@@ -136,10 +136,14 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(runtimeMcp.servers[1].transport, "stdio");
     assert.equal(runtimeMcp.servers[1].command, "node");
     assert.deepEqual(runtimeMcp.servers[1].args, ["/usr/local/bin/agentswarm-mcp-bridge.mjs"]);
-    assert.equal(
-      runtimeMcp.env.AGENTSWARM_MCP_ENDPOINT,
-      existsSync("/.dockerenv") ? `http://127.0.0.1:${env.PORT}/mcp` : `http://host.docker.internal:${env.PORT}/mcp`
-    );
+    const expectedEndpoint = existsSync("/.dockerenv")
+      ? `http://127.0.0.1:${env.PORT}/mcp`
+      : `http://host.docker.internal:${env.PORT}/mcp`;
+    assert.equal(runtimeMcp.env.AGENTSWARM_MCP_ENDPOINT, expectedEndpoint);
+    assert.deepEqual(runtimeMcp.servers[1].env, {
+      AGENTSWARM_MCP_ENDPOINT: expectedEndpoint,
+      AGENTSWARM_MCP_TOKEN: "runtime-token"
+    });
   });
 
   it("allows internal checkpoint apply flow to bypass the running-task guard", async () => {

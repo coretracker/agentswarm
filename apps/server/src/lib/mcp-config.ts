@@ -13,6 +13,15 @@ const validEnvVarName = (value: string): string | null => {
   return trimmed;
 };
 
+const validEnvEntries = (env: Record<string, string> | undefined): Array<[string, string]> =>
+  Object.entries(env ?? {}).flatMap(([name, value]) => {
+    const validName = validEnvVarName(name);
+    if (!validName || typeof value !== "string") {
+      return [];
+    }
+    return [[validName, value]];
+  });
+
 export function serializeCodexMcpConfig(servers: McpServerConfig[]): string {
   const enabledServers = enabledMcpServers(servers);
   if (enabledServers.length === 0) {
@@ -38,6 +47,14 @@ export function serializeCodexMcpConfig(servers: McpServerConfig[]): string {
       lines.push(`command = ${tomlString(server.command)}`);
       if ((server.args ?? []).length > 0) {
         lines.push(`args = [${(server.args ?? []).map(tomlString).join(", ")}]`);
+      }
+      const envEntries = validEnvEntries(server.env);
+      if (envEntries.length > 0) {
+        lines.push("");
+        lines.push(`[mcp_servers.${server.name}.env]`);
+        for (const [name, value] of envEntries) {
+          lines.push(`${name} = ${tomlString(value)}`);
+        }
       }
     }
     lines.push("");
@@ -77,7 +94,7 @@ export function serializeClaudeMcpConfig(servers: McpServerConfig[]): string {
       type: "stdio",
       command: server.command,
       args: server.args ?? [],
-      env: {}
+      env: Object.fromEntries(validEnvEntries(server.env))
     };
   }
 

@@ -3045,7 +3045,16 @@ export class SpawnerService {
       return { servers: baseServers, env: baseEnv, injectedAgentSwarmMcp: false };
     }
 
+    const agentSwarmMcpEnv = {
+      [AGENTSWARM_RUNTIME_MCP_ENDPOINT_ENV]: this.resolveInternalAgentSwarmMcpEndpoint(),
+      [AGENTSWARM_RUNTIME_MCP_TOKEN_ENV]: token.token
+    };
+
     return {
+      env: {
+        ...baseEnv,
+        ...agentSwarmMcpEnv
+      },
       servers: [
         ...baseServers,
         {
@@ -3053,14 +3062,10 @@ export class SpawnerService {
           transport: "stdio",
           command: "node",
           args: ["/usr/local/bin/agentswarm-mcp-bridge.mjs"],
+          env: agentSwarmMcpEnv,
           enabled: true
         }
       ],
-      env: {
-        ...baseEnv,
-        [AGENTSWARM_RUNTIME_MCP_ENDPOINT_ENV]: this.resolveInternalAgentSwarmMcpEndpoint(),
-        [AGENTSWARM_RUNTIME_MCP_TOKEN_ENV]: token.token
-      },
       injectedAgentSwarmMcp: true
     };
   }

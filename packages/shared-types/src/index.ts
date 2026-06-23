@@ -788,6 +788,7 @@ export interface McpServerConfig {
   transport: McpServerTransport;
   command?: string | null;
   args?: string[];
+  env?: Record<string, string>;
   url?: string | null;
   bearerTokenEnvVar?: string | null;
 }

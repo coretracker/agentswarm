@@ -16,7 +16,10 @@ describe("serializeCodexMcpConfig", () => {
         enabled: true,
         transport: "stdio",
         command: "npx",
-        args: ["-y", "mcp-memory"]
+        args: ["-y", "mcp-memory"],
+        env: {
+          MEMORY_TOKEN: "secret"
+        }
       },
       {
         name: "remote",
@@ -36,6 +39,8 @@ describe("serializeCodexMcpConfig", () => {
     assert.match(config, /\[mcp_servers\.memory\]/);
     assert.match(config, /command = "npx"/);
     assert.match(config, /args = \["-y", "mcp-memory"\]/);
+    assert.match(config, /\[mcp_servers\.memory\.env\]/);
+    assert.match(config, /MEMORY_TOKEN = "secret"/);
     assert.match(config, /\[mcp_servers\.remote\]/);
     assert.match(config, /url = "https:\/\/example\.com\/mcp"/);
     assert.match(config, /bearer_token_env_var = "MCP_TOKEN"/);
@@ -51,7 +56,10 @@ describe("serializeClaudeMcpConfig", () => {
         enabled: true,
         transport: "stdio",
         command: "npx",
-        args: ["-y", "mcp-memory"]
+        args: ["-y", "mcp-memory"],
+        env: {
+          MEMORY_TOKEN: "secret"
+        }
       },
       {
         name: "remote",
@@ -71,7 +79,9 @@ describe("serializeClaudeMcpConfig", () => {
               type: "stdio",
               command: "npx",
               args: ["-y", "mcp-memory"],
-              env: {}
+              env: {
+                MEMORY_TOKEN: "secret"
+              }
             },
             remote: {
               type: "http",
