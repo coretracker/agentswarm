@@ -78,15 +78,15 @@ test("GitHub PR webhook queues linked PR comments", async () => {
   assert.equal(appendedMessages.length, 1);
   assert.deepEqual(appendedMessages[0], {
     role: "user",
-    action: "ask",
+    action: "build",
     queueState: "pending",
     queueSource: "github_pr",
     externalId: "github:pr_comment:1001",
     content:
-      "A new GitHub pull request feedback item was added to linked PR #42.\n\nType: pr_comment\nAuthor: @alice\nURL: https://github.com/acme/repo/pull/42#issuecomment-1001\n\nFeedback:\nPlease add a regression test.\n\nDecide whether this feedback is actionable. If actionable, make the requested changes. If unclear, ask a follow-up question. If not actionable, explain briefly and do nothing."
+      "A new GitHub pull request feedback item was added to linked PR #42.\n\nType: pr_comment\nAuthor: @alice\nURL: https://github.com/acme/repo/pull/42#issuecomment-1001\n\nFeedback:\nPlease add a regression test."
   });
   assert.equal(triggeredActions.length, 1);
-  assert.deepEqual(triggeredActions[0], ["task-1", "ask", { content: (appendedMessages[0] as { content: string }).content }, { promptMessageId: "message-1" }]);
+  assert.deepEqual(triggeredActions[0], ["task-1", "build", { content: (appendedMessages[0] as { content: string }).content }, { promptMessageId: "message-1" }]);
 
   await app.close();
 });

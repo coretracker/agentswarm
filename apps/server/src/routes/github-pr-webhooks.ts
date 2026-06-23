@@ -159,7 +159,7 @@ const formatFeedbackMessage = (feedback: GitHubPrFeedback): string => {
   if (feedback.diffHunk) {
     lines.push("", "Diff context:", "```diff", feedback.diffHunk, "```");
   }
-  lines.push("", "Feedback:", feedback.body.trim() || "(No body provided.)", "", "Decide whether this feedback is actionable. If actionable, make the requested changes. If unclear, ask a follow-up question. If not actionable, explain briefly and do nothing.");
+  lines.push("", "Feedback:", feedback.body.trim() || "(No body provided.)");
   return lines.join("\n");
 };
 
@@ -205,7 +205,7 @@ export const registerGitHubPrWebhookRoutes = (
 
     const message = await deps.taskStore.appendMessage(task.id, {
       role: "user",
-      action: "ask",
+      action: "build",
       queueState: "pending",
       queueSource: "github_pr",
       externalId: feedback.externalId,
@@ -215,7 +215,7 @@ export const registerGitHubPrWebhookRoutes = (
     if (message && task.executionStatus === "idle" && !(await deps.taskStore.hasPendingChangeProposal(task.id))) {
       const blocked = await getMutationBlocked(deps.taskStore, task.id);
       if (!blocked) {
-        await deps.scheduler.triggerAction(task.id, "ask", { content: message.content }, { promptMessageId: message.id });
+        await deps.scheduler.triggerAction(task.id, "build", { content: message.content }, { promptMessageId: message.id });
       }
     } else if (
       message &&
