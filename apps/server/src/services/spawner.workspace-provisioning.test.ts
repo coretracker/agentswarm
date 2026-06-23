@@ -85,6 +85,57 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
   });
 
+  it("injects AgentSwarm MCP into task runtime config", async () => {
+    const createdTokens: unknown[] = [];
+    const spawner = new SpawnerService(
+      {} as never,
+      {} as never,
+      {
+        getAuthSessionUser: async (userId: string) => ({ id: userId }),
+        listUsers: async () => []
+      } as never,
+      {} as never,
+      undefined,
+      {
+        createToken: async (input: unknown) => {
+          createdTokens.push(input);
+          return { token: "runtime-token" };
+        }
+      } as never
+    );
+
+    const runtimeMcp = await (spawner as any).buildRuntimeMcpConfig(
+      createTask({ ownerUserId: "user-1" }),
+      [
+        {
+          name: "agentswarm",
+          transport: "http",
+          url: "https://manual.example.com/mcp",
+          bearerTokenEnvVar: "MANUAL_TOKEN",
+          enabled: true
+        },
+        {
+          name: "github",
+          transport: "http",
+          url: "https://api.githubcopilot.com/mcp",
+          enabled: true
+        }
+      ],
+      "run-1"
+    );
+
+    assert.equal(runtimeMcp.injectedAgentSwarmMcp, true);
+    assert.equal(runtimeMcp.env.AGENTSWARM_MCP_TOKEN, "runtime-token");
+    assert.equal(createdTokens.length, 1);
+    assert.equal(runtimeMcp.servers.length, 2);
+    assert.deepEqual(
+      runtimeMcp.servers.map((server: { name: string }) => server.name),
+      ["github", "agentswarm"]
+    );
+    assert.equal(runtimeMcp.servers[1].url, env.AGENTSWARM_MCP_URL);
+    assert.equal(runtimeMcp.servers[1].bearerTokenEnvVar, "AGENTSWARM_MCP_TOKEN");
+  });
+
   it("allows internal checkpoint apply flow to bypass the running-task guard", async () => {
     const spawner = new SpawnerService(
       {

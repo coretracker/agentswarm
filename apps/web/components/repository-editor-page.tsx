@@ -737,10 +737,10 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             <Flex vertical gap={12}>
               <Flex vertical gap={4}>
                 <Typography.Title level={4} style={{ margin: 0 }}>
-                  GitHub PR Feedback
+                  Github Integration
                 </Typography.Title>
                 <Typography.Text type="secondary">
-                  Configure this webhook in GitHub so pull request comments and reviews queue follow-up work on linked tasks.
+                  Connect GitHub pull request activity with linked AgentSwarm tasks.
                 </Typography.Text>
               </Flex>
               {mode === "edit" && editingRepository ? (
@@ -767,26 +767,29 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     name="githubPrWebhookSecret"
                     label={
                       editingRepository.githubPrWebhookSecretConfigured
-                        ? "GitHub PR Webhook Secret (leave blank to keep existing)"
-                        : "GitHub PR Webhook Secret"
+                        ? "Github Webhook Secret (leave blank to keep existing)"
+                        : "Github Webhook Secret"
                     }
                   >
                     <Input.Password />
                   </Form.Item>
                   {editingRepository.githubPrWebhookSecretConfigured ? (
                     <Form.Item name="clearGithubPrWebhookSecret" valuePropName="checked">
-                      <Checkbox>Clear stored GitHub PR webhook secret</Checkbox>
+                      <Checkbox>Clear stored Github webhook secret</Checkbox>
                     </Form.Item>
                   ) : null}
                   <Alert
                     type="info"
                     showIcon
-                    message="Full PR feedback flow"
+                    message="Pull request flow"
                     description={
                       <Space direction="vertical" size={4}>
-                        <Typography.Text>1. Configure GitHub MCP for agents and let agents create pull requests there.</Typography.Text>
                         <Typography.Text>
-                          2. After creating a PR, agents call <Typography.Text code>agentswarm_link_pull_request</Typography.Text> with:
+                          1. Keep GitHub MCP available to agents so they can create pull requests.
+                        </Typography.Text>
+                        <Typography.Text>
+                          2. AgentSwarm MCP is connected to agents automatically. After creating a PR, agents call{" "}
+                          <Typography.Text code>agentswarm_link_pull_request</Typography.Text> with:
                         </Typography.Text>
                         <Typography.Text code>{`{ "taskId": "task_id", "prNumber": 123 }`}</Typography.Text>
                         <Typography.Text>
@@ -802,7 +805,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   type="info"
                   showIcon
                   message="Save the repository first"
-                  description="After creation, AgentSwarm will show the repository-scoped GitHub webhook URL and PR feedback secret setup."
+                  description="After creation, AgentSwarm will show the repository-scoped Github webhook URL and webhook secret setup."
                 />
               )}
             </Flex>

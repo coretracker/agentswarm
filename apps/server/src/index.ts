@@ -156,7 +156,7 @@ const bootstrap = async (): Promise<void> => {
     credentialStore,
     personalAccessTokenStore
   });
-  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
+  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore, undefined, personalAccessTokenStore);
   const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
   const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
 
