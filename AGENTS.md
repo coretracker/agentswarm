@@ -96,6 +96,3 @@ Harness remote mode:
 - Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
 - Use a remote image that has: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
 - `test.sh` auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`) for browser E2E when the remote runner cannot launch Playwright locally.
-
-## Sync Policy Reference
-- GitHub sync ownership and conflict policy: [docs/github-sync-ownership-model.md](docs/github-sync-ownership-model.md)

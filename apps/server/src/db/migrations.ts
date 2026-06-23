@@ -480,5 +480,14 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         WHERE value = 'task:interactive'
       );
     `
+  },
+  {
+    id: "20260623_01_remove_legacy_github_sync_columns",
+    sql: `
+      ALTER TABLE repositories
+      DROP COLUMN IF EXISTS github_webhook_secret,
+      DROP COLUMN IF EXISTS github_automations,
+      DROP COLUMN IF EXISTS sync_status_enabled;
+    `
   }
 ];

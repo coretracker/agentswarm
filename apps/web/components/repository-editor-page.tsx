@@ -4,14 +4,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type {
   CreateRepositoryInput,
-  GitHubAutomationRule,
   Repository,
   RepositoryEnvSecretInput,
   RepositoryEnvVarInput
 } from "@agentswarm/shared-types";
 import { Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
 import { ApiError, api } from "../src/api/client";
-import { buildApiUrl } from "../src/lib/public-url";
 import { trackEvent } from "../src/utils/analytics";
 
 interface RepositoryEditorPageProps {
@@ -29,9 +27,6 @@ type RepositoryFormValues = {
   webhookUrl: string;
   webhookSecret: string;
   clearWebhookSecret: boolean;
-  githubWebhookSecret: string;
-  clearGithubWebhookSecret: boolean;
-  githubAutomationsJson: string;
 };
 
 const emptyValues = (): RepositoryFormValues => ({
@@ -43,10 +38,7 @@ const emptyValues = (): RepositoryFormValues => ({
   webhookEnabled: false,
   webhookUrl: "",
   webhookSecret: "",
-  clearWebhookSecret: false,
-  githubWebhookSecret: "",
-  clearGithubWebhookSecret: false,
-  githubAutomationsJson: "[]"
+  clearWebhookSecret: false
 });
 
 const normalizeValues = (values?: Partial<RepositoryFormValues> | null): RepositoryFormValues => ({
@@ -70,10 +62,7 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   webhookEnabled: values?.webhookEnabled === true,
   webhookUrl: typeof values?.webhookUrl === "string" ? values.webhookUrl : "",
   webhookSecret: typeof values?.webhookSecret === "string" ? values.webhookSecret : "",
-  clearWebhookSecret: values?.clearWebhookSecret === true,
-  githubWebhookSecret: typeof values?.githubWebhookSecret === "string" ? values.githubWebhookSecret : "",
-  clearGithubWebhookSecret: values?.clearGithubWebhookSecret === true,
-  githubAutomationsJson: typeof values?.githubAutomationsJson === "string" ? values.githubAutomationsJson : "[]"
+  clearWebhookSecret: values?.clearWebhookSecret === true
 });
 
 const snapshotValues = (values?: Partial<RepositoryFormValues> | null): string => JSON.stringify(normalizeValues(values));
@@ -118,23 +107,6 @@ const readUploadedEnvValueFile = async (file: File): Promise<{ fileName: string;
   };
 };
 
-const isGitHubAutomationRule = (value: unknown): value is GitHubAutomationRule => {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  if (typeof record.id !== "string" || record.id.trim().length === 0) {
-    return false;
-  }
-  if (typeof record.name !== "string" || record.name.trim().length === 0) {
-    return false;
-  }
-  if (record.trigger !== "issue_opened" && record.trigger !== "pull_request_opened") {
-    return false;
-  }
-  return typeof record.task === "object" && record.task !== null;
-};
-
 export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPageProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -148,7 +120,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const [editingRepository, setEditingRepository] = useState<Repository | null>(null);
   const [initialSnapshot, setInitialSnapshot] = useState("");
   const watchedValues = Form.useWatch([], form) as RepositoryFormValues | undefined;
-  const githubWebhookUrl = editingRepository ? buildApiUrl(`/webhooks/github/${encodeURIComponent(editingRepository.id)}`) : null;
 
   const hasUnsavedChanges = useMemo(() => {
     if (!initialSnapshot) {
@@ -209,10 +180,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           webhookEnabled: repository.webhookEnabled,
           webhookUrl: repository.webhookUrl ?? "",
           webhookSecret: "",
-          clearWebhookSecret: false,
-          githubWebhookSecret: "",
-          clearGithubWebhookSecret: false,
-          githubAutomationsJson: JSON.stringify(repository.githubAutomations ?? [], null, 2)
+          clearWebhookSecret: false
         });
         form.setFieldsValue(initial);
         setInitialSnapshot(snapshotValues(initial));
@@ -392,17 +360,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 }
               }
             }
-            let githubAutomations: GitHubAutomationRule[] = [];
-            if (normalized.githubAutomationsJson.trim().length > 0) {
-              const parsed = JSON.parse(normalized.githubAutomationsJson);
-              if (!Array.isArray(parsed)) {
-                throw new Error("GitHub automations must be a JSON array.");
-              }
-              if (!parsed.every(isGitHubAutomationRule)) {
-                throw new Error("Each GitHub automation must include id, name, trigger, and task.");
-              }
-              githubAutomations = parsed;
-            }
             const payload: CreateRepositoryInput = {
               name: normalized.name,
               url: normalized.url,
@@ -412,10 +369,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               webhookEnabled: normalized.webhookEnabled,
               webhookUrl: normalized.webhookUrl.trim().length > 0 ? normalized.webhookUrl.trim() : null,
               ...(normalized.webhookSecret.trim().length > 0 ? { webhookSecret: normalized.webhookSecret.trim() } : {}),
-              ...(editingRepository && normalized.clearWebhookSecret ? { clearWebhookSecret: true } : {}),
-              ...(normalized.githubWebhookSecret.trim().length > 0 ? { githubWebhookSecret: normalized.githubWebhookSecret.trim() } : {}),
-              ...(editingRepository && normalized.clearGithubWebhookSecret ? { clearGithubWebhookSecret: true } : {}),
-              githubAutomations
+              ...(editingRepository && normalized.clearWebhookSecret ? { clearWebhookSecret: true } : {})
             };
             if (mode === "edit" && editingRepository) {
               await api.updateRepository(editingRepository.id, payload);
@@ -767,49 +721,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 <Checkbox>Clear stored webhook secret</Checkbox>
               </Form.Item>
             ) : null}
-            <Form.Item
-              name="githubWebhookSecret"
-              label={editingRepository?.githubWebhookSecretConfigured ? "GitHub Webhook Secret (leave blank to keep existing)" : "GitHub Webhook Secret"}
-            >
-              <Input.Password placeholder="Optional but recommended for signature verification" />
-            </Form.Item>
-            {editingRepository?.githubWebhookSecretConfigured ? (
-              <Form.Item name="clearGithubWebhookSecret" valuePropName="checked">
-                <Checkbox>Clear stored GitHub webhook secret</Checkbox>
-              </Form.Item>
-            ) : null}
-            <Form.Item label="GitHub Webhook URL">
-              {githubWebhookUrl ? (
-                <Typography.Text code copyable>
-                  {githubWebhookUrl}
-                </Typography.Text>
-              ) : (
-                <Typography.Text type="secondary">
-                  Save this repository first to generate its webhook URL.
-                </Typography.Text>
-              )}
-            </Form.Item>
-            <Form.Item
-              name="githubAutomationsJson"
-              label="GitHub Automations (JSON rules)"
-              rules={[
-                {
-                  validator: async (_, value) => {
-                    const text = typeof value === "string" ? value.trim() : "";
-                    if (!text) {
-                      return;
-                    }
-                    const parsed = JSON.parse(text);
-                    if (!Array.isArray(parsed)) {
-                      throw new Error("GitHub automations must be a JSON array.");
-                    }
-                  }
-                }
-              ]}
-              extra='Example trigger with label filter: [{"id":"bug-opened","name":"Bug Issue","enabled":true,"trigger":"issue_opened","labelFilter":{"labelsAny":["bug"],"labelsNone":["wip"]},"task":{"taskType":"build"}}]'
-            >
-              <Input.TextArea rows={10} />
-            </Form.Item>
           </Card>
         </Flex>
       </Form>

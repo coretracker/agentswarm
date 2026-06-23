@@ -413,53 +413,11 @@ export interface RepositoryEnvSecretInputFile {
 
 export type RepositoryEnvSecretInput = RepositoryEnvSecretInputText | RepositoryEnvSecretInputFile;
 
-export type GitHubAutomationTrigger = "issue_opened" | "pull_request_opened";
-export type GitHubCommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
-
-export interface GitHubAutomationLabelFilter {
-  labelsAny?: string[];
-  labelsAll?: string[];
-  labelsNone?: string[];
-}
-
-export interface GitHubAutomationTaskConfig {
-  assigneeEmail?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  taskType?: Extract<TaskType, "build" | "ask">;
-  includeComments?: boolean;
-  titleTemplate?: string;
-  notes?: string;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string | null;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  snippetId?: string;
-}
-
-export interface GitHubAutomationRule {
-  id: string;
-  name: string;
-  enabled: boolean;
-  trigger: GitHubAutomationTrigger;
-  syncStatusEnabled?: boolean;
-  automationEnabled?: boolean;
-  allowedTriggers?: GitHubCommentTriggerType[];
-  allowedReactions?: string[];
-  allowedCommands?: string[];
-  allowedActorLogins?: string[];
-  labelFilter?: GitHubAutomationLabelFilter;
-  task: GitHubAutomationTaskConfig;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface Repository {
   id: string;
   name: string;
   url: string;
   defaultBranch: string;
-  syncStatusEnabled?: boolean;
   envVars: RepositoryEnvVarValue[];
   envSecrets?: RepositoryEnvSecret[];
   webhookUrl: string | null;
@@ -468,8 +426,6 @@ export interface Repository {
   webhookLastAttemptAt: string | null;
   webhookLastStatus: "success" | "failed" | null;
   webhookLastError: string | null;
-  githubWebhookSecretConfigured?: boolean;
-  githubAutomations?: GitHubAutomationRule[];
   createdAt: string;
   updatedAt: string;
 }
@@ -679,7 +635,7 @@ export interface TaskMessage {
   content: string;
   action: TaskMessageAction | null;
   queueState?: "pending" | null;
-  queueSource?: "user" | "github" | null;
+  queueSource?: "user" | null;
   /** Optional saved image attachments that were attached when the user submitted this message. */
   attachments?: TaskPromptAttachment[];
   /** Present for terminal lifecycle messages so history can address the terminal session. */
@@ -833,25 +789,6 @@ export interface McpServerConfig {
   bearerTokenEnvVar?: string | null;
 }
 
-export interface GitHubIssueReference {
-  number: number;
-  title: string;
-  url: string;
-}
-
-export interface GitHubPullRequestReference {
-  number: number;
-  title: string;
-  url: string;
-  headBranch: string;
-  baseBranch: string;
-}
-
-export interface GitHubBranchReference {
-  name: string;
-  isDefault: boolean;
-}
-
 export type DataStoreBackend = "redis" | "postgres";
 export type WorkspaceProvisioningMode = "clone_only" | "hybrid";
 
@@ -902,30 +839,23 @@ export interface CreateRepositoryInput {
   name: string;
   url: string;
   defaultBranch?: string;
-  syncStatusEnabled?: boolean;
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
-  githubWebhookSecret?: string;
-  githubAutomations?: GitHubAutomationRule[];
 }
 
 export interface UpdateRepositoryInput {
   name?: string;
   url?: string;
   defaultBranch?: string;
-  syncStatusEnabled?: boolean;
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
   clearWebhookSecret?: boolean;
-  githubWebhookSecret?: string;
-  clearGithubWebhookSecret?: boolean;
-  githubAutomations?: GitHubAutomationRule[];
 }
 
 export interface CreateTaskInput {
@@ -993,40 +923,6 @@ export interface UpdateSnippetInput {
   name: string;
   content: string;
   variables?: SnippetVariable[];
-}
-
-export interface CreateTaskFromIssueInput {
-  repoId: string;
-  draft?: boolean;
-  issueNumber: number;
-  includeComments?: boolean;
-  notes?: string;
-  deadline?: string | null;
-  taskType?: Extract<TaskType, "build" | "ask">;
-  title?: string;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  model?: string;
-  reasoningEffort?: TaskReasoningEffort;
-}
-
-export interface CreateTaskFromPullRequestInput {
-  repoId: string;
-  draft?: boolean;
-  pullRequestNumber: number;
-  title?: string;
-  notes?: string;
-  deadline?: string | null;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  model?: string;
-  reasoningEffort?: TaskReasoningEffort;
 }
 
 export interface TriggerTaskActionInput {

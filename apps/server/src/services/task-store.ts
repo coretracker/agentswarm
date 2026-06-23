@@ -177,7 +177,7 @@ const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
     : [];
   const sessionId = typeof message.sessionId === "string" && message.sessionId.trim().length > 0 ? message.sessionId : null;
   const queueState = message.queueState === "pending" ? "pending" : null;
-  const queueSource = message.queueSource === "github" ? "github" : message.queueSource === "user" ? "user" : null;
+  const queueSource = message.queueSource === "user" ? "user" : null;
 
   return {
     ...message,

@@ -14,18 +14,13 @@ import { createPostgresStores } from "./services/create-postgres-stores.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { SpawnerService } from "./services/spawner.js";
 import { SchedulerService } from "./services/scheduler.js";
-import { GitHubImportService } from "./services/github-import-service.js";
 import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
-import { GitHubOutboundService } from "./services/github-outbound-service.js";
-import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
 import { registerRoleRoutes } from "./routes/roles.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerUserRoutes } from "./routes/users.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
-import { registerImportRoutes } from "./routes/imports.js";
 import { registerSnippetRoutes } from "./routes/snippets.js";
-import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 import { registerMcpRoutes } from "./mcp/server.js";
 
@@ -128,7 +123,6 @@ const bootstrap = async (): Promise<void> => {
   const {
     taskStore,
     taskQueueStore,
-    githubOutboundQueueStore,
     webhookDeliveryStore,
     snippetStore,
     repositoryStore,
@@ -154,10 +148,7 @@ const bootstrap = async (): Promise<void> => {
   });
   const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
   const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
-  const githubImportService = new GitHubImportService(settingsStore);
   const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
-  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
-  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
 
   await roleStore.ensureDefaultAdminRole();
   await userStore.ensureDefaultAdminUser({
@@ -183,19 +174,8 @@ const bootstrap = async (): Promise<void> => {
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerImportRoutes(app, { githubImportService, repositoryStore, auth });
-  registerGitHubWebhookRoutes(app, {
-    repositoryStore,
-    githubImportService,
-    taskStore,
-    userStore,
-    scheduler,
-    spawner,
-    snippetStore
-  });
   registerMcpRoutes(app, {
     auth,
-    githubImportService,
     repositoryStore,
     settingsStore,
     taskStore,
@@ -262,7 +242,6 @@ const bootstrap = async (): Promise<void> => {
     try {
       const event = JSON.parse(message) as RealtimeEvent;
       void webhookDeliveryService.handleRealtimeEvent(event);
-      void githubStatusSyncService.handleRealtimeEvent(event);
       void auth.emitScopedRealtimeEvent(io, event);
     } catch (error) {
       app.log.error({ error }, "Failed to parse event message");
@@ -270,7 +249,6 @@ const bootstrap = async (): Promise<void> => {
   });
 
   webhookDeliveryService.start();
-  githubOutboundService.start();
   await scheduler.bootstrap();
 
   let closeStarted = false;
@@ -281,7 +259,6 @@ const bootstrap = async (): Promise<void> => {
     closeStarted = true;
     scheduler.stop();
     webhookDeliveryService.stop();
-    githubOutboundService.stop();
     io.close();
     await Promise.all([
       ...(postgresPool ? [postgresPool.end()] : []),

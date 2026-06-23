@@ -10,8 +10,6 @@ import type {
   CreateRepositoryInput,
   CreateTaskInput,
   CreateUserInput,
-  GitHubBranchReference,
-  GitHubPullRequestReference,
   LoginInput,
   CreatedPersonalAccessToken,
   PersonalAccessToken,
@@ -425,10 +423,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  listGitHubPullRequests: (repoId: string) =>
-    request<GitHubPullRequestReference[]>(`/imports/github/pull-requests?repoId=${encodeURIComponent(repoId)}`),
-  listGitHubBranches: (repoId: string) =>
-    request<GitHubBranchReference[]>(`/imports/github/branches?repoId=${encodeURIComponent(repoId)}`),
   triggerTaskAction: (id: string, action: TaskAction) =>
     request<Task>(`/tasks/${id}/actions`, {
       method: "POST",

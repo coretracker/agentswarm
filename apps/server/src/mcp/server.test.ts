@@ -10,7 +10,6 @@ const createTestApp = (overrides: { authenticateBearerToken?: () => Promise<unkn
     auth: {
       authenticateBearerToken: overrides.authenticateBearerToken ?? (async () => null)
     },
-    githubImportService: {},
     repositoryStore: {},
     settingsStore: {},
     taskStore: {},

@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import type { CreateRepositoryInput, GitHubAutomationRule, UpdateRepositoryInput } from "@agentswarm/shared-types";
+import type { CreateRepositoryInput, UpdateRepositoryInput } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
 import { canUserAccessRepository } from "../lib/task-ownership.js";
@@ -105,101 +105,22 @@ const createRepositorySchema = z.object({
   name: z.string().min(1),
   url: z.string().min(1),
   defaultBranch: z.string().min(1).optional(),
-  syncStatusEnabled: z.boolean().optional(),
   envVars: repositoryEnvVarsSchema.optional(),
   envSecrets: repositoryEnvSecretsSchema.optional(),
   webhookUrl: z.string().trim().url().nullable().optional(),
   webhookEnabled: z.boolean().optional(),
-  webhookSecret: z.string().trim().min(1).optional(),
-  githubWebhookSecret: z.string().trim().min(1).optional(),
-  githubAutomations: z
-    .array(
-      z.object({
-        id: z.string().trim().min(1),
-        name: z.string().trim().min(1).max(160),
-        enabled: z.boolean().optional(),
-        trigger: z.enum(["issue_opened", "pull_request_opened"]),
-        syncStatusEnabled: z.boolean().optional(),
-        automationEnabled: z.boolean().optional(),
-        allowedTriggers: z.array(z.enum(["emoji_reaction", "slash_command", "bot_mention"])).optional(),
-        allowedReactions: z.array(z.string().trim().min(1)).optional(),
-        allowedCommands: z.array(z.string().trim().min(1)).optional(),
-        allowedActorLogins: z.array(z.string().trim().min(1)).optional(),
-        labelFilter: z
-          .object({
-            labelsAny: z.array(z.string().trim().min(1)).optional(),
-            labelsAll: z.array(z.string().trim().min(1)).optional(),
-            labelsNone: z.array(z.string().trim().min(1)).optional()
-          })
-          .optional(),
-        task: z
-          .object({
-            assigneeEmail: z.string().trim().email().optional(),
-            codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-            taskType: z.enum(["build", "ask"]).optional(),
-            includeComments: z.boolean().optional(),
-            titleTemplate: z.string().optional(),
-            notes: z.string().optional(),
-            provider: z.enum(["codex", "claude"]).optional(),
-            providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-            modelOverride: z.string().nullable().optional(),
-            baseBranch: z.string().optional(),
-            branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-            snippetId: z.string().optional()
-          })
-          .strict()
-      })
-    )
-    .optional()
+  webhookSecret: z.string().trim().min(1).optional()
 });
 
 const updateRepositorySchema = createRepositorySchema.partial().extend({
-  clearWebhookSecret: z.boolean().optional(),
-  clearGithubWebhookSecret: z.boolean().optional()
+  clearWebhookSecret: z.boolean().optional()
 });
 
 type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;
 type ParsedRepositoryUpdateInput = z.infer<typeof updateRepositorySchema>;
-type ParsedGitHubAutomationRule = NonNullable<ParsedRepositoryInput["githubAutomations"]>[number];
+const toCreateRepositoryInput = (input: ParsedRepositoryInput): CreateRepositoryInput => input;
 
-const nowIso = (): string => new Date().toISOString();
-
-const toGitHubAutomationRule = (rule: ParsedGitHubAutomationRule, now: string): GitHubAutomationRule => ({
-  id: rule.id,
-  name: rule.name,
-  enabled: rule.enabled ?? true,
-  trigger: rule.trigger,
-  syncStatusEnabled: rule.syncStatusEnabled,
-  automationEnabled: rule.automationEnabled,
-  allowedTriggers: rule.allowedTriggers,
-  allowedReactions: rule.allowedReactions,
-  allowedCommands: rule.allowedCommands,
-  allowedActorLogins: rule.allowedActorLogins,
-  labelFilter: rule.labelFilter,
-  task: rule.task,
-  createdAt: now,
-  updatedAt: now
-});
-
-const normalizeGitHubAutomations = (
-  rules: ParsedRepositoryInput["githubAutomations"] | ParsedRepositoryUpdateInput["githubAutomations"]
-): GitHubAutomationRule[] | undefined => {
-  if (!rules) {
-    return undefined;
-  }
-  const now = nowIso();
-  return rules.map((rule) => toGitHubAutomationRule(rule, now));
-};
-
-const toCreateRepositoryInput = (input: ParsedRepositoryInput): CreateRepositoryInput => ({
-  ...input,
-  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
-});
-
-const toUpdateRepositoryInput = (input: ParsedRepositoryUpdateInput): UpdateRepositoryInput => ({
-  ...input,
-  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
-});
+const toUpdateRepositoryInput = (input: ParsedRepositoryUpdateInput): UpdateRepositoryInput => input;
 
 export const registerRepositoryRoutes = (
   app: FastifyInstance,
