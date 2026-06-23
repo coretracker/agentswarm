@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync, type Dirent } from "node:fs";
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { nanoid } from "nanoid";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import {
   type AgentResponsePreference,
@@ -89,6 +89,7 @@ const LIVE_TIMELINE_POLL_INTERVAL_MS = 1_000;
 const AUTO_APPLY_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const AUTO_APPLY_COMMIT_MESSAGE_PROFILE = "low";
 const AGENTSWARM_RUNTIME_MCP_SERVER_NAME = "agentswarm";
+const AGENTSWARM_RUNTIME_MCP_ENDPOINT_ENV = "AGENTSWARM_MCP_ENDPOINT";
 const AGENTSWARM_RUNTIME_MCP_TOKEN_ENV = "AGENTSWARM_MCP_TOKEN";
 const AGENTSWARM_RUNTIME_MCP_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const AGENTSWARM_RUNTIME_MCP_SCOPES: PermissionScope[] = [
@@ -2990,6 +2991,20 @@ export class SpawnerService {
     return Object.fromEntries(collectMcpServerEnvEntries(servers, process.env));
   }
 
+  private resolveInternalAgentSwarmMcpEndpoint(): string {
+    if (existsSync("/.dockerenv")) {
+      return `http://127.0.0.1:${env.PORT}/mcp`;
+    }
+    return `http://host.docker.internal:${env.PORT}/mcp`;
+  }
+
+  private buildInternalAgentSwarmMcpDockerArgs(): string[] {
+    if (existsSync("/.dockerenv")) {
+      return ["--network", `container:${hostname()}`];
+    }
+    return ["--add-host", "host.docker.internal:host-gateway"];
+  }
+
   private async resolveRuntimeMcpUserId(task: Task): Promise<string | null> {
     if (task.ownerUserId) {
       const owner = await this.userStore.getAuthSessionUser(task.ownerUserId).catch(() => null);
@@ -3035,14 +3050,15 @@ export class SpawnerService {
         ...baseServers,
         {
           name: AGENTSWARM_RUNTIME_MCP_SERVER_NAME,
-          transport: "http",
-          url: env.AGENTSWARM_MCP_URL,
-          bearerTokenEnvVar: AGENTSWARM_RUNTIME_MCP_TOKEN_ENV,
+          transport: "stdio",
+          command: "node",
+          args: ["/usr/local/bin/agentswarm-mcp-bridge.mjs"],
           enabled: true
         }
       ],
       env: {
         ...baseEnv,
+        [AGENTSWARM_RUNTIME_MCP_ENDPOINT_ENV]: this.resolveInternalAgentSwarmMcpEndpoint(),
         [AGENTSWARM_RUNTIME_MCP_TOKEN_ENV]: token.token
       },
       injectedAgentSwarmMcp: true
@@ -5489,6 +5505,7 @@ export class SpawnerService {
         "--rm",
         "--name",
         containerName,
+        ...(runtimeMcp.injectedAgentSwarmMcp ? this.buildInternalAgentSwarmMcpDockerArgs() : []),
         "-v",
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         ...this.buildTaskWorkspaceMountArgs(task.id, workspace.workspacePath, workspaceMountMode),

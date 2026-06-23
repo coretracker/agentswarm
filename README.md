@@ -147,7 +147,6 @@ Most runtime configuration starts in `.env`. Provider API keys and GitHub creden
 | --- | --- | --- |
 | `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
 | `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
-| `AGENTSWARM_MCP_URL` | URL injected into task agents for AgentSwarm's own MCP server. Defaults to `CORS_ORIGIN` plus `/mcp`. | `http://localhost:3217/mcp` |
 | `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
 | `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
 | `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
@@ -274,7 +273,7 @@ Phase 1 tools:
 - `agentswarm_link_pull_request`
 - `agentswarm_update_task_config`
 
-Task agents receive the AgentSwarm MCP server automatically at runtime through a short-lived run token.
+Task agents receive the AgentSwarm MCP server automatically at runtime through an internal stdio bridge and a short-lived run token.
 
 Checkpoint mutation, push/merge, attachments, terminal control, and summarization are intentionally deferred to later phases.
 

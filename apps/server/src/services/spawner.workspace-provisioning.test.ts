@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -132,8 +133,13 @@ describe("SpawnerService workspace provisioning", () => {
       runtimeMcp.servers.map((server: { name: string }) => server.name),
       ["github", "agentswarm"]
     );
-    assert.equal(runtimeMcp.servers[1].url, env.AGENTSWARM_MCP_URL);
-    assert.equal(runtimeMcp.servers[1].bearerTokenEnvVar, "AGENTSWARM_MCP_TOKEN");
+    assert.equal(runtimeMcp.servers[1].transport, "stdio");
+    assert.equal(runtimeMcp.servers[1].command, "node");
+    assert.deepEqual(runtimeMcp.servers[1].args, ["/usr/local/bin/agentswarm-mcp-bridge.mjs"]);
+    assert.equal(
+      runtimeMcp.env.AGENTSWARM_MCP_ENDPOINT,
+      existsSync("/.dockerenv") ? `http://127.0.0.1:${env.PORT}/mcp` : `http://host.docker.internal:${env.PORT}/mcp`
+    );
   });
 
   it("allows internal checkpoint apply flow to bypass the running-task guard", async () => {
