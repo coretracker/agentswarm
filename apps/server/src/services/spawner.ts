@@ -3014,6 +3014,10 @@ export class SpawnerService {
     return ["--add-host", "host.docker.internal:host-gateway"];
   }
 
+  buildRuntimeMcpDockerArgs(injectedAgentSwarmMcp: boolean): string[] {
+    return injectedAgentSwarmMcp ? this.buildInternalAgentSwarmMcpDockerArgs() : [];
+  }
+
   private async resolveRuntimeMcpUserId(task: Task): Promise<string | null> {
     if (task.ownerUserId) {
       const owner = await this.userStore.getAuthSessionUser(task.ownerUserId).catch(() => null);
@@ -3079,6 +3083,14 @@ export class SpawnerService {
       ],
       injectedAgentSwarmMcp: true
     };
+  }
+
+  async buildRuntimeMcpConfigForTask(
+    task: Task,
+    configuredServers: McpServerConfig[],
+    executionId: string
+  ): Promise<{ servers: McpServerConfig[]; env: Record<string, string>; injectedAgentSwarmMcp: boolean }> {
+    return this.buildRuntimeMcpConfig(task, configuredServers, executionId);
   }
 
   private async collectChangedFiles(workspacePath: string, startRef: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string[]> {
