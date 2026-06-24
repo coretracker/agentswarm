@@ -172,6 +172,75 @@ test("GitHub PR webhook ignores configured integration bot login", async () => {
   await app.close();
 });
 
+test("GitHub PR webhook ignores senders outside configured allowed users", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  let lookupCount = 0;
+  let appendCount = 0;
+  const secret = "webhook-secret";
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({ id: "repo-1", githubPrAllowedUsers: ["alice"] }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubPrNumber: async () => {
+        lookupCount += 1;
+        return null;
+      },
+      appendMessage: async () => {
+        appendCount += 1;
+        return null;
+      }
+    } as never,
+    scheduler: {} as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "created",
+    issue: {
+      number: 42,
+      pull_request: {}
+    },
+    comment: {
+      id: 1001,
+      body: "Please handle this.",
+      html_url: "https://github.com/acme/repo/pull/42#issuecomment-1001"
+    },
+    sender: {
+      login: "mallory",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issue_comment",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { queued: false, reason: "disallowed_github_user" });
+  assert.equal(lookupCount, 0);
+  assert.equal(appendCount, 0);
+
+  await app.close();
+});
+
 test("GitHub PR webhook ignores empty feedback bodies", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {

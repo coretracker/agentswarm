@@ -74,6 +74,7 @@ interface RepositoryRecord extends JsonRecord {
   webhookLastAttemptAt?: string | null;
   webhookLastStatus?: string | null;
   webhookLastError?: string | null;
+  githubPrAllowedUsers?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -225,6 +226,21 @@ const stringArray = (value: unknown): string[] =>
         )
       )
     : [];
+
+const githubLoginArray = (value: unknown): string[] => {
+  const seen = new Set<string>();
+  const logins: string[] = [];
+  for (const entry of stringArray(value)) {
+    const normalized = entry.replace(/^@+/, "");
+    const comparable = normalized.toLowerCase();
+    if (!normalized || seen.has(comparable)) {
+      continue;
+    }
+    logins.push(normalized);
+    seen.add(comparable);
+  }
+  return logins;
+};
 
 const loadRoles = async (redis: Redis): Promise<RoleRecord[]> => {
   const roleIds = await redis.smembers(ROLE_IDS_KEY);
@@ -499,6 +515,7 @@ const main = async (): Promise<void> => {
               webhook_secret,
               github_pr_webhook_secret,
               github_integration_bot_login,
+              github_pr_allowed_users,
               github_pr_require_bot_mention,
               github_pr_feedback_instructions,
               github_pr_task_owner_user_id,
@@ -508,7 +525,7 @@ const main = async (): Promise<void> => {
               created_at,
               updated_at
             )
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20)
           `,
           [
             repository.id,
@@ -522,6 +539,7 @@ const main = async (): Promise<void> => {
             trimString(repository.webhookSecret),
             trimString(repository.githubPrWebhookSecret),
             trimString(repository.githubIntegrationBotLogin),
+            JSON.stringify(githubLoginArray(repository.githubPrAllowedUsers)),
             repository.githubPrRequireBotMention === true,
             trimString(repository.githubPrFeedbackInstructions),
             trimString(repository.githubPrTaskOwnerUserId),

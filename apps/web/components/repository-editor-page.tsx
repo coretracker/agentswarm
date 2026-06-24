@@ -33,6 +33,7 @@ type RepositoryFormValues = {
   githubPrWebhookSecret: string;
   clearGithubPrWebhookSecret: boolean;
   githubIntegrationBotLogin: string;
+  githubPrAllowedUsers: string;
   githubPrRequireBotMention: boolean;
   githubPrFeedbackInstructions: string;
   githubPrTaskOwnerUserId: string;
@@ -51,6 +52,7 @@ const emptyValues = (): RepositoryFormValues => ({
   githubPrWebhookSecret: "",
   clearGithubPrWebhookSecret: false,
   githubIntegrationBotLogin: "",
+  githubPrAllowedUsers: "",
   githubPrRequireBotMention: false,
   githubPrFeedbackInstructions: DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
   githubPrTaskOwnerUserId: ""
@@ -81,6 +83,7 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   githubPrWebhookSecret: typeof values?.githubPrWebhookSecret === "string" ? values.githubPrWebhookSecret : "",
   clearGithubPrWebhookSecret: values?.clearGithubPrWebhookSecret === true,
   githubIntegrationBotLogin: typeof values?.githubIntegrationBotLogin === "string" ? values.githubIntegrationBotLogin : "",
+  githubPrAllowedUsers: typeof values?.githubPrAllowedUsers === "string" ? values.githubPrAllowedUsers : "",
   githubPrRequireBotMention: values?.githubPrRequireBotMention === true,
   githubPrFeedbackInstructions:
     typeof values?.githubPrFeedbackInstructions === "string"
@@ -94,6 +97,21 @@ const REPOSITORY_ENV_VALUE_MAX_LENGTH = 8192;
 const REPOSITORY_ENV_FILE_MAX_BYTES = 256 * 1024;
 const ENV_VALUE_FILE_ACCEPT =
   ".txt,.env,.json,.yaml,.yml,.ini,.cfg,.conf,.properties,.xml,.pem,.crt,.cer,.key,.p12,.jks";
+
+const parseAllowedGitHubUsers = (value: string): string[] => {
+  const seen = new Set<string>();
+  const users: string[] = [];
+  for (const entry of value.split(/[\n,]+/)) {
+    const normalized = entry.trim().replace(/^@+/, "");
+    const comparable = normalized.toLowerCase();
+    if (!normalized || seen.has(comparable)) {
+      continue;
+    }
+    users.push(normalized);
+    seen.add(comparable);
+  }
+  return users;
+};
 
 const bytesToBase64 = (bytes: Uint8Array): string => {
   let binary = "";
@@ -230,6 +248,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           githubPrWebhookSecret: "",
           clearGithubPrWebhookSecret: false,
           githubIntegrationBotLogin: repository.githubIntegrationBotLogin ?? "",
+          githubPrAllowedUsers: (repository.githubPrAllowedUsers ?? []).join("\n"),
           githubPrRequireBotMention: repository.githubPrRequireBotMention === true,
           githubPrFeedbackInstructions: repository.githubPrFeedbackInstructions ?? DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
           githubPrTaskOwnerUserId: repository.githubPrTaskOwnerUserId ?? ""
@@ -425,6 +444,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               ...(normalized.githubPrWebhookSecret.trim().length > 0 ? { githubPrWebhookSecret: normalized.githubPrWebhookSecret.trim() } : {}),
               ...(editingRepository && normalized.clearGithubPrWebhookSecret ? { clearGithubPrWebhookSecret: true } : {}),
               githubIntegrationBotLogin: normalized.githubIntegrationBotLogin.trim().replace(/^@+/, "") || null,
+              githubPrAllowedUsers: parseAllowedGitHubUsers(normalized.githubPrAllowedUsers),
               githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
               githubPrFeedbackInstructions:
                 normalized.githubPrFeedbackInstructions.trim() === DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
@@ -835,6 +855,13 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     rules={[{ max: 255, message: "Login must be 255 characters or fewer." }]}
                   >
                     <Input placeholder="agentswarm-bot" addonBefore="@" autoComplete="off" />
+                  </Form.Item>
+                  <Form.Item
+                    name="githubPrAllowedUsers"
+                    label="Allowed GitHub Users"
+                    extra="Optional. When set, only feedback from these GitHub users is processed. Enter one login per line or separate logins with commas."
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder={"alice\nbob"} />
                   </Form.Item>
                   <Form.Item
                     name="githubPrRequireBotMention"

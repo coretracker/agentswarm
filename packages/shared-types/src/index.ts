@@ -431,6 +431,7 @@ export interface Repository {
   webhookSecretConfigured: boolean;
   githubPrWebhookSecretConfigured?: boolean;
   githubIntegrationBotLogin?: string | null;
+  githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
   githubPrFeedbackInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
@@ -860,6 +861,7 @@ export interface CreateRepositoryInput {
   webhookSecret?: string;
   githubPrWebhookSecret?: string;
   githubIntegrationBotLogin?: string | null;
+  githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
   githubPrFeedbackInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
@@ -878,6 +880,7 @@ export interface UpdateRepositoryInput {
   githubPrWebhookSecret?: string;
   clearGithubPrWebhookSecret?: boolean;
   githubIntegrationBotLogin?: string | null;
+  githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
   githubPrFeedbackInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;

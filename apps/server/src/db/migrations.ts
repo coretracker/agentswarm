@@ -524,5 +524,12 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS github_pr_task_owner_user_id text NULL REFERENCES users(id) ON DELETE SET NULL;
     `
+  },
+  {
+    id: "20260624_05_repository_github_pr_allowed_users",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_allowed_users jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
   }
 ];
