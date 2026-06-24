@@ -169,6 +169,8 @@ const formatFeedbackMessage = (feedback: GitHubPrFeedback): string => {
     "Feedback:",
     feedback.body.trim() || "(No body provided.)",
     "",
+    "If the feedback is a question without a clear requested code or file change, reply on GitHub asking for confirmation or a follow-up before changing files.",
+    "",
     "After handling this feedback, reply on GitHub at the URL above with a brief status."
   );
   return lines.join("\n");
