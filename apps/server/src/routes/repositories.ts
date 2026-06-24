@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import type { CreateRepositoryInput, UpdateRepositoryInput } from "@agentswarm/shared-types";
+import type { AuthSessionUser, CreateRepositoryInput, UpdateRepositoryInput } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
 import { canUserAccessRepository } from "../lib/task-ownership.js";
@@ -181,6 +181,21 @@ export const registerRepositoryRoutes = (
     return { ok: true };
   };
 
+  const validateGithubPrTaskOwnerForCreate = async (
+    ownerUserId: string | null | undefined,
+    authUser: AuthSessionUser | null | undefined
+  ): Promise<{ ok: true } | { ok: false; statusCode: 400 | 404; message: string }> => {
+    const normalizedOwnerUserId = ownerUserId?.trim() || null;
+    if (!normalizedOwnerUserId) {
+      return { ok: true };
+    }
+    if (!authUser || normalizedOwnerUserId !== authUser.id) {
+      return { ok: false, statusCode: 400, message: "GitHub-created task owner must have access to this repository." };
+    }
+
+    return validateGithubPrTaskOwner(normalizedOwnerUserId, null);
+  };
+
   app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async (request) => {
     const repositories = await deps.repositoryStore.listRepositories();
     return repositories.filter((repository) => canUserAccessRepository(request.auth?.user, repository.id));
@@ -202,19 +217,16 @@ export const registerRepositoryRoutes = (
     }
 
     try {
-      const ownerValidation = await validateGithubPrTaskOwner(parsed.data.githubPrTaskOwnerUserId, null);
+      const authUser = request.auth?.user;
+      const ownerValidation = await validateGithubPrTaskOwnerForCreate(parsed.data.githubPrTaskOwnerUserId, authUser);
       if (!ownerValidation.ok) {
         return reply.status(ownerValidation.statusCode).send({ message: ownerValidation.message });
       }
 
       const createInput: CreateRepositoryInput = toCreateRepositoryInput(parsed.data);
       const repository = await deps.repositoryStore.createRepository(createInput);
-      const authUser = request.auth?.user;
       if (authUser) {
         await addRepositoryAccessForUser(authUser.id, repository.id);
-      }
-      if (repository.githubPrTaskOwnerUserId && repository.githubPrTaskOwnerUserId !== authUser?.id) {
-        await addRepositoryAccessForUser(repository.githubPrTaskOwnerUserId, repository.id);
       }
       return reply.status(201).send(repository);
     } catch (error) {
