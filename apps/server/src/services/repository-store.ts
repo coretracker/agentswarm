@@ -30,6 +30,12 @@ const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
 const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
 
 const nowIso = (): string => new Date().toISOString();
+
+const normalizeGitHubLogin = (login: string | null | undefined): string | null => {
+  const normalized = (login ?? "").trim().replace(/^@+/, "");
+  return normalized.length > 0 ? normalized : null;
+};
+
 export type RepositoryRuntimeEnvEntry =
   | {
       key: string;
@@ -629,6 +635,7 @@ export class RedisRepositoryStore implements RepositoryStore {
   private normalizeStoredRepository(repository: StoredRepository): StoredRepository {
     const webhookSecret = this.normalizeWebhookSecret(repository.webhookSecret);
     const githubPrWebhookSecret = this.normalizeWebhookSecret(repository.githubPrWebhookSecret);
+    const githubIntegrationBotLogin = normalizeGitHubLogin(repository.githubIntegrationBotLogin);
     const webhookUrl = this.normalizeWebhookUrl(repository.webhookUrl as string | null | undefined);
     const webhookEnabled = repository.webhookEnabled === true;
     const envVars = normalizeRepositoryEnvVars(repository.envVars);
@@ -644,6 +651,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookEnabled,
       webhookSecret,
       githubPrWebhookSecret,
+      githubIntegrationBotLogin,
       webhookLastAttemptAt: typeof repository.webhookLastAttemptAt === "string" ? repository.webhookLastAttemptAt : null,
       webhookLastStatus: repository.webhookLastStatus === "success" || repository.webhookLastStatus === "failed" ? repository.webhookLastStatus : null,
       webhookLastError: typeof repository.webhookLastError === "string" && repository.webhookLastError.trim().length > 0
@@ -665,6 +673,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookEnabled: normalized.webhookEnabled,
       webhookSecretConfigured: Boolean(normalized.webhookSecret),
       githubPrWebhookSecretConfigured: Boolean(normalized.githubPrWebhookSecret),
+      githubIntegrationBotLogin: normalized.githubIntegrationBotLogin ?? null,
       webhookLastAttemptAt: normalized.webhookLastAttemptAt ?? null,
       webhookLastStatus: normalized.webhookLastStatus ?? null,
       webhookLastError: normalized.webhookLastError ?? null,
@@ -687,6 +696,7 @@ export class RedisRepositoryStore implements RepositoryStore {
     const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
     const githubPrWebhookSecret = this.normalizeWebhookSecret(input.githubPrWebhookSecret);
+    const githubIntegrationBotLogin = normalizeGitHubLogin(input.githubIntegrationBotLogin);
     const webhookEnabled = input.webhookEnabled === true;
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
@@ -707,6 +717,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookEnabled,
       webhookSecret,
       githubPrWebhookSecret,
+      githubIntegrationBotLogin,
       webhookLastAttemptAt: null,
       webhookLastStatus: null,
       webhookLastError: null,
@@ -792,6 +803,10 @@ export class RedisRepositoryStore implements RepositoryStore {
         : input.githubPrWebhookSecret !== undefined
           ? this.normalizeWebhookSecret(input.githubPrWebhookSecret)
           : current.githubPrWebhookSecret;
+    const nextGithubIntegrationBotLogin =
+      input.githubIntegrationBotLogin !== undefined
+        ? normalizeGitHubLogin(input.githubIntegrationBotLogin)
+        : current.githubIntegrationBotLogin ?? null;
     const nextWebhookUrl =
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
@@ -820,6 +835,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookEnabled: nextWebhookEnabled,
       webhookSecret: nextWebhookSecret,
       githubPrWebhookSecret: nextGithubPrWebhookSecret,
+      githubIntegrationBotLogin: nextGithubIntegrationBotLogin,
       updatedAt: nowIso()
     };
     const next = this.normalizeRepository(nextStored);
@@ -950,6 +966,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookSecretConfigured: typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0,
       githubPrWebhookSecretConfigured:
         typeof row.github_pr_webhook_secret === "string" && row.github_pr_webhook_secret.trim().length > 0,
+      githubIntegrationBotLogin:
+        typeof row.github_integration_bot_login === "string" && row.github_integration_bot_login.trim().length > 0
+          ? row.github_integration_bot_login.trim()
+          : null,
       webhookLastAttemptAt: typeof row.webhook_last_attempt_at === "string" ? row.webhook_last_attempt_at : null,
       webhookLastStatus:
         row.webhook_last_status === "success" || row.webhook_last_status === "failed" ? row.webhook_last_status : null,
@@ -970,6 +990,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
     const githubPrWebhookSecret = this.normalizeWebhookSecret(input.githubPrWebhookSecret);
+    const githubIntegrationBotLogin = normalizeGitHubLogin(input.githubIntegrationBotLogin);
     const webhookEnabled = input.webhookEnabled === true;
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
@@ -990,6 +1011,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookEnabled,
       webhookSecretConfigured: Boolean(webhookSecret),
       githubPrWebhookSecretConfigured: Boolean(githubPrWebhookSecret),
+      githubIntegrationBotLogin,
       webhookLastAttemptAt: null,
       webhookLastStatus: null,
       webhookLastError: null,
@@ -1014,13 +1036,14 @@ export class PostgresRepositoryStore implements RepositoryStore {
             webhook_enabled,
             webhook_secret,
             github_pr_webhook_secret,
+            github_integration_bot_login,
             webhook_last_attempt_at,
             webhook_last_status,
             webhook_last_error,
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
         `,
         [
           repository.id,
@@ -1033,6 +1056,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           repository.webhookEnabled,
           webhookSecret,
           githubPrWebhookSecret,
+          repository.githubIntegrationBotLogin,
           repository.webhookLastAttemptAt,
           repository.webhookLastStatus,
           repository.webhookLastError,
@@ -1098,6 +1122,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
         : input.githubPrWebhookSecret !== undefined
           ? this.normalizeWebhookSecret(input.githubPrWebhookSecret)
           : currentGithubPrWebhookSecret;
+    const nextGithubIntegrationBotLogin =
+      input.githubIntegrationBotLogin !== undefined
+        ? normalizeGitHubLogin(input.githubIntegrationBotLogin)
+        : current.githubIntegrationBotLogin ?? null;
     const nextWebhookUrl =
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
@@ -1126,6 +1154,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookEnabled: nextWebhookEnabled,
       webhookSecretConfigured: Boolean(nextWebhookSecret),
       githubPrWebhookSecretConfigured: Boolean(nextGithubPrWebhookSecret),
+      githubIntegrationBotLogin: nextGithubIntegrationBotLogin,
       updatedAt: nowIso()
     };
 
@@ -1146,11 +1175,12 @@ export class PostgresRepositoryStore implements RepositoryStore {
             webhook_enabled = $8,
             webhook_secret = $9,
             github_pr_webhook_secret = $10,
-            webhook_last_attempt_at = $11,
-            webhook_last_status = $12,
-            webhook_last_error = $13,
-            created_at = $14,
-            updated_at = $15
+            github_integration_bot_login = $11,
+            webhook_last_attempt_at = $12,
+            webhook_last_status = $13,
+            webhook_last_error = $14,
+            created_at = $15,
+            updated_at = $16
           WHERE id = $1
         `,
         [
@@ -1164,6 +1194,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           next.webhookEnabled,
           nextWebhookSecret,
           nextGithubPrWebhookSecret,
+          next.githubIntegrationBotLogin,
           next.webhookLastAttemptAt,
           next.webhookLastStatus,
           next.webhookLastError,

@@ -44,6 +44,11 @@ const numberValue = (record: Record<string, unknown>, key: string): number | nul
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 };
 
+const normalizeGitHubLogin = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().replace(/^@+/, "").toLowerCase();
+  return normalized.length > 0 ? normalized : null;
+};
+
 const verifySignature = (rawBody: string, signatureHeader: string | null, secret: string): boolean => {
   if (!signatureHeader?.startsWith("sha256=")) {
     return false;
@@ -197,6 +202,10 @@ export const registerGitHubPrWebhookRoutes = (
     const feedback = normalizeGitHubPrFeedback(readHeader(request.headers["x-github-event"]), request.body);
     if (!feedback) {
       return reply.status(202).send({ queued: false, reason: "ignored_event" });
+    }
+    const ignoredBotLogin = normalizeGitHubLogin(repository.githubIntegrationBotLogin);
+    if (ignoredBotLogin && normalizeGitHubLogin(feedback.author) === ignoredBotLogin) {
+      return reply.status(202).send({ queued: false, reason: "ignored_bot_user" });
     }
 
     const task = await deps.taskStore.findTaskByGitHubPrNumber(repository.id, feedback.prNumber);

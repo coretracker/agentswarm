@@ -30,6 +30,7 @@ type RepositoryFormValues = {
   clearWebhookSecret: boolean;
   githubPrWebhookSecret: string;
   clearGithubPrWebhookSecret: boolean;
+  githubIntegrationBotLogin: string;
 };
 
 const emptyValues = (): RepositoryFormValues => ({
@@ -43,7 +44,8 @@ const emptyValues = (): RepositoryFormValues => ({
   webhookSecret: "",
   clearWebhookSecret: false,
   githubPrWebhookSecret: "",
-  clearGithubPrWebhookSecret: false
+  clearGithubPrWebhookSecret: false,
+  githubIntegrationBotLogin: ""
 });
 
 const normalizeValues = (values?: Partial<RepositoryFormValues> | null): RepositoryFormValues => ({
@@ -69,7 +71,8 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   webhookSecret: typeof values?.webhookSecret === "string" ? values.webhookSecret : "",
   clearWebhookSecret: values?.clearWebhookSecret === true,
   githubPrWebhookSecret: typeof values?.githubPrWebhookSecret === "string" ? values.githubPrWebhookSecret : "",
-  clearGithubPrWebhookSecret: values?.clearGithubPrWebhookSecret === true
+  clearGithubPrWebhookSecret: values?.clearGithubPrWebhookSecret === true,
+  githubIntegrationBotLogin: typeof values?.githubIntegrationBotLogin === "string" ? values.githubIntegrationBotLogin : ""
 });
 
 const snapshotValues = (values?: Partial<RepositoryFormValues> | null): string => JSON.stringify(normalizeValues(values));
@@ -189,7 +192,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           webhookSecret: "",
           clearWebhookSecret: false,
           githubPrWebhookSecret: "",
-          clearGithubPrWebhookSecret: false
+          clearGithubPrWebhookSecret: false,
+          githubIntegrationBotLogin: repository.githubIntegrationBotLogin ?? ""
         });
         form.setFieldsValue(initial);
         setInitialSnapshot(snapshotValues(initial));
@@ -380,7 +384,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               ...(normalized.webhookSecret.trim().length > 0 ? { webhookSecret: normalized.webhookSecret.trim() } : {}),
               ...(editingRepository && normalized.clearWebhookSecret ? { clearWebhookSecret: true } : {}),
               ...(normalized.githubPrWebhookSecret.trim().length > 0 ? { githubPrWebhookSecret: normalized.githubPrWebhookSecret.trim() } : {}),
-              ...(editingRepository && normalized.clearGithubPrWebhookSecret ? { clearGithubPrWebhookSecret: true } : {})
+              ...(editingRepository && normalized.clearGithubPrWebhookSecret ? { clearGithubPrWebhookSecret: true } : {}),
+              githubIntegrationBotLogin: normalized.githubIntegrationBotLogin.trim().replace(/^@+/, "") || null
             };
             if (mode === "edit" && editingRepository) {
               await api.updateRepository(editingRepository.id, payload);
@@ -778,6 +783,14 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                       <Checkbox>Clear stored Github webhook secret</Checkbox>
                     </Form.Item>
                   ) : null}
+                  <Form.Item
+                    name="githubIntegrationBotLogin"
+                    label="Ignored Github Bot User"
+                    tooltip="Comments from this GitHub login are ignored by the PR feedback webhook to prevent reply loops."
+                    rules={[{ max: 255, message: "Login must be 255 characters or fewer." }]}
+                  >
+                    <Input placeholder="agentswarm-bot" addonBefore="@" autoComplete="off" />
+                  </Form.Item>
                   <Alert
                     type="info"
                     showIcon
