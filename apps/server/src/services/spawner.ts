@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync, type Dirent } from "node:fs";
 import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { nanoid } from "nanoid";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import {
   type AgentResponsePreference,
@@ -16,6 +16,7 @@ import {
   isActiveTaskStatus,
   isQueuedTaskStatus,
   type AgentProvider,
+  type PermissionScope,
   type NormalizedAgentEvent,
   type McpServerConfig,
   type Task,
@@ -78,13 +79,29 @@ import type { TaskStore } from "./task-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { UserStore } from "./user-store.js";
 import type { RepositoryStore } from "./repository-store.js";
+import type { PersonalAccessTokenStore } from "./personal-access-token-store.js";
 import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
 import { RepoSyncManager, type RepoSyncOperation } from "./repo-sync-manager.js";
+import { SYSTEM_ADMIN_ROLE_ID } from "./role-store.js";
 
 const ansiPattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|\u001B\\))/g;
 const LIVE_TIMELINE_POLL_INTERVAL_MS = 1_000;
 const AUTO_APPLY_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const AUTO_APPLY_COMMIT_MESSAGE_PROFILE = "low";
+const AGENTSWARM_RUNTIME_MCP_SERVER_NAME = "agentswarm";
+const AGENTSWARM_RUNTIME_MCP_ENDPOINT_ENV = "AGENTSWARM_MCP_ENDPOINT";
+const AGENTSWARM_RUNTIME_MCP_ENDPOINTS_ENV = "AGENTSWARM_MCP_ENDPOINTS";
+const AGENTSWARM_RUNTIME_MCP_TOKEN_ENV = "AGENTSWARM_MCP_TOKEN";
+const AGENTSWARM_RUNTIME_MCP_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const AGENTSWARM_RUNTIME_MCP_SCOPES: PermissionScope[] = [
+  "repo:list",
+  "repo:read",
+  "task:list",
+  "task:read",
+  "task:edit",
+  "task:build",
+  "task:ask"
+];
 const AUTO_APPLY_COMMIT_MESSAGE_PROMPT =
   "Generate one git commit subject line based on these changes. Do not use conventional commit prefixes (for example: feat:, feat(scope):, fix:, chore:). Return only a plain subject line with no quotes, bullets, markdown, or explanation.";
 
@@ -280,7 +297,8 @@ export class SpawnerService {
     private readonly settingsStore: SettingsStore,
     private readonly userStore: UserStore,
     private readonly repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries">,
-    private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore()
+    private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore(),
+    private readonly personalAccessTokenStore?: PersonalAccessTokenStore
   ) {}
 
   private formatExecutionLabel(command: string, args: string[]): string {
@@ -2974,6 +2992,107 @@ export class SpawnerService {
     return Object.fromEntries(collectMcpServerEnvEntries(servers, process.env));
   }
 
+  private resolveInternalAgentSwarmMcpEndpoint(): string {
+    return this.resolveInternalAgentSwarmMcpEndpoints()[0] ?? `http://127.0.0.1:${env.PORT}/mcp`;
+  }
+
+  private resolveInternalAgentSwarmMcpEndpoints(): string[] {
+    if (existsSync("/.dockerenv")) {
+      return [
+        `http://127.0.0.1:${env.PORT}/mcp`,
+        `http://host.docker.internal:${env.PORT}/mcp`,
+        `http://172.17.0.1:${env.PORT}/mcp`
+      ];
+    }
+    return [`http://host.docker.internal:${env.PORT}/mcp`, `http://172.17.0.1:${env.PORT}/mcp`];
+  }
+
+  private buildInternalAgentSwarmMcpDockerArgs(): string[] {
+    if (existsSync("/.dockerenv")) {
+      return ["--network", `container:${hostname()}`];
+    }
+    return ["--add-host", "host.docker.internal:host-gateway"];
+  }
+
+  buildRuntimeMcpDockerArgs(injectedAgentSwarmMcp: boolean): string[] {
+    return injectedAgentSwarmMcp ? this.buildInternalAgentSwarmMcpDockerArgs() : [];
+  }
+
+  private async resolveRuntimeMcpUserId(task: Task): Promise<string | null> {
+    if (task.ownerUserId) {
+      const owner = await this.userStore.getAuthSessionUser(task.ownerUserId).catch(() => null);
+      if (owner) {
+        return owner.id;
+      }
+    }
+
+    const users = await this.userStore.listUsers().catch(() => []);
+    return users.find((user) => user.active && user.roles.some((role) => role.id === SYSTEM_ADMIN_ROLE_ID))?.id ?? null;
+  }
+
+  private async buildRuntimeMcpConfig(
+    task: Task,
+    configuredServers: McpServerConfig[],
+    executionId: string
+  ): Promise<{ servers: McpServerConfig[]; env: Record<string, string>; injectedAgentSwarmMcp: boolean }> {
+    const baseServers = configuredServers.filter((server) => server.name !== AGENTSWARM_RUNTIME_MCP_SERVER_NAME);
+    const baseEnv = this.collectRuntimeMcpEnv(baseServers);
+    if (!this.personalAccessTokenStore) {
+      return { servers: baseServers, env: baseEnv, injectedAgentSwarmMcp: false };
+    }
+
+    const userId = await this.resolveRuntimeMcpUserId(task);
+    if (!userId) {
+      return { servers: baseServers, env: baseEnv, injectedAgentSwarmMcp: false };
+    }
+
+    const token = await this.personalAccessTokenStore
+      .createToken({
+        userId,
+        name: `AgentSwarm runtime MCP ${task.id}/${executionId}`,
+        scopes: AGENTSWARM_RUNTIME_MCP_SCOPES,
+        expiresAt: new Date(Date.now() + AGENTSWARM_RUNTIME_MCP_TOKEN_TTL_MS).toISOString()
+      })
+      .catch(() => null);
+    if (!token) {
+      return { servers: baseServers, env: baseEnv, injectedAgentSwarmMcp: false };
+    }
+
+    const agentSwarmMcpEndpoints = this.resolveInternalAgentSwarmMcpEndpoints();
+    const agentSwarmMcpEnv = {
+      [AGENTSWARM_RUNTIME_MCP_ENDPOINT_ENV]: agentSwarmMcpEndpoints[0] ?? this.resolveInternalAgentSwarmMcpEndpoint(),
+      [AGENTSWARM_RUNTIME_MCP_ENDPOINTS_ENV]: agentSwarmMcpEndpoints.join(","),
+      [AGENTSWARM_RUNTIME_MCP_TOKEN_ENV]: token.token
+    };
+
+    return {
+      env: {
+        ...baseEnv,
+        ...agentSwarmMcpEnv
+      },
+      servers: [
+        ...baseServers,
+        {
+          name: AGENTSWARM_RUNTIME_MCP_SERVER_NAME,
+          transport: "stdio",
+          command: "node",
+          args: ["/usr/local/bin/agentswarm-mcp-bridge.mjs"],
+          env: agentSwarmMcpEnv,
+          enabled: true
+        }
+      ],
+      injectedAgentSwarmMcp: true
+    };
+  }
+
+  async buildRuntimeMcpConfigForTask(
+    task: Task,
+    configuredServers: McpServerConfig[],
+    executionId: string
+  ): Promise<{ servers: McpServerConfig[]; env: Record<string, string>; injectedAgentSwarmMcp: boolean }> {
+    return this.buildRuntimeMcpConfig(task, configuredServers, executionId);
+  }
+
   private async collectChangedFiles(workspacePath: string, startRef: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string[]> {
     const output = await this.gitCommandCapture(["-C", workspacePath, "diff", "--name-only", `${startRef}..HEAD`], githubToken, gitUsername);
     return output.split("\n").map((line) => line.trim()).filter(Boolean);
@@ -5250,8 +5369,12 @@ export class SpawnerService {
       if (action === "build" && !task.workspaceBaseRef) {
         await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
       }
-      const runtimeMcpEnv = this.collectRuntimeMcpEnv(settings.mcpServers);
-      const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(settings.mcpServers, process.env);
+      const runtimeMcp = await this.buildRuntimeMcpConfig(task, settings.mcpServers, executionId);
+      const runtimeMcpEnv = runtimeMcp.env;
+      const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(runtimeMcp.servers, {
+        ...process.env,
+        ...runtimeMcpEnv
+      });
       const providerConfigPath = path.join(payloadDir, providerDefinition.configFileName);
       const resultMarkdownPath = path.join(payloadDir, "result.md");
       const resultJsonPath = path.join(payloadDir, "result.json");
@@ -5313,7 +5436,7 @@ export class SpawnerService {
       await appendRunLog("Spawner: repository profile ready.");
       await appendRunLog(`Spawner: ${workspace.kind} workspace ready at ${workspace.workspacePath}.`);
 
-      const payloadPaths = await this.writeRuntimePayloadFiles(manifest, providerDefinition.getProviderConfig(settings.mcpServers));
+      const payloadPaths = await this.writeRuntimePayloadFiles(manifest, providerDefinition.getProviderConfig(runtimeMcp.servers));
       const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
         destinationDir: path.join(payloadPaths.payloadDir, "repository-env-files"),
         entries: repositoryRuntimeEnvEntries,
@@ -5331,8 +5454,11 @@ export class SpawnerService {
       }
 
       await appendRunLog(
-        `Spawner: runtime config includes provider=${task.provider}, profile=${task.providerProfile}, and ${settings.mcpServers.length} MCP server${settings.mcpServers.length === 1 ? "" : "s"}.`
+        `Spawner: runtime config includes provider=${task.provider}, profile=${task.providerProfile}, and ${runtimeMcp.servers.length} MCP server${runtimeMcp.servers.length === 1 ? "" : "s"}.`
       );
+      if (runtimeMcp.injectedAgentSwarmMcp) {
+        await appendRunLog("Spawner: AgentSwarm MCP is connected automatically for this run.");
+      }
       if (missingMcpBearerEnvVars.length > 0) {
         await appendRunLog(
           `Spawner: warning - missing MCP bearer token env var${missingMcpBearerEnvVars.length === 1 ? "" : "s"}: ${missingMcpBearerEnvVars.join(", ")}`
@@ -5407,6 +5533,7 @@ export class SpawnerService {
         "--rm",
         "--name",
         containerName,
+        ...(runtimeMcp.injectedAgentSwarmMcp ? this.buildInternalAgentSwarmMcpDockerArgs() : []),
         "-v",
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         ...this.buildTaskWorkspaceMountArgs(task.id, workspace.workspacePath, workspaceMountMode),

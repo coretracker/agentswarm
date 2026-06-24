@@ -10,8 +10,6 @@ import type {
   CreateRepositoryInput,
   CreateTaskInput,
   CreateUserInput,
-  GitHubBranchReference,
-  GitHubPullRequestReference,
   LoginInput,
   CreatedPersonalAccessToken,
   PersonalAccessToken,
@@ -59,6 +57,7 @@ import type {
   UpdateAuthProfileInput,
   UpdateCredentialSettingsInput,
   UpdateTaskConfigInput,
+  UpdateTaskPullRequestInput,
   UpdateRepositoryInput,
   UpdateSettingsInput,
   UpdateUserInput,
@@ -425,10 +424,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  listGitHubPullRequests: (repoId: string) =>
-    request<GitHubPullRequestReference[]>(`/imports/github/pull-requests?repoId=${encodeURIComponent(repoId)}`),
-  listGitHubBranches: (repoId: string) =>
-    request<GitHubBranchReference[]>(`/imports/github/branches?repoId=${encodeURIComponent(repoId)}`),
   triggerTaskAction: (id: string, action: TaskAction) =>
     request<Task>(`/tasks/${id}/actions`, {
       method: "POST",
@@ -535,6 +530,11 @@ export const api = {
     }),
   updateTaskAssignee: (id: string, input: UpdateTaskAssigneeInput) =>
     request<Task>(`/tasks/${id}/assignee`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskPullRequest: (id: string, input: UpdateTaskPullRequestInput) =>
+    request<Task>(`/tasks/${id}/github-pr`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),

@@ -109,7 +109,6 @@ describe("MCP Phase 1 tools", () => {
               }
             ]
           },
-          githubImportService: {} as never,
           settingsStore: {} as never,
           taskStore: {} as never,
           taskQueueStore: {} as never,
@@ -134,62 +133,6 @@ describe("MCP Phase 1 tools", () => {
     });
   });
 
-  it("lists repository branches with branch strategy guidance", async () => {
-    const tool = toolByName("agentswarm_list_repository_branches");
-    const result = await tool.handler(
-      {
-        repoId: "repo-1",
-        query: "dev"
-      },
-      {
-        user,
-        deps: {
-          repositoryStore: {
-            getRepository: async () => repository
-          },
-          githubImportService: {
-            listBranches: async () => [
-              { name: "main", isDefault: true },
-              { name: "develop", isDefault: false }
-            ]
-          },
-          settingsStore: {} as never,
-          taskStore: {} as never,
-          taskQueueStore: {} as never,
-          scheduler: {} as never,
-          spawner: {} as never
-        } as never
-      }
-    );
-
-    assert.deepEqual(result, {
-      repository: {
-        id: "repo-1",
-        name: "Repo",
-        url: "https://github.com/example/repo.git",
-        defaultBranch: "main",
-        webhookEnabled: false,
-        createdAt: "2026-01-01T00:00:00.000Z",
-        updatedAt: "2026-01-01T00:00:00.000Z"
-      },
-      branches: [{ name: "develop", isDefault: false }],
-      branchStrategies: [
-        {
-          value: "feature_branch",
-          description: "Create a new task branch from baseBranch."
-        },
-        {
-          value: "work_on_branch",
-          description: "Check out and work directly on baseBranch."
-        }
-      ],
-      createTaskDefaults: {
-        baseBranch: "main",
-        branchStrategy: "feature_branch"
-      }
-    });
-  });
-
   it("creates draft tasks by default and stores an initial user message", async () => {
     const tool = toolByName("agentswarm_create_task");
     const messages: unknown[] = [];
@@ -208,7 +151,6 @@ describe("MCP Phase 1 tools", () => {
           repositoryStore: {
             getRepository: async () => repository
           },
-          githubImportService: {} as never,
           settingsStore: {
             getSettings: async () => ({
               defaultProvider: "codex",
@@ -279,7 +221,6 @@ describe("MCP Phase 1 tools", () => {
         user,
         deps: {
           repositoryStore: {} as never,
-          githubImportService: {} as never,
           settingsStore: {} as never,
           taskStore: {
             getTask: async () => task,
@@ -339,7 +280,6 @@ describe("MCP Phase 1 tools", () => {
         user,
         deps: {
           repositoryStore: {} as never,
-          githubImportService: {} as never,
           settingsStore: {} as never,
           taskStore: {
             getTask: async () => task,

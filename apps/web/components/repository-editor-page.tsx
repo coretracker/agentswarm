@@ -4,15 +4,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type {
   CreateRepositoryInput,
-  GitHubAutomationRule,
   Repository,
   RepositoryEnvSecretInput,
   RepositoryEnvVarInput
 } from "@agentswarm/shared-types";
-import { Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
+import { DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS } from "@agentswarm/shared-types";
+import { Alert, Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
 import { ApiError, api } from "../src/api/client";
-import { buildApiUrl } from "../src/lib/public-url";
 import { trackEvent } from "../src/utils/analytics";
+import { buildApiUrl } from "../src/lib/public-url";
 
 interface RepositoryEditorPageProps {
   mode: "create" | "edit";
@@ -29,9 +29,11 @@ type RepositoryFormValues = {
   webhookUrl: string;
   webhookSecret: string;
   clearWebhookSecret: boolean;
-  githubWebhookSecret: string;
-  clearGithubWebhookSecret: boolean;
-  githubAutomationsJson: string;
+  githubPrWebhookSecret: string;
+  clearGithubPrWebhookSecret: boolean;
+  githubIntegrationBotLogin: string;
+  githubPrRequireBotMention: boolean;
+  githubPrFeedbackInstructions: string;
 };
 
 const emptyValues = (): RepositoryFormValues => ({
@@ -44,9 +46,11 @@ const emptyValues = (): RepositoryFormValues => ({
   webhookUrl: "",
   webhookSecret: "",
   clearWebhookSecret: false,
-  githubWebhookSecret: "",
-  clearGithubWebhookSecret: false,
-  githubAutomationsJson: "[]"
+  githubPrWebhookSecret: "",
+  clearGithubPrWebhookSecret: false,
+  githubIntegrationBotLogin: "",
+  githubPrRequireBotMention: false,
+  githubPrFeedbackInstructions: DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
 });
 
 const normalizeValues = (values?: Partial<RepositoryFormValues> | null): RepositoryFormValues => ({
@@ -71,9 +75,14 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   webhookUrl: typeof values?.webhookUrl === "string" ? values.webhookUrl : "",
   webhookSecret: typeof values?.webhookSecret === "string" ? values.webhookSecret : "",
   clearWebhookSecret: values?.clearWebhookSecret === true,
-  githubWebhookSecret: typeof values?.githubWebhookSecret === "string" ? values.githubWebhookSecret : "",
-  clearGithubWebhookSecret: values?.clearGithubWebhookSecret === true,
-  githubAutomationsJson: typeof values?.githubAutomationsJson === "string" ? values.githubAutomationsJson : "[]"
+  githubPrWebhookSecret: typeof values?.githubPrWebhookSecret === "string" ? values.githubPrWebhookSecret : "",
+  clearGithubPrWebhookSecret: values?.clearGithubPrWebhookSecret === true,
+  githubIntegrationBotLogin: typeof values?.githubIntegrationBotLogin === "string" ? values.githubIntegrationBotLogin : "",
+  githubPrRequireBotMention: values?.githubPrRequireBotMention === true,
+  githubPrFeedbackInstructions:
+    typeof values?.githubPrFeedbackInstructions === "string"
+      ? values.githubPrFeedbackInstructions
+      : DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
 });
 
 const snapshotValues = (values?: Partial<RepositoryFormValues> | null): string => JSON.stringify(normalizeValues(values));
@@ -118,23 +127,6 @@ const readUploadedEnvValueFile = async (file: File): Promise<{ fileName: string;
   };
 };
 
-const isGitHubAutomationRule = (value: unknown): value is GitHubAutomationRule => {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const record = value as Record<string, unknown>;
-  if (typeof record.id !== "string" || record.id.trim().length === 0) {
-    return false;
-  }
-  if (typeof record.name !== "string" || record.name.trim().length === 0) {
-    return false;
-  }
-  if (record.trigger !== "issue_opened" && record.trigger !== "pull_request_opened") {
-    return false;
-  }
-  return typeof record.task === "object" && record.task !== null;
-};
-
 export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPageProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -148,7 +140,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const [editingRepository, setEditingRepository] = useState<Repository | null>(null);
   const [initialSnapshot, setInitialSnapshot] = useState("");
   const watchedValues = Form.useWatch([], form) as RepositoryFormValues | undefined;
-  const githubWebhookUrl = editingRepository ? buildApiUrl(`/webhooks/github/${encodeURIComponent(editingRepository.id)}`) : null;
 
   const hasUnsavedChanges = useMemo(() => {
     if (!initialSnapshot) {
@@ -210,9 +201,11 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           webhookUrl: repository.webhookUrl ?? "",
           webhookSecret: "",
           clearWebhookSecret: false,
-          githubWebhookSecret: "",
-          clearGithubWebhookSecret: false,
-          githubAutomationsJson: JSON.stringify(repository.githubAutomations ?? [], null, 2)
+          githubPrWebhookSecret: "",
+          clearGithubPrWebhookSecret: false,
+          githubIntegrationBotLogin: repository.githubIntegrationBotLogin ?? "",
+          githubPrRequireBotMention: repository.githubPrRequireBotMention === true,
+          githubPrFeedbackInstructions: repository.githubPrFeedbackInstructions ?? DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
         });
         form.setFieldsValue(initial);
         setInitialSnapshot(snapshotValues(initial));
@@ -392,17 +385,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 }
               }
             }
-            let githubAutomations: GitHubAutomationRule[] = [];
-            if (normalized.githubAutomationsJson.trim().length > 0) {
-              const parsed = JSON.parse(normalized.githubAutomationsJson);
-              if (!Array.isArray(parsed)) {
-                throw new Error("GitHub automations must be a JSON array.");
-              }
-              if (!parsed.every(isGitHubAutomationRule)) {
-                throw new Error("Each GitHub automation must include id, name, trigger, and task.");
-              }
-              githubAutomations = parsed;
-            }
             const payload: CreateRepositoryInput = {
               name: normalized.name,
               url: normalized.url,
@@ -413,9 +395,14 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               webhookUrl: normalized.webhookUrl.trim().length > 0 ? normalized.webhookUrl.trim() : null,
               ...(normalized.webhookSecret.trim().length > 0 ? { webhookSecret: normalized.webhookSecret.trim() } : {}),
               ...(editingRepository && normalized.clearWebhookSecret ? { clearWebhookSecret: true } : {}),
-              ...(normalized.githubWebhookSecret.trim().length > 0 ? { githubWebhookSecret: normalized.githubWebhookSecret.trim() } : {}),
-              ...(editingRepository && normalized.clearGithubWebhookSecret ? { clearGithubWebhookSecret: true } : {}),
-              githubAutomations
+              ...(normalized.githubPrWebhookSecret.trim().length > 0 ? { githubPrWebhookSecret: normalized.githubPrWebhookSecret.trim() } : {}),
+              ...(editingRepository && normalized.clearGithubPrWebhookSecret ? { clearGithubPrWebhookSecret: true } : {}),
+              githubIntegrationBotLogin: normalized.githubIntegrationBotLogin.trim().replace(/^@+/, "") || null,
+              githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
+              githubPrFeedbackInstructions:
+                normalized.githubPrFeedbackInstructions.trim() === DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
+                  ? null
+                  : normalized.githubPrFeedbackInstructions.trim() || null
             };
             if (mode === "edit" && editingRepository) {
               await api.updateRepository(editingRepository.id, payload);
@@ -767,49 +754,114 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 <Checkbox>Clear stored webhook secret</Checkbox>
               </Form.Item>
             ) : null}
-            <Form.Item
-              name="githubWebhookSecret"
-              label={editingRepository?.githubWebhookSecretConfigured ? "GitHub Webhook Secret (leave blank to keep existing)" : "GitHub Webhook Secret"}
-            >
-              <Input.Password placeholder="Optional but recommended for signature verification" />
-            </Form.Item>
-            {editingRepository?.githubWebhookSecretConfigured ? (
-              <Form.Item name="clearGithubWebhookSecret" valuePropName="checked">
-                <Checkbox>Clear stored GitHub webhook secret</Checkbox>
-              </Form.Item>
-            ) : null}
-            <Form.Item label="GitHub Webhook URL">
-              {githubWebhookUrl ? (
-                <Typography.Text code copyable>
-                  {githubWebhookUrl}
-                </Typography.Text>
-              ) : (
+          </Card>
+          <Card bordered={false}>
+            <Flex vertical gap={12}>
+              <Flex vertical gap={4}>
+                <Typography.Title level={4} style={{ margin: 0 }}>
+                  Github Integration
+                </Typography.Title>
                 <Typography.Text type="secondary">
-                  Save this repository first to generate its webhook URL.
+                  Connect GitHub pull request activity with linked AgentSwarm tasks.
                 </Typography.Text>
+              </Flex>
+              {mode === "edit" && editingRepository ? (
+                <>
+                  <Form.Item label="Payload URL">
+                    <Input
+                      readOnly
+                      value={buildApiUrl(`/github/webhooks/${editingRepository.id}`)}
+                      addonAfter={
+                        <Button
+                          type="link"
+                          size="small"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(buildApiUrl(`/github/webhooks/${editingRepository.id}`));
+                            messageApi.success("Webhook URL copied");
+                          }}
+                        >
+                          Copy
+                        </Button>
+                      }
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    name="githubPrWebhookSecret"
+                    label={
+                      editingRepository.githubPrWebhookSecretConfigured
+                        ? "Github Webhook Secret (leave blank to keep existing)"
+                        : "Github Webhook Secret"
+                    }
+                  >
+                    <Input.Password />
+                  </Form.Item>
+                  {editingRepository.githubPrWebhookSecretConfigured ? (
+                    <Form.Item name="clearGithubPrWebhookSecret" valuePropName="checked">
+                      <Checkbox>Clear stored Github webhook secret</Checkbox>
+                    </Form.Item>
+                  ) : null}
+                  <Form.Item
+                    name="githubIntegrationBotLogin"
+                    label="Ignored Github Bot User"
+                    tooltip="Comments from this GitHub login are ignored by the PR feedback webhook to prevent reply loops."
+                    rules={[{ max: 255, message: "Login must be 255 characters or fewer." }]}
+                  >
+                    <Input placeholder="agentswarm-bot" addonBefore="@" autoComplete="off" />
+                  </Form.Item>
+                  <Form.Item
+                    name="githubPrRequireBotMention"
+                    label="Only Process Bot Mentions"
+                    valuePropName="checked"
+                    extra="When enabled and an ignored Github bot user is configured, PR feedback is ignored unless the body mentions that bot user."
+                  >
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item
+                    name="githubPrFeedbackInstructions"
+                    label="Agent Feedback Instructions"
+                    extra="Appended to GitHub feedback prompts after the raw feedback body. Reset or leave as the default to use the built-in behavior."
+                    rules={[{ max: 4000, message: "Instructions must be 4000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 5, maxRows: 10 }} />
+                  </Form.Item>
+                  <Button
+                    onClick={() => {
+                      form.setFieldValue("githubPrFeedbackInstructions", DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS);
+                    }}
+                  >
+                    Reset feedback instructions
+                  </Button>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="Pull request flow"
+                    description={
+                      <Space direction="vertical" size={4}>
+                        <Typography.Text>
+                          1. Keep GitHub MCP available to agents so they can create pull requests.
+                        </Typography.Text>
+                        <Typography.Text>
+                          2. AgentSwarm MCP is connected to agents automatically. After creating a PR, agents call{" "}
+                          <Typography.Text code>agentswarm_link_pull_request</Typography.Text> with:
+                        </Typography.Text>
+                        <Typography.Text code>{`{ "taskId": "task_id", "prNumber": 123 }`}</Typography.Text>
+                        <Typography.Text>
+                          3. In GitHub, create a webhook with content type <Typography.Text code>application/json</Typography.Text>, this payload URL,
+                          this secret, and events: issue comments, pull request review comments, pull request reviews.
+                        </Typography.Text>
+                      </Space>
+                    }
+                  />
+                </>
+              ) : (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Save the repository first"
+                  description="After creation, AgentSwarm will show the repository-scoped Github webhook URL and webhook secret setup."
+                />
               )}
-            </Form.Item>
-            <Form.Item
-              name="githubAutomationsJson"
-              label="GitHub Automations (JSON rules)"
-              rules={[
-                {
-                  validator: async (_, value) => {
-                    const text = typeof value === "string" ? value.trim() : "";
-                    if (!text) {
-                      return;
-                    }
-                    const parsed = JSON.parse(text);
-                    if (!Array.isArray(parsed)) {
-                      throw new Error("GitHub automations must be a JSON array.");
-                    }
-                  }
-                }
-              ]}
-              extra='Example trigger with label filter: [{"id":"bug-opened","name":"Bug Issue","enabled":true,"trigger":"issue_opened","labelFilter":{"labelsAny":["bug"],"labelsNone":["wip"]},"task":{"taskType":"build"}}]'
-            >
-              <Input.TextArea rows={10} />
-            </Form.Item>
+            </Flex>
           </Card>
         </Flex>
       </Form>

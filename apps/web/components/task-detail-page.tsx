@@ -26,8 +26,6 @@ import {
   type ProviderProfile,
   type SystemSettings,
   type Snippet,
-  type GitHubBranchReference,
-  type GitHubPullRequestReference,
   type TaskMergePreview,
   type TaskPushPreview,
   type TaskChangeProposal,
@@ -377,6 +375,30 @@ function renderDiffFileActions(file: FileData, renderFileActions?: (file: FileDa
   return <span onClick={(event) => event.stopPropagation()}>{actions}</span>;
 }
 
+function deriveGitHubPullRequestUrl(repoUrl: string | undefined, prNumber: number | null | undefined): string | null {
+  if (!repoUrl || !prNumber) {
+    return null;
+  }
+  const trimmed = repoUrl.trim();
+  const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/);
+  if (sshMatch) {
+    return `https://github.com/${sshMatch[1]}/${sshMatch[2]}/pull/${prNumber}`;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.hostname !== "github.com") {
+      return null;
+    }
+    const segments = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "").split("/");
+    if (segments.length < 2) {
+      return null;
+    }
+    return `https://github.com/${segments[0]}/${segments[1]}/pull/${prNumber}`;
+  } catch {
+    return null;
+  }
+}
+
 function renderParsedDiff(diffText: string, emptyMessage: string, options?: ParsedDiffRenderOptions): ReactNode {
   if (!diffText.trim()) {
     return (
@@ -498,28 +520,6 @@ function getFirstDiffFilePath(diffText: string): string | null {
   }
 }
 
-function getGitHubRepositoryBaseUrl(repoUrl: string): string | null {
-  const httpsMatch = repoUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
-  if (httpsMatch) {
-    return `https://github.com/${httpsMatch[1]}/${httpsMatch[2]}`;
-  }
-
-  const sshMatch = repoUrl.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (sshMatch) {
-    return `https://github.com/${sshMatch[1]}/${sshMatch[2]}`;
-  }
-
-  return null;
-}
-
-function getTaskGitHubTargetBranch(task: Task): string | null {
-  if (task.taskType !== "build" && task.taskType !== "ask") {
-    return null;
-  }
-
-  return task.branchName ?? task.baseBranch ?? null;
-}
-
 function canOfferRemoteBranchDeletion(task: Task): boolean {
   const branchName = task.branchName?.trim();
   return Boolean(
@@ -528,37 +528,6 @@ function canOfferRemoteBranchDeletion(task: Task): boolean {
       branchName !== task.repoDefaultBranch &&
       branchName !== task.baseBranch
   );
-}
-
-function getGitHubDiffTarget(task: Task, existingPullRequest?: GitHubPullRequestReference | null): { href: string; label: string } | null {
-  const repoBaseUrl = getGitHubRepositoryBaseUrl(task.repoUrl);
-  if (!repoBaseUrl) {
-    return null;
-  }
-
-  const targetBranch = getTaskGitHubTargetBranch(task);
-  if (!targetBranch) {
-    return null;
-  }
-
-  if (targetBranch === task.repoDefaultBranch) {
-    return {
-      href: `${repoBaseUrl}/tree/${encodeURIComponent(targetBranch)}`,
-      label: "Open Branch In GitHub"
-    };
-  }
-
-  if (existingPullRequest?.url) {
-    return {
-      href: existingPullRequest.url,
-      label: "View PR"
-    };
-  }
-
-  return {
-    href: `${repoBaseUrl}/compare/${encodeURIComponent(task.repoDefaultBranch)}...${encodeURIComponent(targetBranch)}`,
-    label: "Create PR"
-  };
 }
 
 type FollowUpMode = "continue" | null;
@@ -753,14 +722,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [liveDiffRefreshKey, setLiveDiffRefreshKey] = useState(0);
   const [diffLiveKind, setDiffLiveKind] = useState<"compare" | "commits" | "working">("working");
   const [diffCompareBaseRef, setDiffCompareBaseRef] = useState<string | null>(null);
-  const [existingGitHubPullRequest, setExistingGitHubPullRequest] = useState<GitHubPullRequestReference | null>(null);
-  const [existingGitHubPullRequestChecked, setExistingGitHubPullRequestChecked] = useState(false);
   const [commitLog, setCommitLog] = useState<TaskWorkspaceCommit[]>([]);
   const [commitLogLoading, setCommitLogLoading] = useState(false);
   const [commitLogError, setCommitLogError] = useState<string | null>(null);
   const [selectedCommitSha, setSelectedCommitSha] = useState<string | null>(null);
-  const [diffBranches, setDiffBranches] = useState<GitHubBranchReference[]>([]);
-  const [diffBranchesLoading, setDiffBranchesLoading] = useState(false);
   const [assignableUsers, setAssignableUsers] = useState<User[]>([]);
   const [assignableUsersLoading, setAssignableUsersLoading] = useState(false);
   const [followUpForm] = Form.useForm();
@@ -803,6 +768,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "state"
     | "renameTitle"
     | "linkTask"
+    | "linkPr"
     | "editComment"
   >(null);
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
@@ -939,8 +905,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [pushPreviewLoading, setPushPreviewLoading] = useState(false);
   const [pushCommitMessage, setPushCommitMessage] = useState("");
   const [mergeModalOpen, setMergeModalOpen] = useState(false);
-  const [mergeBranches, setMergeBranches] = useState<GitHubBranchReference[]>([]);
-  const [mergeBranchesLoading, setMergeBranchesLoading] = useState(false);
+  const [mergeBranches, setMergeBranches] = useState<Array<{ name: string; isDefault: boolean }>>([]);
   const [mergeTargetBranch, setMergeTargetBranch] = useState<string | undefined>();
   const [mergePreview, setMergePreview] = useState<TaskMergePreview | null>(null);
   const [mergePreviewLoading, setMergePreviewLoading] = useState(false);
@@ -964,6 +929,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [linkTaskCandidates, setLinkTaskCandidates] = useState<Task[]>([]);
   const [linkTaskCandidatesLoading, setLinkTaskCandidatesLoading] = useState(false);
   const [selectedLinkedTaskId, setSelectedLinkedTaskId] = useState<string | undefined>();
+  const [linkPrModalOpen, setLinkPrModalOpen] = useState(false);
+  const [linkPrNumberDraft, setLinkPrNumberDraft] = useState<string>("");
   const [commentEditModalOpen, setCommentEditModalOpen] = useState(false);
   const [editingComment, setEditingComment] = useState<TaskMessage | null>(null);
   const [commentEditDraft, setCommentEditDraft] = useState("");
@@ -1140,6 +1107,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
   const canChangeTaskState = canEditTask && !!task && !isArchived;
   const canLinkTaskWorkspace = canEditTask && !!task && !isArchived;
+  const canLinkPullRequest = canEditTask && !!task && !isArchived;
+  const linkedPullRequestUrl = useMemo(
+    () => deriveGitHubPullRequestUrl(task?.repoUrl, task?.githubPrNumber ?? null),
+    [task?.githubPrNumber, task?.repoUrl]
+  );
   const canAssignTask = canEditTask && canListUsers && isAdminTaskUser && !!task && !isArchived;
   const linkedWorkspaceIds = useMemo(() => new Set((task?.linkedWorkspaces ?? []).map((link) => link.taskId)), [task?.linkedWorkspaces]);
   const linkTaskOptions = useMemo(
@@ -1455,24 +1427,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const hasDiffTab = hasStoredDiff || canRequestLiveDiff;
   const diffBaseBranchOptions = useMemo(() => {
     const options: Array<{ value: string; label: string }> = [];
-    const seen = new Set<string>();
     const repoDefault = task?.repoDefaultBranch;
     if (repoDefault?.trim()) {
-      seen.add(repoDefault);
       options.push({ value: repoDefault, label: `${repoDefault} (repo default)` });
     }
-    for (const branch of diffBranches) {
-      if (seen.has(branch.name)) {
-        continue;
-      }
-      seen.add(branch.name);
-      options.push({
-        value: branch.name,
-        label: branch.isDefault ? `${branch.name} (repo default)` : branch.name
-      });
-    }
     return options;
-  }, [task?.repoDefaultBranch, diffBranches]);
+  }, [task?.repoDefaultBranch]);
   const allowedChatActions = useMemo(
     () => getAllowedComposerActions(canBuildTasks, canAskTasks, canUseInteractiveTerminal),
     [canAskTasks, canBuildTasks, canUseInteractiveTerminal]
@@ -1747,123 +1707,34 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   ]);
 
   useEffect(() => {
-    const targetBranch = task ? getTaskGitHubTargetBranch(task) : null;
-    if (!task?.repoId || !targetBranch || !task.repoDefaultBranch || targetBranch === task.repoDefaultBranch) {
-      setExistingGitHubPullRequest(null);
-      setExistingGitHubPullRequestChecked(false);
+    if (!mergeModalOpen || !task?.branchName) {
       return;
     }
 
-    let cancelled = false;
-    setExistingGitHubPullRequest(null);
-    setExistingGitHubPullRequestChecked(false);
-
-    void api
-      .listGitHubPullRequests(task.repoId)
-      .then((pullRequests) => {
-        if (cancelled) {
-          return;
-        }
-
-        setExistingGitHubPullRequest(
-          pullRequests.find((pullRequest) => pullRequest.headBranch === targetBranch) ?? null
-        );
-        setExistingGitHubPullRequestChecked(true);
-      })
-      .catch(() => {
-        if (cancelled) {
-          return;
-        }
-
-        setExistingGitHubPullRequest(null);
-        setExistingGitHubPullRequestChecked(true);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [task?.id, task?.repoId, task?.repoDefaultBranch, task?.taskType, task?.branchName, task?.baseBranch]);
-
-  useEffect(() => {
-    if (activeMainTab !== "diff" || !task?.repoId) {
-      return;
-    }
-
-    let cancelled = false;
-    setDiffBranchesLoading(true);
-    void api
-      .listGitHubBranches(task.repoId)
-      .then((branches) => {
-        if (!cancelled) {
-          setDiffBranches(branches);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setDiffBranches([]);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setDiffBranchesLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeMainTab, task?.repoId]);
-
-  useEffect(() => {
-    if (!mergeModalOpen || !task?.repoId || !task.branchName) {
-      return;
-    }
-
-    let cancelled = false;
-    setMergeBranchesLoading(true);
     setMergePreview(null);
     setMergePreviewError(null);
     setMergeCommitMessage("");
 
-    void api
-      .listGitHubBranches(task.repoId)
-      .then((branches) => {
-        if (cancelled) {
-          return;
-        }
+    const candidateNames = Array.from(
+      new Set(
+        [task.repoDefaultBranch, task.baseBranch]
+          .map((branch) => branch?.trim())
+          .filter((branch): branch is string => Boolean(branch && branch !== task.branchName))
+      )
+    );
+    const availableBranches = candidateNames.map((name) => ({
+      name,
+      isDefault: name === task.repoDefaultBranch
+    }));
+    setMergeBranches(availableBranches);
+    setMergeTargetBranch((current) => {
+      if (current && availableBranches.some((branch) => branch.name === current)) {
+        return current;
+      }
 
-        const availableBranches = branches.filter((branch) => branch.name !== task.branchName);
-        setMergeBranches(availableBranches);
-        setMergeTargetBranch((current) => {
-          if (current && availableBranches.some((branch) => branch.name === current)) {
-            return current;
-          }
-
-          return (
-            availableBranches.find((branch) => branch.name === task.repoDefaultBranch)?.name ??
-            availableBranches[0]?.name
-          );
-        });
-      })
-      .catch((error) => {
-        if (cancelled) {
-          return;
-        }
-
-        setMergeBranches([]);
-        setMergeTargetBranch(undefined);
-        setMergePreviewError(error instanceof Error ? error.message : "Failed to load merge branches");
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setMergeBranchesLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [mergeModalOpen, task?.repoId, task?.branchName, task?.repoDefaultBranch]);
+      return availableBranches.find((branch) => branch.isDefault)?.name ?? availableBranches[0]?.name;
+    });
+  }, [mergeModalOpen, task?.branchName, task?.baseBranch, task?.repoDefaultBranch]);
 
   useEffect(() => {
     if (!mergeModalOpen || !task?.id || !mergeTargetBranch) {
@@ -2192,16 +2063,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const providerLabel = task ? getAgentProviderLabel(task.provider) : "Agent";
   const hasBranch = isBuildTask || isAskTask;
   const runtimeBranchLabel = task ? (hasBranch ? task.branchName ?? task.baseBranch : task.baseBranch) : "";
-  const githubPullRequestTargetBranch = task ? getTaskGitHubTargetBranch(task) : null;
-  const githubPullRequestLookupPending = Boolean(
-    task &&
-      githubPullRequestTargetBranch &&
-      task.repoDefaultBranch &&
-      githubPullRequestTargetBranch !== task.repoDefaultBranch &&
-      !existingGitHubPullRequestChecked
-  );
-  const githubDiffTarget =
-    task && !githubPullRequestLookupPending ? getGitHubDiffTarget(task, existingGitHubPullRequest) : null;
   const hasReadOnlyTaskAccess = !canEditTask;
   const showCheckpointState = task?.autoApplyCheckpoints !== true;
   const visibleChangeProposals = useMemo(
@@ -2908,6 +2769,45 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting((current) => (current === "linkTask" ? null : current));
     }
   };
+  const openLinkPrModal = () => {
+    if (!task || !canLinkPullRequest) {
+      return;
+    }
+    setLinkPrNumberDraft(task.githubPrNumber ? String(task.githubPrNumber) : "");
+    setLinkPrModalOpen(true);
+  };
+  const confirmLinkPullRequest = async () => {
+    if (!task || !canLinkPullRequest) {
+      return;
+    }
+
+    const trimmed = linkPrNumberDraft.trim();
+    const githubPrNumber = trimmed.length === 0 ? null : Number(trimmed);
+    if (githubPrNumber !== null && (!Number.isInteger(githubPrNumber) || githubPrNumber <= 0)) {
+      messageApi.warning("Enter a positive pull request number.");
+      return;
+    }
+
+    setSubmitting("linkPr");
+    try {
+      const updatedTask = await api.updateTaskPullRequest(task.id, { githubPrNumber });
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      setLinkPrModalOpen(false);
+      messageApi.success(githubPrNumber === null ? "Linked pull request cleared" : `Linked pull request #${githubPrNumber}`);
+    } catch (error) {
+      showTaskActionError(error, "Could not update linked pull request");
+    } finally {
+      setSubmitting((current) => (current === "linkPr" ? null : current));
+    }
+  };
   const openTaskStateModal = () => {
     if (!task) {
       return;
@@ -3522,6 +3422,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         hasBranchForSync ? { key: "refreshGitStatus", label: "Refresh Git Status" } : null,
         canEditTask && !isArchived ? { key: "newSession", label: "New Session" } : null,
         canLinkTaskWorkspace ? { key: "linkTask", label: "Link Task" } : null,
+        canLinkPullRequest ? { key: "linkPr", label: task.githubPrNumber ? "Edit Linked PR" : "Link Pull Request" } : null,
         canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Session", danger: true } : null,
         canChangeTaskState ? { key: "changeState", label: "Change State" } : null,
         canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
@@ -3530,7 +3431,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       ].filter(Boolean)
     : [];
   const hasExecutionButtons = canCancel || canStartDraft;
-  const hasGitHubDiffTargetAction = githubPullRequestLookupPending || Boolean(githubDiffTarget);
   const assigneeLabel = task?.ownerUserId ? (assigneeNameById.get(task.ownerUserId) ?? task.ownerUserId) : "Unassigned";
   const contextContent = (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
@@ -3559,6 +3459,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Descriptions.Item label={baseBranchLabel}>{task?.baseBranch}</Descriptions.Item>
           {hasBranch ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
           {hasBranch ? <Descriptions.Item label="Target Branch">{task?.branchName ?? "(pending)"}</Descriptions.Item> : null}
+          <Descriptions.Item label="Linked PR">
+            {task?.githubPrNumber ? (
+              linkedPullRequestUrl ? (
+                <Typography.Link href={linkedPullRequestUrl} target="_blank" rel="noreferrer">
+                  #{task.githubPrNumber}
+                </Typography.Link>
+              ) : (
+                `#${task.githubPrNumber}`
+              )
+            ) : (
+              <Typography.Text type="secondary">None</Typography.Text>
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label="Created">{task ? dayjs(task.createdAt).format("YYYY-MM-DD HH:mm") : ""}</Descriptions.Item>
           <Descriptions.Item label="Deadline">
             {canEditTask && !isArchived ? (
@@ -3760,25 +3673,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         </span>
       </Tooltip>
     ) : null;
-  const renderGitHubDiffTargetButton = () => {
-    if (githubPullRequestLookupPending) {
-      return (
-        <Button loading disabled>
-          Checking PR…
-        </Button>
-      );
-    }
-
-    if (!githubDiffTarget) {
-      return null;
-    }
-
-    return (
-      <Button href={githubDiffTarget.href} target="_blank" rel="noreferrer">
-        {githubDiffTarget.label}
-      </Button>
-    );
-  };
   const dropdownMoreActionItems = [
     ...(canMerge
       ? [
@@ -3828,6 +3722,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               return;
             }
 
+            if (key === "linkPr") {
+              openLinkPrModal();
+              return;
+            }
+
             if (key === "changeState") {
               openTaskStateModal();
               return;
@@ -3855,7 +3754,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
         trigger={["click"]}
       >
-        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "killTerminal" || submitting === "merge" || submitting === "state" || submitting === "linkTask"}>
+        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "killTerminal" || submitting === "merge" || submitting === "state" || submitting === "linkTask" || submitting === "linkPr"}>
           More
         </Button>
       </Dropdown>
@@ -3903,7 +3802,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 placeholder={task.repoDefaultBranch ?? "Branch"}
                 value={diffCompareBaseRef ?? task.repoDefaultBranch}
                 options={diffBaseBranchOptions}
-                loading={diffBranchesLoading}
                 disabled={!canRequestLiveDiff || diffLiveKind !== "compare"}
                 style={{ width: "100%" }}
                 onChange={(value) => {
@@ -4291,7 +4189,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Button disabled={composerClearDisabled}>Clear</Button>
             </Popconfirm>
           </Space.Compact>
-          {canPull || canPush || hasGitHubDiffTargetAction || hasDropdownMoreActions ? (
+          {canPull || canPush || hasDropdownMoreActions ? (
             <Space
               size={8}
               wrap
@@ -4304,7 +4202,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               {renderPullTaskButton()}
               {renderPushTaskButton()}
               {renderResetGitButton()}
-              {renderGitHubDiffTargetButton()}
               {renderMoreActionsButton()}
             </Space>
           ) : null}
@@ -5949,8 +5846,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Form.Item label="Target Branch" required>
               <Select
                 showSearch
-                placeholder={mergeBranchesLoading ? "Loading branches..." : "Select target branch"}
-                loading={mergeBranchesLoading}
+                placeholder="Select target branch"
                 value={mergeTargetBranch}
                 onChange={(value) => setMergeTargetBranch(value ?? undefined)}
                 disabled={mergeFooterBusy}
@@ -5982,7 +5878,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               </Form.Item>
             ) : null}
           </Form>
-          {!mergeBranchesLoading && mergeBranches.length === 0 ? (
+          {mergeBranches.length === 0 ? (
             <Alert type="info" showIcon message="No target branches available for merging." />
           ) : null}
           {mergePreviewLoading ? (
@@ -6032,6 +5928,33 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               notFoundContent={linkTaskCandidatesLoading ? <Spin size="small" /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />}
             />
           </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        title="Linked Pull Request"
+        open={linkPrModalOpen}
+        onCancel={() => {
+          if (submitting === "linkPr") {
+            return;
+          }
+          setLinkPrModalOpen(false);
+        }}
+        destroyOnClose
+        onOk={() => void confirmLinkPullRequest()}
+        okText="Save"
+        confirmLoading={submitting === "linkPr"}
+      >
+        <Form layout="vertical">
+          <Form.Item label="Pull Request Number">
+            <Input
+              value={linkPrNumberDraft}
+              onChange={(event) => setLinkPrNumberDraft(event.target.value.replace(/[^\d]/g, ""))}
+              onPressEnter={() => void confirmLinkPullRequest()}
+              placeholder="123"
+              disabled={submitting === "linkPr"}
+            />
+          </Form.Item>
+          <Typography.Text type="secondary">Leave blank to clear the linked pull request.</Typography.Text>
         </Form>
       </Modal>
       <WorkspaceFilePreviewModal

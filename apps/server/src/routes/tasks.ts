@@ -139,6 +139,10 @@ const updateTaskAssigneeSchema = z.object({
   ownerUserId: z.string().trim().min(1)
 });
 
+const updateTaskPullRequestSchema = z.object({
+  githubPrNumber: z.number().int().positive().nullable()
+});
+
 const linkTaskWorkspaceSchema = z.object({
   linkedTaskId: z.string().trim().min(1)
 });
@@ -1786,6 +1790,37 @@ export const registerTaskRoutes = (
     }
 
     await deps.taskStore.appendLog(task.id, `Task assigned to ${targetUser.name} by ${request.auth!.user.name}.`);
+    return reply.send(await withTaskCreatorName(deps.userStore, updated));
+  });
+
+  app.patch<{ Params: { id: string } }>("/tasks/:id/github-pr", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateTaskPullRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    const updated = await deps.taskStore.patchTask(task.id, {
+      githubPrNumber: parsed.data.githubPrNumber
+    });
+    if (!updated) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    await deps.taskStore.appendLog(
+      task.id,
+      parsed.data.githubPrNumber === null
+        ? `Linked pull request cleared by ${request.auth!.user.name}.`
+        : `Linked pull request set to #${parsed.data.githubPrNumber} by ${request.auth!.user.name}.`
+    );
     return reply.send(await withTaskCreatorName(deps.userStore, updated));
   });
 

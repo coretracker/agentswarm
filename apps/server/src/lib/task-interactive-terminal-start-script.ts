@@ -16,6 +16,17 @@ export function buildTerminalStartScript(): string {
       '  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/agentswarm-git-askpass.sh',
       "fi"
     ].join("\n"),
+    [
+      'if [ -f "$HOME/.claude/mcp-config.json" ]; then',
+      '  CLAUDE_REAL="$(command -v claude 2>/dev/null || true)"',
+      '  if [ -n "$CLAUDE_REAL" ]; then',
+      '    mkdir -p /tmp/agentswarm-bin',
+      '    printf "%s\\n" "#!/bin/sh" "exec \\"$CLAUDE_REAL\\" --mcp-config \\"$HOME/.claude/mcp-config.json\\" \\"\\$@\\"" > /tmp/agentswarm-bin/claude',
+      '    chmod 700 /tmp/agentswarm-bin/claude',
+      '    export PATH="/tmp/agentswarm-bin:$PATH"',
+      "  fi",
+      "fi"
+    ].join("\n"),
     'if command -v bash >/dev/null 2>&1; then exec bash -l; fi',
     "exec sh -l"
   ].join(" && ");

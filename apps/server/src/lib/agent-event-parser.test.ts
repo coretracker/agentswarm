@@ -30,9 +30,9 @@ describe("parseAgentJsonlEvents", () => {
         item: {
           id: "item_1",
           type: "mcp_tool_call",
-          server: "github-mcp",
-          tool: "list_pull_requests",
-          arguments: { owner: "org", repo: "repo", state: "all" },
+          server: "repo-mcp",
+          tool: "list_branches",
+          arguments: { repo: "repo", query: "main" },
           result: null,
           error: null,
           status: "in_progress"
@@ -43,9 +43,9 @@ describe("parseAgentJsonlEvents", () => {
         item: {
           id: "item_1",
           type: "mcp_tool_call",
-          server: "github-mcp",
-          tool: "list_pull_requests",
-          arguments: { owner: "org", repo: "repo", state: "all" },
+          server: "repo-mcp",
+          tool: "list_branches",
+          arguments: { repo: "repo", query: "main" },
           result: { content: [{ type: "text", text: "[]" }], structured_content: null },
           error: null,
           status: "completed"
@@ -56,9 +56,9 @@ describe("parseAgentJsonlEvents", () => {
         item: {
           id: "item_2",
           type: "mcp_tool_call",
-          server: "github-mcp",
-          tool: "create_pull_request",
-          arguments: { owner: "org", repo: "repo" },
+          server: "repo-mcp",
+          tool: "delete_branch",
+          arguments: { repo: "repo", branch: "old-branch" },
           result: null,
           error: { message: "Forbidden" },
           status: "completed"
@@ -72,9 +72,9 @@ describe("parseAgentJsonlEvents", () => {
       events.some(
         (event) =>
           event.kind === "tool.started" &&
-          event.title === "MCP github-mcp:list_pull_requests started" &&
-          event.toolName === "list_pull_requests" &&
-          event.detail === "{\"owner\":\"org\",\"repo\":\"repo\",\"state\":\"all\"}"
+          event.title === "MCP repo-mcp:list_branches started" &&
+          event.toolName === "list_branches" &&
+          event.detail === "{\"repo\":\"repo\",\"query\":\"main\"}"
       ),
       true
     );
@@ -82,7 +82,7 @@ describe("parseAgentJsonlEvents", () => {
       events.some(
         (event) =>
           event.kind === "tool.completed" &&
-          event.title === "MCP github-mcp:list_pull_requests completed" &&
+          event.title === "MCP repo-mcp:list_branches completed" &&
           event.message === "[]" &&
           event.status === "completed"
       ),
@@ -92,7 +92,7 @@ describe("parseAgentJsonlEvents", () => {
       events.some(
         (event) =>
           event.kind === "tool.failed" &&
-          event.title === "MCP github-mcp:create_pull_request failed" &&
+          event.title === "MCP repo-mcp:delete_branch failed" &&
           event.message === "{\"message\":\"Forbidden\"}" &&
           event.status === "completed"
       ),

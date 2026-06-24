@@ -24,6 +24,8 @@ describe("buildTerminalStartScript", () => {
     assert.match(script, /CODEX_AUTH_JSON_B64/);
     assert.match(script, /base64 -d > "\$HOME\/\.codex\/auth\.json"/);
     assert.match(script, /chmod 600 "\$HOME\/\.codex\/auth\.json"/);
+    assert.match(script, /\$HOME\/\.claude\/mcp-config\.json/);
+    assert.match(script, /\/tmp\/agentswarm-bin\/claude/);
     assert.match(script, /exec bash -l/);
     assert.match(script, /exec sh -l$/);
   });
@@ -40,6 +42,7 @@ describe("buildTerminalStartScript", () => {
     assert.doesNotMatch(dockerfile, /\bdocker\.io\b/);
     assert.match(dockerfile, /COPY run-task-codex\.mjs/);
     assert.match(dockerfile, /COPY run-task-claude\.mjs/);
+    assert.match(dockerfile, /COPY agentswarm-mcp-bridge\.mjs/);
   });
 });
 

@@ -16,7 +16,6 @@ import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
-import type { GitHubImportService } from "../services/github-import-service.js";
 import { clampLimit, compactCheckpoint, compactMessage, compactRepository, compactRun, compactTask, detailTask } from "./format.js";
 
 export interface McpToolDefinition {
@@ -35,7 +34,6 @@ export interface McpToolContext {
 export interface McpToolDeps {
   repositoryStore: RepositoryStore;
   settingsStore: SettingsStore;
-  githubImportService: GitHubImportService;
   taskStore: TaskStore;
   taskQueueStore: TaskQueueStore;
   scheduler: SchedulerService;
@@ -55,12 +53,6 @@ export class McpToolError extends Error {
 const taskActionSchema = z.enum(["build", "ask"]);
 
 const listRepositoriesSchema = z.object({
-  query: z.string().trim().optional(),
-  limit: z.number().int().positive().max(100).optional()
-});
-
-const listRepositoryBranchesSchema = z.object({
-  repoId: z.string().trim().min(1),
   query: z.string().trim().optional(),
   limit: z.number().int().positive().max(100).optional()
 });
@@ -106,6 +98,11 @@ const addTaskMessageSchema = z.object({
   taskId: z.string().trim().min(1),
   content: z.string().trim().min(1),
   action: z.enum(["build", "ask", "comment"]).optional()
+});
+
+const linkPullRequestSchema = z.object({
+  taskId: z.string().trim().min(1),
+  prNumber: z.number().int().positive()
 });
 
 const updateTaskConfigSchema = z.object({
@@ -246,41 +243,6 @@ export const createMcpTools = (): McpToolDefinition[] => [
         .slice(0, limit)
         .map(compactRepository);
       return { repositories };
-    }
-  },
-  {
-    name: "agentswarm_list_repository_branches",
-    description: "List available GitHub branches for an accessible repository.",
-    inputSchema: schemaToJson(listRepositoryBranchesSchema),
-    scopes: ["repo:read"],
-    async handler(rawInput, context) {
-      const input = listRepositoryBranchesSchema.parse(rawInput ?? {});
-      const repository = await context.deps.repositoryStore.getRepository(input.repoId);
-      if (!repository || !canUserAccessRepository(context.user, repository.id)) {
-        throw new McpToolError(404, "Repository not found", "not_found");
-      }
-      const query = input.query?.toLowerCase() ?? "";
-      const branches = (await context.deps.githubImportService.listBranches(repository))
-        .filter((branch) => !query || branch.name.toLowerCase().includes(query))
-        .slice(0, clampLimit(input.limit, 100, 100));
-      return {
-        repository: compactRepository(repository),
-        branches,
-        branchStrategies: [
-          {
-            value: "feature_branch",
-            description: "Create a new task branch from baseBranch."
-          },
-          {
-            value: "work_on_branch",
-            description: "Check out and work directly on baseBranch."
-          }
-        ],
-        createTaskDefaults: {
-          baseBranch: repository.defaultBranch,
-          branchStrategy: "feature_branch"
-        }
-      };
     }
   },
   {
@@ -452,6 +414,21 @@ export const createMcpTools = (): McpToolDefinition[] => [
         }
       }
       return { task: compactTask((await context.deps.taskStore.getTask(task.id)) ?? task), messageId: message?.id ?? null };
+    }
+  },
+  {
+    name: "agentswarm_link_pull_request",
+    description: "Link a task to a GitHub pull request number after creating the PR with GitHub MCP.",
+    inputSchema: schemaToJson(linkPullRequestSchema),
+    scopes: ["task:edit"],
+    async handler(rawInput, context) {
+      const input = linkPullRequestSchema.parse(rawInput ?? {});
+      const task = await getAccessibleTask(context, input.taskId);
+      ensureNotArchived(task);
+      const updated = await context.deps.taskStore.patchTask(task.id, {
+        githubPrNumber: input.prNumber
+      });
+      return { task: compactTask(updated ?? task), githubPrNumber: input.prNumber };
     }
   },
   {

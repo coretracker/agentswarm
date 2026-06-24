@@ -53,5 +53,6 @@ ENV HOME=/root \
 WORKDIR /runtime
 COPY run-task-codex.mjs /usr/local/bin/run-task-codex.mjs
 COPY run-task-claude.mjs /usr/local/bin/run-task-claude.mjs
+COPY agentswarm-mcp-bridge.mjs /usr/local/bin/agentswarm-mcp-bridge.mjs
 
 CMD ["bash"]

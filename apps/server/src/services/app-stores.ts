@@ -8,13 +8,11 @@ import type { TaskQueueStore } from "./task-queue-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { UserStore } from "./user-store.js";
 import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
-import type { GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
 import type { PersonalAccessTokenStore } from "./personal-access-token-store.js";
 
 export interface AppStores {
   taskStore: TaskStore;
   taskQueueStore: TaskQueueStore;
-  githubOutboundQueueStore: GitHubOutboundQueueStore;
   webhookDeliveryStore: WebhookDeliveryStore;
   snippetStore: SnippetStore;
   repositoryStore: RepositoryStore;

@@ -11,7 +11,6 @@
 - [Architecture index](architecture/index.md)
 - [Domains](architecture/domains.md)
 - [Boundaries](architecture/boundaries.md)
-- [GitHub sync ownership model](github-sync-ownership-model.md)
 
 ## Product
 - [Product index](product/index.md)

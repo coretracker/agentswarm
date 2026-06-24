@@ -480,5 +480,42 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         WHERE value = 'task:interactive'
       );
     `
+  },
+  {
+    id: "20260623_01_remove_legacy_github_sync_columns",
+    sql: `
+      ALTER TABLE repositories
+      DROP COLUMN IF EXISTS github_webhook_secret,
+      DROP COLUMN IF EXISTS github_automations,
+      DROP COLUMN IF EXISTS sync_status_enabled;
+    `
+  },
+  {
+    id: "20260623_02_repository_github_pr_feedback_webhook_secret",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_webhook_secret text NULL;
+    `
+  },
+  {
+    id: "20260624_01_repository_github_integration_bot_login",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_integration_bot_login text NULL;
+    `
+  },
+  {
+    id: "20260624_02_repository_github_pr_feedback_instructions",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_feedback_instructions text NULL;
+    `
+  },
+  {
+    id: "20260624_03_repository_github_pr_require_bot_mention",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_require_bot_mention boolean NOT NULL DEFAULT false;
+    `
   }
 ];

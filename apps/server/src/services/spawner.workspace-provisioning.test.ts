@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
 import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -50,7 +51,8 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     finishedAt: null,
     errorMessage: null,
     lastAction: "build",
-    enqueued: false
+    enqueued: false,
+    ...overrides
   }) satisfies Task as Task;
 
 const createSpawner = (): SpawnerService =>
@@ -82,6 +84,73 @@ describe("SpawnerService workspace provisioning", () => {
 
     assert.equal(mount.hostDir, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/raw-runs"));
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
+  });
+
+  it("injects AgentSwarm MCP into task runtime config", async () => {
+    const createdTokens: unknown[] = [];
+    const spawner = new SpawnerService(
+      {} as never,
+      {} as never,
+      {
+        getAuthSessionUser: async (userId: string) => ({ id: userId }),
+        listUsers: async () => []
+      } as never,
+      {} as never,
+      undefined,
+      {
+        createToken: async (input: unknown) => {
+          createdTokens.push(input);
+          return { token: "runtime-token" };
+        }
+      } as never
+    );
+
+    const runtimeMcp = await (spawner as any).buildRuntimeMcpConfig(
+      createTask({ ownerUserId: "user-1" }),
+      [
+        {
+          name: "agentswarm",
+          transport: "http",
+          url: "https://manual.example.com/mcp",
+          bearerTokenEnvVar: "MANUAL_TOKEN",
+          enabled: true
+        },
+        {
+          name: "github",
+          transport: "http",
+          url: "https://api.githubcopilot.com/mcp",
+          enabled: true
+        }
+      ],
+      "run-1"
+    );
+
+    assert.equal(runtimeMcp.injectedAgentSwarmMcp, true);
+    assert.equal(runtimeMcp.env.AGENTSWARM_MCP_TOKEN, "runtime-token");
+    assert.equal(createdTokens.length, 1);
+    assert.equal(runtimeMcp.servers.length, 2);
+    assert.deepEqual(
+      runtimeMcp.servers.map((server: { name: string }) => server.name),
+      ["github", "agentswarm"]
+    );
+    assert.equal(runtimeMcp.servers[1].transport, "stdio");
+    assert.equal(runtimeMcp.servers[1].command, "node");
+    assert.deepEqual(runtimeMcp.servers[1].args, ["/usr/local/bin/agentswarm-mcp-bridge.mjs"]);
+    const expectedEndpoints = existsSync("/.dockerenv")
+      ? [
+          `http://127.0.0.1:${env.PORT}/mcp`,
+          `http://host.docker.internal:${env.PORT}/mcp`,
+          `http://172.17.0.1:${env.PORT}/mcp`
+        ]
+      : [`http://host.docker.internal:${env.PORT}/mcp`, `http://172.17.0.1:${env.PORT}/mcp`];
+    const expectedEndpoint = expectedEndpoints[0] ?? "";
+    assert.equal(runtimeMcp.env.AGENTSWARM_MCP_ENDPOINT, expectedEndpoint);
+    assert.equal(runtimeMcp.env.AGENTSWARM_MCP_ENDPOINTS, expectedEndpoints.join(","));
+    assert.deepEqual(runtimeMcp.servers[1].env, {
+      AGENTSWARM_MCP_ENDPOINT: expectedEndpoint,
+      AGENTSWARM_MCP_ENDPOINTS: expectedEndpoints.join(","),
+      AGENTSWARM_MCP_TOKEN: "runtime-token"
+    });
   });
 
   it("allows internal checkpoint apply flow to bypass the running-task guard", async () => {
@@ -347,6 +416,8 @@ describe("SpawnerService workspace provisioning", () => {
     const spawnerAny = spawner as any;
     const root = await mkdtemp(path.join(tmpdir(), "agentswarm-postflight-"));
     const workspacePath = path.join(root, "workspace");
+    const originalRuntimePayloadRoot = env.RUNTIME_PAYLOAD_ROOT;
+    env.RUNTIME_PAYLOAD_ROOT = path.join(root, "runtime-payloads");
     const task = createTask({ id: "task-postflight" });
     await mkdir(workspacePath, { recursive: true });
 
@@ -393,7 +464,11 @@ describe("SpawnerService workspace provisioning", () => {
       appendLog: async () => undefined
     };
 
-    await spawner.runTaskPostflight(task);
-    assert.equal(workspaceKindSeen, "clone");
+    try {
+      await spawner.runTaskPostflight(task);
+      assert.equal(workspaceKindSeen, "clone");
+    } finally {
+      env.RUNTIME_PAYLOAD_ROOT = originalRuntimePayloadRoot;
+    }
   });
 });

@@ -1,6 +1,6 @@
 import { spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, constants, rm } from "node:fs/promises";
+import { access, constants, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import path from "node:path";
 import type { Duplex } from "node:stream";
@@ -39,6 +39,7 @@ import { buildDockerWorkspaceMountArgs } from "./docker-workspace-mounts.js";
 import type { UserStore } from "../services/user-store.js";
 import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
 import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
+import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/terminal$/;
 const INTERACTIVE_WORKSPACE_PATH = "/workspace";
@@ -416,12 +417,14 @@ async function initializeTaskInteractiveTerminalWebSocket(
     });
     const [
       credentials,
+      settings,
       gitIdentity,
       repositoryRuntimeEnvEntries,
       codexProviderStatePaths,
       claudeProviderStatePaths
     ] = await Promise.all([
       deps.settingsStore.getRuntimeCredentials(userId, task.codexCredentialSource ?? "auto"),
+      deps.settingsStore.getSettings(),
       resolveTaskGitCommitIdentity(task, deps.userStore, {
         ...DEFAULT_GIT_COMMIT_IDENTITY
       }),
@@ -433,6 +436,21 @@ async function initializeTaskInteractiveTerminalWebSocket(
     if (!runtime.ok) {
       throw new Error(runtime.reason);
     }
+    const runtimeMcp = await deps.spawner.buildRuntimeMcpConfigForTask(task, settings.mcpServers, terminalSessionId);
+    const codexProviderDefinition = getProviderRuntimeDefinition("codex");
+    const claudeProviderDefinition = getProviderRuntimeDefinition("claude");
+    await Promise.all([
+      writeFile(
+        path.join(codexProviderStatePaths.serverPath, "config.toml"),
+        codexProviderDefinition.getProviderConfig(runtimeMcp.servers),
+        "utf8"
+      ),
+      writeFile(
+        path.join(claudeProviderStatePaths.serverPath, "mcp-config.json"),
+        claudeProviderDefinition.getProviderConfig(runtimeMcp.servers),
+        "utf8"
+      )
+    ]);
 
     const sessionName = `aswterm-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
     const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "terminal-env", taskId, terminalSessionId);
@@ -444,7 +462,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
     });
     const dockerEnv: string[] = [];
     for (const [name, value] of buildTerminalDockerEnvEntries({
-      runtimeEnvEntries: runtime.envEntries,
+      runtimeEnvEntries: [...runtime.envEntries, ...Object.entries(runtimeMcp.env)],
       repositoryEnvEntries: repositoryRuntimeEnv
     })) {
       dockerEnv.push("-e", `${name}=${value}`);
@@ -458,6 +476,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       "--rm",
       "--name",
       sessionName,
+      ...deps.spawner.buildRuntimeMcpDockerArgs(runtimeMcp.injectedAgentSwarmMcp),
       "-v",
       `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
       ...buildTaskWorkspaceMountArgs(taskId, INTERACTIVE_WORKSPACE_PATH, "rw"),

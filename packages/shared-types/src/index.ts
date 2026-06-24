@@ -1,6 +1,12 @@
 export type TaskType = "build" | "ask";
 export type AgentProvider = "codex" | "claude";
 
+export const DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS = [
+  "If the feedback is a question without a clear requested code or file change, reply on GitHub asking for confirmation or a follow-up before changing files.",
+  "",
+  "After handling this feedback, reply on GitHub at the URL above with a brief status."
+].join("\n");
+
 /** Native effort values from providers. "max" is Claude-only. */
 export type ProviderProfile = "low" | "medium" | "high" | "max";
 
@@ -413,63 +419,23 @@ export interface RepositoryEnvSecretInputFile {
 
 export type RepositoryEnvSecretInput = RepositoryEnvSecretInputText | RepositoryEnvSecretInputFile;
 
-export type GitHubAutomationTrigger = "issue_opened" | "pull_request_opened";
-export type GitHubCommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
-
-export interface GitHubAutomationLabelFilter {
-  labelsAny?: string[];
-  labelsAll?: string[];
-  labelsNone?: string[];
-}
-
-export interface GitHubAutomationTaskConfig {
-  assigneeEmail?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  taskType?: Extract<TaskType, "build" | "ask">;
-  includeComments?: boolean;
-  titleTemplate?: string;
-  notes?: string;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string | null;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  snippetId?: string;
-}
-
-export interface GitHubAutomationRule {
-  id: string;
-  name: string;
-  enabled: boolean;
-  trigger: GitHubAutomationTrigger;
-  syncStatusEnabled?: boolean;
-  automationEnabled?: boolean;
-  allowedTriggers?: GitHubCommentTriggerType[];
-  allowedReactions?: string[];
-  allowedCommands?: string[];
-  allowedActorLogins?: string[];
-  labelFilter?: GitHubAutomationLabelFilter;
-  task: GitHubAutomationTaskConfig;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface Repository {
   id: string;
   name: string;
   url: string;
   defaultBranch: string;
-  syncStatusEnabled?: boolean;
   envVars: RepositoryEnvVarValue[];
   envSecrets?: RepositoryEnvSecret[];
   webhookUrl: string | null;
   webhookEnabled: boolean;
   webhookSecretConfigured: boolean;
+  githubPrWebhookSecretConfigured?: boolean;
+  githubIntegrationBotLogin?: string | null;
+  githubPrRequireBotMention?: boolean;
+  githubPrFeedbackInstructions?: string | null;
   webhookLastAttemptAt: string | null;
   webhookLastStatus: "success" | "failed" | null;
   webhookLastError: string | null;
-  githubWebhookSecretConfigured?: boolean;
-  githubAutomations?: GitHubAutomationRule[];
   createdAt: string;
   updatedAt: string;
 }
@@ -502,6 +468,7 @@ export interface Task {
   repoName: string;
   repoUrl: string;
   repoDefaultBranch: string;
+  githubPrNumber?: number | null;
   taskType: TaskType;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
@@ -679,7 +646,8 @@ export interface TaskMessage {
   content: string;
   action: TaskMessageAction | null;
   queueState?: "pending" | null;
-  queueSource?: "user" | "github" | null;
+  queueSource?: "user" | "github_pr" | null;
+  externalId?: string | null;
   /** Optional saved image attachments that were attached when the user submitted this message. */
   attachments?: TaskPromptAttachment[];
   /** Present for terminal lifecycle messages so history can address the terminal session. */
@@ -829,27 +797,9 @@ export interface McpServerConfig {
   transport: McpServerTransport;
   command?: string | null;
   args?: string[];
+  env?: Record<string, string>;
   url?: string | null;
   bearerTokenEnvVar?: string | null;
-}
-
-export interface GitHubIssueReference {
-  number: number;
-  title: string;
-  url: string;
-}
-
-export interface GitHubPullRequestReference {
-  number: number;
-  title: string;
-  url: string;
-  headBranch: string;
-  baseBranch: string;
-}
-
-export interface GitHubBranchReference {
-  name: string;
-  isDefault: boolean;
 }
 
 export type DataStoreBackend = "redis" | "postgres";
@@ -902,30 +852,32 @@ export interface CreateRepositoryInput {
   name: string;
   url: string;
   defaultBranch?: string;
-  syncStatusEnabled?: boolean;
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
-  githubWebhookSecret?: string;
-  githubAutomations?: GitHubAutomationRule[];
+  githubPrWebhookSecret?: string;
+  githubIntegrationBotLogin?: string | null;
+  githubPrRequireBotMention?: boolean;
+  githubPrFeedbackInstructions?: string | null;
 }
 
 export interface UpdateRepositoryInput {
   name?: string;
   url?: string;
   defaultBranch?: string;
-  syncStatusEnabled?: boolean;
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
   clearWebhookSecret?: boolean;
-  githubWebhookSecret?: string;
-  clearGithubWebhookSecret?: boolean;
-  githubAutomations?: GitHubAutomationRule[];
+  githubPrWebhookSecret?: string;
+  clearGithubPrWebhookSecret?: boolean;
+  githubIntegrationBotLogin?: string | null;
+  githubPrRequireBotMention?: boolean;
+  githubPrFeedbackInstructions?: string | null;
 }
 
 export interface CreateTaskInput {
@@ -995,40 +947,6 @@ export interface UpdateSnippetInput {
   variables?: SnippetVariable[];
 }
 
-export interface CreateTaskFromIssueInput {
-  repoId: string;
-  draft?: boolean;
-  issueNumber: number;
-  includeComments?: boolean;
-  notes?: string;
-  deadline?: string | null;
-  taskType?: Extract<TaskType, "build" | "ask">;
-  title?: string;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  model?: string;
-  reasoningEffort?: TaskReasoningEffort;
-}
-
-export interface CreateTaskFromPullRequestInput {
-  repoId: string;
-  draft?: boolean;
-  pullRequestNumber: number;
-  title?: string;
-  notes?: string;
-  deadline?: string | null;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  model?: string;
-  reasoningEffort?: TaskReasoningEffort;
-}
-
 export interface TriggerTaskActionInput {
   action: TaskAction;
 }
@@ -1082,6 +1000,10 @@ export interface UpdateTaskStateInput {
 
 export interface UpdateTaskAssigneeInput {
   ownerUserId: string;
+}
+
+export interface UpdateTaskPullRequestInput {
+  githubPrNumber: number | null;
 }
 
 export interface CreateTaskMessageInput {

@@ -10,13 +10,12 @@ The project is built for developers and teams who want agent-assisted coding wor
 
 ## Features
 
-- Create build or ask tasks from a blank prompt, reusable snippet, GitHub issue, or pull request.
+- Create build or ask tasks from a blank prompt or reusable snippet.
 - Run Codex and Claude tasks in isolated Docker runtime containers.
 - Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
 - Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
 - Open task workspaces in an interactive browser terminal.
 - Configure repositories, credentials, roles, users, provider defaults, and snippets.
-- Automate task creation from GitHub webhooks and repository automation rules.
 - Add repository-local postflight checks with `.agentswarm/postflight.yml`.
 
 ## Requirements
@@ -110,53 +109,8 @@ Tasks are the main unit of work in AgentSwarm.
 - **Build tasks** ask an agent to make repository changes.
 - **Ask tasks** ask an agent to inspect and answer without changing code.
 - **Snippet tasks** start from reusable prompt templates and variables.
-- **GitHub-imported tasks** can be created from issues, pull requests, review comments, and automation rules.
 
 Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
-
-### GitHub Webhooks
-
-AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
-
-For each repository, configure this webhook URL in GitHub:
-
-```text
-https://<your-host>/api/webhooks/github/<repositoryId>
-```
-
-Use content type `application/json` and subscribe to the events you want to automate, such as Issues, Pull requests, Pull request review comments, Issue comments, and Reactions.
-
-Example repository automation rule:
-
-```json
-[
-  {
-    "id": "ai-issue-opened",
-    "name": "AI issue to build task",
-    "enabled": true,
-    "trigger": "issue_opened",
-    "syncStatusEnabled": true,
-    "labelFilter": {
-      "labelsAny": ["ai"],
-      "labelsNone": ["wip"]
-    },
-    "task": {
-      "assigneeEmail": "dev@example.com",
-      "taskType": "build",
-      "provider": "codex",
-      "providerProfile": "high",
-      "modelOverride": "gpt-5.4",
-      "codexCredentialSource": "profile"
-    }
-  }
-]
-```
-
-Supported automation triggers include:
-
-- `issue_opened`
-- `pull_request_opened`
-- comment or reaction triggers when rule-level comment automation is enabled
 
 ### Postflight Checks
 
@@ -310,14 +264,16 @@ Supported MCP methods:
 Phase 1 tools:
 
 - `agentswarm_list_repositories`
-- `agentswarm_list_repository_branches`
 - `agentswarm_list_tasks`
 - `agentswarm_get_task`
 - `agentswarm_create_task`
 - `agentswarm_update_draft`
 - `agentswarm_start_task`
 - `agentswarm_add_task_message`
+- `agentswarm_link_pull_request`
 - `agentswarm_update_task_config`
+
+Task agents receive the AgentSwarm MCP server automatically at runtime through an internal stdio bridge and a short-lived run token.
 
 Checkpoint mutation, push/merge, attachments, terminal control, and summarization are intentionally deferred to later phases.
 
@@ -330,10 +286,6 @@ Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings U
 ### Can I run without Docker?
 
 The documented and supported path is Docker-based. Some server and web commands can run locally with Node.js, but the full task execution flow depends on Docker runtime containers.
-
-### What does a `202` response from a GitHub webhook mean?
-
-It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
 
 ### How do I reset local data?
 

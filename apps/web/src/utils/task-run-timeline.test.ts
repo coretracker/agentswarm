@@ -56,10 +56,10 @@ test("keeps failed tool calls prominent in the group status", () => {
       id: "tool-1",
       kind: "tool.completed",
       rawEventIndex: 0,
-      title: "MCP github-mcp:list_pull_requests completed",
+      title: "MCP repo-mcp:list_branches completed",
       status: "completed",
       toolCallId: "tool-1",
-      toolName: "list_pull_requests"
+      toolName: "list_branches"
     }),
     event({
       id: "tool-2",

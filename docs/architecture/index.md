@@ -4,7 +4,6 @@
 - [Domains](domains.md)
 - [Boundaries](boundaries.md)
 - [Top-level architecture](../../ARCHITECTURE.md)
-- [GitHub sync ownership model](../github-sync-ownership-model.md)
 
 ## Quick Summary
 - Frontend (`apps/web`) calls backend APIs.

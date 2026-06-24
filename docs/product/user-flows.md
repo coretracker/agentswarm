@@ -53,10 +53,7 @@ flowchart TD
     A4[POST /tasks/prompt-magic]
     A5[Prompt returned + textarea/title updated]
     A6[Submit create form]
-    A7{Source type}
-    A8[Blank/Snippet -> POST /tasks]
-    A9[Issue -> POST /imports/issue]
-    A10[PR -> POST /imports/pull-request]
+    A7[POST /tasks]
     A11[Task row created in store]
     A12[Workspace prepared]
     A13[Action enqueued via Scheduler]
@@ -66,10 +63,7 @@ flowchart TD
   A1 --> A2 --> A3
   A3 -- Yes --> A4 --> A5 --> A6
   A3 -- No --> A6
-  A6 --> A7
-  A7 --> A8 --> A11
-  A7 --> A9 --> A11
-  A7 --> A10 --> A11
+  A6 --> A7 --> A11
   A11 --> A12 --> A13 --> A14
 
   subgraph B[Existing Build Flow]
@@ -124,11 +118,8 @@ flowchart TD
     N1[web: task-create-page.tsx submit]
     N2[web: buildTaskDefinitionInput]
     N3[web: createTaskFromDefinition]
-    N4{sourceType}
-    N5[web api: POST /tasks]
-    N6[web api: POST /imports/issue]
-    N7[web api: POST /imports/pull-request]
-    N8[server route: routes/tasks.ts or routes/imports.ts]
+    N4[web api: POST /tasks]
+    N8[server route: routes/tasks.ts]
     N9[server: taskStore.createTask]
     N10[server: orchestrateTaskStart]
     N11[spawner.prepareWorkspace]
@@ -136,10 +127,7 @@ flowchart TD
     N14[task persisted + events published]
   end
 
-  N1 --> N2 --> N3 --> N4
-  N4 -- blank/snippet --> N5 --> N8
-  N4 -- issue --> N6 --> N8
-  N4 -- pull_request --> N7 --> N8
+  N1 --> N2 --> N3 --> N4 --> N8
   N8 --> N9 --> N10 --> N11 --> N12 --> N14
 
   subgraph B[Existing Build - Code Path]

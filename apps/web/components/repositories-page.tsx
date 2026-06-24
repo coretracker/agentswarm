@@ -90,10 +90,6 @@ export function RepositoriesPage() {
                 }
               },
               {
-                title: "Automations",
-                render: (_, repository) => <Typography.Text>{repository.githubAutomations?.length ?? 0}</Typography.Text>
-              },
-              {
                 title: "Actions",
                 render: (_, repository) => (
                   <Space>

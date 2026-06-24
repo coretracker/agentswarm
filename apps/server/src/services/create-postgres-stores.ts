@@ -12,7 +12,6 @@ import { RedisTaskQueueStore } from "./task-queue-store.js";
 import { PostgresTaskStore } from "./task-store.js";
 import { PostgresUserStore } from "./user-store.js";
 import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
-import { RedisGitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
 import { PostgresPersonalAccessTokenStore } from "./personal-access-token-store.js";
 
 export const createPostgresStores = (
@@ -23,7 +22,6 @@ export const createPostgresStores = (
 ): AppStores => {
   const taskStore = new PostgresTaskStore(pool, eventBus);
   const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
-  const githubOutboundQueueStore = new RedisGitHubOutboundQueueStore(redisClients.command);
   const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
   const snippetStore = new PostgresSnippetStore(pool, eventBus);
   const repositoryStore = new PostgresRepositoryStore(pool, eventBus);
@@ -37,7 +35,6 @@ export const createPostgresStores = (
   return {
     taskStore,
     taskQueueStore,
-    githubOutboundQueueStore,
     webhookDeliveryStore,
     snippetStore,
     repositoryStore,

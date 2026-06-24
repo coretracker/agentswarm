@@ -7,7 +7,6 @@ import type {
   AgentProvider,
   CodexCredentialSource,
   CreateTaskPromptAttachmentInput,
-  GitHubBranchReference,
   ProviderProfile,
   Repository,
   Snippet,
@@ -163,14 +162,11 @@ export function TaskDefinitionFields({
   const { can, session } = useAuth();
   const { repositories } = useRepositories();
   const { settings } = useSettings();
-  const [githubBranches, setGitHubBranches] = useState<GitHubBranchReference[]>([]);
-  const [githubOptionsLoading, setGitHubOptionsLoading] = useState(false);
   const [magicPromptLoading, setMagicPromptLoading] = useState(false);
   const [selectedSnippetToInsertId, setSelectedSnippetToInsertId] = useState<string | null>(null);
   const [pendingSnippetForInsert, setPendingSnippetForInsert] = useState<Snippet | null>(null);
   const [snippetVariableModalOpen, setSnippetVariableModalOpen] = useState(false);
   const [snippetVariableForm] = Form.useForm<SnippetVariableFormValues>();
-  const canReadRepositoryMetadata = can("repo:read");
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
   const canRunAutomatedTask = canBuildTasks || canAskTasks;
@@ -301,29 +297,6 @@ export function TaskDefinitionFields({
       form.setFieldValue("taskType", "build");
     }
   }, [canAskTasks, canBuildTasks, form, selectedTaskType]);
-
-  useEffect(() => {
-    if (!selectedRepoId || !canReadRepositoryMetadata) {
-      setGitHubBranches([]);
-      return;
-    }
-
-    let active = true;
-    setGitHubOptionsLoading(true);
-
-    void api.listGitHubBranches(selectedRepoId).catch(() => []).then((branches) => {
-      if (!active) {
-        return;
-      }
-
-      setGitHubBranches(branches);
-      setGitHubOptionsLoading(false);
-    });
-
-    return () => {
-      active = false;
-    };
-  }, [canReadRepositoryMetadata, selectedRepoId]);
 
   const promptPanelTitle = effectiveTaskType === "ask" ? "Question" : "Prompt";
   const canAttachPromptImages = allowPromptAttachments;
@@ -632,22 +605,7 @@ export function TaskDefinitionFields({
             ) : null}
 
             <Form.Item name="baseBranch" label="Base Branch" rules={[{ required: true }]}>
-              <Select
-                showSearch
-                loading={githubOptionsLoading}
-                placeholder={selectedRepository?.defaultBranch ?? "develop"}
-                optionFilterProp="label"
-                options={
-                  canReadRepositoryMetadata
-                    ? githubBranches.map((branch) => ({
-                        label: branch.isDefault ? `${branch.name} (default)` : branch.name,
-                        value: branch.name
-                      }))
-                    : selectedRepository
-                      ? [{ label: selectedRepository.defaultBranch, value: selectedRepository.defaultBranch }]
-                      : []
-                }
-              />
+              <Input placeholder={selectedRepository?.defaultBranch ?? "develop"} />
             </Form.Item>
 
             {isImplementationTask ? (
