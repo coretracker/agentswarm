@@ -1,6 +1,12 @@
 export type TaskType = "build" | "ask";
 export type AgentProvider = "codex" | "claude";
 
+export const DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS = [
+  "If the feedback is a question without a clear requested code or file change, reply on GitHub asking for confirmation or a follow-up before changing files.",
+  "",
+  "After handling this feedback, reply on GitHub at the URL above with a brief status."
+].join("\n");
+
 /** Native effort values from providers. "max" is Claude-only. */
 export type ProviderProfile = "low" | "medium" | "high" | "max";
 
@@ -425,6 +431,7 @@ export interface Repository {
   webhookSecretConfigured: boolean;
   githubPrWebhookSecretConfigured?: boolean;
   githubIntegrationBotLogin?: string | null;
+  githubPrFeedbackInstructions?: string | null;
   webhookLastAttemptAt: string | null;
   webhookLastStatus: "success" | "failed" | null;
   webhookLastError: string | null;
@@ -851,6 +858,7 @@ export interface CreateRepositoryInput {
   webhookSecret?: string;
   githubPrWebhookSecret?: string;
   githubIntegrationBotLogin?: string | null;
+  githubPrFeedbackInstructions?: string | null;
 }
 
 export interface UpdateRepositoryInput {
@@ -866,6 +874,7 @@ export interface UpdateRepositoryInput {
   githubPrWebhookSecret?: string;
   clearGithubPrWebhookSecret?: boolean;
   githubIntegrationBotLogin?: string | null;
+  githubPrFeedbackInstructions?: string | null;
 }
 
 export interface CreateTaskInput {

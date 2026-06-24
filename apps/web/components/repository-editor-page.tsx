@@ -8,6 +8,7 @@ import type {
   RepositoryEnvSecretInput,
   RepositoryEnvVarInput
 } from "@agentswarm/shared-types";
+import { DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS } from "@agentswarm/shared-types";
 import { Alert, Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
 import { ApiError, api } from "../src/api/client";
 import { trackEvent } from "../src/utils/analytics";
@@ -31,6 +32,7 @@ type RepositoryFormValues = {
   githubPrWebhookSecret: string;
   clearGithubPrWebhookSecret: boolean;
   githubIntegrationBotLogin: string;
+  githubPrFeedbackInstructions: string;
 };
 
 const emptyValues = (): RepositoryFormValues => ({
@@ -45,7 +47,8 @@ const emptyValues = (): RepositoryFormValues => ({
   clearWebhookSecret: false,
   githubPrWebhookSecret: "",
   clearGithubPrWebhookSecret: false,
-  githubIntegrationBotLogin: ""
+  githubIntegrationBotLogin: "",
+  githubPrFeedbackInstructions: DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
 });
 
 const normalizeValues = (values?: Partial<RepositoryFormValues> | null): RepositoryFormValues => ({
@@ -72,7 +75,11 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   clearWebhookSecret: values?.clearWebhookSecret === true,
   githubPrWebhookSecret: typeof values?.githubPrWebhookSecret === "string" ? values.githubPrWebhookSecret : "",
   clearGithubPrWebhookSecret: values?.clearGithubPrWebhookSecret === true,
-  githubIntegrationBotLogin: typeof values?.githubIntegrationBotLogin === "string" ? values.githubIntegrationBotLogin : ""
+  githubIntegrationBotLogin: typeof values?.githubIntegrationBotLogin === "string" ? values.githubIntegrationBotLogin : "",
+  githubPrFeedbackInstructions:
+    typeof values?.githubPrFeedbackInstructions === "string"
+      ? values.githubPrFeedbackInstructions
+      : DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
 });
 
 const snapshotValues = (values?: Partial<RepositoryFormValues> | null): string => JSON.stringify(normalizeValues(values));
@@ -193,7 +200,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           clearWebhookSecret: false,
           githubPrWebhookSecret: "",
           clearGithubPrWebhookSecret: false,
-          githubIntegrationBotLogin: repository.githubIntegrationBotLogin ?? ""
+          githubIntegrationBotLogin: repository.githubIntegrationBotLogin ?? "",
+          githubPrFeedbackInstructions: repository.githubPrFeedbackInstructions ?? DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
         });
         form.setFieldsValue(initial);
         setInitialSnapshot(snapshotValues(initial));
@@ -385,7 +393,11 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               ...(editingRepository && normalized.clearWebhookSecret ? { clearWebhookSecret: true } : {}),
               ...(normalized.githubPrWebhookSecret.trim().length > 0 ? { githubPrWebhookSecret: normalized.githubPrWebhookSecret.trim() } : {}),
               ...(editingRepository && normalized.clearGithubPrWebhookSecret ? { clearGithubPrWebhookSecret: true } : {}),
-              githubIntegrationBotLogin: normalized.githubIntegrationBotLogin.trim().replace(/^@+/, "") || null
+              githubIntegrationBotLogin: normalized.githubIntegrationBotLogin.trim().replace(/^@+/, "") || null,
+              githubPrFeedbackInstructions:
+                normalized.githubPrFeedbackInstructions.trim() === DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
+                  ? null
+                  : normalized.githubPrFeedbackInstructions.trim() || null
             };
             if (mode === "edit" && editingRepository) {
               await api.updateRepository(editingRepository.id, payload);
@@ -791,6 +803,21 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   >
                     <Input placeholder="agentswarm-bot" addonBefore="@" autoComplete="off" />
                   </Form.Item>
+                  <Form.Item
+                    name="githubPrFeedbackInstructions"
+                    label="Agent Feedback Instructions"
+                    extra="Appended to GitHub feedback prompts after the raw feedback body. Reset or leave as the default to use the built-in behavior."
+                    rules={[{ max: 4000, message: "Instructions must be 4000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 5, maxRows: 10 }} />
+                  </Form.Item>
+                  <Button
+                    onClick={() => {
+                      form.setFieldValue("githubPrFeedbackInstructions", DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS);
+                    }}
+                  >
+                    Reset feedback instructions
+                  </Button>
                   <Alert
                     type="info"
                     showIcon

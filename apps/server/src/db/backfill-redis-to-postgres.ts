@@ -499,13 +499,14 @@ const main = async (): Promise<void> => {
               webhook_secret,
               github_pr_webhook_secret,
               github_integration_bot_login,
+              github_pr_feedback_instructions,
               webhook_last_attempt_at,
               webhook_last_status,
               webhook_last_error,
               created_at,
               updated_at
             )
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
           `,
           [
             repository.id,
@@ -519,6 +520,7 @@ const main = async (): Promise<void> => {
             trimString(repository.webhookSecret),
             trimString(repository.githubPrWebhookSecret),
             trimString(repository.githubIntegrationBotLogin),
+            trimString(repository.githubPrFeedbackInstructions),
             repository.webhookLastAttemptAt ?? null,
             trimString(repository.webhookLastStatus),
             trimString(repository.webhookLastError),

@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS } from "@agentswarm/shared-types";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
@@ -145,7 +146,7 @@ const normalizeGitHubPrFeedback = (event: string | null, payload: unknown): GitH
   return null;
 };
 
-const formatFeedbackMessage = (feedback: GitHubPrFeedback): string => {
+const formatFeedbackMessage = (feedback: GitHubPrFeedback, instructions: string | null | undefined): string => {
   const lines = [
     `A new GitHub pull request feedback item was added to linked PR #${feedback.prNumber}.`,
     "",
@@ -169,9 +170,7 @@ const formatFeedbackMessage = (feedback: GitHubPrFeedback): string => {
     "Feedback:",
     feedback.body.trim() || "(No body provided.)",
     "",
-    "If the feedback is a question without a clear requested code or file change, reply on GitHub asking for confirmation or a follow-up before changing files.",
-    "",
-    "After handling this feedback, reply on GitHub at the URL above with a brief status."
+    instructions?.trim() || DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
   );
   return lines.join("\n");
 };
@@ -226,7 +225,7 @@ export const registerGitHubPrWebhookRoutes = (
       queueState: "pending",
       queueSource: "github_pr",
       externalId: feedback.externalId,
-      content: formatFeedbackMessage(feedback)
+      content: formatFeedbackMessage(feedback, repository.githubPrFeedbackInstructions)
     });
 
     if (message && task.executionStatus === "idle" && !(await deps.taskStore.hasPendingChangeProposal(task.id))) {

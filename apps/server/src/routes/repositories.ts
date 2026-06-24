@@ -111,7 +111,8 @@ const createRepositorySchema = z.object({
   webhookEnabled: z.boolean().optional(),
   webhookSecret: z.string().trim().min(1).optional(),
   githubPrWebhookSecret: z.string().trim().min(1).optional(),
-  githubIntegrationBotLogin: z.string().trim().max(255).nullable().optional()
+  githubIntegrationBotLogin: z.string().trim().max(255).nullable().optional(),
+  githubPrFeedbackInstructions: z.string().trim().max(4000).nullable().optional()
 });
 
 const updateRepositorySchema = createRepositorySchema.partial().extend({
