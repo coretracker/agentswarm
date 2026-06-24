@@ -682,6 +682,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookSecretConfigured: Boolean(normalized.webhookSecret),
       githubPrWebhookSecretConfigured: Boolean(normalized.githubPrWebhookSecret),
       githubIntegrationBotLogin: normalized.githubIntegrationBotLogin ?? null,
+      githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
       githubPrFeedbackInstructions: normalized.githubPrFeedbackInstructions ?? null,
       webhookLastAttemptAt: normalized.webhookLastAttemptAt ?? null,
       webhookLastStatus: normalized.webhookLastStatus ?? null,
@@ -728,6 +729,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookSecret,
       githubPrWebhookSecret,
       githubIntegrationBotLogin,
+      githubPrRequireBotMention: input.githubPrRequireBotMention === true,
       githubPrFeedbackInstructions,
       webhookLastAttemptAt: null,
       webhookLastStatus: null,
@@ -822,6 +824,8 @@ export class RedisRepositoryStore implements RepositoryStore {
       input.githubPrFeedbackInstructions !== undefined
         ? normalizeGitHubPrFeedbackInstructions(input.githubPrFeedbackInstructions)
         : current.githubPrFeedbackInstructions ?? null;
+    const nextGithubPrRequireBotMention =
+      input.githubPrRequireBotMention !== undefined ? input.githubPrRequireBotMention === true : current.githubPrRequireBotMention === true;
     const nextWebhookUrl =
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
@@ -851,6 +855,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookSecret: nextWebhookSecret,
       githubPrWebhookSecret: nextGithubPrWebhookSecret,
       githubIntegrationBotLogin: nextGithubIntegrationBotLogin,
+      githubPrRequireBotMention: nextGithubPrRequireBotMention,
       githubPrFeedbackInstructions: nextGithubPrFeedbackInstructions,
       updatedAt: nowIso()
     };
@@ -986,6 +991,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
         typeof row.github_integration_bot_login === "string" && row.github_integration_bot_login.trim().length > 0
           ? row.github_integration_bot_login.trim()
           : null,
+      githubPrRequireBotMention: row.github_pr_require_bot_mention === true,
       githubPrFeedbackInstructions:
         typeof row.github_pr_feedback_instructions === "string" && row.github_pr_feedback_instructions.trim().length > 0
           ? row.github_pr_feedback_instructions.trim()
@@ -1033,6 +1039,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookSecretConfigured: Boolean(webhookSecret),
       githubPrWebhookSecretConfigured: Boolean(githubPrWebhookSecret),
       githubIntegrationBotLogin,
+      githubPrRequireBotMention: input.githubPrRequireBotMention === true,
       githubPrFeedbackInstructions,
       webhookLastAttemptAt: null,
       webhookLastStatus: null,
@@ -1059,6 +1066,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             webhook_secret,
             github_pr_webhook_secret,
             github_integration_bot_login,
+            github_pr_require_bot_mention,
             github_pr_feedback_instructions,
             webhook_last_attempt_at,
             webhook_last_status,
@@ -1066,7 +1074,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
         `,
         [
           repository.id,
@@ -1080,6 +1088,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           webhookSecret,
           githubPrWebhookSecret,
           repository.githubIntegrationBotLogin,
+          repository.githubPrRequireBotMention,
           repository.githubPrFeedbackInstructions,
           repository.webhookLastAttemptAt,
           repository.webhookLastStatus,
@@ -1154,6 +1163,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
       input.githubPrFeedbackInstructions !== undefined
         ? normalizeGitHubPrFeedbackInstructions(input.githubPrFeedbackInstructions)
         : current.githubPrFeedbackInstructions ?? null;
+    const nextGithubPrRequireBotMention =
+      input.githubPrRequireBotMention !== undefined ? input.githubPrRequireBotMention === true : current.githubPrRequireBotMention === true;
     const nextWebhookUrl =
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
@@ -1183,6 +1194,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookSecretConfigured: Boolean(nextWebhookSecret),
       githubPrWebhookSecretConfigured: Boolean(nextGithubPrWebhookSecret),
       githubIntegrationBotLogin: nextGithubIntegrationBotLogin,
+      githubPrRequireBotMention: nextGithubPrRequireBotMention,
       githubPrFeedbackInstructions: nextGithubPrFeedbackInstructions,
       updatedAt: nowIso()
     };
@@ -1205,12 +1217,13 @@ export class PostgresRepositoryStore implements RepositoryStore {
             webhook_secret = $9,
             github_pr_webhook_secret = $10,
             github_integration_bot_login = $11,
-            github_pr_feedback_instructions = $12,
-            webhook_last_attempt_at = $13,
-            webhook_last_status = $14,
-            webhook_last_error = $15,
-            created_at = $16,
-            updated_at = $17
+            github_pr_require_bot_mention = $12,
+            github_pr_feedback_instructions = $13,
+            webhook_last_attempt_at = $14,
+            webhook_last_status = $15,
+            webhook_last_error = $16,
+            created_at = $17,
+            updated_at = $18
           WHERE id = $1
         `,
         [
@@ -1225,6 +1238,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           nextWebhookSecret,
           nextGithubPrWebhookSecret,
           next.githubIntegrationBotLogin,
+          next.githubPrRequireBotMention,
           next.githubPrFeedbackInstructions,
           next.webhookLastAttemptAt,
           next.webhookLastStatus,

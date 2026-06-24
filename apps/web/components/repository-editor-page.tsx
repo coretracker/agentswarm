@@ -32,6 +32,7 @@ type RepositoryFormValues = {
   githubPrWebhookSecret: string;
   clearGithubPrWebhookSecret: boolean;
   githubIntegrationBotLogin: string;
+  githubPrRequireBotMention: boolean;
   githubPrFeedbackInstructions: string;
 };
 
@@ -48,6 +49,7 @@ const emptyValues = (): RepositoryFormValues => ({
   githubPrWebhookSecret: "",
   clearGithubPrWebhookSecret: false,
   githubIntegrationBotLogin: "",
+  githubPrRequireBotMention: false,
   githubPrFeedbackInstructions: DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
 });
 
@@ -76,6 +78,7 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   githubPrWebhookSecret: typeof values?.githubPrWebhookSecret === "string" ? values.githubPrWebhookSecret : "",
   clearGithubPrWebhookSecret: values?.clearGithubPrWebhookSecret === true,
   githubIntegrationBotLogin: typeof values?.githubIntegrationBotLogin === "string" ? values.githubIntegrationBotLogin : "",
+  githubPrRequireBotMention: values?.githubPrRequireBotMention === true,
   githubPrFeedbackInstructions:
     typeof values?.githubPrFeedbackInstructions === "string"
       ? values.githubPrFeedbackInstructions
@@ -201,6 +204,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           githubPrWebhookSecret: "",
           clearGithubPrWebhookSecret: false,
           githubIntegrationBotLogin: repository.githubIntegrationBotLogin ?? "",
+          githubPrRequireBotMention: repository.githubPrRequireBotMention === true,
           githubPrFeedbackInstructions: repository.githubPrFeedbackInstructions ?? DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
         });
         form.setFieldsValue(initial);
@@ -394,6 +398,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               ...(normalized.githubPrWebhookSecret.trim().length > 0 ? { githubPrWebhookSecret: normalized.githubPrWebhookSecret.trim() } : {}),
               ...(editingRepository && normalized.clearGithubPrWebhookSecret ? { clearGithubPrWebhookSecret: true } : {}),
               githubIntegrationBotLogin: normalized.githubIntegrationBotLogin.trim().replace(/^@+/, "") || null,
+              githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
               githubPrFeedbackInstructions:
                 normalized.githubPrFeedbackInstructions.trim() === DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
                   ? null
@@ -802,6 +807,14 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     rules={[{ max: 255, message: "Login must be 255 characters or fewer." }]}
                   >
                     <Input placeholder="agentswarm-bot" addonBefore="@" autoComplete="off" />
+                  </Form.Item>
+                  <Form.Item
+                    name="githubPrRequireBotMention"
+                    label="Only Process Bot Mentions"
+                    valuePropName="checked"
+                    extra="When enabled and an ignored Github bot user is configured, PR feedback is ignored unless the body mentions that bot user."
+                  >
+                    <Switch />
                   </Form.Item>
                   <Form.Item
                     name="githubPrFeedbackInstructions"

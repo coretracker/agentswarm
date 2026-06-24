@@ -50,6 +50,13 @@ const normalizeGitHubLogin = (value: string | null | undefined): string | null =
   return normalized.length > 0 ? normalized : null;
 };
 
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+const mentionsGitHubLogin = (body: string, login: string): boolean => {
+  const escapedLogin = escapeRegExp(login);
+  return new RegExp(`(^|[^A-Za-z0-9_-])@${escapedLogin}(?=$|[^A-Za-z0-9_-])`, "i").test(body);
+};
+
 const verifySignature = (rawBody: string, signatureHeader: string | null, secret: string): boolean => {
   if (!signatureHeader?.startsWith("sha256=")) {
     return false;
@@ -207,6 +214,9 @@ export const registerGitHubPrWebhookRoutes = (
     const ignoredBotLogin = normalizeGitHubLogin(repository.githubIntegrationBotLogin);
     if (ignoredBotLogin && normalizeGitHubLogin(feedback.author) === ignoredBotLogin) {
       return reply.status(202).send({ queued: false, reason: "ignored_bot_user" });
+    }
+    if (repository.githubPrRequireBotMention === true && ignoredBotLogin && !mentionsGitHubLogin(feedback.body, ignoredBotLogin)) {
+      return reply.status(202).send({ queued: false, reason: "missing_bot_mention" });
     }
 
     const task = await deps.taskStore.findTaskByGitHubPrNumber(repository.id, feedback.prNumber);

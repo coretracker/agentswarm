@@ -112,6 +112,7 @@ const createRepositorySchema = z.object({
   webhookSecret: z.string().trim().min(1).optional(),
   githubPrWebhookSecret: z.string().trim().min(1).optional(),
   githubIntegrationBotLogin: z.string().trim().max(255).nullable().optional(),
+  githubPrRequireBotMention: z.boolean().optional(),
   githubPrFeedbackInstructions: z.string().trim().max(4000).nullable().optional()
 });
 

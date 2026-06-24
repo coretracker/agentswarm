@@ -219,6 +219,152 @@ test("GitHub PR webhook ignores empty feedback bodies", async () => {
   await app.close();
 });
 
+test("GitHub PR webhook ignores comments without required bot mention", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  let lookupCount = 0;
+  let appendCount = 0;
+  const secret = "webhook-secret";
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({
+        id: "repo-1",
+        githubIntegrationBotLogin: "agentswarm-bot",
+        githubPrRequireBotMention: true
+      }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubPrNumber: async () => {
+        lookupCount += 1;
+        return null;
+      },
+      appendMessage: async () => {
+        appendCount += 1;
+        return null;
+      }
+    } as never,
+    scheduler: {} as never
+  });
+
+  const payload = JSON.stringify({
+    action: "created",
+    issue: {
+      number: 42,
+      pull_request: {}
+    },
+    comment: {
+      id: 1001,
+      body: "Please add a regression test.",
+      html_url: "https://github.com/acme/repo/pull/42#issuecomment-1001"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issue_comment",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { queued: false, reason: "missing_bot_mention" });
+  assert.equal(lookupCount, 0);
+  assert.equal(appendCount, 0);
+
+  await app.close();
+});
+
+test("GitHub PR webhook queues comments with required bot mention", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const appendedMessages: unknown[] = [];
+  const secret = "webhook-secret";
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({
+        id: "repo-1",
+        githubIntegrationBotLogin: "agentswarm-bot",
+        githubPrRequireBotMention: true
+      }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubPrNumber: async () => ({
+        id: "task-1",
+        executionStatus: "queued"
+      }),
+      listMessages: async () => [],
+      appendMessage: async (_taskId: string, input: unknown) => {
+        appendedMessages.push(input);
+        return {
+          id: "message-1",
+          content: (input as { content: string }).content
+        };
+      },
+      hasPendingChangeProposal: async () => false
+    } as never,
+    scheduler: {} as never
+  });
+
+  const payload = JSON.stringify({
+    action: "created",
+    issue: {
+      number: 42,
+      pull_request: {}
+    },
+    comment: {
+      id: 1001,
+      body: "@AgentSwarm-Bot please add a regression test.",
+      html_url: "https://github.com/acme/repo/pull/42#issuecomment-1001"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issue_comment",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { queued: true, taskId: "task-1", messageId: "message-1" });
+  assert.equal(appendedMessages.length, 1);
+  assert.match((appendedMessages[0] as { content: string }).content, /@AgentSwarm-Bot please add a regression test\./);
+
+  await app.close();
+});
+
 test("GitHub PR webhook uses repository feedback instructions", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
