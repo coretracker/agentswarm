@@ -1112,6 +1112,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     () => deriveGitHubPullRequestUrl(task?.repoUrl, task?.githubPrNumber ?? null),
     [task?.githubPrNumber, task?.repoUrl]
   );
+  const hasLinkedPullRequest = Boolean(task?.githubPrNumber);
   const canAssignTask = canEditTask && canListUsers && isAdminTaskUser && !!task && !isArchived;
   const linkedWorkspaceIds = useMemo(() => new Set((task?.linkedWorkspaces ?? []).map((link) => link.taskId)), [task?.linkedWorkspaces]);
   const linkTaskOptions = useMemo(
@@ -3673,6 +3674,27 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         </span>
       </Tooltip>
     ) : null;
+  const renderViewPullRequestButton = () =>
+    task?.githubPrNumber ? (
+      <Tooltip
+        title={
+          linkedPullRequestUrl
+            ? `Open linked pull request #${task.githubPrNumber}.`
+            : "The linked pull request URL is unavailable for this repository."
+        }
+      >
+        <span style={{ display: "inline-block" }}>
+          <Button
+            href={linkedPullRequestUrl ?? undefined}
+            target="_blank"
+            rel="noreferrer"
+            disabled={!linkedPullRequestUrl}
+          >
+            View PR
+          </Button>
+        </span>
+      </Tooltip>
+    ) : null;
   const dropdownMoreActionItems = [
     ...(canMerge
       ? [
@@ -4189,7 +4211,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Button disabled={composerClearDisabled}>Clear</Button>
             </Popconfirm>
           </Space.Compact>
-          {canPull || canPush || hasDropdownMoreActions ? (
+          {canPull || canPush || hasLinkedPullRequest || hasDropdownMoreActions ? (
             <Space
               size={8}
               wrap
@@ -4202,6 +4224,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               {renderPullTaskButton()}
               {renderPushTaskButton()}
               {renderResetGitButton()}
+              {renderViewPullRequestButton()}
               {renderMoreActionsButton()}
             </Space>
           ) : null}
