@@ -83,7 +83,7 @@ const normalizeGitHubPrFeedback = (event: string | null, payload: unknown): GitH
     const commentId = numberValue(payload.comment, "id");
     const body = stringValue(payload.comment, "body") ?? "";
     const url = stringValue(payload.comment, "html_url") ?? "";
-    if (!prNumber || !commentId) {
+    if (!prNumber || !commentId || body.trim().length === 0) {
       return null;
     }
     return {
@@ -104,7 +104,7 @@ const normalizeGitHubPrFeedback = (event: string | null, payload: unknown): GitH
     const commentId = numberValue(payload.comment, "id");
     const body = stringValue(payload.comment, "body") ?? "";
     const url = stringValue(payload.comment, "html_url") ?? "";
-    if (!prNumber || !commentId) {
+    if (!prNumber || !commentId || body.trim().length === 0) {
       return null;
     }
     return {
@@ -128,7 +128,7 @@ const normalizeGitHubPrFeedback = (event: string | null, payload: unknown): GitH
     const reviewId = numberValue(payload.review, "id");
     const body = stringValue(payload.review, "body") ?? "";
     const url = stringValue(payload.review, "html_url") ?? "";
-    if (!prNumber || !reviewId) {
+    if (!prNumber || !reviewId || body.trim().length === 0) {
       return null;
     }
     return {
