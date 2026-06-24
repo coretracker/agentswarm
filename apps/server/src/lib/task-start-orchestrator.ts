@@ -14,6 +14,7 @@ export interface OrchestrateTaskStartOptions {
   task: Task;
   action?: TaskAction;
   input?: TaskExecutionInput;
+  promptMessageId?: string | null;
   fallbackMessage: string;
 }
 
@@ -71,7 +72,9 @@ export async function orchestrateTaskStart(
       errorMessage: null,
       enqueued: false
     });
-    const accepted = await deps.scheduler.triggerAction(options.task.id, action, options.input);
+    const accepted = await deps.scheduler.triggerAction(options.task.id, action, options.input, {
+      promptMessageId: options.promptMessageId ?? null
+    });
     if (!accepted) {
       throw new Error("Task execution could not be started");
     }
@@ -108,7 +111,9 @@ export async function beginTaskStart(
         errorMessage: null,
         enqueued: false
       });
-      const accepted = await deps.scheduler.triggerAction(preparingTask.id, action, options.input);
+      const accepted = await deps.scheduler.triggerAction(preparingTask.id, action, options.input, {
+        promptMessageId: options.promptMessageId ?? null
+      });
       if (!accepted) {
         throw new Error("Task execution could not be started");
       }

@@ -6,7 +6,8 @@ import type {
   CreateRepositoryInput,
   Repository,
   RepositoryEnvSecretInput,
-  RepositoryEnvVarInput
+  RepositoryEnvVarInput,
+  User
 } from "@agentswarm/shared-types";
 import { DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS } from "@agentswarm/shared-types";
 import { Alert, Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
@@ -34,6 +35,7 @@ type RepositoryFormValues = {
   githubIntegrationBotLogin: string;
   githubPrRequireBotMention: boolean;
   githubPrFeedbackInstructions: string;
+  githubPrTaskOwnerUserId: string;
 };
 
 const emptyValues = (): RepositoryFormValues => ({
@@ -50,7 +52,8 @@ const emptyValues = (): RepositoryFormValues => ({
   clearGithubPrWebhookSecret: false,
   githubIntegrationBotLogin: "",
   githubPrRequireBotMention: false,
-  githubPrFeedbackInstructions: DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
+  githubPrFeedbackInstructions: DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
+  githubPrTaskOwnerUserId: ""
 });
 
 const normalizeValues = (values?: Partial<RepositoryFormValues> | null): RepositoryFormValues => ({
@@ -82,7 +85,8 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   githubPrFeedbackInstructions:
     typeof values?.githubPrFeedbackInstructions === "string"
       ? values.githubPrFeedbackInstructions
-      : DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
+      : DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
+  githubPrTaskOwnerUserId: typeof values?.githubPrTaskOwnerUserId === "string" ? values.githubPrTaskOwnerUserId : ""
 });
 
 const snapshotValues = (values?: Partial<RepositoryFormValues> | null): string => JSON.stringify(normalizeValues(values));
@@ -138,6 +142,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const [notFound, setNotFound] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editingRepository, setEditingRepository] = useState<Repository | null>(null);
+  const [users, setUsers] = useState<User[]>([]);
+  const [usersLoadError, setUsersLoadError] = useState<string | null>(null);
   const [initialSnapshot, setInitialSnapshot] = useState("");
   const watchedValues = Form.useWatch([], form) as RepositoryFormValues | undefined;
 
@@ -151,6 +157,26 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   useEffect(() => {
     trackEvent("repository_editor_opened", { mode, entry_point: entryPoint });
   }, [entryPoint, mode]);
+
+  useEffect(() => {
+    let active = true;
+    setUsersLoadError(null);
+    void api
+      .listUsers()
+      .then((loadedUsers) => {
+        if (active) {
+          setUsers(loadedUsers);
+        }
+      })
+      .catch((error: unknown) => {
+        if (active) {
+          setUsersLoadError(error instanceof Error ? error.message : "Failed to load users");
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (mode !== "create") {
@@ -205,7 +231,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           clearGithubPrWebhookSecret: false,
           githubIntegrationBotLogin: repository.githubIntegrationBotLogin ?? "",
           githubPrRequireBotMention: repository.githubPrRequireBotMention === true,
-          githubPrFeedbackInstructions: repository.githubPrFeedbackInstructions ?? DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
+          githubPrFeedbackInstructions: repository.githubPrFeedbackInstructions ?? DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
+          githubPrTaskOwnerUserId: repository.githubPrTaskOwnerUserId ?? ""
         });
         form.setFieldsValue(initial);
         setInitialSnapshot(snapshotValues(initial));
@@ -402,7 +429,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               githubPrFeedbackInstructions:
                 normalized.githubPrFeedbackInstructions.trim() === DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
                   ? null
-                  : normalized.githubPrFeedbackInstructions.trim() || null
+                  : normalized.githubPrFeedbackInstructions.trim() || null,
+              githubPrTaskOwnerUserId: normalized.githubPrTaskOwnerUserId.trim() || null
             };
             if (mode === "edit" && editingRepository) {
               await api.updateRepository(editingRepository.id, payload);
@@ -815,6 +843,28 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra="When enabled and an ignored Github bot user is configured, PR feedback is ignored unless the body mentions that bot user."
                   >
                     <Switch />
+                  </Form.Item>
+                  <Form.Item
+                    name="githubPrTaskOwnerUserId"
+                    label="GitHub-Created Task Owner"
+                    extra={
+                      usersLoadError
+                        ? `Users could not be loaded: ${usersLoadError}`
+                        : "Required for creating a new task when the bot is mentioned on an unlinked pull request."
+                    }
+                  >
+                    <Select
+                      allowClear
+                      showSearch
+                      disabled={Boolean(usersLoadError)}
+                      placeholder="Select task owner"
+                      optionFilterProp="label"
+                      options={users.map((user) => ({
+                        value: user.id,
+                        label: `${user.name} <${user.email}>${user.active ? "" : " (inactive)"}`,
+                        disabled: !user.active
+                      }))}
+                    />
                   </Form.Item>
                   <Form.Item
                     name="githubPrFeedbackInstructions"

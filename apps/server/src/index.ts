@@ -183,7 +183,7 @@ const bootstrap = async (): Promise<void> => {
   });
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
-  registerGitHubPrWebhookRoutes(app, { repositoryStore, taskStore, scheduler });
+  registerGitHubPrWebhookRoutes(app, { repositoryStore, taskStore, scheduler, settingsStore, spawner });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
   registerMcpRoutes(app, {
     auth,
