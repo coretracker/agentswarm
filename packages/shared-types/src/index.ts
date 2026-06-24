@@ -433,6 +433,7 @@ export interface Repository {
   githubIntegrationBotLogin?: string | null;
   githubPrRequireBotMention?: boolean;
   githubPrFeedbackInstructions?: string | null;
+  githubPrTaskOwnerUserId?: string | null;
   webhookLastAttemptAt: string | null;
   webhookLastStatus: "success" | "failed" | null;
   webhookLastError: string | null;
@@ -861,6 +862,7 @@ export interface CreateRepositoryInput {
   githubIntegrationBotLogin?: string | null;
   githubPrRequireBotMention?: boolean;
   githubPrFeedbackInstructions?: string | null;
+  githubPrTaskOwnerUserId?: string | null;
 }
 
 export interface UpdateRepositoryInput {
@@ -878,6 +880,7 @@ export interface UpdateRepositoryInput {
   githubIntegrationBotLogin?: string | null;
   githubPrRequireBotMention?: boolean;
   githubPrFeedbackInstructions?: string | null;
+  githubPrTaskOwnerUserId?: string | null;
 }
 
 export interface CreateTaskInput {

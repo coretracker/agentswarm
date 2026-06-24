@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import type { CreateRepositoryInput, UpdateRepositoryInput } from "@agentswarm/shared-types";
+import type { AuthSessionUser, CreateRepositoryInput, UpdateRepositoryInput } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
 import { canUserAccessRepository } from "../lib/task-ownership.js";
@@ -113,7 +113,8 @@ const createRepositorySchema = z.object({
   githubPrWebhookSecret: z.string().trim().min(1).optional(),
   githubIntegrationBotLogin: z.string().trim().max(255).nullable().optional(),
   githubPrRequireBotMention: z.boolean().optional(),
-  githubPrFeedbackInstructions: z.string().trim().max(4000).nullable().optional()
+  githubPrFeedbackInstructions: z.string().trim().max(4000).nullable().optional(),
+  githubPrTaskOwnerUserId: z.string().trim().min(1).nullable().optional()
 });
 
 const updateRepositorySchema = createRepositorySchema.partial().extend({
@@ -135,6 +136,66 @@ export const registerRepositoryRoutes = (
     userStore: UserStore;
   }
 ): void => {
+  const addRepositoryAccessForUser = async (userId: string, repositoryId: string): Promise<void> => {
+    const user = await deps.userStore.getUser(userId);
+    if (!user) {
+      return;
+    }
+
+    const resolvedRepositoryIds = await Promise.all(
+      user.repositoryIds.map(async (currentRepositoryId) =>
+        (await deps.repositoryStore.getRepository(currentRepositoryId)) ? currentRepositoryId : null
+      )
+    );
+    const nextRepositoryIds = resolvedRepositoryIds.filter((currentRepositoryId): currentRepositoryId is string =>
+      Boolean(currentRepositoryId)
+    );
+    if (!nextRepositoryIds.includes(repositoryId)) {
+      nextRepositoryIds.push(repositoryId);
+    }
+    await deps.userStore.updateUser(user.id, {
+      repositoryIds: nextRepositoryIds
+    });
+  };
+
+  const validateGithubPrTaskOwner = async (
+    ownerUserId: string | null | undefined,
+    repositoryId: string | null
+  ): Promise<{ ok: true } | { ok: false; statusCode: 400 | 404; message: string }> => {
+    const normalizedOwnerUserId = ownerUserId?.trim() || null;
+    if (!normalizedOwnerUserId) {
+      return { ok: true };
+    }
+
+    const owner = await deps.userStore.getUser(normalizedOwnerUserId);
+    if (!owner) {
+      return { ok: false, statusCode: 400, message: "GitHub-created task owner was not found." };
+    }
+    if (!owner.active) {
+      return { ok: false, statusCode: 400, message: "GitHub-created task owner must be active." };
+    }
+    if (repositoryId && !canUserAccessRepository(owner, repositoryId)) {
+      return { ok: false, statusCode: 400, message: "GitHub-created task owner must have access to this repository." };
+    }
+
+    return { ok: true };
+  };
+
+  const validateGithubPrTaskOwnerForCreate = async (
+    ownerUserId: string | null | undefined,
+    authUser: AuthSessionUser | null | undefined
+  ): Promise<{ ok: true } | { ok: false; statusCode: 400 | 404; message: string }> => {
+    const normalizedOwnerUserId = ownerUserId?.trim() || null;
+    if (!normalizedOwnerUserId) {
+      return { ok: true };
+    }
+    if (!authUser || normalizedOwnerUserId !== authUser.id) {
+      return { ok: false, statusCode: 400, message: "GitHub-created task owner must have access to this repository." };
+    }
+
+    return validateGithubPrTaskOwner(normalizedOwnerUserId, null);
+  };
+
   app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async (request) => {
     const repositories = await deps.repositoryStore.listRepositories();
     return repositories.filter((repository) => canUserAccessRepository(request.auth?.user, repository.id));
@@ -156,25 +217,16 @@ export const registerRepositoryRoutes = (
     }
 
     try {
+      const authUser = request.auth?.user;
+      const ownerValidation = await validateGithubPrTaskOwnerForCreate(parsed.data.githubPrTaskOwnerUserId, authUser);
+      if (!ownerValidation.ok) {
+        return reply.status(ownerValidation.statusCode).send({ message: ownerValidation.message });
+      }
+
       const createInput: CreateRepositoryInput = toCreateRepositoryInput(parsed.data);
       const repository = await deps.repositoryStore.createRepository(createInput);
-      const authUser = request.auth?.user;
       if (authUser) {
-        const creator = await deps.userStore.getUser(authUser.id);
-        if (creator) {
-          const resolvedRepositoryIds = await Promise.all(
-            creator.repositoryIds.map(async (repositoryId) =>
-              (await deps.repositoryStore.getRepository(repositoryId)) ? repositoryId : null
-            )
-          );
-          const nextRepositoryIds = resolvedRepositoryIds.filter((repositoryId): repositoryId is string => Boolean(repositoryId));
-          if (!nextRepositoryIds.includes(repository.id)) {
-            nextRepositoryIds.push(repository.id);
-          }
-          await deps.userStore.updateUser(creator.id, {
-            repositoryIds: nextRepositoryIds
-          });
-        }
+        await addRepositoryAccessForUser(authUser.id, repository.id);
       }
       return reply.status(201).send(repository);
     } catch (error) {
@@ -196,6 +248,10 @@ export const registerRepositoryRoutes = (
       const current = await deps.repositoryStore.getRepository(request.params.id);
       if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
         return reply.status(404).send({ message: "Repository not found" });
+      }
+      const ownerValidation = await validateGithubPrTaskOwner(parsed.data.githubPrTaskOwnerUserId, request.params.id);
+      if (!ownerValidation.ok) {
+        return reply.status(ownerValidation.statusCode).send({ message: ownerValidation.message });
       }
 
       const updateInput: UpdateRepositoryInput = toUpdateRepositoryInput(parsed.data);
