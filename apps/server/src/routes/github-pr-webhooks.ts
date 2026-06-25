@@ -433,7 +433,8 @@ export const registerGitHubPrWebhookRoutes = (
             prompt: content,
             taskType: "build",
             baseBranch: repository.defaultBranch,
-            branchStrategy: "feature_branch"
+            branchStrategy: "feature_branch",
+            autoApplyCheckpoints: true
           },
           repository,
           ownerUserId
