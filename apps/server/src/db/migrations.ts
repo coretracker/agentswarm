@@ -543,5 +543,12 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       SET definition = definition - 'notes'
       WHERE definition ? 'notes';
     `
+  },
+  {
+    id: "20260625_02_repository_github_pr_auto_archive_on_merge",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_auto_archive_on_merge boolean NOT NULL DEFAULT false;
+    `
   }
 ];

@@ -35,6 +35,7 @@ type RepositoryFormValues = {
   githubIntegrationBotLogin: string;
   githubPrAllowedUsers: string;
   githubPrRequireBotMention: boolean;
+  githubPrAutoArchiveOnMerge: boolean;
   githubPrFeedbackInstructions: string;
   githubPrTaskOwnerUserId: string;
 };
@@ -54,6 +55,7 @@ const emptyValues = (): RepositoryFormValues => ({
   githubIntegrationBotLogin: "",
   githubPrAllowedUsers: "",
   githubPrRequireBotMention: false,
+  githubPrAutoArchiveOnMerge: false,
   githubPrFeedbackInstructions: DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
   githubPrTaskOwnerUserId: ""
 });
@@ -85,6 +87,7 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   githubIntegrationBotLogin: typeof values?.githubIntegrationBotLogin === "string" ? values.githubIntegrationBotLogin : "",
   githubPrAllowedUsers: typeof values?.githubPrAllowedUsers === "string" ? values.githubPrAllowedUsers : "",
   githubPrRequireBotMention: values?.githubPrRequireBotMention === true,
+  githubPrAutoArchiveOnMerge: values?.githubPrAutoArchiveOnMerge === true,
   githubPrFeedbackInstructions:
     typeof values?.githubPrFeedbackInstructions === "string"
       ? values.githubPrFeedbackInstructions
@@ -250,6 +253,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           githubIntegrationBotLogin: repository.githubIntegrationBotLogin ?? "",
           githubPrAllowedUsers: (repository.githubPrAllowedUsers ?? []).join("\n"),
           githubPrRequireBotMention: repository.githubPrRequireBotMention === true,
+          githubPrAutoArchiveOnMerge: repository.githubPrAutoArchiveOnMerge === true,
           githubPrFeedbackInstructions: repository.githubPrFeedbackInstructions ?? DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
           githubPrTaskOwnerUserId: repository.githubPrTaskOwnerUserId ?? ""
         });
@@ -446,6 +450,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               githubIntegrationBotLogin: normalized.githubIntegrationBotLogin.trim().replace(/^@+/, "") || null,
               githubPrAllowedUsers: parseAllowedGitHubUsers(normalized.githubPrAllowedUsers),
               githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
+              githubPrAutoArchiveOnMerge: normalized.githubPrAutoArchiveOnMerge === true,
               githubPrFeedbackInstructions:
                 normalized.githubPrFeedbackInstructions.trim() === DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
                   ? null
@@ -872,6 +877,14 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     <Switch />
                   </Form.Item>
                   <Form.Item
+                    name="githubPrAutoArchiveOnMerge"
+                    label="Archive Task When PR Merges"
+                    valuePropName="checked"
+                    extra="When enabled, a GitHub pull request merged webhook archives the linked task."
+                  >
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item
                     name="githubPrTaskOwnerUserId"
                     label="GitHub-Created Task Owner"
                     extra={
@@ -924,7 +937,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                         <Typography.Text code>{`{ "taskId": "task_id", "prNumber": 123 }`}</Typography.Text>
                         <Typography.Text>
                           3. In GitHub, create a webhook with content type <Typography.Text code>application/json</Typography.Text>, this payload URL,
-                          this secret, and events: issue comments, pull request review comments, pull request reviews.
+                          this secret, and events: pull requests, issue comments, pull request review comments, pull request reviews.
                         </Typography.Text>
                       </Space>
                     }

@@ -433,6 +433,7 @@ export interface Repository {
   githubIntegrationBotLogin?: string | null;
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
+  githubPrAutoArchiveOnMerge?: boolean;
   githubPrFeedbackInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
   webhookLastAttemptAt: string | null;
@@ -863,6 +864,7 @@ export interface CreateRepositoryInput {
   githubIntegrationBotLogin?: string | null;
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
+  githubPrAutoArchiveOnMerge?: boolean;
   githubPrFeedbackInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
 }
@@ -882,6 +884,7 @@ export interface UpdateRepositoryInput {
   githubIntegrationBotLogin?: string | null;
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
+  githubPrAutoArchiveOnMerge?: boolean;
   githubPrFeedbackInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
 }

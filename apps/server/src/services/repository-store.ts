@@ -691,6 +691,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubPrAllowedUsers,
       githubPrFeedbackInstructions,
       githubPrTaskOwnerUserId,
+      githubPrAutoArchiveOnMerge: repository.githubPrAutoArchiveOnMerge === true,
       webhookLastAttemptAt: typeof repository.webhookLastAttemptAt === "string" ? repository.webhookLastAttemptAt : null,
       webhookLastStatus: repository.webhookLastStatus === "success" || repository.webhookLastStatus === "failed" ? repository.webhookLastStatus : null,
       webhookLastError: typeof repository.webhookLastError === "string" && repository.webhookLastError.trim().length > 0
@@ -715,6 +716,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubIntegrationBotLogin: normalized.githubIntegrationBotLogin ?? null,
       githubPrAllowedUsers: normalized.githubPrAllowedUsers,
       githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
+      githubPrAutoArchiveOnMerge: normalized.githubPrAutoArchiveOnMerge === true,
       githubPrFeedbackInstructions: normalized.githubPrFeedbackInstructions ?? null,
       githubPrTaskOwnerUserId: normalized.githubPrTaskOwnerUserId ?? null,
       webhookLastAttemptAt: normalized.webhookLastAttemptAt ?? null,
@@ -766,6 +768,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubIntegrationBotLogin,
       githubPrAllowedUsers,
       githubPrRequireBotMention: input.githubPrRequireBotMention === true,
+      githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge === true,
       githubPrFeedbackInstructions,
       githubPrTaskOwnerUserId,
       webhookLastAttemptAt: null,
@@ -871,6 +874,10 @@ export class RedisRepositoryStore implements RepositoryStore {
         : current.githubPrTaskOwnerUserId ?? null;
     const nextGithubPrRequireBotMention =
       input.githubPrRequireBotMention !== undefined ? input.githubPrRequireBotMention === true : current.githubPrRequireBotMention === true;
+    const nextGithubPrAutoArchiveOnMerge =
+      input.githubPrAutoArchiveOnMerge !== undefined
+        ? input.githubPrAutoArchiveOnMerge === true
+        : current.githubPrAutoArchiveOnMerge === true;
     const nextWebhookUrl =
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
@@ -902,6 +909,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubIntegrationBotLogin: nextGithubIntegrationBotLogin,
       githubPrAllowedUsers: nextGithubPrAllowedUsers,
       githubPrRequireBotMention: nextGithubPrRequireBotMention,
+      githubPrAutoArchiveOnMerge: nextGithubPrAutoArchiveOnMerge,
       githubPrFeedbackInstructions: nextGithubPrFeedbackInstructions,
       githubPrTaskOwnerUserId: nextGithubPrTaskOwnerUserId,
       updatedAt: nowIso()
@@ -1040,6 +1048,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           : null,
       githubPrAllowedUsers: normalizeGitHubAllowedUsers(row.github_pr_allowed_users),
       githubPrRequireBotMention: row.github_pr_require_bot_mention === true,
+      githubPrAutoArchiveOnMerge: row.github_pr_auto_archive_on_merge === true,
       githubPrFeedbackInstructions:
         typeof row.github_pr_feedback_instructions === "string" && row.github_pr_feedback_instructions.trim().length > 0
           ? row.github_pr_feedback_instructions.trim()
@@ -1095,6 +1104,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       githubIntegrationBotLogin,
       githubPrAllowedUsers,
       githubPrRequireBotMention: input.githubPrRequireBotMention === true,
+      githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge === true,
       githubPrFeedbackInstructions,
       githubPrTaskOwnerUserId,
       webhookLastAttemptAt: null,
@@ -1124,6 +1134,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             github_integration_bot_login,
             github_pr_allowed_users,
             github_pr_require_bot_mention,
+            github_pr_auto_archive_on_merge,
             github_pr_feedback_instructions,
             github_pr_task_owner_user_id,
             webhook_last_attempt_at,
@@ -1132,7 +1143,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20)
+          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20, $21)
         `,
         [
           repository.id,
@@ -1148,6 +1159,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           repository.githubIntegrationBotLogin,
           JSON.stringify(repository.githubPrAllowedUsers),
           repository.githubPrRequireBotMention,
+          repository.githubPrAutoArchiveOnMerge,
           repository.githubPrFeedbackInstructions,
           repository.githubPrTaskOwnerUserId,
           repository.webhookLastAttemptAt,
@@ -1233,6 +1245,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
         : current.githubPrTaskOwnerUserId ?? null;
     const nextGithubPrRequireBotMention =
       input.githubPrRequireBotMention !== undefined ? input.githubPrRequireBotMention === true : current.githubPrRequireBotMention === true;
+    const nextGithubPrAutoArchiveOnMerge =
+      input.githubPrAutoArchiveOnMerge !== undefined
+        ? input.githubPrAutoArchiveOnMerge === true
+        : current.githubPrAutoArchiveOnMerge === true;
     const nextWebhookUrl =
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
@@ -1264,6 +1280,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       githubIntegrationBotLogin: nextGithubIntegrationBotLogin,
       githubPrAllowedUsers: nextGithubPrAllowedUsers,
       githubPrRequireBotMention: nextGithubPrRequireBotMention,
+      githubPrAutoArchiveOnMerge: nextGithubPrAutoArchiveOnMerge,
       githubPrFeedbackInstructions: nextGithubPrFeedbackInstructions,
       githubPrTaskOwnerUserId: nextGithubPrTaskOwnerUserId,
       updatedAt: nowIso()
@@ -1289,13 +1306,14 @@ export class PostgresRepositoryStore implements RepositoryStore {
             github_integration_bot_login = $11,
             github_pr_allowed_users = $12::jsonb,
             github_pr_require_bot_mention = $13,
-            github_pr_feedback_instructions = $14,
-            github_pr_task_owner_user_id = $15,
-            webhook_last_attempt_at = $16,
-            webhook_last_status = $17,
-            webhook_last_error = $18,
-            created_at = $19,
-            updated_at = $20
+            github_pr_auto_archive_on_merge = $14,
+            github_pr_feedback_instructions = $15,
+            github_pr_task_owner_user_id = $16,
+            webhook_last_attempt_at = $17,
+            webhook_last_status = $18,
+            webhook_last_error = $19,
+            created_at = $20,
+            updated_at = $21
           WHERE id = $1
         `,
         [
@@ -1312,6 +1330,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           next.githubIntegrationBotLogin,
           JSON.stringify(next.githubPrAllowedUsers),
           next.githubPrRequireBotMention,
+          next.githubPrAutoArchiveOnMerge,
           next.githubPrFeedbackInstructions,
           next.githubPrTaskOwnerUserId,
           next.webhookLastAttemptAt,
