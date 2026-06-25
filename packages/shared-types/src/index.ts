@@ -2,6 +2,28 @@ export type TaskType = "build" | "ask";
 export type AgentProvider = "codex" | "claude";
 
 export const DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS = [
+  "A new GitHub {{target_label}} feedback item was added to linked {{target_ref}}.",
+  "",
+  "Type: {{feedback_type}}",
+  "Author: @{{author}}",
+  "{{issue_title_line}}{{review_state_line}}{{file_line}}{{url_line}}{{diff_context_block}}",
+  "Feedback:",
+  "{{feedback_body}}",
+  "",
+  "If the feedback is a question without a clear requested code or file change, reply on GitHub asking for confirmation or a follow-up before changing files.",
+  "",
+  "After handling this feedback, reply on GitHub at the URL above with a brief status."
+].join("\n");
+
+export const DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS = [
+  "A new GitHub {{target_label}} task was created from {{target_ref}}.",
+  "",
+  "Type: {{feedback_type}}",
+  "Author: @{{author}}",
+  "{{issue_title_line}}{{review_state_line}}{{file_line}}{{url_line}}{{diff_context_block}}",
+  "Feedback:",
+  "{{feedback_body}}",
+  "",
   "If the feedback is a question without a clear requested code or file change, reply on GitHub asking for confirmation or a follow-up before changing files.",
   "",
   "After handling this feedback, reply on GitHub at the URL above with a brief status."
@@ -434,6 +456,7 @@ export interface Repository {
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
   githubPrAutoArchiveOnMerge?: boolean;
+  githubPrInitialInstructions?: string | null;
   githubPrFeedbackInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
   webhookLastAttemptAt: string | null;
@@ -865,6 +888,7 @@ export interface CreateRepositoryInput {
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
   githubPrAutoArchiveOnMerge?: boolean;
+  githubPrInitialInstructions?: string | null;
   githubPrFeedbackInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
 }
@@ -885,6 +909,7 @@ export interface UpdateRepositoryInput {
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
   githubPrAutoArchiveOnMerge?: boolean;
+  githubPrInitialInstructions?: string | null;
   githubPrFeedbackInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
 }

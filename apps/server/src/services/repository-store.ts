@@ -9,7 +9,7 @@ import type {
   RepositoryEnvSecretInput,
   UpdateRepositoryInput
 } from "@agentswarm/shared-types";
-import { DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS } from "@agentswarm/shared-types";
+import { DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS, DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
 import { HttpError } from "../lib/http-error.js";
 import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
@@ -59,9 +59,9 @@ const normalizeGitHubAllowedUsers = (value: unknown): string[] => {
   return users;
 };
 
-const normalizeGitHubPrFeedbackInstructions = (value: string | null | undefined): string | null => {
+const normalizeGitHubInstructions = (value: string | null | undefined, defaultValue: string): string | null => {
   const normalized = (value ?? "").trim();
-  return normalized.length > 0 && normalized !== DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS ? normalized : null;
+  return normalized.length > 0 && normalized !== defaultValue ? normalized : null;
 };
 
 const normalizeUserId = (value: string | null | undefined): string | null => {
@@ -670,7 +670,14 @@ export class RedisRepositoryStore implements RepositoryStore {
     const githubPrWebhookSecret = this.normalizeWebhookSecret(repository.githubPrWebhookSecret);
     const githubIntegrationBotLogin = normalizeGitHubLogin(repository.githubIntegrationBotLogin);
     const githubPrAllowedUsers = normalizeGitHubAllowedUsers(repository.githubPrAllowedUsers);
-    const githubPrFeedbackInstructions = normalizeGitHubPrFeedbackInstructions(repository.githubPrFeedbackInstructions);
+    const githubPrInitialInstructions = normalizeGitHubInstructions(
+      repository.githubPrInitialInstructions,
+      DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS
+    );
+    const githubPrFeedbackInstructions = normalizeGitHubInstructions(
+      repository.githubPrFeedbackInstructions,
+      DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
+    );
     const githubPrTaskOwnerUserId = normalizeUserId(repository.githubPrTaskOwnerUserId);
     const webhookUrl = this.normalizeWebhookUrl(repository.webhookUrl as string | null | undefined);
     const webhookEnabled = repository.webhookEnabled === true;
@@ -689,6 +696,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubPrWebhookSecret,
       githubIntegrationBotLogin,
       githubPrAllowedUsers,
+      githubPrInitialInstructions,
       githubPrFeedbackInstructions,
       githubPrTaskOwnerUserId,
       githubPrAutoArchiveOnMerge: repository.githubPrAutoArchiveOnMerge === true,
@@ -717,6 +725,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubPrAllowedUsers: normalized.githubPrAllowedUsers,
       githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
       githubPrAutoArchiveOnMerge: normalized.githubPrAutoArchiveOnMerge === true,
+      githubPrInitialInstructions: normalized.githubPrInitialInstructions ?? null,
       githubPrFeedbackInstructions: normalized.githubPrFeedbackInstructions ?? null,
       githubPrTaskOwnerUserId: normalized.githubPrTaskOwnerUserId ?? null,
       webhookLastAttemptAt: normalized.webhookLastAttemptAt ?? null,
@@ -743,7 +752,11 @@ export class RedisRepositoryStore implements RepositoryStore {
     const githubPrWebhookSecret = this.normalizeWebhookSecret(input.githubPrWebhookSecret);
     const githubIntegrationBotLogin = normalizeGitHubLogin(input.githubIntegrationBotLogin);
     const githubPrAllowedUsers = normalizeGitHubAllowedUsers(input.githubPrAllowedUsers);
-    const githubPrFeedbackInstructions = normalizeGitHubPrFeedbackInstructions(input.githubPrFeedbackInstructions);
+    const githubPrInitialInstructions = normalizeGitHubInstructions(
+      input.githubPrInitialInstructions,
+      DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS
+    );
+    const githubPrFeedbackInstructions = normalizeGitHubInstructions(input.githubPrFeedbackInstructions, DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS);
     const githubPrTaskOwnerUserId = normalizeUserId(input.githubPrTaskOwnerUserId);
     const webhookEnabled = input.webhookEnabled === true;
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
@@ -769,6 +782,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubPrAllowedUsers,
       githubPrRequireBotMention: input.githubPrRequireBotMention === true,
       githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge === true,
+      githubPrInitialInstructions,
       githubPrFeedbackInstructions,
       githubPrTaskOwnerUserId,
       webhookLastAttemptAt: null,
@@ -866,8 +880,12 @@ export class RedisRepositoryStore implements RepositoryStore {
         : normalizeGitHubAllowedUsers(current.githubPrAllowedUsers);
     const nextGithubPrFeedbackInstructions =
       input.githubPrFeedbackInstructions !== undefined
-        ? normalizeGitHubPrFeedbackInstructions(input.githubPrFeedbackInstructions)
+        ? normalizeGitHubInstructions(input.githubPrFeedbackInstructions, DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS)
         : current.githubPrFeedbackInstructions ?? null;
+    const nextGithubPrInitialInstructions =
+      input.githubPrInitialInstructions !== undefined
+        ? normalizeGitHubInstructions(input.githubPrInitialInstructions, DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS)
+        : current.githubPrInitialInstructions ?? null;
     const nextGithubPrTaskOwnerUserId =
       input.githubPrTaskOwnerUserId !== undefined
         ? normalizeUserId(input.githubPrTaskOwnerUserId)
@@ -910,6 +928,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubPrAllowedUsers: nextGithubPrAllowedUsers,
       githubPrRequireBotMention: nextGithubPrRequireBotMention,
       githubPrAutoArchiveOnMerge: nextGithubPrAutoArchiveOnMerge,
+      githubPrInitialInstructions: nextGithubPrInitialInstructions,
       githubPrFeedbackInstructions: nextGithubPrFeedbackInstructions,
       githubPrTaskOwnerUserId: nextGithubPrTaskOwnerUserId,
       updatedAt: nowIso()
@@ -1049,6 +1068,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
       githubPrAllowedUsers: normalizeGitHubAllowedUsers(row.github_pr_allowed_users),
       githubPrRequireBotMention: row.github_pr_require_bot_mention === true,
       githubPrAutoArchiveOnMerge: row.github_pr_auto_archive_on_merge === true,
+      githubPrInitialInstructions:
+        typeof row.github_pr_initial_instructions === "string" && row.github_pr_initial_instructions.trim().length > 0
+          ? row.github_pr_initial_instructions.trim()
+          : null,
       githubPrFeedbackInstructions:
         typeof row.github_pr_feedback_instructions === "string" && row.github_pr_feedback_instructions.trim().length > 0
           ? row.github_pr_feedback_instructions.trim()
@@ -1079,7 +1102,11 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const githubPrWebhookSecret = this.normalizeWebhookSecret(input.githubPrWebhookSecret);
     const githubIntegrationBotLogin = normalizeGitHubLogin(input.githubIntegrationBotLogin);
     const githubPrAllowedUsers = normalizeGitHubAllowedUsers(input.githubPrAllowedUsers);
-    const githubPrFeedbackInstructions = normalizeGitHubPrFeedbackInstructions(input.githubPrFeedbackInstructions);
+    const githubPrInitialInstructions = normalizeGitHubInstructions(
+      input.githubPrInitialInstructions,
+      DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS
+    );
+    const githubPrFeedbackInstructions = normalizeGitHubInstructions(input.githubPrFeedbackInstructions, DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS);
     const githubPrTaskOwnerUserId = normalizeUserId(input.githubPrTaskOwnerUserId);
     const webhookEnabled = input.webhookEnabled === true;
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
@@ -1105,6 +1132,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       githubPrAllowedUsers,
       githubPrRequireBotMention: input.githubPrRequireBotMention === true,
       githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge === true,
+      githubPrInitialInstructions,
       githubPrFeedbackInstructions,
       githubPrTaskOwnerUserId,
       webhookLastAttemptAt: null,
@@ -1135,6 +1163,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             github_pr_allowed_users,
             github_pr_require_bot_mention,
             github_pr_auto_archive_on_merge,
+            github_pr_initial_instructions,
             github_pr_feedback_instructions,
             github_pr_task_owner_user_id,
             webhook_last_attempt_at,
@@ -1143,7 +1172,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
         `,
         [
           repository.id,
@@ -1160,6 +1189,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           JSON.stringify(repository.githubPrAllowedUsers),
           repository.githubPrRequireBotMention,
           repository.githubPrAutoArchiveOnMerge,
+          repository.githubPrInitialInstructions,
           repository.githubPrFeedbackInstructions,
           repository.githubPrTaskOwnerUserId,
           repository.webhookLastAttemptAt,
@@ -1237,8 +1267,12 @@ export class PostgresRepositoryStore implements RepositoryStore {
         : normalizeGitHubAllowedUsers(current.githubPrAllowedUsers);
     const nextGithubPrFeedbackInstructions =
       input.githubPrFeedbackInstructions !== undefined
-        ? normalizeGitHubPrFeedbackInstructions(input.githubPrFeedbackInstructions)
+        ? normalizeGitHubInstructions(input.githubPrFeedbackInstructions, DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS)
         : current.githubPrFeedbackInstructions ?? null;
+    const nextGithubPrInitialInstructions =
+      input.githubPrInitialInstructions !== undefined
+        ? normalizeGitHubInstructions(input.githubPrInitialInstructions, DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS)
+        : current.githubPrInitialInstructions ?? null;
     const nextGithubPrTaskOwnerUserId =
       input.githubPrTaskOwnerUserId !== undefined
         ? normalizeUserId(input.githubPrTaskOwnerUserId)
@@ -1281,6 +1315,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       githubPrAllowedUsers: nextGithubPrAllowedUsers,
       githubPrRequireBotMention: nextGithubPrRequireBotMention,
       githubPrAutoArchiveOnMerge: nextGithubPrAutoArchiveOnMerge,
+      githubPrInitialInstructions: nextGithubPrInitialInstructions,
       githubPrFeedbackInstructions: nextGithubPrFeedbackInstructions,
       githubPrTaskOwnerUserId: nextGithubPrTaskOwnerUserId,
       updatedAt: nowIso()
@@ -1307,13 +1342,14 @@ export class PostgresRepositoryStore implements RepositoryStore {
             github_pr_allowed_users = $12::jsonb,
             github_pr_require_bot_mention = $13,
             github_pr_auto_archive_on_merge = $14,
-            github_pr_feedback_instructions = $15,
-            github_pr_task_owner_user_id = $16,
-            webhook_last_attempt_at = $17,
-            webhook_last_status = $18,
-            webhook_last_error = $19,
-            created_at = $20,
-            updated_at = $21
+            github_pr_initial_instructions = $15,
+            github_pr_feedback_instructions = $16,
+            github_pr_task_owner_user_id = $17,
+            webhook_last_attempt_at = $18,
+            webhook_last_status = $19,
+            webhook_last_error = $20,
+            created_at = $21,
+            updated_at = $22
           WHERE id = $1
         `,
         [
@@ -1331,6 +1367,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           JSON.stringify(next.githubPrAllowedUsers),
           next.githubPrRequireBotMention,
           next.githubPrAutoArchiveOnMerge,
+          next.githubPrInitialInstructions,
           next.githubPrFeedbackInstructions,
           next.githubPrTaskOwnerUserId,
           next.webhookLastAttemptAt,
