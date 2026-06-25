@@ -881,7 +881,8 @@ test("GitHub webhook creates feature branch task from issue body mention without
       prompt: (appendedMessages[0] as { content: string }).content,
       taskType: "build",
       baseBranch: "main",
-      branchStrategy: "feature_branch"
+      branchStrategy: "feature_branch",
+      autoApplyCheckpoints: true
     }
   });
   assert.deepEqual(patches[0], {
@@ -1024,7 +1025,8 @@ test("GitHub webhook creates feature branch task when bot is assigned to an unli
       prompt: (appendedMessages[0] as { content: string }).content,
       taskType: "build",
       baseBranch: "main",
-      branchStrategy: "feature_branch"
+      branchStrategy: "feature_branch",
+      autoApplyCheckpoints: true
     }
   });
   assert.deepEqual(patches[0], {
