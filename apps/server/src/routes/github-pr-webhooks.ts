@@ -12,6 +12,7 @@ import { beginTaskStart } from "../lib/task-start-orchestrator.js";
 type RawBodyRequest = FastifyRequest & { rawBody?: string };
 
 interface GitHubPrFeedback {
+  target: "pr";
   externalId: string;
   kind: "pr_comment" | "review_comment" | "review";
   prNumber: number;
@@ -27,6 +28,20 @@ interface GitHubPrFeedback {
   diffHunk?: string;
   reviewState?: string;
 }
+
+interface GitHubIssueFeedback {
+  target: "issue";
+  externalId: string;
+  kind: "issue" | "issue_comment";
+  issueNumber: number;
+  issueTitle?: string;
+  author: string;
+  body: string;
+  url: string;
+  repositoryFullName?: string;
+}
+
+type GitHubFeedback = GitHubPrFeedback | GitHubIssueFeedback;
 
 interface GitHubPrBranchDetails {
   headBranch: string;
@@ -105,7 +120,7 @@ const verifySignature = (rawBody: string, signatureHeader: string | null, secret
   return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
 };
 
-const normalizeGitHubPrFeedback = (event: string | null, payload: unknown): GitHubPrFeedback | null => {
+const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHubFeedback | null => {
   if (!event || !isRecord(payload)) {
     return null;
   }
@@ -122,17 +137,35 @@ const normalizeGitHubPrFeedback = (event: string | null, payload: unknown): GitH
     if (action !== "created" || !isRecord(payload.issue) || !isRecord(payload.comment)) {
       return null;
     }
-    if (!isRecord(payload.issue.pull_request)) {
-      return null;
-    }
-    const prNumber = numberValue(payload.issue, "number");
     const commentId = numberValue(payload.comment, "id");
     const body = stringValue(payload.comment, "body") ?? "";
     const url = stringValue(payload.comment, "html_url") ?? "";
-    if (!prNumber || !commentId || body.trim().length === 0) {
+    if (!commentId || body.trim().length === 0) {
+      return null;
+    }
+    if (!isRecord(payload.issue.pull_request)) {
+      const issueNumber = numberValue(payload.issue, "number");
+      if (!issueNumber) {
+        return null;
+      }
+      return {
+        target: "issue",
+        externalId: `github:issue_comment:${commentId}`,
+        kind: "issue_comment",
+        issueNumber,
+        issueTitle: stringValue(payload.issue, "title") ?? undefined,
+        author,
+        body,
+        url,
+        repositoryFullName: readRepositoryFullName(payload)
+      };
+    }
+    const prNumber = numberValue(payload.issue, "number");
+    if (!prNumber) {
       return null;
     }
     return {
+      target: "pr",
       externalId: `github:pr_comment:${commentId}`,
       kind: "pr_comment",
       prNumber,
@@ -156,6 +189,7 @@ const normalizeGitHubPrFeedback = (event: string | null, payload: unknown): GitH
       return null;
     }
     return {
+      target: "pr",
       externalId: `github:review_comment:${commentId}`,
       kind: "review_comment",
       prNumber,
@@ -183,6 +217,7 @@ const normalizeGitHubPrFeedback = (event: string | null, payload: unknown): GitH
       return null;
     }
     return {
+      target: "pr",
       externalId: `github:review:${reviewId}`,
       kind: "review",
       prNumber,
@@ -193,6 +228,30 @@ const normalizeGitHubPrFeedback = (event: string | null, payload: unknown): GitH
       prHeadBranch: readPullRequestHeadDetails(payload.pull_request)?.headBranch,
       prHeadRepositoryFullName: readPullRequestHeadDetails(payload.pull_request)?.headRepositoryFullName,
       reviewState: stringValue(payload.review, "state") ?? undefined
+    };
+  }
+
+  if (event === "issues") {
+    if ((action !== "opened" && action !== "edited") || !isRecord(payload.issue)) {
+      return null;
+    }
+    const issueNumber = numberValue(payload.issue, "number");
+    const issueId = numberValue(payload.issue, "id");
+    const body = stringValue(payload.issue, "body") ?? "";
+    const url = stringValue(payload.issue, "html_url") ?? "";
+    if (!issueNumber || !issueId || body.trim().length === 0 || isRecord(payload.issue.pull_request)) {
+      return null;
+    }
+    return {
+      target: "issue",
+      externalId: `github:issue:${issueId}`,
+      kind: "issue",
+      issueNumber,
+      issueTitle: stringValue(payload.issue, "title") ?? undefined,
+      author,
+      body,
+      url,
+      repositoryFullName: readRepositoryFullName(payload)
     };
   }
 
@@ -217,6 +276,29 @@ const formatFeedbackMessage = (feedback: GitHubPrFeedback, instructions: string 
   }
   if (feedback.diffHunk) {
     lines.push("", "Diff context:", "```diff", feedback.diffHunk, "```");
+  }
+  lines.push(
+    "",
+    "Feedback:",
+    feedback.body.trim() || "(No body provided.)",
+    "",
+    instructions?.trim() || DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
+  );
+  return lines.join("\n");
+};
+
+const formatIssueFeedbackMessage = (feedback: GitHubIssueFeedback, instructions: string | null | undefined): string => {
+  const lines = [
+    `A new GitHub issue feedback item was added to linked issue #${feedback.issueNumber}.`,
+    "",
+    `Type: ${feedback.kind}`,
+    `Author: @${feedback.author}`
+  ];
+  if (feedback.issueTitle) {
+    lines.push(`Issue title: ${feedback.issueTitle}`);
+  }
+  if (feedback.url) {
+    lines.push(`URL: ${feedback.url}`);
   }
   lines.push(
     "",
@@ -264,6 +346,9 @@ const resolveGitHubPrBranchDetails = async (
 const formatNewTaskTitle = (feedback: GitHubPrFeedback): string =>
   `GitHub PR #${feedback.prNumber} feedback from @${feedback.author}`;
 
+const formatNewIssueTaskTitle = (feedback: GitHubIssueFeedback): string =>
+  `GitHub issue #${feedback.issueNumber} feedback from @${feedback.author}`;
+
 export const registerGitHubPrWebhookRoutes = (
   app: FastifyInstance,
   deps: {
@@ -291,7 +376,7 @@ export const registerGitHubPrWebhookRoutes = (
       return reply.status(401).send({ message: "Invalid GitHub webhook signature." });
     }
 
-    const feedback = normalizeGitHubPrFeedback(readHeader(request.headers["x-github-event"]), request.body);
+    const feedback = normalizeGitHubFeedback(readHeader(request.headers["x-github-event"]), request.body);
     if (!feedback) {
       return reply.status(202).send({ queued: false, reason: "ignored_event" });
     }
@@ -309,6 +394,103 @@ export const registerGitHubPrWebhookRoutes = (
     }
     if (repository.githubPrRequireBotMention === true && ignoredBotLogin && !mentionsGitHubLogin(feedback.body, ignoredBotLogin)) {
       return reply.status(202).send({ queued: false, reason: "missing_bot_mention" });
+    }
+
+    if (feedback.target === "issue") {
+      const task = await deps.taskStore.findTaskByGitHubIssueNumber(repository.id, feedback.issueNumber);
+      if (!task) {
+        const ownerUserId = repository.githubPrTaskOwnerUserId?.trim() || null;
+        if (!ownerUserId) {
+          return reply.status(202).send({ queued: false, reason: "missing_github_task_owner" });
+        }
+
+        const content = formatIssueFeedbackMessage(feedback, repository.githubPrFeedbackInstructions);
+        const createdTask = await deps.taskStore.createTask(
+          {
+            title: formatNewIssueTaskTitle(feedback),
+            draft: true,
+            repoId: repository.id,
+            prompt: content,
+            taskType: "build",
+            baseBranch: repository.defaultBranch,
+            branchStrategy: "feature_branch"
+          },
+          repository,
+          ownerUserId
+        );
+        const openedTask = await deps.taskStore.patchTask(createdTask.id, {
+          githubIssueNumber: feedback.issueNumber,
+          status: "open",
+          workflowStatus: "ready",
+          executionStatus: "idle",
+          executionAction: "build",
+          lastAction: "build"
+        });
+        if (!openedTask) {
+          return reply.status(500).send({ message: "GitHub issue-created task could not be opened." });
+        }
+
+        const message = await deps.taskStore.appendMessage(openedTask.id, {
+          role: "user",
+          action: "build",
+          queueState: "pending",
+          queueSource: "github_issue",
+          externalId: feedback.externalId,
+          content
+        });
+        if (!message) {
+          return reply.status(500).send({ message: "GitHub issue-created task message could not be queued." });
+        }
+
+        const startResult = await beginTaskStart(
+          {
+            taskStore: deps.taskStore,
+            scheduler: deps.scheduler,
+            spawner: deps.spawner
+          },
+          {
+            task: openedTask,
+            action: "build",
+            input: { content },
+            promptMessageId: message.id,
+            fallbackMessage: "GitHub issue-created task start failed"
+          }
+        );
+        if (!startResult.ok) {
+          return reply.status(startResult.statusCode).send({ message: startResult.message });
+        }
+
+        return reply.status(202).send({ queued: true, taskId: openedTask.id, messageId: message.id, createdTask: true });
+      }
+
+      const existing = await deps.taskStore.listMessages(task.id);
+      if (existing.some((message) => message.externalId === feedback.externalId)) {
+        return reply.status(202).send({ queued: false, reason: "duplicate" });
+      }
+
+      const message = await deps.taskStore.appendMessage(task.id, {
+        role: "user",
+        action: "build",
+        queueState: "pending",
+        queueSource: "github_issue",
+        externalId: feedback.externalId,
+        content: formatIssueFeedbackMessage(feedback, repository.githubPrFeedbackInstructions)
+      });
+
+      if (message && task.executionStatus === "idle" && !(await deps.taskStore.hasPendingChangeProposal(task.id))) {
+        const blocked = await getMutationBlocked(deps.taskStore, task.id);
+        if (!blocked) {
+          await deps.scheduler.triggerAction(task.id, "build", { content: message.content }, { promptMessageId: message.id });
+        }
+      } else if (
+        message &&
+        (task.executionStatus === "failed" || task.executionStatus === "cancelled") &&
+        !(await deps.taskStore.hasPendingChangeProposal(task.id))
+      ) {
+        await deps.scheduler.triggerNextPendingAction(task.id, "auto");
+      }
+
+      return reply.status(202).send({ queued: true, taskId: task.id, messageId: message?.id ?? null });
     }
 
     const task = await deps.taskStore.findTaskByGitHubPrNumber(repository.id, feedback.prNumber);
