@@ -45,7 +45,6 @@ import {
   Tooltip,
   Typography
 } from "antd";
-import { useRouter } from "next/navigation";
 import { api } from "../src/api/client";
 import { useSettings } from "../src/hooks/useSettings";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -108,7 +107,7 @@ interface ResponsePreferencePresetFormValues {
 }
 
 type ClearCredentialTarget = "github" | "openai" | "codexAuthJson" | "anthropic";
-type SettingsTabKey = "overview" | "runtime" | "models" | "connections" | "access" | "responses";
+type SettingsTabKey = "runtime" | "models" | "connections" | "access" | "responses";
 type DirtyGeneralTabKey = "runtime" | "models" | "connections";
 
 const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
@@ -177,7 +176,6 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
 
 export function SettingsPage() {
   const { message } = App.useApp();
-  const router = useRouter();
   const { can } = useAuth();
   const { loading, setSettings, settings } = useSettings();
   const [generalForm] = Form.useForm<GeneralSettingsForm>();
@@ -195,7 +193,7 @@ export function SettingsPage() {
   const [editingRole, setEditingRole] = useState<Role | null>(null);
   const [responsePreferencePresetModalOpen, setResponsePreferencePresetModalOpen] = useState(false);
   const [editingResponsePreferencePreset, setEditingResponsePreferencePreset] = useState<ResponsePreferencePreset | null>(null);
-  const [activeTab, setActiveTab] = useState<SettingsTabKey>("overview");
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>("runtime");
   const [generalDirty, setGeneralDirty] = useState(false);
   const [credentialsDirty, setCredentialsDirty] = useState(false);
   const [generalDirtyTabs, setGeneralDirtyTabs] = useState<DirtyGeneralTabKey[]>([]);
@@ -503,10 +501,6 @@ export function SettingsPage() {
 
   const tabItems: Array<{ key: SettingsTabKey; label: React.ReactNode }> = [
     {
-      key: "overview",
-      label: "Overview"
-    },
-    {
       key: "runtime",
       label: <span>{generalDirtyTabs.includes("runtime") ? "Runtime *" : "Runtime"}</span>
     },
@@ -550,60 +544,6 @@ export function SettingsPage() {
         ) : null}
 
         <Tabs activeKey={activeTab} onChange={(value) => handleTabChange(value as SettingsTabKey)} items={tabItems} />
-
-        {activeTab === "overview" ? (
-          <Space direction="vertical" size={16} style={{ width: "100%" }}>
-            <Card bordered={false} loading={loading} title="System Summary">
-              <Flex wrap="wrap" gap={16}>
-                <Card size="small" style={{ flex: "1 1 220px" }}>
-                  <Typography.Text type="secondary">Task Runtime</Typography.Text>
-                  <Typography.Title level={4} style={{ margin: "6px 0 0" }}>
-                    {settings ? getAgentProviderLabel(settings.defaultProvider) : "Loading"}
-                  </Typography.Title>
-                  <Typography.Text type="secondary">
-                    {settings ? `${settings.maxAgents} concurrent agent${settings.maxAgents === 1 ? "" : "s"}` : ""}
-                  </Typography.Text>
-                </Card>
-                <Card size="small" style={{ flex: "1 1 220px" }}>
-                  <Typography.Text type="secondary">Credentials</Typography.Text>
-                  <Flex vertical gap={6} style={{ marginTop: 8 }}>
-                    <Tag color={settings?.githubTokenConfigured ? "green" : "default"}>{settings?.githubTokenConfigured ? "GitHub ready" : "GitHub missing"}</Tag>
-                    <Tag color={settings?.openaiApiKeyConfigured ? "green" : "default"}>{settings?.openaiApiKeyConfigured ? "OpenAI ready" : "OpenAI missing"}</Tag>
-                    <Tag color={settings?.anthropicApiKeyConfigured ? "green" : "default"}>{settings?.anthropicApiKeyConfigured ? "Anthropic ready" : "Anthropic missing"}</Tag>
-                  </Flex>
-                </Card>
-                <Card size="small" style={{ flex: "1 1 220px" }}>
-                  <Typography.Text type="secondary">Data Stores</Typography.Text>
-                  <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
-                    {settings?.dataStores
-                      ? `Tasks: ${settings.dataStores.taskStore}, queue: ${settings.dataStores.taskQueueStore}, events: ${settings.dataStores.eventBus}`
-                      : "Store details unavailable."}
-                  </Typography.Paragraph>
-                </Card>
-              </Flex>
-            </Card>
-
-            <Card bordered={false} title="Jump To">
-              <Space wrap>
-                <Button onClick={() => handleTabChange("runtime")}>Runtime Defaults</Button>
-                <Button onClick={() => handleTabChange("models")}>Models</Button>
-                <Button onClick={() => handleTabChange("connections")}>Connections</Button>
-                <Button onClick={() => handleTabChange("access")}>Access Control</Button>
-                <Button onClick={() => handleTabChange("responses")}>Response Presets</Button>
-                <Button
-                  onClick={() => {
-                    if (!confirmLeave()) {
-                      return;
-                    }
-                    router.push("/repositories");
-                  }}
-                >
-                  Repositories
-                </Button>
-              </Space>
-            </Card>
-          </Space>
-        ) : null}
 
         {activeTab === "runtime" ? (
           <Form
