@@ -360,7 +360,7 @@ const formatNewTaskTitle = (feedback: GitHubPrFeedback): string =>
   `GitHub PR #${feedback.prNumber} feedback from @${feedback.author}`;
 
 const formatNewIssueTaskTitle = (feedback: GitHubIssueFeedback): string =>
-  `GitHub issue #${feedback.issueNumber} feedback from @${feedback.author}`;
+  feedback.issueTitle?.trim() || `GitHub issue #${feedback.issueNumber} feedback from @${feedback.author}`;
 
 export const registerGitHubPrWebhookRoutes = (
   app: FastifyInstance,
