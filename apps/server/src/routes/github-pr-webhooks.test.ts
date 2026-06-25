@@ -103,6 +103,157 @@ test("GitHub PR webhook queues linked PR comments", async () => {
   await app.close();
 });
 
+test("GitHub PR merged webhook ignores archive when repository toggle is disabled", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  let taskLookupCount = 0;
+  const secret = "webhook-secret";
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({ id: "repo-1", defaultBranch: "develop", githubPrAutoArchiveOnMerge: false }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubPrNumber: async () => {
+        taskLookupCount += 1;
+        return null;
+      }
+    } as never,
+    scheduler: {} as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "closed",
+    pull_request: {
+      number: 42,
+      merged: true,
+      head: { ref: "feature/pr-42" },
+      base: { ref: "develop" }
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "pull_request",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { archived: false, reason: "auto_archive_disabled" });
+  assert.equal(taskLookupCount, 0);
+
+  await app.close();
+});
+
+test("GitHub PR merged webhook archives linked task when repository toggle is enabled", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const secret = "webhook-secret";
+  const mergeEvents: unknown[] = [];
+  const archivedTaskIds: string[] = [];
+  const removedQueueTaskIds: string[] = [];
+  const logs: Array<{ taskId: string; line: string }> = [];
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({ id: "repo-1", defaultBranch: "develop", githubPrAutoArchiveOnMerge: true }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubPrNumber: async () => ({
+        id: "task-1",
+        status: "open",
+        executionStatus: "idle",
+        branchName: "feature/pr-42"
+      }),
+      publishTaskMergedEvent: async (input: unknown) => {
+        mergeEvents.push(input);
+      },
+      archiveTask: async (taskId: string) => {
+        archivedTaskIds.push(taskId);
+        return null;
+      },
+      appendLog: async (taskId: string, line: string) => {
+        logs.push({ taskId, line });
+        return null;
+      }
+    } as never,
+    taskQueueStore: {
+      removeTask: async (taskId: string) => {
+        removedQueueTaskIds.push(taskId);
+      }
+    },
+    scheduler: {} as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "closed",
+    pull_request: {
+      number: 42,
+      merged: true,
+      head: { ref: "feature/pr-42" },
+      base: { ref: "develop" }
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "pull_request",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { archived: true, taskId: "task-1" });
+  assert.deepEqual(mergeEvents, [
+    {
+      taskId: "task-1",
+      sourceBranch: "feature/pr-42",
+      targetBranch: "develop",
+      commitMessage: null
+    }
+  ]);
+  assert.deepEqual(removedQueueTaskIds, ["task-1"]);
+  assert.deepEqual(archivedTaskIds, ["task-1"]);
+  assert.deepEqual(logs, [{ taskId: "task-1", line: "Task archived after GitHub PR #42 was merged." }]);
+
+  await app.close();
+});
+
 test("GitHub PR webhook ignores configured integration bot login", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {

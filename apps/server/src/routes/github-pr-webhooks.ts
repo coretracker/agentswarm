@@ -6,6 +6,7 @@ import type { RepositoryStore } from "../services/repository-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
+import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import { beginTaskStart } from "../lib/task-start-orchestrator.js";
 
@@ -49,6 +50,12 @@ interface GitHubPrBranchDetails {
   headRepositoryFullName?: string;
 }
 
+interface GitHubMergedPullRequest {
+  prNumber: number;
+  sourceBranch?: string;
+  targetBranch?: string;
+}
+
 const readHeader = (value: string | string[] | undefined): string | null => {
   if (typeof value === "string") {
     const trimmed = value.trim();
@@ -76,6 +83,11 @@ const stringValue = (record: Record<string, unknown>, key: string): string | nul
 const numberValue = (record: Record<string, unknown>, key: string): number | null => {
   const value = record[key];
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
+};
+
+const booleanValue = (record: Record<string, unknown>, key: string): boolean | null => {
+  const value = record[key];
+  return typeof value === "boolean" ? value : null;
 };
 
 const readRepositoryFullName = (payload: Record<string, unknown>): string | undefined => {
@@ -107,6 +119,11 @@ const readPullRequestHeadDetails = (pullRequest: Record<string, unknown>): GitHu
     headBranch,
     headRepositoryFullName: headRepository ? stringValue(headRepository, "full_name") ?? undefined : undefined
   };
+};
+
+const readPullRequestBaseBranch = (pullRequest: Record<string, unknown>): string | undefined => {
+  const base = recordValue(pullRequest, "base");
+  return base ? stringValue(base, "ref") ?? undefined : undefined;
 };
 
 const normalizeGitHubLogin = (value: string | null | undefined): string | null => {
@@ -271,6 +288,32 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
   return null;
 };
 
+const normalizeGitHubMergedPullRequest = (event: string | null, payload: unknown): GitHubMergedPullRequest | null => {
+  if (event !== "pull_request" || !isRecord(payload)) {
+    return null;
+  }
+
+  if (stringValue(payload, "action") !== "closed" || !isRecord(payload.pull_request)) {
+    return null;
+  }
+
+  if (booleanValue(payload.pull_request, "merged") !== true) {
+    return null;
+  }
+
+  const prNumber = numberValue(payload.pull_request, "number");
+  if (!prNumber) {
+    return null;
+  }
+
+  const headDetails = readPullRequestHeadDetails(payload.pull_request);
+  return {
+    prNumber,
+    sourceBranch: headDetails?.headBranch,
+    targetBranch: readPullRequestBaseBranch(payload.pull_request)
+  };
+};
+
 const formatFeedbackMessage = (feedback: GitHubPrFeedback, instructions: string | null | undefined): string => {
   const lines = [
     `A new GitHub pull request feedback item was added to linked PR #${feedback.prNumber}.`,
@@ -367,6 +410,7 @@ export const registerGitHubPrWebhookRoutes = (
   deps: {
     repositoryStore: RepositoryStore;
     taskStore: TaskStore;
+    taskQueueStore?: Pick<TaskQueueStore, "removeTask">;
     scheduler: SchedulerService;
     settingsStore: SettingsStore;
     spawner: SpawnerService;
@@ -389,7 +433,41 @@ export const registerGitHubPrWebhookRoutes = (
       return reply.status(401).send({ message: "Invalid GitHub webhook signature." });
     }
 
-    const feedback = normalizeGitHubFeedback(readHeader(request.headers["x-github-event"]), request.body);
+    const event = readHeader(request.headers["x-github-event"]);
+    const mergedPullRequest = normalizeGitHubMergedPullRequest(event, request.body);
+    if (mergedPullRequest) {
+      if (repository.githubPrAutoArchiveOnMerge !== true) {
+        return reply.status(202).send({ archived: false, reason: "auto_archive_disabled" });
+      }
+
+      const task = await deps.taskStore.findTaskByGitHubPrNumber(repository.id, mergedPullRequest.prNumber);
+      if (!task) {
+        return reply.status(202).send({ archived: false, reason: "linked_task_not_found" });
+      }
+      if (task.status === "archived") {
+        return reply.status(202).send({ archived: false, reason: "already_archived", taskId: task.id });
+      }
+      if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
+        await deps.taskStore.appendLog(
+          task.id,
+          `GitHub PR #${mergedPullRequest.prNumber} was merged, but the task was not archived because it is active.`
+        );
+        return reply.status(202).send({ archived: false, reason: "active_task", taskId: task.id });
+      }
+
+      await deps.taskStore.publishTaskMergedEvent({
+        taskId: task.id,
+        sourceBranch: mergedPullRequest.sourceBranch ?? task.branchName ?? `pull/${mergedPullRequest.prNumber}`,
+        targetBranch: mergedPullRequest.targetBranch ?? repository.defaultBranch,
+        commitMessage: null
+      });
+      await deps.taskQueueStore?.removeTask(task.id);
+      await deps.taskStore.archiveTask(task.id);
+      await deps.taskStore.appendLog(task.id, `Task archived after GitHub PR #${mergedPullRequest.prNumber} was merged.`);
+      return reply.status(202).send({ archived: true, taskId: task.id });
+    }
+
+    const feedback = normalizeGitHubFeedback(event, request.body);
     if (!feedback) {
       return reply.status(202).send({ queued: false, reason: "ignored_event" });
     }

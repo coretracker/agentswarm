@@ -46,6 +46,7 @@ const createRepository = (input: CreateRepositoryInput, overrides: Partial<Repos
   githubIntegrationBotLogin: input.githubIntegrationBotLogin ?? null,
   githubPrAllowedUsers: input.githubPrAllowedUsers ?? [],
   githubPrRequireBotMention: input.githubPrRequireBotMention === true,
+  githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge === true,
   githubPrFeedbackInstructions: input.githubPrFeedbackInstructions ?? null,
   githubPrTaskOwnerUserId: input.githubPrTaskOwnerUserId ?? null,
   webhookLastAttemptAt: null,
@@ -146,6 +147,26 @@ test("repository create allows the authenticated user as GitHub-created task own
   assert.equal(response.statusCode, 201);
   assert.equal(JSON.parse(response.body).githubPrTaskOwnerUserId, "user-1");
   assert.deepEqual(updateUserCalls, [{ userId: "user-1", patch: { repositoryIds: ["repo-1"] } }]);
+
+  await app.close();
+});
+
+test("repository create accepts GitHub PR auto-archive setting", async () => {
+  const authUser = createAuthUser({ id: "user-1" });
+  const { app } = createTestApp({ authUser, users: [createUser({ id: "user-1" })] });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/repositories",
+    payload: {
+      name: "repo",
+      url: "https://github.com/acme/repo.git",
+      githubPrAutoArchiveOnMerge: true
+    }
+  });
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(JSON.parse(response.body).githubPrAutoArchiveOnMerge, true);
 
   await app.close();
 });
