@@ -105,6 +105,11 @@ const linkPullRequestSchema = z.object({
   prNumber: z.number().int().positive()
 });
 
+const linkIssueSchema = z.object({
+  taskId: z.string().trim().min(1),
+  issueNumber: z.number().int().positive()
+});
+
 const updateTaskConfigSchema = z.object({
   taskId: z.string().trim().min(1),
   autoApplyCheckpoints: z.boolean()
@@ -429,6 +434,21 @@ export const createMcpTools = (): McpToolDefinition[] => [
         githubPrNumber: input.prNumber
       });
       return { task: compactTask(updated ?? task), githubPrNumber: input.prNumber };
+    }
+  },
+  {
+    name: "agentswarm_link_issue",
+    description: "Link a task to a GitHub issue number.",
+    inputSchema: schemaToJson(linkIssueSchema),
+    scopes: ["task:edit"],
+    async handler(rawInput, context) {
+      const input = linkIssueSchema.parse(rawInput ?? {});
+      const task = await getAccessibleTask(context, input.taskId);
+      ensureNotArchived(task);
+      const updated = await context.deps.taskStore.patchTask(task.id, {
+        githubIssueNumber: input.issueNumber
+      });
+      return { task: compactTask(updated ?? task), githubIssueNumber: input.issueNumber };
     }
   },
   {

@@ -471,6 +471,7 @@ export interface Task {
   repoUrl: string;
   repoDefaultBranch: string;
   githubPrNumber?: number | null;
+  githubIssueNumber?: number | null;
   taskType: TaskType;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
@@ -648,7 +649,7 @@ export interface TaskMessage {
   content: string;
   action: TaskMessageAction | null;
   queueState?: "pending" | null;
-  queueSource?: "user" | "github_pr" | null;
+  queueSource?: "user" | "github_pr" | "github_issue" | null;
   externalId?: string | null;
   /** Optional saved image attachments that were attached when the user submitted this message. */
   attachments?: TaskPromptAttachment[];
@@ -1010,6 +1011,10 @@ export interface UpdateTaskAssigneeInput {
 
 export interface UpdateTaskPullRequestInput {
   githubPrNumber: number | null;
+}
+
+export interface UpdateTaskIssueInput {
+  githubIssueNumber: number | null;
 }
 
 export interface CreateTaskMessageInput {

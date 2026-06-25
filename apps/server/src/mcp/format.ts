@@ -33,6 +33,7 @@ export const compactTask = (task: Task) => ({
   repoId: task.repoId,
   repoName: task.repoName,
   ...(task.githubPrNumber ? { githubPrNumber: task.githubPrNumber } : {}),
+  ...(task.githubIssueNumber ? { githubIssueNumber: task.githubIssueNumber } : {}),
   taskType: task.taskType,
   status: task.status,
   workflowStatus: task.workflowStatus,

@@ -679,6 +679,374 @@ test("GitHub PR webhook creates build task on PR branch when mentioned without l
   await app.close();
 });
 
+test("GitHub webhook queues linked issue comments", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const appendedMessages: unknown[] = [];
+  const triggeredActions: unknown[] = [];
+  const secret = "webhook-secret";
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({ id: "repo-1" }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubIssueNumber: async () => ({
+        id: "task-issue",
+        executionStatus: "idle"
+      }),
+      listMessages: async () => [],
+      appendMessage: async (_taskId: string, input: unknown) => {
+        appendedMessages.push(input);
+        return {
+          id: "message-issue",
+          content: (input as { content: string }).content
+        };
+      },
+      hasPendingChangeProposal: async () => false,
+      getActiveInteractiveSession: async () => null
+    } as never,
+    scheduler: {
+      triggerAction: async (...args: unknown[]) => {
+        triggeredActions.push(args);
+        return true;
+      }
+    } as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "created",
+    issue: {
+      id: 9001,
+      number: 77,
+      title: "Import customers fails"
+    },
+    comment: {
+      id: 3001,
+      body: "Please fix the import failure.",
+      html_url: "https://github.com/acme/repo/issues/77#issuecomment-3001"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issue_comment",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.equal(appendedMessages.length, 1);
+  assert.deepEqual(appendedMessages[0], {
+    role: "user",
+    action: "build",
+    queueState: "pending",
+    queueSource: "github_issue",
+    externalId: "github:issue_comment:3001",
+    content:
+      "A new GitHub issue feedback item was added to linked issue #77.\n\nType: issue_comment\nAuthor: @alice\nIssue title: Import customers fails\nURL: https://github.com/acme/repo/issues/77#issuecomment-3001\n\nFeedback:\nPlease fix the import failure.\n\nIf the feedback is a question without a clear requested code or file change, reply on GitHub asking for confirmation or a follow-up before changing files.\n\nAfter handling this feedback, reply on GitHub at the URL above with a brief status."
+  });
+  assert.equal(triggeredActions.length, 1);
+  assert.deepEqual(triggeredActions[0], ["task-issue", "build", { content: (appendedMessages[0] as { content: string }).content }, { promptMessageId: "message-issue" }]);
+
+  await app.close();
+});
+
+test("GitHub webhook creates feature branch task from issue body mention without linked task", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const secret = "webhook-secret";
+  const createdTasks: unknown[] = [];
+  const patches: unknown[] = [];
+  const appendedMessages: unknown[] = [];
+  const triggeredActions: unknown[] = [];
+
+  const openedTask = {
+    id: "task-issue-created",
+    executionStatus: "idle",
+    taskType: "build"
+  };
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({
+        id: "repo-1",
+        name: "repo",
+        url: "https://github.com/acme/repo.git",
+        defaultBranch: "main",
+        githubIntegrationBotLogin: "agentswarm-bot",
+        githubPrRequireBotMention: true,
+        githubPrTaskOwnerUserId: "user-1"
+      }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubIssueNumber: async () => null,
+      createTask: async (input: unknown, _repository: unknown, ownerUserId: string) => {
+        createdTasks.push({ input, ownerUserId });
+        return {
+          id: "task-issue-created"
+        };
+      },
+      patchTask: async (_taskId: string, patch: unknown) => {
+        patches.push(patch);
+        return openedTask;
+      },
+      appendMessage: async (_taskId: string, input: unknown) => {
+        appendedMessages.push(input);
+        return {
+          id: "message-issue-created",
+          content: (input as { content: string }).content
+        };
+      },
+      setExecutionState: async () => openedTask
+    } as never,
+    scheduler: {
+      triggerAction: async (...args: unknown[]) => {
+        triggeredActions.push(args);
+        return true;
+      }
+    } as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "opened",
+    repository: {
+      full_name: "acme/repo"
+    },
+    issue: {
+      id: 9001,
+      number: 77,
+      title: "Import customers fails",
+      body: "@agentswarm-bot please fix customer imports.",
+      html_url: "https://github.com/acme/repo/issues/77"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issues",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), {
+    queued: true,
+    taskId: "task-issue-created",
+    messageId: "message-issue-created",
+    createdTask: true
+  });
+  assert.deepEqual(createdTasks[0], {
+    ownerUserId: "user-1",
+    input: {
+      title: "GitHub issue #77 feedback from @alice",
+      draft: true,
+      repoId: "repo-1",
+      prompt: (appendedMessages[0] as { content: string }).content,
+      taskType: "build",
+      baseBranch: "main",
+      branchStrategy: "feature_branch"
+    }
+  });
+  assert.deepEqual(patches[0], {
+    githubIssueNumber: 77,
+    status: "open",
+    workflowStatus: "ready",
+    executionStatus: "idle",
+    executionAction: "build",
+    lastAction: "build"
+  });
+  assert.deepEqual(appendedMessages[0], {
+    role: "user",
+    action: "build",
+    queueState: "pending",
+    queueSource: "github_issue",
+    externalId: "github:issue:9001",
+    content: (appendedMessages[0] as { content: string }).content
+  });
+  assert.match((appendedMessages[0] as { content: string }).content, /@agentswarm-bot please fix customer imports\./);
+  assert.deepEqual(triggeredActions[0], [
+    "task-issue-created",
+    "build",
+    { content: (appendedMessages[0] as { content: string }).content },
+    { promptMessageId: "message-issue-created" }
+  ]);
+
+  await app.close();
+});
+
+test("GitHub webhook creates feature branch task when bot is assigned to an unlinked issue", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const secret = "webhook-secret";
+  const createdTasks: unknown[] = [];
+  const patches: unknown[] = [];
+  const appendedMessages: unknown[] = [];
+
+  const openedTask = {
+    id: "task-assigned-issue",
+    executionStatus: "idle",
+    taskType: "build"
+  };
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({
+        id: "repo-1",
+        name: "repo",
+        url: "https://github.com/acme/repo.git",
+        defaultBranch: "main",
+        githubIntegrationBotLogin: "agentswarm-bot",
+        githubPrRequireBotMention: true,
+        githubPrTaskOwnerUserId: "user-1"
+      }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubIssueNumber: async () => null,
+      createTask: async (input: unknown, _repository: unknown, ownerUserId: string) => {
+        createdTasks.push({ input, ownerUserId });
+        return {
+          id: "task-assigned-issue"
+        };
+      },
+      patchTask: async (_taskId: string, patch: unknown) => {
+        patches.push(patch);
+        return openedTask;
+      },
+      appendMessage: async (_taskId: string, input: unknown) => {
+        appendedMessages.push(input);
+        return {
+          id: "message-assigned-issue",
+          content: (input as { content: string }).content
+        };
+      },
+      setExecutionState: async () => openedTask
+    } as never,
+    scheduler: {
+      triggerAction: async () => true
+    } as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "opened",
+    repository: {
+      full_name: "acme/repo"
+    },
+    issue: {
+      id: 9002,
+      number: 78,
+      title: "Export customers fails",
+      body: "Please fix customer exports.",
+      html_url: "https://github.com/acme/repo/issues/78",
+      assignees: [
+        {
+          login: "agentswarm-bot"
+        }
+      ]
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issues",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), {
+    queued: true,
+    taskId: "task-assigned-issue",
+    messageId: "message-assigned-issue",
+    createdTask: true
+  });
+  assert.deepEqual(createdTasks[0], {
+    ownerUserId: "user-1",
+    input: {
+      title: "GitHub issue #78 feedback from @alice",
+      draft: true,
+      repoId: "repo-1",
+      prompt: (appendedMessages[0] as { content: string }).content,
+      taskType: "build",
+      baseBranch: "main",
+      branchStrategy: "feature_branch"
+    }
+  });
+  assert.deepEqual(patches[0], {
+    githubIssueNumber: 78,
+    status: "open",
+    workflowStatus: "ready",
+    executionStatus: "idle",
+    executionAction: "build",
+    lastAction: "build"
+  });
+  assert.deepEqual(appendedMessages[0], {
+    role: "user",
+    action: "build",
+    queueState: "pending",
+    queueSource: "github_issue",
+    externalId: "github:issue:9002",
+    content: (appendedMessages[0] as { content: string }).content
+  });
+
+  await app.close();
+});
+
 test("GitHub PR webhook does not create task without configured GitHub task owner", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {

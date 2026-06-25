@@ -376,13 +376,21 @@ function renderDiffFileActions(file: FileData, renderFileActions?: (file: FileDa
 }
 
 function deriveGitHubPullRequestUrl(repoUrl: string | undefined, prNumber: number | null | undefined): string | null {
-  if (!repoUrl || !prNumber) {
+  return deriveGitHubNumberUrl(repoUrl, prNumber, "pull");
+}
+
+function deriveGitHubIssueUrl(repoUrl: string | undefined, issueNumber: number | null | undefined): string | null {
+  return deriveGitHubNumberUrl(repoUrl, issueNumber, "issues");
+}
+
+function deriveGitHubNumberUrl(repoUrl: string | undefined, number: number | null | undefined, pathSegment: "pull" | "issues"): string | null {
+  if (!repoUrl || !number) {
     return null;
   }
   const trimmed = repoUrl.trim();
   const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/);
   if (sshMatch) {
-    return `https://github.com/${sshMatch[1]}/${sshMatch[2]}/pull/${prNumber}`;
+    return `https://github.com/${sshMatch[1]}/${sshMatch[2]}/${pathSegment}/${number}`;
   }
   try {
     const parsed = new URL(trimmed);
@@ -393,7 +401,7 @@ function deriveGitHubPullRequestUrl(repoUrl: string | undefined, prNumber: numbe
     if (segments.length < 2) {
       return null;
     }
-    return `https://github.com/${segments[0]}/${segments[1]}/pull/${prNumber}`;
+    return `https://github.com/${segments[0]}/${segments[1]}/${pathSegment}/${number}`;
   } catch {
     return null;
   }
@@ -769,6 +777,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "renameTitle"
     | "linkTask"
     | "linkPr"
+    | "linkIssue"
     | "editComment"
   >(null);
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
@@ -931,6 +940,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [selectedLinkedTaskId, setSelectedLinkedTaskId] = useState<string | undefined>();
   const [linkPrModalOpen, setLinkPrModalOpen] = useState(false);
   const [linkPrNumberDraft, setLinkPrNumberDraft] = useState<string>("");
+  const [linkIssueModalOpen, setLinkIssueModalOpen] = useState(false);
+  const [linkIssueNumberDraft, setLinkIssueNumberDraft] = useState<string>("");
   const [commentEditModalOpen, setCommentEditModalOpen] = useState(false);
   const [editingComment, setEditingComment] = useState<TaskMessage | null>(null);
   const [commentEditDraft, setCommentEditDraft] = useState("");
@@ -1108,11 +1119,17 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canChangeTaskState = canEditTask && !!task && !isArchived;
   const canLinkTaskWorkspace = canEditTask && !!task && !isArchived;
   const canLinkPullRequest = canEditTask && !!task && !isArchived;
+  const canLinkIssue = canEditTask && !!task && !isArchived;
   const linkedPullRequestUrl = useMemo(
     () => deriveGitHubPullRequestUrl(task?.repoUrl, task?.githubPrNumber ?? null),
     [task?.githubPrNumber, task?.repoUrl]
   );
+  const linkedIssueUrl = useMemo(
+    () => deriveGitHubIssueUrl(task?.repoUrl, task?.githubIssueNumber ?? null),
+    [task?.githubIssueNumber, task?.repoUrl]
+  );
   const hasLinkedPullRequest = Boolean(task?.githubPrNumber);
+  const hasLinkedIssue = Boolean(task?.githubIssueNumber);
   const canAssignTask = canEditTask && canListUsers && isAdminTaskUser && !!task && !isArchived;
   const linkedWorkspaceIds = useMemo(() => new Set((task?.linkedWorkspaces ?? []).map((link) => link.taskId)), [task?.linkedWorkspaces]);
   const linkTaskOptions = useMemo(
@@ -2809,6 +2826,45 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting((current) => (current === "linkPr" ? null : current));
     }
   };
+  const openLinkIssueModal = () => {
+    if (!task || !canLinkIssue) {
+      return;
+    }
+    setLinkIssueNumberDraft(task.githubIssueNumber ? String(task.githubIssueNumber) : "");
+    setLinkIssueModalOpen(true);
+  };
+  const confirmLinkIssue = async () => {
+    if (!task || !canLinkIssue) {
+      return;
+    }
+
+    const trimmed = linkIssueNumberDraft.trim();
+    const githubIssueNumber = trimmed.length === 0 ? null : Number(trimmed);
+    if (githubIssueNumber !== null && (!Number.isInteger(githubIssueNumber) || githubIssueNumber <= 0)) {
+      messageApi.warning("Enter a positive issue number.");
+      return;
+    }
+
+    setSubmitting("linkIssue");
+    try {
+      const updatedTask = await api.updateTaskIssue(task.id, { githubIssueNumber });
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      setLinkIssueModalOpen(false);
+      messageApi.success(githubIssueNumber === null ? "Linked issue cleared" : `Linked issue #${githubIssueNumber}`);
+    } catch (error) {
+      showTaskActionError(error, "Could not update linked issue");
+    } finally {
+      setSubmitting((current) => (current === "linkIssue" ? null : current));
+    }
+  };
   const openTaskStateModal = () => {
     if (!task) {
       return;
@@ -3424,6 +3480,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         canEditTask && !isArchived ? { key: "newSession", label: "New Session" } : null,
         canLinkTaskWorkspace ? { key: "linkTask", label: "Link Task" } : null,
         canLinkPullRequest ? { key: "linkPr", label: task.githubPrNumber ? "Edit Linked PR" : "Link Pull Request" } : null,
+        canLinkIssue ? { key: "linkIssue", label: task.githubIssueNumber ? "Edit Linked Issue" : "Link Issue" } : null,
         canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Session", danger: true } : null,
         canChangeTaskState ? { key: "changeState", label: "Change State" } : null,
         canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
@@ -3468,6 +3525,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 </Typography.Link>
               ) : (
                 `#${task.githubPrNumber}`
+              )
+            ) : (
+              <Typography.Text type="secondary">None</Typography.Text>
+            )}
+          </Descriptions.Item>
+          <Descriptions.Item label="Linked Issue">
+            {task?.githubIssueNumber ? (
+              linkedIssueUrl ? (
+                <Typography.Link href={linkedIssueUrl} target="_blank" rel="noreferrer">
+                  #{task.githubIssueNumber}
+                </Typography.Link>
+              ) : (
+                `#${task.githubIssueNumber}`
               )
             ) : (
               <Typography.Text type="secondary">None</Typography.Text>
@@ -3695,6 +3765,27 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         </span>
       </Tooltip>
     ) : null;
+  const renderViewIssueButton = () =>
+    task?.githubIssueNumber ? (
+      <Tooltip
+        title={
+          linkedIssueUrl
+            ? `Open linked issue #${task.githubIssueNumber}.`
+            : "The linked issue URL is unavailable for this repository."
+        }
+      >
+        <span style={{ display: "inline-block" }}>
+          <Button
+            href={linkedIssueUrl ?? undefined}
+            target="_blank"
+            rel="noreferrer"
+            disabled={!linkedIssueUrl}
+          >
+            View Issue
+          </Button>
+        </span>
+      </Tooltip>
+    ) : null;
   const dropdownMoreActionItems = [
     ...(canMerge
       ? [
@@ -3749,6 +3840,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               return;
             }
 
+            if (key === "linkIssue") {
+              openLinkIssueModal();
+              return;
+            }
+
             if (key === "changeState") {
               openTaskStateModal();
               return;
@@ -3776,7 +3872,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
         trigger={["click"]}
       >
-        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "killTerminal" || submitting === "merge" || submitting === "state" || submitting === "linkTask" || submitting === "linkPr"}>
+        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "killTerminal" || submitting === "merge" || submitting === "state" || submitting === "linkTask" || submitting === "linkPr" || submitting === "linkIssue"}>
           More
         </Button>
       </Dropdown>
@@ -4211,7 +4307,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Button disabled={composerClearDisabled}>Clear</Button>
             </Popconfirm>
           </Space.Compact>
-          {canPull || canPush || hasLinkedPullRequest || hasDropdownMoreActions ? (
+          {canPull || canPush || hasLinkedPullRequest || hasLinkedIssue || hasDropdownMoreActions ? (
             <Space
               size={8}
               wrap
@@ -4225,6 +4321,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               {renderPushTaskButton()}
               {renderResetGitButton()}
               {renderViewPullRequestButton()}
+              {renderViewIssueButton()}
               {renderMoreActionsButton()}
             </Space>
           ) : null}
@@ -5978,6 +6075,33 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             />
           </Form.Item>
           <Typography.Text type="secondary">Leave blank to clear the linked pull request.</Typography.Text>
+        </Form>
+      </Modal>
+      <Modal
+        title="Linked Issue"
+        open={linkIssueModalOpen}
+        onCancel={() => {
+          if (submitting === "linkIssue") {
+            return;
+          }
+          setLinkIssueModalOpen(false);
+        }}
+        destroyOnClose
+        onOk={() => void confirmLinkIssue()}
+        okText="Save"
+        confirmLoading={submitting === "linkIssue"}
+      >
+        <Form layout="vertical">
+          <Form.Item label="Issue Number">
+            <Input
+              value={linkIssueNumberDraft}
+              onChange={(event) => setLinkIssueNumberDraft(event.target.value.replace(/[^\d]/g, ""))}
+              onPressEnter={() => void confirmLinkIssue()}
+              placeholder="123"
+              disabled={submitting === "linkIssue"}
+            />
+          </Form.Item>
+          <Typography.Text type="secondary">Leave blank to clear the linked issue.</Typography.Text>
         </Form>
       </Modal>
       <WorkspaceFilePreviewModal
