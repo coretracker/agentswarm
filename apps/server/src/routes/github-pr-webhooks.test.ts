@@ -911,6 +911,142 @@ test("GitHub webhook creates feature branch task from issue body mention without
   await app.close();
 });
 
+test("GitHub webhook creates feature branch task when bot is assigned to an unlinked issue", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const secret = "webhook-secret";
+  const createdTasks: unknown[] = [];
+  const patches: unknown[] = [];
+  const appendedMessages: unknown[] = [];
+
+  const openedTask = {
+    id: "task-assigned-issue",
+    executionStatus: "idle",
+    taskType: "build"
+  };
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({
+        id: "repo-1",
+        name: "repo",
+        url: "https://github.com/acme/repo.git",
+        defaultBranch: "main",
+        githubIntegrationBotLogin: "agentswarm-bot",
+        githubPrRequireBotMention: true,
+        githubPrTaskOwnerUserId: "user-1"
+      }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubIssueNumber: async () => null,
+      createTask: async (input: unknown, _repository: unknown, ownerUserId: string) => {
+        createdTasks.push({ input, ownerUserId });
+        return {
+          id: "task-assigned-issue"
+        };
+      },
+      patchTask: async (_taskId: string, patch: unknown) => {
+        patches.push(patch);
+        return openedTask;
+      },
+      appendMessage: async (_taskId: string, input: unknown) => {
+        appendedMessages.push(input);
+        return {
+          id: "message-assigned-issue",
+          content: (input as { content: string }).content
+        };
+      },
+      setExecutionState: async () => openedTask
+    } as never,
+    scheduler: {
+      triggerAction: async () => true
+    } as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "opened",
+    repository: {
+      full_name: "acme/repo"
+    },
+    issue: {
+      id: 9002,
+      number: 78,
+      title: "Export customers fails",
+      body: "Please fix customer exports.",
+      html_url: "https://github.com/acme/repo/issues/78",
+      assignees: [
+        {
+          login: "agentswarm-bot"
+        }
+      ]
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issues",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), {
+    queued: true,
+    taskId: "task-assigned-issue",
+    messageId: "message-assigned-issue",
+    createdTask: true
+  });
+  assert.deepEqual(createdTasks[0], {
+    ownerUserId: "user-1",
+    input: {
+      title: "GitHub issue #78 feedback from @alice",
+      draft: true,
+      repoId: "repo-1",
+      prompt: (appendedMessages[0] as { content: string }).content,
+      taskType: "build",
+      baseBranch: "main",
+      branchStrategy: "feature_branch"
+    }
+  });
+  assert.deepEqual(patches[0], {
+    githubIssueNumber: 78,
+    status: "open",
+    workflowStatus: "ready",
+    executionStatus: "idle",
+    executionAction: "build",
+    lastAction: "build"
+  });
+  assert.deepEqual(appendedMessages[0], {
+    role: "user",
+    action: "build",
+    queueState: "pending",
+    queueSource: "github_issue",
+    externalId: "github:issue:9002",
+    content: (appendedMessages[0] as { content: string }).content
+  });
+
+  await app.close();
+});
+
 test("GitHub PR webhook does not create task without configured GitHub task owner", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {

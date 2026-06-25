@@ -35,6 +35,7 @@ interface GitHubIssueFeedback {
   kind: "issue" | "issue_comment";
   issueNumber: number;
   issueTitle?: string;
+  assigneeLogins: string[];
   author: string;
   body: string;
   url: string;
@@ -80,6 +81,16 @@ const numberValue = (record: Record<string, unknown>, key: string): number | nul
 const readRepositoryFullName = (payload: Record<string, unknown>): string | undefined => {
   const repository = recordValue(payload, "repository");
   return repository ? stringValue(repository, "full_name") ?? undefined : undefined;
+};
+
+const readIssueAssigneeLogins = (issue: Record<string, unknown>): string[] => {
+  const assignees = issue.assignees;
+  if (!Array.isArray(assignees)) {
+    return [];
+  }
+  return assignees
+    .map((assignee) => (isRecord(assignee) ? stringValue(assignee, "login") : null))
+    .filter((login): login is string => Boolean(login));
 };
 
 const readPullRequestHeadDetails = (pullRequest: Record<string, unknown>): GitHubPrBranchDetails | null => {
@@ -154,6 +165,7 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
         kind: "issue_comment",
         issueNumber,
         issueTitle: stringValue(payload.issue, "title") ?? undefined,
+        assigneeLogins: readIssueAssigneeLogins(payload.issue),
         author,
         body,
         url,
@@ -232,14 +244,14 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
   }
 
   if (event === "issues") {
-    if ((action !== "opened" && action !== "edited") || !isRecord(payload.issue)) {
+    if ((action !== "opened" && action !== "edited" && action !== "assigned") || !isRecord(payload.issue)) {
       return null;
     }
     const issueNumber = numberValue(payload.issue, "number");
     const issueId = numberValue(payload.issue, "id");
     const body = stringValue(payload.issue, "body") ?? "";
     const url = stringValue(payload.issue, "html_url") ?? "";
-    if (!issueNumber || !issueId || body.trim().length === 0 || isRecord(payload.issue.pull_request)) {
+    if (!issueNumber || !issueId || isRecord(payload.issue.pull_request)) {
       return null;
     }
     return {
@@ -248,6 +260,7 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
       kind: "issue",
       issueNumber,
       issueTitle: stringValue(payload.issue, "title") ?? undefined,
+      assigneeLogins: readIssueAssigneeLogins(payload.issue),
       author,
       body,
       url,
@@ -392,7 +405,14 @@ export const registerGitHubPrWebhookRoutes = (
         return reply.status(202).send({ queued: false, reason: "disallowed_github_user" });
       }
     }
-    if (repository.githubPrRequireBotMention === true && ignoredBotLogin && !mentionsGitHubLogin(feedback.body, ignoredBotLogin)) {
+    const issueAssignedToBot =
+      feedback.target === "issue" &&
+      ignoredBotLogin !== null &&
+      feedback.assigneeLogins.some((login) => normalizeGitHubLogin(login) === ignoredBotLogin);
+    if (feedback.target === "issue" && feedback.body.trim().length === 0 && !issueAssignedToBot) {
+      return reply.status(202).send({ queued: false, reason: "ignored_event" });
+    }
+    if (repository.githubPrRequireBotMention === true && ignoredBotLogin && !mentionsGitHubLogin(feedback.body, ignoredBotLogin) && !issueAssignedToBot) {
       return reply.status(202).send({ queued: false, reason: "missing_bot_mention" });
     }
 
