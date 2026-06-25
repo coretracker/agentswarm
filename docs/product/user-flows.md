@@ -43,7 +43,7 @@ Notes:
 
 Notes:
 - `/tasks/board` shows saved task drafts in Backlog and active tasks in Ready, In Progress, Review, and Done columns.
-- Saving a draft stores the same task definition fields used by the new task form; opening a draft reuses the same form and can create the runnable task.
+- Saving a draft stores the same task definition fields used by the new task form; opening a draft reuses the same form and can create the runnable task. Task definitions do not include task-specific notes.
 
 ```mermaid
 flowchart TD

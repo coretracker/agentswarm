@@ -52,11 +52,9 @@ export const compactTask = (task: Task) => ({
 
 export const detailTask = (task: Task) => {
   const result = truncateText(task.resultMarkdown, 6_000);
-  const notes = truncateText(task.notes, 3_000);
   return {
     ...compactTask(task),
     prompt: truncateText(task.prompt, 4_000),
-    notes,
     resultMarkdown: result,
     errorMessage: task.errorMessage,
     provider: task.provider,

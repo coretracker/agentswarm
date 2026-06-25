@@ -485,7 +485,6 @@ export interface Task {
   branchName: string | null;
   workspaceBaseRef: string | null;
   prompt: string;
-  notes?: string;
   resultMarkdown: string | null;
   executionSummary: string;
   branchDiff: string | null;
@@ -893,7 +892,6 @@ export interface CreateTaskInput {
   deadline?: string | null;
   repoId: string;
   prompt: string;
-  notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
   taskType?: TaskType;
   provider?: AgentProvider;
@@ -912,7 +910,6 @@ export interface TaskDefinitionInput {
   deadline?: string | null;
   repoId: string;
   prompt: string;
-  notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
   taskType: TaskType;
   provider: AgentProvider;
@@ -975,10 +972,6 @@ export interface UpdateTaskTitleInput {
   title: string;
 }
 
-export interface UpdateTaskNotesInput {
-  notes: string;
-}
-
 export interface UpdateTaskDeadlineInput {
   deadline: string | null;
 }
@@ -987,7 +980,6 @@ export interface UpdateTaskDraftInput {
   title: string;
   deadline: string | null;
   prompt: string;
-  notes?: string;
   taskType: TaskType;
   provider: AgentProvider;
   providerProfile: ProviderProfile;

@@ -531,5 +531,17 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS github_pr_allowed_users jsonb NOT NULL DEFAULT '[]'::jsonb;
     `
+  },
+  {
+    id: "20260625_01_remove_task_notes",
+    sql: `
+      UPDATE tasks
+      SET task_data = task_data - 'notes'
+      WHERE task_data ? 'notes';
+
+      UPDATE task_drafts
+      SET definition = definition - 'notes'
+      WHERE definition ? 'notes';
+    `
   }
 ];

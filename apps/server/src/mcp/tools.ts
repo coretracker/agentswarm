@@ -69,21 +69,22 @@ const getTaskSchema = z.object({
   include: z.array(z.enum(["messages", "runs", "checkpoints", "logs"])).optional()
 });
 
-const createTaskSchema = z.object({
-  title: z.string().trim().min(1),
-  repoId: z.string().trim().min(1),
-  prompt: z.string().trim().min(1),
-  draft: z.boolean().optional(),
-  taskType: z.enum(["build", "ask"]).optional(),
-  provider: z.enum(["codex", "claude"]).optional(),
-  providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-  modelOverride: z.string().trim().min(1).optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-  baseBranch: z.string().trim().min(1).optional(),
-  branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-  notes: z.string().max(40_000).optional(),
-  deadline: z.string().trim().min(1).nullable().optional()
-});
+const createTaskSchema = z
+  .object({
+    title: z.string().trim().min(1),
+    repoId: z.string().trim().min(1),
+    prompt: z.string().trim().min(1),
+    draft: z.boolean().optional(),
+    taskType: z.enum(["build", "ask"]).optional(),
+    provider: z.enum(["codex", "claude"]).optional(),
+    providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+    modelOverride: z.string().trim().min(1).optional(),
+    codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+    baseBranch: z.string().trim().min(1).optional(),
+    branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+    deadline: z.string().trim().min(1).nullable().optional()
+  })
+  .strict();
 
 const updateDraftSchema = createTaskSchema.omit({ repoId: true, draft: true }).partial().extend({
   taskId: z.string().trim().min(1)
@@ -319,8 +320,7 @@ export const createMcpTools = (): McpToolDefinition[] => [
           ...input,
           ...providerConfig,
           draft: true,
-          prompt: input.prompt,
-          notes: input.notes ?? ""
+          prompt: input.prompt
         },
         repository,
         context.user.id
@@ -359,7 +359,6 @@ export const createMcpTools = (): McpToolDefinition[] => [
       const updated = await context.deps.taskStore.patchTask(task.id, {
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),
-        ...(input.notes !== undefined ? { notes: input.notes } : {}),
         ...(input.taskType !== undefined ? { taskType: input.taskType, lastAction: input.taskType === "ask" ? "ask" : "build" } : {}),
         ...(input.baseBranch !== undefined ? { baseBranch: input.baseBranch } : {}),
         ...(input.branchStrategy !== undefined ? { branchStrategy: input.branchStrategy } : {}),

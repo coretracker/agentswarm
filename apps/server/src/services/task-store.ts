@@ -503,6 +503,7 @@ export class RedisTaskStore implements TaskStore {
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
+    delete taskWithoutStartMode.notes;
     const taskSource = legacyTask.taskSource === "snippet" || legacyTask.taskSource === "blank" ? legacyTask.taskSource : "blank";
     const normalizedTask: Task = {
       ...taskWithoutStartMode,
@@ -532,8 +533,7 @@ export class RedisTaskStore implements TaskStore {
       resultMarkdown: legacyTask.resultMarkdown ?? null,
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
       // Prefer the new prompt field; fall back to legacy requirements for older tasks.
-      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim(),
-      notes: (legacyTask.notes ?? "").trim()
+      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
     const legacyStatus = currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as TaskStatus) : "open";
@@ -714,7 +714,6 @@ export class RedisTaskStore implements TaskStore {
     const taskType = input.taskType ?? "build";
     const promptRaw = (input.prompt ?? "").trim();
     const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
-    const notes = (input.notes ?? "").trim();
     const deadline = normalizeDeadline(input.deadline);
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
@@ -757,7 +756,6 @@ export class RedisTaskStore implements TaskStore {
       branchName: branchStrategy === "work_on_branch" ? baseBranch : null,
       workspaceBaseRef: null,
       prompt,
-      notes,
       resultMarkdown: null,
       executionSummary: buildExecutionSummaryFromPrompt(title, prompt),
       branchDiff: null,
@@ -1867,6 +1865,7 @@ export class PostgresTaskStore implements TaskStore {
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
+    delete taskWithoutStartMode.notes;
     const taskSource = legacyTask.taskSource === "snippet" || legacyTask.taskSource === "blank" ? legacyTask.taskSource : "blank";
     const normalizedTask: Task = {
       ...taskWithoutStartMode,
@@ -1893,8 +1892,7 @@ export class PostgresTaskStore implements TaskStore {
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
       resultMarkdown: legacyTask.resultMarkdown ?? null,
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
-      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim(),
-      notes: (legacyTask.notes ?? "").trim()
+      prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
     const legacyStatus = currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as TaskStatus) : "open";
@@ -2157,7 +2155,6 @@ export class PostgresTaskStore implements TaskStore {
     const taskType = input.taskType ?? "build";
     const promptRaw = (input.prompt ?? "").trim();
     const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
-    const notes = (input.notes ?? "").trim();
     const deadline = normalizeDeadline(input.deadline);
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
@@ -2200,7 +2197,6 @@ export class PostgresTaskStore implements TaskStore {
       branchName: branchStrategy === "work_on_branch" ? baseBranch : null,
       workspaceBaseRef: null,
       prompt,
-      notes,
       resultMarkdown: null,
       executionSummary: buildExecutionSummaryFromPrompt(title, prompt),
       branchDiff: null,

@@ -65,7 +65,6 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     branchName: null,
     workspaceBaseRef: null,
     prompt: "Do work",
-    notes: "",
     executionSummary: "Do work",
     resultMarkdown: null,
     branchDiff: null,
@@ -200,6 +199,46 @@ describe("MCP Phase 1 tools", () => {
       updatedAt: "2026-01-01T00:00:00.000Z",
       createdAt: "2026-01-01T00:00:00.000Z"
     });
+  });
+
+  it("rejects notes when creating tasks through MCP", async () => {
+    const tool = toolByName("agentswarm_create_task");
+
+    await assert.rejects(
+      () =>
+        tool.handler(
+          {
+            title: "Task",
+            repoId: "repo-1",
+            prompt: "Do work",
+            notes: "Legacy notes"
+          },
+          {
+            user,
+            deps: {} as never
+          }
+        ),
+      /Unrecognized key\(s\) in object: 'notes'/
+    );
+  });
+
+  it("rejects notes when updating drafts through MCP", async () => {
+    const tool = toolByName("agentswarm_update_draft");
+
+    await assert.rejects(
+      () =>
+        tool.handler(
+          {
+            taskId: "task-1",
+            notes: "Legacy notes"
+          },
+          {
+            user,
+            deps: {} as never
+          }
+        ),
+      /Unrecognized key\(s\) in object: 'notes'/
+    );
   });
 
   it("starts a task with the requested action mode", async () => {

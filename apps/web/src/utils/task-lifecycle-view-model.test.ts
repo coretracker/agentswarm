@@ -30,7 +30,6 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     branchName: "feature/task-1",
     workspaceBaseRef: null,
     prompt: "Do the work",
-    notes: "",
     executionSummary: "",
     resultMarkdown: null,
     branchDiff: null,
