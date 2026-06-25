@@ -299,6 +299,14 @@ export const registerGitHubPrWebhookRoutes = (
     if (ignoredBotLogin && normalizeGitHubLogin(feedback.author) === ignoredBotLogin) {
       return reply.status(202).send({ queued: false, reason: "ignored_bot_user" });
     }
+    const allowedUsers = Array.isArray(repository.githubPrAllowedUsers) ? repository.githubPrAllowedUsers : [];
+    if (allowedUsers.length > 0) {
+      const normalizedAuthor = normalizeGitHubLogin(feedback.author);
+      const allowedUserSet = new Set(allowedUsers.map((user) => normalizeGitHubLogin(user)).filter((user): user is string => Boolean(user)));
+      if (!normalizedAuthor || !allowedUserSet.has(normalizedAuthor)) {
+        return reply.status(202).send({ queued: false, reason: "disallowed_github_user" });
+      }
+    }
     if (repository.githubPrRequireBotMention === true && ignoredBotLogin && !mentionsGitHubLogin(feedback.body, ignoredBotLogin)) {
       return reply.status(202).send({ queued: false, reason: "missing_bot_mention" });
     }

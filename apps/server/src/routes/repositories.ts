@@ -17,6 +17,8 @@ const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
 const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
 const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
 const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
+const GITHUB_ALLOWED_USERS_MAX_COUNT = 100;
+const GITHUB_LOGIN_PATTERN = /^@?[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
 const repositoryEnvKeySchema = z
   .string()
@@ -101,6 +103,35 @@ const repositoryEnvSecretsSchema = z
     }
   });
 
+const githubAllowedUsersSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(40)
+      .regex(GITHUB_LOGIN_PATTERN, "GitHub usernames may include alphanumeric characters or hyphens.")
+  )
+  .max(GITHUB_ALLOWED_USERS_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const normalized = entries[index]?.trim().replace(/^@+/, "").toLowerCase();
+      if (!normalized) {
+        continue;
+      }
+      if (seen.has(normalized)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index],
+          message: `Duplicate GitHub user: ${entries[index]}`
+        });
+      } else {
+        seen.add(normalized);
+      }
+    }
+  });
+
 const createRepositorySchema = z.object({
   name: z.string().min(1),
   url: z.string().min(1),
@@ -112,6 +143,7 @@ const createRepositorySchema = z.object({
   webhookSecret: z.string().trim().min(1).optional(),
   githubPrWebhookSecret: z.string().trim().min(1).optional(),
   githubIntegrationBotLogin: z.string().trim().max(255).nullable().optional(),
+  githubPrAllowedUsers: githubAllowedUsersSchema.optional(),
   githubPrRequireBotMention: z.boolean().optional(),
   githubPrFeedbackInstructions: z.string().trim().max(4000).nullable().optional(),
   githubPrTaskOwnerUserId: z.string().trim().min(1).nullable().optional()

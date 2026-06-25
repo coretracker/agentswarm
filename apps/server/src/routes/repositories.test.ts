@@ -44,6 +44,7 @@ const createRepository = (input: CreateRepositoryInput, overrides: Partial<Repos
   webhookSecretConfigured: false,
   githubPrWebhookSecretConfigured: false,
   githubIntegrationBotLogin: input.githubIntegrationBotLogin ?? null,
+  githubPrAllowedUsers: input.githubPrAllowedUsers ?? [],
   githubPrRequireBotMention: input.githubPrRequireBotMention === true,
   githubPrFeedbackInstructions: input.githubPrFeedbackInstructions ?? null,
   githubPrTaskOwnerUserId: input.githubPrTaskOwnerUserId ?? null,
@@ -171,6 +172,26 @@ test("repository create rejects a GitHub-created task owner who cannot already a
     message: "GitHub-created task owner must have access to this repository."
   });
   assert.deepEqual(updateUserCalls, []);
+
+  await app.close();
+});
+
+test("repository create rejects duplicate GitHub allowed users", async () => {
+  const authUser = createAuthUser({ id: "user-1" });
+  const { app } = createTestApp({ authUser, users: [createUser({ id: "user-1" })] });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/repositories",
+    payload: {
+      name: "repo",
+      url: "https://github.com/acme/repo.git",
+      githubPrAllowedUsers: ["alice", "@Alice"]
+    }
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.match(JSON.parse(response.body).message, /Duplicate GitHub user/);
 
   await app.close();
 });

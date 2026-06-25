@@ -24,6 +24,7 @@ Notes:
 Notes:
 - Existing secrets are shown as configured placeholders only; values are never shown again after save.
 - Editing can keep an existing secret by leaving its value blank, replace it by entering a new value, or delete it by removing the row.
+- GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
 
 ## Settings And Credentials Flow (Current)
 1. Open `/settings`.
