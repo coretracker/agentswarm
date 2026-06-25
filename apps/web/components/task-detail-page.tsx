@@ -6216,15 +6216,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Form
             form={followUpForm}
             layout="vertical"
-            onFinish={async (values: { title: string; prompt: string; notes?: string }) => {
+            onFinish={async (values: { title: string; prompt: string }) => {
               setSubmitting("continue");
               try {
                 const normalizedPrompt = values.prompt.trim();
-                const normalizedNotes = values.notes?.trim() ?? "";
                 const nextTask = await api.createTask({
                   title: values.title.trim(),
                   prompt: normalizedPrompt,
-                  notes: normalizedNotes,
                   taskType: "build",
                   repoId: task.repoId,
                   baseBranch: followUpBranch,
@@ -6266,13 +6264,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 <Input.TextArea
                   autoSize={{ minRows: 6, maxRows: 18 }}
                   placeholder="Describe the new problem to solve on this branch."
-                  style={{ resize: "none" }}
-                />
-              </Form.Item>
-              <Form.Item name="notes" label="Notes (Markdown)">
-                <Input.TextArea
-                  autoSize={{ minRows: 4, maxRows: 12 }}
-                  placeholder="Optional markdown notes for this follow-up task."
                   style={{ resize: "none" }}
                 />
               </Form.Item>

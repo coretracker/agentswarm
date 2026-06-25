@@ -39,7 +39,6 @@ export type TaskDefinitionFormValues = {
   deadline?: string | null | Dayjs;
   repoId?: string;
   prompt?: string;
-  notes?: string;
   taskType?: TaskType;
   provider?: AgentProvider;
   model?: string;
@@ -139,7 +138,6 @@ export const buildTaskDefinitionInput = (
     deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
     repoId: values.repoId ?? "",
     prompt: values.prompt?.trim() ?? "",
-    notes: values.notes?.trim() || undefined,
     ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
     taskType: values.taskType ?? "build",
     provider,
@@ -482,22 +480,6 @@ export function TaskDefinitionFields({
             />
           ) : null}
         </Flex>
-      </Form.Item>
-      <Form.Item
-        name="notes"
-        label="Notes (Markdown)"
-        extra={
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Optional. These notes are shown in the task Info tab below current configuration.
-          </Typography.Text>
-        }
-        style={{ marginTop: 16, marginBottom: 0 }}
-      >
-        <Input.TextArea
-          autoSize={{ minRows: 6, maxRows: 16 }}
-          style={{ resize: "none" }}
-          placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
-        />
       </Form.Item>
     </>
   );

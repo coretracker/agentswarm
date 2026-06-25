@@ -626,6 +626,8 @@ const main = async (): Promise<void> => {
 
       for (const snapshot of taskSnapshots) {
         const { task, logs, messages, runs, proposals, activeInteractiveSession, transcripts } = snapshot;
+        const taskData = { ...task };
+        delete taskData.notes;
 
         await client.query(
           `
@@ -638,7 +640,7 @@ const main = async (): Promise<void> => {
             trimString(task.status) ?? "open",
             task.pinned === true,
             task.createdAt,
-            JSON.stringify(task)
+            JSON.stringify(taskData)
           ]
         );
 

@@ -13,7 +13,6 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput, option
     draft: options.draft,
     repoId: definition.repoId,
     prompt: definition.prompt,
-    notes: definition.notes,
     deadline: definition.deadline,
     attachments: definition.attachments,
     taskType: definition.taskType,

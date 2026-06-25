@@ -110,6 +110,8 @@ Tasks are the main unit of work in AgentSwarm.
 - **Ask tasks** ask an agent to inspect and answer without changing code.
 - **Snippet tasks** start from reusable prompt templates and variables.
 
+Task definitions include title, repository, prompt, deadline, provider/model settings, branch settings, and optional prompt attachments. Task-specific notes are not part of the task model.
+
 Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
 
 ### Postflight Checks
