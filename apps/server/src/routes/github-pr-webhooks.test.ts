@@ -605,7 +605,7 @@ test("GitHub PR webhook queues comments with required bot mention", async () => 
   await app.close();
 });
 
-test("GitHub PR webhook uses repository feedback instructions", async () => {
+test("GitHub PR webhook uses repository feedback instructions as a full template", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
     const rawBody = typeof body === "string" ? body : body.toString("utf8");
@@ -615,7 +615,7 @@ test("GitHub PR webhook uses repository feedback instructions", async () => {
 
   const appendedMessages: unknown[] = [];
   const secret = "webhook-secret";
-  const customInstructions = "Custom repo instruction: reply with the final decision.";
+  const customInstructions = "Custom feedback template for {{target_ref}}: {{title}}\nFrom @{{author}}\n{{feedback_body}}\n{{url}}";
 
   registerGitHubPrWebhookRoutes(app, {
     repositoryStore: {
@@ -646,6 +646,7 @@ test("GitHub PR webhook uses repository feedback instructions", async () => {
     action: "created",
     issue: {
       number: 42,
+      title: "Improve customer import",
       pull_request: {}
     },
     comment: {
@@ -673,7 +674,10 @@ test("GitHub PR webhook uses repository feedback instructions", async () => {
 
   assert.equal(response.statusCode, 202);
   assert.equal(appendedMessages.length, 1);
-  assert.match((appendedMessages[0] as { content: string }).content, /Custom repo instruction/);
+  assert.equal(
+    (appendedMessages[0] as { content: string }).content,
+    "Custom feedback template for PR #42: Improve customer import\nFrom @alice\nPlease add a regression test.\nhttps://github.com/acme/repo/pull/42#issuecomment-1001"
+  );
   assert.doesNotMatch((appendedMessages[0] as { content: string }).content, /If the feedback is a question without a clear requested code/);
 
   await app.close();
@@ -949,6 +953,7 @@ test("GitHub webhook creates feature branch task from issue body mention without
         defaultBranch: "main",
         githubIntegrationBotLogin: "agentswarm-bot",
         githubPrRequireBotMention: true,
+        githubPrInitialInstructions: "Initial template for {{target_ref}}\n{{issue_title_line}}Body: {{feedback_body}}",
         githubPrTaskOwnerUserId: "user-1"
       }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
@@ -1050,9 +1055,8 @@ test("GitHub webhook creates feature branch task from issue body mention without
     queueState: "pending",
     queueSource: "github_issue",
     externalId: "github:issue:9001",
-    content: (appendedMessages[0] as { content: string }).content
+    content: "Initial template for issue #77\nIssue title: Import customers fails\nBody: @agentswarm-bot please fix customer imports."
   });
-  assert.match((appendedMessages[0] as { content: string }).content, /@agentswarm-bot please fix customer imports\./);
   assert.deepEqual(triggeredActions[0], [
     "task-issue-created",
     "build",

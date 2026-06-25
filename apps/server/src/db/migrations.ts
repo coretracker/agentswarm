@@ -512,6 +512,34 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
     `
   },
   {
+    id: "20260624_02a_repository_github_pr_initial_instructions",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_initial_instructions text NULL;
+    `
+  },
+  {
+    id: "20260624_02b_repository_github_pr_feedback_template_backfill",
+    sql: `
+      UPDATE repositories
+      SET github_pr_feedback_instructions = concat(
+        'A new GitHub {{target_label}} feedback item was added to linked {{target_ref}}.
+
+Type: {{feedback_type}}
+Author: @{{author}}
+{{issue_title_line}}{{review_state_line}}{{file_line}}{{url_line}}{{diff_context_block}}
+Feedback:
+{{feedback_body}}
+
+',
+        btrim(github_pr_feedback_instructions)
+      )
+      WHERE github_pr_feedback_instructions IS NOT NULL
+        AND btrim(github_pr_feedback_instructions) <> ''
+        AND position('{{' in github_pr_feedback_instructions) = 0;
+    `
+  },
+  {
     id: "20260624_03_repository_github_pr_require_bot_mention",
     sql: `
       ALTER TABLE repositories

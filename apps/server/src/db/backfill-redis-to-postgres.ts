@@ -517,6 +517,7 @@ const main = async (): Promise<void> => {
               github_integration_bot_login,
               github_pr_allowed_users,
               github_pr_require_bot_mention,
+              github_pr_initial_instructions,
               github_pr_feedback_instructions,
               github_pr_task_owner_user_id,
               webhook_last_attempt_at,
@@ -525,7 +526,7 @@ const main = async (): Promise<void> => {
               created_at,
               updated_at
             )
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20, $21)
           `,
           [
             repository.id,
@@ -541,6 +542,7 @@ const main = async (): Promise<void> => {
             trimString(repository.githubIntegrationBotLogin),
             JSON.stringify(githubLoginArray(repository.githubPrAllowedUsers)),
             repository.githubPrRequireBotMention === true,
+            trimString(repository.githubPrInitialInstructions),
             trimString(repository.githubPrFeedbackInstructions),
             trimString(repository.githubPrTaskOwnerUserId),
             repository.webhookLastAttemptAt ?? null,

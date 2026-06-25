@@ -26,6 +26,7 @@ Notes:
 - Editing can keep an existing secret by leaving its value blank, replace it by entering a new value, or delete it by removing the row.
 - GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
 - GitHub Integration can optionally archive linked tasks when a GitHub pull request webhook reports the PR as merged.
+- GitHub Integration supports separate editable agent templates for newly created GitHub tasks and feedback comments on linked tasks. Templates can include markers such as `{{target_ref}}`, `{{title}}`, `{{title_line}}`, `{{author}}`, `{{url_line}}`, and `{{feedback_body}}`.
 
 ## Settings And Credentials Flow (Current)
 1. Open `/settings`.

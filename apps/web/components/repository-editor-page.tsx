@@ -9,7 +9,7 @@ import type {
   RepositoryEnvVarInput,
   User
 } from "@agentswarm/shared-types";
-import { DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS } from "@agentswarm/shared-types";
+import { DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS, DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS } from "@agentswarm/shared-types";
 import { Alert, Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
 import { ApiError, api } from "../src/api/client";
 import { trackEvent } from "../src/utils/analytics";
@@ -36,6 +36,7 @@ type RepositoryFormValues = {
   githubPrAllowedUsers: string;
   githubPrRequireBotMention: boolean;
   githubPrAutoArchiveOnMerge: boolean;
+  githubPrInitialInstructions: string;
   githubPrFeedbackInstructions: string;
   githubPrTaskOwnerUserId: string;
 };
@@ -56,6 +57,7 @@ const emptyValues = (): RepositoryFormValues => ({
   githubPrAllowedUsers: "",
   githubPrRequireBotMention: false,
   githubPrAutoArchiveOnMerge: false,
+  githubPrInitialInstructions: DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
   githubPrFeedbackInstructions: DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
   githubPrTaskOwnerUserId: ""
 });
@@ -88,6 +90,10 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   githubPrAllowedUsers: typeof values?.githubPrAllowedUsers === "string" ? values.githubPrAllowedUsers : "",
   githubPrRequireBotMention: values?.githubPrRequireBotMention === true,
   githubPrAutoArchiveOnMerge: values?.githubPrAutoArchiveOnMerge === true,
+  githubPrInitialInstructions:
+    typeof values?.githubPrInitialInstructions === "string"
+      ? values.githubPrInitialInstructions
+      : DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
   githubPrFeedbackInstructions:
     typeof values?.githubPrFeedbackInstructions === "string"
       ? values.githubPrFeedbackInstructions
@@ -115,6 +121,9 @@ const parseAllowedGitHubUsers = (value: string): string[] => {
   }
   return users;
 };
+
+const GITHUB_TEMPLATE_MARKER_HELP =
+  "Template markers: {{target_label}}, {{target_ref}}, {{title}}, {{title_line}}, {{feedback_type}}, {{author}}, {{issue_title_line}}, {{review_state_line}}, {{file_line}}, {{url_line}}, {{diff_context_block}}, {{feedback_body}}.";
 
 const bytesToBase64 = (bytes: Uint8Array): string => {
   let binary = "";
@@ -254,6 +263,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           githubPrAllowedUsers: (repository.githubPrAllowedUsers ?? []).join("\n"),
           githubPrRequireBotMention: repository.githubPrRequireBotMention === true,
           githubPrAutoArchiveOnMerge: repository.githubPrAutoArchiveOnMerge === true,
+          githubPrInitialInstructions: repository.githubPrInitialInstructions ?? DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
           githubPrFeedbackInstructions: repository.githubPrFeedbackInstructions ?? DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
           githubPrTaskOwnerUserId: repository.githubPrTaskOwnerUserId ?? ""
         });
@@ -451,6 +461,10 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               githubPrAllowedUsers: parseAllowedGitHubUsers(normalized.githubPrAllowedUsers),
               githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
               githubPrAutoArchiveOnMerge: normalized.githubPrAutoArchiveOnMerge === true,
+              githubPrInitialInstructions:
+                normalized.githubPrInitialInstructions.trim() === DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS
+                  ? null
+                  : normalized.githubPrInitialInstructions.trim() || null,
               githubPrFeedbackInstructions:
                 normalized.githubPrFeedbackInstructions.trim() === DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
                   ? null
@@ -907,12 +921,27 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     />
                   </Form.Item>
                   <Form.Item
+                    name="githubPrInitialInstructions"
+                    label="Initial Agent Instructions"
+                    extra={`Used when GitHub creates a new AgentSwarm task. ${GITHUB_TEMPLATE_MARKER_HELP}`}
+                    rules={[{ max: 8000, message: "Instructions must be 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 8, maxRows: 16 }} />
+                  </Form.Item>
+                  <Button
+                    onClick={() => {
+                      form.setFieldValue("githubPrInitialInstructions", DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS);
+                    }}
+                  >
+                    Reset initial instructions
+                  </Button>
+                  <Form.Item
                     name="githubPrFeedbackInstructions"
                     label="Agent Feedback Instructions"
-                    extra="Appended to GitHub feedback prompts after the raw feedback body. Reset or leave as the default to use the built-in behavior."
-                    rules={[{ max: 4000, message: "Instructions must be 4000 characters or fewer." }]}
+                    extra={`Used when GitHub adds feedback to an existing linked task. ${GITHUB_TEMPLATE_MARKER_HELP}`}
+                    rules={[{ max: 8000, message: "Instructions must be 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 5, maxRows: 10 }} />
+                    <Input.TextArea autoSize={{ minRows: 8, maxRows: 16 }} />
                   </Form.Item>
                   <Button
                     onClick={() => {

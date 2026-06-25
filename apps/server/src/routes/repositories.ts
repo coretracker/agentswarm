@@ -146,7 +146,8 @@ const createRepositorySchema = z.object({
   githubPrAllowedUsers: githubAllowedUsersSchema.optional(),
   githubPrRequireBotMention: z.boolean().optional(),
   githubPrAutoArchiveOnMerge: z.boolean().optional(),
-  githubPrFeedbackInstructions: z.string().trim().max(4000).nullable().optional(),
+  githubPrInitialInstructions: z.string().trim().max(8000).nullable().optional(),
+  githubPrFeedbackInstructions: z.string().trim().max(8000).nullable().optional(),
   githubPrTaskOwnerUserId: z.string().trim().min(1).nullable().optional()
 });
 

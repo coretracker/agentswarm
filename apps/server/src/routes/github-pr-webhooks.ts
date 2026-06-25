@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS } from "@agentswarm/shared-types";
+import { DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS, DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS } from "@agentswarm/shared-types";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
@@ -17,6 +17,7 @@ interface GitHubPrFeedback {
   externalId: string;
   kind: "pr_comment" | "review_comment" | "review";
   prNumber: number;
+  title?: string;
   author: string;
   body: string;
   url: string;
@@ -44,6 +45,7 @@ interface GitHubIssueFeedback {
 }
 
 type GitHubFeedback = GitHubPrFeedback | GitHubIssueFeedback;
+type GitHubPromptKind = "initial" | "feedback";
 
 interface GitHubPrBranchDetails {
   headBranch: string;
@@ -198,6 +200,7 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
       externalId: `github:pr_comment:${commentId}`,
       kind: "pr_comment",
       prNumber,
+      title: stringValue(payload.issue, "title") ?? undefined,
       author,
       body,
       url,
@@ -222,6 +225,7 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
       externalId: `github:review_comment:${commentId}`,
       kind: "review_comment",
       prNumber,
+      title: stringValue(payload.pull_request, "title") ?? undefined,
       author,
       body,
       url,
@@ -250,6 +254,7 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
       externalId: `github:review:${reviewId}`,
       kind: "review",
       prNumber,
+      title: stringValue(payload.pull_request, "title") ?? undefined,
       author,
       body,
       url,
@@ -314,56 +319,61 @@ const normalizeGitHubMergedPullRequest = (event: string | null, payload: unknown
   };
 };
 
-const formatFeedbackMessage = (feedback: GitHubPrFeedback, instructions: string | null | undefined): string => {
-  const lines = [
-    `A new GitHub pull request feedback item was added to linked PR #${feedback.prNumber}.`,
-    "",
-    `Type: ${feedback.kind}`,
-    `Author: @${feedback.author}`
-  ];
-  if (feedback.reviewState) {
-    lines.push(`Review state: ${feedback.reviewState}`);
+const replaceTemplateMarkers = (template: string, markers: Record<string, string>): string => {
+  let rendered = template;
+  for (const [marker, value] of Object.entries(markers)) {
+    rendered = rendered.replaceAll(`{{${marker}}}`, value);
   }
-  if (feedback.path) {
-    lines.push(`File: ${feedback.path}${feedback.line ? `:${feedback.line}` : ""}`);
-  }
-  if (feedback.url) {
-    lines.push(`URL: ${feedback.url}`);
-  }
-  if (feedback.diffHunk) {
-    lines.push("", "Diff context:", "```diff", feedback.diffHunk, "```");
-  }
-  lines.push(
-    "",
-    "Feedback:",
-    feedback.body.trim() || "(No body provided.)",
-    "",
-    instructions?.trim() || DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
-  );
-  return lines.join("\n");
+  return rendered.trim();
 };
 
-const formatIssueFeedbackMessage = (feedback: GitHubIssueFeedback, instructions: string | null | undefined): string => {
-  const lines = [
-    `A new GitHub issue feedback item was added to linked issue #${feedback.issueNumber}.`,
-    "",
-    `Type: ${feedback.kind}`,
-    `Author: @${feedback.author}`
-  ];
-  if (feedback.issueTitle) {
-    lines.push(`Issue title: ${feedback.issueTitle}`);
-  }
-  if (feedback.url) {
-    lines.push(`URL: ${feedback.url}`);
-  }
-  lines.push(
-    "",
-    "Feedback:",
-    feedback.body.trim() || "(No body provided.)",
-    "",
-    instructions?.trim() || DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
-  );
-  return lines.join("\n");
+const buildTemplateMarkers = (feedback: GitHubFeedback): Record<string, string> => {
+  const targetLabel = feedback.target === "pr" ? "pull request" : "issue";
+  const targetRef = feedback.target === "pr" ? `PR #${feedback.prNumber}` : `issue #${feedback.issueNumber}`;
+  const feedbackBody = feedback.body.trim() || "(No body provided.)";
+  const title = feedback.target === "pr" ? feedback.title ?? "" : feedback.issueTitle ?? "";
+  const issueTitle = feedback.target === "issue" ? feedback.issueTitle ?? "" : "";
+  const reviewState = feedback.target === "pr" ? feedback.reviewState ?? "" : "";
+  const file = feedback.target === "pr" ? feedback.path ?? "" : "";
+  const line = feedback.target === "pr" && feedback.line ? String(feedback.line) : "";
+  const fileWithLine = file ? `${file}${line ? `:${line}` : ""}` : "";
+  const diffHunk = feedback.target === "pr" ? feedback.diffHunk ?? "" : "";
+
+  return {
+    target_label: targetLabel,
+    target_ref: targetRef,
+    target: feedback.target,
+    number: feedback.target === "pr" ? String(feedback.prNumber) : String(feedback.issueNumber),
+    feedback_type: feedback.kind,
+    type: feedback.kind,
+    author: feedback.author,
+    title,
+    title_line: title ? `Title: ${title}\n` : "",
+    issue_title: issueTitle,
+    issue_title_line: issueTitle ? `Issue title: ${issueTitle}\n` : "",
+    review_state: reviewState,
+    review_state_line: reviewState ? `Review state: ${reviewState}\n` : "",
+    file,
+    line,
+    file_line: fileWithLine ? `File: ${fileWithLine}\n` : "",
+    url: feedback.url,
+    url_line: feedback.url ? `URL: ${feedback.url}\n` : "",
+    diff_hunk: diffHunk,
+    diff_context_block: diffHunk ? `\nDiff context:\n\`\`\`diff\n${diffHunk}\n\`\`\`\n\n` : "",
+    feedback_body: feedbackBody
+  };
+};
+
+const formatGitHubMessage = (
+  feedback: GitHubFeedback,
+  kind: GitHubPromptKind,
+  templates: { initial?: string | null; feedback?: string | null }
+): string => {
+  const template =
+    kind === "initial"
+      ? templates.initial?.trim() || DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS
+      : templates.feedback?.trim() || DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS;
+  return replaceTemplateMarkers(template, buildTemplateMarkers(feedback));
 };
 
 const resolveGitHubPrBranchDetails = async (
@@ -502,7 +512,10 @@ export const registerGitHubPrWebhookRoutes = (
           return reply.status(202).send({ queued: false, reason: "missing_github_task_owner" });
         }
 
-        const content = formatIssueFeedbackMessage(feedback, repository.githubPrFeedbackInstructions);
+        const content = formatGitHubMessage(feedback, "initial", {
+          initial: repository.githubPrInitialInstructions,
+          feedback: repository.githubPrFeedbackInstructions
+        });
         const createdTask = await deps.taskStore.createTask(
           {
             title: formatNewIssueTaskTitle(feedback),
@@ -573,7 +586,10 @@ export const registerGitHubPrWebhookRoutes = (
         queueState: "pending",
         queueSource: "github_issue",
         externalId: feedback.externalId,
-        content: formatIssueFeedbackMessage(feedback, repository.githubPrFeedbackInstructions)
+        content: formatGitHubMessage(feedback, "feedback", {
+          initial: repository.githubPrInitialInstructions,
+          feedback: repository.githubPrFeedbackInstructions
+        })
       });
 
       if (message && task.executionStatus === "idle" && !(await deps.taskStore.hasPendingChangeProposal(task.id))) {
@@ -612,7 +628,10 @@ export const registerGitHubPrWebhookRoutes = (
         return reply.status(202).send({ queued: false, reason: "fork_pr_branch_unsupported" });
       }
 
-      const content = formatFeedbackMessage(feedback, repository.githubPrFeedbackInstructions);
+      const content = formatGitHubMessage(feedback, "initial", {
+        initial: repository.githubPrInitialInstructions,
+        feedback: repository.githubPrFeedbackInstructions
+      });
       const createdTask = await deps.taskStore.createTask(
         {
           title: formatNewTaskTitle(feedback),
@@ -682,7 +701,10 @@ export const registerGitHubPrWebhookRoutes = (
       queueState: "pending",
       queueSource: "github_pr",
       externalId: feedback.externalId,
-      content: formatFeedbackMessage(feedback, repository.githubPrFeedbackInstructions)
+      content: formatGitHubMessage(feedback, "feedback", {
+        initial: repository.githubPrInitialInstructions,
+        feedback: repository.githubPrFeedbackInstructions
+      })
     });
 
     if (message && task.executionStatus === "idle" && !(await deps.taskStore.hasPendingChangeProposal(task.id))) {
