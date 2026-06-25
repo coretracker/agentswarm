@@ -875,7 +875,7 @@ test("GitHub webhook creates feature branch task from issue body mention without
   assert.deepEqual(createdTasks[0], {
     ownerUserId: "user-1",
     input: {
-      title: "GitHub issue #77 feedback from @alice",
+      title: "Import customers fails",
       draft: true,
       repoId: "repo-1",
       prompt: (appendedMessages[0] as { content: string }).content,
@@ -1019,7 +1019,7 @@ test("GitHub webhook creates feature branch task when bot is assigned to an unli
   assert.deepEqual(createdTasks[0], {
     ownerUserId: "user-1",
     input: {
-      title: "GitHub issue #78 feedback from @alice",
+      title: "Export customers fails",
       draft: true,
       repoId: "repo-1",
       prompt: (appendedMessages[0] as { content: string }).content,
