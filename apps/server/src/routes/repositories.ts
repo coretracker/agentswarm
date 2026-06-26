@@ -148,6 +148,7 @@ const createRepositorySchema = z.object({
   githubPrAutoArchiveOnMerge: z.boolean().optional(),
   githubPrInitialInstructions: z.string().trim().max(8000).nullable().optional(),
   githubPrFeedbackInstructions: z.string().trim().max(8000).nullable().optional(),
+  githubPrReviewInstructions: z.string().trim().max(8000).nullable().optional(),
   githubPrTaskOwnerUserId: z.string().trim().min(1).nullable().optional()
 });
 

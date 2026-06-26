@@ -834,6 +834,331 @@ test("GitHub PR webhook creates build task on PR branch when mentioned without l
   await app.close();
 });
 
+test("GitHub PR webhook queues linked review requests for the integration bot", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const appendedMessages: unknown[] = [];
+  const triggeredActions: unknown[] = [];
+  const secret = "webhook-secret";
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({
+        id: "repo-1",
+        githubIntegrationBotLogin: "agentswarm-bot",
+        githubPrRequireBotMention: true
+      }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubPrNumber: async () => ({
+        id: "task-1",
+        executionStatus: "idle"
+      }),
+      listMessages: async () => [],
+      appendMessage: async (_taskId: string, input: unknown) => {
+        appendedMessages.push(input);
+        return {
+          id: "message-1",
+          content: (input as { content: string }).content
+        };
+      },
+      hasPendingChangeProposal: async () => false,
+      getActiveInteractiveSession: async () => null
+    } as never,
+    scheduler: {
+      triggerAction: async (...args: unknown[]) => {
+        triggeredActions.push(args);
+        return true;
+      }
+    } as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "review_requested",
+    repository: {
+      full_name: "acme/repo"
+    },
+    pull_request: {
+      number: 42,
+      title: "Improve importer",
+      body: "Please review the importer changes.",
+      html_url: "https://github.com/acme/repo/pull/42",
+      head: {
+        ref: "feature/importer",
+        repo: {
+          full_name: "acme/repo"
+        }
+      }
+    },
+    requested_reviewer: {
+      login: "agentswarm-bot"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "pull_request",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.equal(appendedMessages.length, 1);
+  assert.deepEqual(appendedMessages[0], {
+    role: "user",
+    action: "build",
+    queueState: "pending",
+    queueSource: "github_pr",
+    externalId: "github:review_requested:42:reviewer:agentswarm-bot",
+    content:
+      "A GitHub pull request review was requested for PR #42.\n\nRequested by: @alice\nRequested reviewer: @agentswarm-bot\nTitle: Improve importer\nURL: https://github.com/acme/repo/pull/42\n\nPull request body:\nPlease review the importer changes.\n\nReview the pull request and leave GitHub review feedback or comments.\nDo not make code changes unless these instructions explicitly request them.\n\nAfter completing the review, reply on GitHub at the URL above with a brief status."
+  });
+  assert.deepEqual(triggeredActions[0], ["task-1", "build", { content: (appendedMessages[0] as { content: string }).content }, { promptMessageId: "message-1" }]);
+
+  await app.close();
+});
+
+test("GitHub PR webhook creates auto-apply build task for unlinked review requests", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const secret = "webhook-secret";
+  const createdTasks: unknown[] = [];
+  const patches: unknown[] = [];
+  const appendedMessages: unknown[] = [];
+  const triggeredActions: unknown[] = [];
+  const reviewInstructions = "Review {{target_ref}} for @{{requested_reviewer}} by @{{author}}\n{{url_line}}";
+
+  const openedTask = {
+    id: "task-created",
+    executionStatus: "idle",
+    taskType: "build"
+  };
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({
+        id: "repo-1",
+        name: "repo",
+        url: "https://github.com/acme/repo.git",
+        defaultBranch: "main",
+        githubIntegrationBotLogin: "agentswarm-bot",
+        githubPrReviewInstructions: reviewInstructions,
+        githubPrTaskOwnerUserId: "user-1"
+      }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubPrNumber: async () => null,
+      createTask: async (input: unknown, _repository: unknown, ownerUserId: string) => {
+        createdTasks.push({ input, ownerUserId });
+        return {
+          id: "task-created"
+        };
+      },
+      patchTask: async (_taskId: string, patch: unknown) => {
+        patches.push(patch);
+        return openedTask;
+      },
+      appendMessage: async (_taskId: string, input: unknown) => {
+        appendedMessages.push(input);
+        return {
+          id: "message-created",
+          content: (input as { content: string }).content
+        };
+      },
+      setExecutionState: async () => openedTask
+    } as never,
+    scheduler: {
+      triggerAction: async (...args: unknown[]) => {
+        triggeredActions.push(args);
+        return true;
+      }
+    } as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "review_requested",
+    repository: {
+      full_name: "acme/repo"
+    },
+    pull_request: {
+      number: 42,
+      title: "Improve importer",
+      body: "Please review the importer changes.",
+      html_url: "https://github.com/acme/repo/pull/42",
+      head: {
+        ref: "feature/importer",
+        repo: {
+          full_name: "acme/repo"
+        }
+      }
+    },
+    requested_reviewer: {
+      login: "agentswarm-bot"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "pull_request",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), {
+    queued: true,
+    taskId: "task-created",
+    messageId: "message-created",
+    createdTask: true
+  });
+  assert.deepEqual(createdTasks[0], {
+    ownerUserId: "user-1",
+    input: {
+      title: "GitHub PR #42 review requested",
+      draft: true,
+      repoId: "repo-1",
+      prompt: "Review PR #42 for @agentswarm-bot by @alice\nURL: https://github.com/acme/repo/pull/42",
+      taskType: "build",
+      baseBranch: "feature/importer",
+      branchStrategy: "work_on_branch",
+      autoApplyCheckpoints: true
+    }
+  });
+  assert.deepEqual(patches[0], {
+    githubPrNumber: 42,
+    status: "open",
+    workflowStatus: "ready",
+    executionStatus: "idle",
+    executionAction: "build",
+    lastAction: "build"
+  });
+  assert.deepEqual(appendedMessages[0], {
+    role: "user",
+    action: "build",
+    queueState: "pending",
+    queueSource: "github_pr",
+    externalId: "github:review_requested:42:reviewer:agentswarm-bot",
+    content: "Review PR #42 for @agentswarm-bot by @alice\nURL: https://github.com/acme/repo/pull/42"
+  });
+  assert.deepEqual(triggeredActions[0], [
+    "task-created",
+    "build",
+    { content: "Review PR #42 for @agentswarm-bot by @alice\nURL: https://github.com/acme/repo/pull/42" },
+    { promptMessageId: "message-created" }
+  ]);
+
+  await app.close();
+});
+
+test("GitHub PR webhook ignores review requests for other reviewers", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const secret = "webhook-secret";
+  let taskLookupCount = 0;
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({
+        id: "repo-1",
+        githubIntegrationBotLogin: "agentswarm-bot"
+      }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubPrNumber: async () => {
+        taskLookupCount += 1;
+        return null;
+      }
+    } as never,
+    scheduler: {} as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "review_requested",
+    repository: {
+      full_name: "acme/repo"
+    },
+    pull_request: {
+      number: 42,
+      html_url: "https://github.com/acme/repo/pull/42",
+      head: {
+        ref: "feature/importer",
+        repo: {
+          full_name: "acme/repo"
+        }
+      }
+    },
+    requested_reviewer: {
+      login: "bob"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "pull_request",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { queued: false, reason: "review_request_not_for_bot" });
+  assert.equal(taskLookupCount, 0);
+
+  await app.close();
+});
+
 test("GitHub webhook queues linked issue comments", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {

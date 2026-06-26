@@ -49,6 +49,7 @@ const createRepository = (input: CreateRepositoryInput, overrides: Partial<Repos
   githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge === true,
   githubPrInitialInstructions: input.githubPrInitialInstructions ?? null,
   githubPrFeedbackInstructions: input.githubPrFeedbackInstructions ?? null,
+  githubPrReviewInstructions: input.githubPrReviewInstructions ?? null,
   githubPrTaskOwnerUserId: input.githubPrTaskOwnerUserId ?? null,
   webhookLastAttemptAt: null,
   webhookLastStatus: null,

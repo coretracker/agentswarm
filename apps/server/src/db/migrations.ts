@@ -578,5 +578,12 @@ Feedback:
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS github_pr_auto_archive_on_merge boolean NOT NULL DEFAULT false;
     `
+  },
+  {
+    id: "20260626_01_repository_github_pr_review_instructions",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_review_instructions text NULL;
+    `
   }
 ];
