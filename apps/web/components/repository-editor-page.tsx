@@ -9,7 +9,11 @@ import type {
   RepositoryEnvVarInput,
   User
 } from "@agentswarm/shared-types";
-import { DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS, DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS } from "@agentswarm/shared-types";
+import {
+  DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
+  DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
+  DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS
+} from "@agentswarm/shared-types";
 import { Alert, Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
 import { ApiError, api } from "../src/api/client";
 import { trackEvent } from "../src/utils/analytics";
@@ -38,6 +42,7 @@ type RepositoryFormValues = {
   githubPrAutoArchiveOnMerge: boolean;
   githubPrInitialInstructions: string;
   githubPrFeedbackInstructions: string;
+  githubPrReviewInstructions: string;
   githubPrTaskOwnerUserId: string;
 };
 
@@ -59,6 +64,7 @@ const emptyValues = (): RepositoryFormValues => ({
   githubPrAutoArchiveOnMerge: false,
   githubPrInitialInstructions: DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
   githubPrFeedbackInstructions: DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
+  githubPrReviewInstructions: DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
   githubPrTaskOwnerUserId: ""
 });
 
@@ -98,6 +104,10 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
     typeof values?.githubPrFeedbackInstructions === "string"
       ? values.githubPrFeedbackInstructions
       : DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
+  githubPrReviewInstructions:
+    typeof values?.githubPrReviewInstructions === "string"
+      ? values.githubPrReviewInstructions
+      : DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
   githubPrTaskOwnerUserId: typeof values?.githubPrTaskOwnerUserId === "string" ? values.githubPrTaskOwnerUserId : ""
 });
 
@@ -123,7 +133,7 @@ const parseAllowedGitHubUsers = (value: string): string[] => {
 };
 
 const GITHUB_TEMPLATE_MARKER_HELP =
-  "Template markers: {{target_label}}, {{target_ref}}, {{title}}, {{title_line}}, {{feedback_type}}, {{author}}, {{issue_title_line}}, {{review_state_line}}, {{file_line}}, {{url_line}}, {{diff_context_block}}, {{feedback_body}}.";
+  "Template markers: {{target_label}}, {{target_ref}}, {{title}}, {{title_line}}, {{feedback_type}}, {{author}}, {{requested_reviewer}}, {{requested_reviewer_line}}, {{issue_title_line}}, {{review_state_line}}, {{file_line}}, {{url_line}}, {{diff_context_block}}, {{feedback_body}}.";
 
 const bytesToBase64 = (bytes: Uint8Array): string => {
   let binary = "";
@@ -265,6 +275,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           githubPrAutoArchiveOnMerge: repository.githubPrAutoArchiveOnMerge === true,
           githubPrInitialInstructions: repository.githubPrInitialInstructions ?? DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
           githubPrFeedbackInstructions: repository.githubPrFeedbackInstructions ?? DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
+          githubPrReviewInstructions: repository.githubPrReviewInstructions ?? DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
           githubPrTaskOwnerUserId: repository.githubPrTaskOwnerUserId ?? ""
         });
         form.setFieldsValue(initial);
@@ -469,6 +480,10 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 normalized.githubPrFeedbackInstructions.trim() === DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
                   ? null
                   : normalized.githubPrFeedbackInstructions.trim() || null,
+              githubPrReviewInstructions:
+                normalized.githubPrReviewInstructions.trim() === DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS
+                  ? null
+                  : normalized.githubPrReviewInstructions.trim() || null,
               githubPrTaskOwnerUserId: normalized.githubPrTaskOwnerUserId.trim() || null
             };
             if (mode === "edit" && editingRepository) {
@@ -904,7 +919,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra={
                       usersLoadError
                         ? `Users could not be loaded: ${usersLoadError}`
-                        : "Required for creating a new task when the bot is mentioned on an unlinked pull request."
+                        : "Required for creating a new task from unlinked GitHub issue, pull request feedback, or pull request review request events."
                     }
                   >
                     <Select
@@ -949,6 +964,21 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     }}
                   >
                     Reset feedback instructions
+                  </Button>
+                  <Form.Item
+                    name="githubPrReviewInstructions"
+                    label="Review Agent Instructions"
+                    extra={`Used when GitHub requests a pull request review from the integration bot. ${GITHUB_TEMPLATE_MARKER_HELP}`}
+                    rules={[{ max: 8000, message: "Instructions must be 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 8, maxRows: 16 }} />
+                  </Form.Item>
+                  <Button
+                    onClick={() => {
+                      form.setFieldValue("githubPrReviewInstructions", DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS);
+                    }}
+                  >
+                    Reset review instructions
                   </Button>
                   <Alert
                     type="info"

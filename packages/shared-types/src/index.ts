@@ -29,6 +29,20 @@ export const DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS = [
   "After handling this feedback, reply on GitHub at the URL above with a brief status."
 ].join("\n");
 
+export const DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS = [
+  "A GitHub pull request review was requested for {{target_ref}}.",
+  "",
+  "Requested by: @{{author}}",
+  "{{requested_reviewer_line}}{{title_line}}{{url_line}}",
+  "Pull request body:",
+  "{{feedback_body}}",
+  "",
+  "Review the pull request and leave GitHub review feedback or comments.",
+  "Do not make code changes unless these instructions explicitly request them.",
+  "",
+  "After completing the review, reply on GitHub at the URL above with a brief status."
+].join("\n");
+
 /** Native effort values from providers. "max" is Claude-only. */
 export type ProviderProfile = "low" | "medium" | "high" | "max";
 
@@ -458,6 +472,7 @@ export interface Repository {
   githubPrAutoArchiveOnMerge?: boolean;
   githubPrInitialInstructions?: string | null;
   githubPrFeedbackInstructions?: string | null;
+  githubPrReviewInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
   webhookLastAttemptAt: string | null;
   webhookLastStatus: "success" | "failed" | null;
@@ -890,6 +905,7 @@ export interface CreateRepositoryInput {
   githubPrAutoArchiveOnMerge?: boolean;
   githubPrInitialInstructions?: string | null;
   githubPrFeedbackInstructions?: string | null;
+  githubPrReviewInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
 }
 
@@ -911,6 +927,7 @@ export interface UpdateRepositoryInput {
   githubPrAutoArchiveOnMerge?: boolean;
   githubPrInitialInstructions?: string | null;
   githubPrFeedbackInstructions?: string | null;
+  githubPrReviewInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
 }
 

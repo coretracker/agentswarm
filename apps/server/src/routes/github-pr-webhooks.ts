@@ -1,6 +1,10 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS, DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS } from "@agentswarm/shared-types";
+import {
+  DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
+  DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
+  DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS
+} from "@agentswarm/shared-types";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
@@ -15,7 +19,7 @@ type RawBodyRequest = FastifyRequest & { rawBody?: string };
 interface GitHubPrFeedback {
   target: "pr";
   externalId: string;
-  kind: "pr_comment" | "review_comment" | "review";
+  kind: "pr_comment" | "review_comment" | "review" | "review_requested";
   prNumber: number;
   title?: string;
   author: string;
@@ -29,6 +33,7 @@ interface GitHubPrFeedback {
   line?: number;
   diffHunk?: string;
   reviewState?: string;
+  requestedReviewer?: string;
 }
 
 interface GitHubIssueFeedback {
@@ -45,7 +50,7 @@ interface GitHubIssueFeedback {
 }
 
 type GitHubFeedback = GitHubPrFeedback | GitHubIssueFeedback;
-type GitHubPromptKind = "initial" | "feedback";
+type GitHubPromptKind = "initial" | "feedback" | "review";
 
 interface GitHubPrBranchDetails {
   headBranch: string;
@@ -265,6 +270,32 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
     };
   }
 
+  if (event === "pull_request") {
+    if (action !== "review_requested" || !isRecord(payload.pull_request)) {
+      return null;
+    }
+    const prNumber = numberValue(payload.pull_request, "number");
+    const requestedReviewer = recordValue(payload, "requested_reviewer");
+    const requestedReviewerLogin = requestedReviewer ? stringValue(requestedReviewer, "login") : null;
+    if (!prNumber || !requestedReviewerLogin) {
+      return null;
+    }
+    return {
+      target: "pr",
+      externalId: `github:review_requested:${prNumber}:reviewer:${requestedReviewerLogin.toLowerCase()}`,
+      kind: "review_requested",
+      prNumber,
+      title: stringValue(payload.pull_request, "title") ?? undefined,
+      author,
+      body: stringValue(payload.pull_request, "body") ?? "",
+      url: stringValue(payload.pull_request, "html_url") ?? "",
+      repositoryFullName: readRepositoryFullName(payload),
+      prHeadBranch: readPullRequestHeadDetails(payload.pull_request)?.headBranch,
+      prHeadRepositoryFullName: readPullRequestHeadDetails(payload.pull_request)?.headRepositoryFullName,
+      requestedReviewer: requestedReviewerLogin
+    };
+  }
+
   if (event === "issues") {
     if ((action !== "opened" && action !== "edited" && action !== "assigned") || !isRecord(payload.issue)) {
       return null;
@@ -338,6 +369,7 @@ const buildTemplateMarkers = (feedback: GitHubFeedback): Record<string, string> 
   const line = feedback.target === "pr" && feedback.line ? String(feedback.line) : "";
   const fileWithLine = file ? `${file}${line ? `:${line}` : ""}` : "";
   const diffHunk = feedback.target === "pr" ? feedback.diffHunk ?? "" : "";
+  const requestedReviewer = feedback.target === "pr" ? feedback.requestedReviewer ?? "" : "";
 
   return {
     target_label: targetLabel,
@@ -347,6 +379,8 @@ const buildTemplateMarkers = (feedback: GitHubFeedback): Record<string, string> 
     feedback_type: feedback.kind,
     type: feedback.kind,
     author: feedback.author,
+    requested_reviewer: requestedReviewer,
+    requested_reviewer_line: requestedReviewer ? `Requested reviewer: @${requestedReviewer}\n` : "",
     title,
     title_line: title ? `Title: ${title}\n` : "",
     issue_title: issueTitle,
@@ -367,11 +401,13 @@ const buildTemplateMarkers = (feedback: GitHubFeedback): Record<string, string> 
 const formatGitHubMessage = (
   feedback: GitHubFeedback,
   kind: GitHubPromptKind,
-  templates: { initial?: string | null; feedback?: string | null }
+  templates: { initial?: string | null; feedback?: string | null; review?: string | null }
 ): string => {
   const template =
     kind === "initial"
       ? templates.initial?.trim() || DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS
+      : kind === "review"
+        ? templates.review?.trim() || DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS
       : templates.feedback?.trim() || DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS;
   return replaceTemplateMarkers(template, buildTemplateMarkers(feedback));
 };
@@ -410,7 +446,9 @@ const resolveGitHubPrBranchDetails = async (
 };
 
 const formatNewTaskTitle = (feedback: GitHubPrFeedback): string =>
-  `GitHub PR #${feedback.prNumber} feedback from @${feedback.author}`;
+  feedback.kind === "review_requested"
+    ? `GitHub PR #${feedback.prNumber} review requested`
+    : `GitHub PR #${feedback.prNumber} feedback from @${feedback.author}`;
 
 const formatNewIssueTaskTitle = (feedback: GitHubIssueFeedback): string =>
   feedback.issueTitle?.trim() || `GitHub issue #${feedback.issueNumber} feedback from @${feedback.author}`;
@@ -485,6 +523,13 @@ export const registerGitHubPrWebhookRoutes = (
     if (ignoredBotLogin && normalizeGitHubLogin(feedback.author) === ignoredBotLogin) {
       return reply.status(202).send({ queued: false, reason: "ignored_bot_user" });
     }
+    if (
+      feedback.target === "pr" &&
+      feedback.kind === "review_requested" &&
+      (!ignoredBotLogin || normalizeGitHubLogin(feedback.requestedReviewer) !== ignoredBotLogin)
+    ) {
+      return reply.status(202).send({ queued: false, reason: "review_request_not_for_bot" });
+    }
     const allowedUsers = Array.isArray(repository.githubPrAllowedUsers) ? repository.githubPrAllowedUsers : [];
     if (allowedUsers.length > 0) {
       const normalizedAuthor = normalizeGitHubLogin(feedback.author);
@@ -500,7 +545,13 @@ export const registerGitHubPrWebhookRoutes = (
     if (feedback.target === "issue" && feedback.body.trim().length === 0 && !issueAssignedToBot) {
       return reply.status(202).send({ queued: false, reason: "ignored_event" });
     }
-    if (repository.githubPrRequireBotMention === true && ignoredBotLogin && !mentionsGitHubLogin(feedback.body, ignoredBotLogin) && !issueAssignedToBot) {
+    if (
+      repository.githubPrRequireBotMention === true &&
+      ignoredBotLogin &&
+      !(feedback.target === "pr" && feedback.kind === "review_requested") &&
+      !mentionsGitHubLogin(feedback.body, ignoredBotLogin) &&
+      !issueAssignedToBot
+    ) {
       return reply.status(202).send({ queued: false, reason: "missing_bot_mention" });
     }
 
@@ -514,7 +565,8 @@ export const registerGitHubPrWebhookRoutes = (
 
         const content = formatGitHubMessage(feedback, "initial", {
           initial: repository.githubPrInitialInstructions,
-          feedback: repository.githubPrFeedbackInstructions
+          feedback: repository.githubPrFeedbackInstructions,
+          review: repository.githubPrReviewInstructions
         });
         const createdTask = await deps.taskStore.createTask(
           {
@@ -588,7 +640,8 @@ export const registerGitHubPrWebhookRoutes = (
         externalId: feedback.externalId,
         content: formatGitHubMessage(feedback, "feedback", {
           initial: repository.githubPrInitialInstructions,
-          feedback: repository.githubPrFeedbackInstructions
+          feedback: repository.githubPrFeedbackInstructions,
+          review: repository.githubPrReviewInstructions
         })
       });
 
@@ -628,9 +681,11 @@ export const registerGitHubPrWebhookRoutes = (
         return reply.status(202).send({ queued: false, reason: "fork_pr_branch_unsupported" });
       }
 
-      const content = formatGitHubMessage(feedback, "initial", {
+      const promptKind: GitHubPromptKind = feedback.kind === "review_requested" ? "review" : "initial";
+      const content = formatGitHubMessage(feedback, promptKind, {
         initial: repository.githubPrInitialInstructions,
-        feedback: repository.githubPrFeedbackInstructions
+        feedback: repository.githubPrFeedbackInstructions,
+        review: repository.githubPrReviewInstructions
       });
       const createdTask = await deps.taskStore.createTask(
         {
@@ -640,7 +695,8 @@ export const registerGitHubPrWebhookRoutes = (
           prompt: content,
           taskType: "build",
           baseBranch: branchDetails.headBranch,
-          branchStrategy: "work_on_branch"
+          branchStrategy: "work_on_branch",
+          ...(feedback.kind === "review_requested" ? { autoApplyCheckpoints: true } : {})
         },
         repository,
         ownerUserId
@@ -695,15 +751,17 @@ export const registerGitHubPrWebhookRoutes = (
       return reply.status(202).send({ queued: false, reason: "duplicate" });
     }
 
+    const linkedPromptKind: GitHubPromptKind = feedback.kind === "review_requested" ? "review" : "feedback";
     const message = await deps.taskStore.appendMessage(task.id, {
       role: "user",
       action: "build",
       queueState: "pending",
       queueSource: "github_pr",
       externalId: feedback.externalId,
-      content: formatGitHubMessage(feedback, "feedback", {
+      content: formatGitHubMessage(feedback, linkedPromptKind, {
         initial: repository.githubPrInitialInstructions,
-        feedback: repository.githubPrFeedbackInstructions
+        feedback: repository.githubPrFeedbackInstructions,
+        review: repository.githubPrReviewInstructions
       })
     });
 
