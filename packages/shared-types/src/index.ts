@@ -452,6 +452,7 @@ export interface Repository {
   defaultBranch: string;
   envVars: RepositoryEnvVarValue[];
   envSecrets?: RepositoryEnvSecret[];
+  mcpServers: McpServerConfig[];
   webhookUrl: string | null;
   webhookEnabled: boolean;
   webhookSecretConfigured: boolean;
@@ -858,7 +859,6 @@ export interface SystemSettings {
   gitUsername: string;
   gitAuthorName: string | null;
   gitAuthorEmail: string | null;
-  mcpServers: McpServerConfig[];
   openaiBaseUrl: string | null;
   taskPromptMagicModel: string;
   taskPromptMagicTemplate: string;
@@ -887,6 +887,7 @@ export interface CreateRepositoryInput {
   defaultBranch?: string;
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
+  mcpServers?: McpServerConfig[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
@@ -907,6 +908,7 @@ export interface UpdateRepositoryInput {
   defaultBranch?: string;
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
+  mcpServers?: McpServerConfig[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
@@ -1313,7 +1315,6 @@ export interface UpdateSettingsInput {
   gitUsername?: string;
   gitAuthorName?: string | null;
   gitAuthorEmail?: string | null;
-  mcpServers?: McpServerConfig[];
   openaiBaseUrl?: string | null;
   taskPromptMagicModel?: string;
   taskPromptMagicTemplate?: string;

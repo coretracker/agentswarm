@@ -14,6 +14,10 @@ class FakeRedis {
     this.values.set(key, value);
     return "OK";
   }
+
+  seed(key: string, value: unknown): void {
+    this.values.set(key, JSON.stringify(value));
+  }
 }
 
 const createCredentialStore = (credentials: RuntimeCredentials): CredentialStore => ({
@@ -74,5 +78,38 @@ describe("RedisSettingsStore runtime credentials", () => {
 
     assert.equal(credentials.gitAuthorName, "AgentSwarm");
     assert.equal(credentials.gitAuthorEmail, "agentswarm@example.com");
+  });
+
+  it("does not expose legacy global MCP servers", async () => {
+    const redis = new FakeRedis();
+    redis.seed("agentswarm:settings", {
+      defaultProvider: "codex",
+      maxAgents: 2,
+      branchPrefix: "agentswarm",
+      workspaceProvisioningMode: "clone_only",
+      gitUsername: "x-access-token",
+      mcpServers: [
+        {
+          name: "legacy",
+          enabled: true,
+          transport: "http",
+          url: "https://example.com/mcp"
+        }
+      ]
+    });
+    const settingsStore = new RedisSettingsStore(
+      redis as never,
+      { publish: async () => undefined } as never,
+      createCredentialStore({
+        githubToken: null,
+        openaiApiKey: null,
+        anthropicApiKey: null,
+        codexAuthJson: null
+      })
+    );
+
+    const settings = await settingsStore.getSettings();
+
+    assert.equal(Object.prototype.hasOwnProperty.call(settings, "mcpServers"), false);
   });
 });

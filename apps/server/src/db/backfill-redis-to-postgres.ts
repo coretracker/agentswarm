@@ -68,6 +68,7 @@ interface RepositoryRecord extends JsonRecord {
   defaultBranch?: string;
   envVars?: unknown[];
   envSecrets?: unknown[];
+  mcpServers?: unknown[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string | null;
@@ -94,7 +95,6 @@ interface SettingsRecord extends JsonRecord {
   maxAgents?: number;
   branchPrefix?: string;
   gitUsername?: string;
-  mcpServers?: unknown[];
   openaiBaseUrl?: string | null;
   codexDefaultModel?: string;
   codexDefaultEffort?: string;
@@ -511,6 +511,7 @@ const main = async (): Promise<void> => {
               default_branch,
               env_vars,
               env_secrets,
+              mcp_servers,
               webhook_url,
               webhook_enabled,
               webhook_secret,
@@ -528,7 +529,7 @@ const main = async (): Promise<void> => {
               created_at,
               updated_at
             )
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
           `,
           [
             repository.id,
@@ -537,6 +538,7 @@ const main = async (): Promise<void> => {
             trimString(repository.defaultBranch) ?? "develop",
             JSON.stringify(repositoryEnvVarArray(repository.envVars)),
             JSON.stringify(repositoryEnvSecretArray(repository.envSecrets)),
+            JSON.stringify(Array.isArray(repository.mcpServers) ? repository.mcpServers : []),
             trimString(repository.webhookUrl),
             repository.webhookEnabled === true,
             trimString(repository.webhookSecret),
@@ -591,7 +593,6 @@ const main = async (): Promise<void> => {
               branch_prefix,
               workspace_provisioning_mode,
               git_username,
-              mcp_servers,
               openai_base_url,
               task_prompt_magic_model,
               task_prompt_magic_template,
@@ -601,7 +602,7 @@ const main = async (): Promise<void> => {
               claude_default_effort,
               response_preference_presets
             )
-            VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13::jsonb)
+            VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
           `,
           [
             trimString(settings.defaultProvider) ?? "codex",
@@ -609,7 +610,6 @@ const main = async (): Promise<void> => {
             trimString(settings.branchPrefix) ?? "agentswarm",
             trimString((settings as { workspaceProvisioningMode?: string }).workspaceProvisioningMode) ?? "clone_only",
             trimString(settings.gitUsername) ?? "x-access-token",
-            JSON.stringify(Array.isArray(settings.mcpServers) ? settings.mcpServers : []),
             trimString(settings.openaiBaseUrl),
             trimString((settings as { taskPromptMagicModel?: string }).taskPromptMagicModel) ?? "gpt-5.4-mini",
             trimString((settings as { taskPromptMagicTemplate?: string }).taskPromptMagicTemplate) ?? "",

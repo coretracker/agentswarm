@@ -168,6 +168,7 @@ const repository: Repository = {
   url: "https://github.com/example/repo.git",
   defaultBranch: "main",
   envVars: [],
+  mcpServers: [],
   webhookUrl: null,
   webhookEnabled: false,
   webhookSecretConfigured: false,

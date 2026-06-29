@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type {
   CreateRepositoryInput,
+  McpServerTransport,
   Repository,
   RepositoryEnvSecretInput,
   RepositoryEnvVarInput,
@@ -15,6 +16,7 @@ import {
   DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS
 } from "@agentswarm/shared-types";
 import { Alert, Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
+import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { ApiError, api } from "../src/api/client";
 import { trackEvent } from "../src/utils/analytics";
 import { buildApiUrl } from "../src/lib/public-url";
@@ -30,6 +32,15 @@ type RepositoryFormValues = {
   defaultBranch: string;
   envVars: Array<{ key: string; type: "text" | "file"; value: string; fileName: string; fileContentBase64: string }>;
   envSecrets: Array<{ key: string; type: "text" | "file"; value: string; fileName: string; fileContentBase64: string }>;
+  mcpServers: Array<{
+    name: string;
+    enabled: boolean;
+    transport: McpServerTransport;
+    command: string;
+    argsText: string;
+    url: string;
+    bearerTokenEnvVar: string;
+  }>;
   webhookEnabled: boolean;
   webhookUrl: string;
   webhookSecret: string;
@@ -52,6 +63,7 @@ const emptyValues = (): RepositoryFormValues => ({
   defaultBranch: "develop",
   envVars: [],
   envSecrets: [],
+  mcpServers: [],
   webhookEnabled: false,
   webhookUrl: "",
   webhookSecret: "",
@@ -86,6 +98,15 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
     fileName: typeof entry?.fileName === "string" ? entry.fileName : "",
     fileContentBase64: typeof entry?.fileContentBase64 === "string" ? entry.fileContentBase64 : ""
   })),
+  mcpServers: (values?.mcpServers ?? []).map((entry) => ({
+    name: typeof entry?.name === "string" ? entry.name : "",
+    enabled: entry?.enabled !== false,
+    transport: entry?.transport === "http" ? "http" : "stdio",
+    command: typeof entry?.command === "string" ? entry.command : "",
+    argsText: typeof entry?.argsText === "string" ? entry.argsText : "",
+    url: typeof entry?.url === "string" ? entry.url : "",
+    bearerTokenEnvVar: typeof entry?.bearerTokenEnvVar === "string" ? entry.bearerTokenEnvVar : ""
+  })),
   webhookEnabled: values?.webhookEnabled === true,
   webhookUrl: typeof values?.webhookUrl === "string" ? values.webhookUrl : "",
   webhookSecret: typeof values?.webhookSecret === "string" ? values.webhookSecret : "",
@@ -116,6 +137,19 @@ const REPOSITORY_ENV_VALUE_MAX_LENGTH = 8192;
 const REPOSITORY_ENV_FILE_MAX_BYTES = 256 * 1024;
 const ENV_VALUE_FILE_ACCEPT =
   ".txt,.env,.json,.yaml,.yml,.ini,.cfg,.conf,.properties,.xml,.pem,.crt,.cer,.key,.p12,.jks";
+
+const mcpTransportOptions: Array<{ label: string; value: McpServerTransport }> = [
+  { label: "stdio", value: "stdio" },
+  { label: "http", value: "http" }
+];
+
+const normalizeMcpServerName = (value: string | undefined): string =>
+  (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
 
 const parseAllowedGitHubUsers = (value: string): string[] => {
   const seen = new Set<string>();
@@ -262,6 +296,15 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             value: "",
             fileName: entry.type === "file" ? (entry.fileName ?? "") : "",
             fileContentBase64: ""
+          })),
+          mcpServers: (repository.mcpServers ?? []).map((server) => ({
+            name: server.name,
+            enabled: server.enabled,
+            transport: server.transport,
+            command: server.command ?? "",
+            argsText: (server.args ?? []).join("\n"),
+            url: server.url ?? "",
+            bearerTokenEnvVar: server.bearerTokenEnvVar ?? ""
           })),
           webhookEnabled: repository.webhookEnabled,
           webhookUrl: repository.webhookUrl ?? "",
@@ -462,6 +505,26 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               defaultBranch: normalized.defaultBranch,
               envVars,
               envSecrets,
+              mcpServers: normalized.mcpServers.map((server) =>
+                server.transport === "http"
+                  ? {
+                      name: server.name,
+                      enabled: server.enabled,
+                      transport: "http" as const,
+                      url: server.url.trim(),
+                      bearerTokenEnvVar: server.bearerTokenEnvVar.trim() || null
+                    }
+                  : {
+                      name: server.name,
+                      enabled: server.enabled,
+                      transport: "stdio" as const,
+                      command: server.command.trim(),
+                      args: server.argsText
+                        .split("\n")
+                        .map((item) => item.trim())
+                        .filter(Boolean)
+                    }
+              ),
               webhookEnabled: normalized.webhookEnabled,
               webhookUrl: normalized.webhookUrl.trim().length > 0 ? normalized.webhookUrl.trim() : null,
               ...(normalized.webhookSecret.trim().length > 0 ? { webhookSecret: normalized.webhookSecret.trim() } : {}),
@@ -774,6 +837,126 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     );
                   })}
                   <Button onClick={() => add({ key: "", type: "text", value: "", fileName: "", fileContentBase64: "" })}>Add secret</Button>
+                  <Form.ErrorList errors={errors} />
+                </Flex>
+              )}
+            </Form.List>
+            <Form.List
+              name="mcpServers"
+              rules={[
+                {
+                  validator: async (_, value: RepositoryFormValues["mcpServers"]) => {
+                    const seen = new Set<string>();
+                    for (const entry of value ?? []) {
+                      const name = normalizeMcpServerName(entry?.name);
+                      if (!name) {
+                        continue;
+                      }
+                      if (seen.has(name)) {
+                        throw new Error(`Duplicate MCP server name: ${entry.name}`);
+                      }
+                      seen.add(name);
+                    }
+                  }
+                }
+              ]}
+            >
+              {(fields, { add, remove }, { errors }) => (
+                <Flex vertical gap={8} style={{ marginBottom: 16 }}>
+                  <Typography.Text strong>MCP Servers</Typography.Text>
+                  {fields.map((field) => (
+                    <div
+                      key={field.key}
+                      style={{
+                        border: "1px solid #d9d9d9",
+                        borderRadius: 8,
+                        padding: 12,
+                        width: "100%"
+                      }}
+                    >
+                      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                        <Flex align="center" justify="space-between" gap={8} wrap="wrap">
+                          <Typography.Text strong>{`Server ${field.name + 1}`}</Typography.Text>
+                          <Button danger type="text" icon={<DeleteOutlined />} onClick={() => remove(field.name)}>
+                            Remove
+                          </Button>
+                        </Flex>
+                        <Form.Item name={[field.name, "name"]} label="Name" rules={[{ required: true, whitespace: true }]}>
+                          <Input placeholder="github" />
+                        </Form.Item>
+                        <Form.Item name={[field.name, "enabled"]} label="Enabled" valuePropName="checked">
+                          <Switch />
+                        </Form.Item>
+                        <Form.Item name={[field.name, "transport"]} label="Transport" rules={[{ required: true }]}>
+                          <Select options={mcpTransportOptions} />
+                        </Form.Item>
+                        <Form.Item noStyle shouldUpdate>
+                          {() => {
+                            const transport = form.getFieldValue(["mcpServers", field.name, "transport"]) ?? "stdio";
+                            return transport === "http" ? (
+                              <>
+                                <Form.Item
+                                  name={[field.name, "url"]}
+                                  label="URL"
+                                  rules={[
+                                    { required: true, whitespace: true },
+                                    { type: "url", message: "Enter a valid absolute URL." }
+                                  ]}
+                                >
+                                  <Input placeholder="https://example.com/mcp" />
+                                </Form.Item>
+                                <Form.Item
+                                  name={[field.name, "bearerTokenEnvVar"]}
+                                  label="Bearer Token Env Var"
+                                  rules={[
+                                    {
+                                      validator: (_rule, value?: string) => {
+                                        if (!value || value.trim().length === 0) {
+                                          return Promise.resolve();
+                                        }
+
+                                        return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.trim())
+                                          ? Promise.resolve()
+                                          : Promise.reject(new Error("Use a valid environment variable name with letters, numbers, and underscores."));
+                                      }
+                                    }
+                                  ]}
+                                >
+                                  <Input placeholder="MY_MCP_TOKEN" />
+                                </Form.Item>
+                              </>
+                            ) : (
+                              <>
+                                <Form.Item name={[field.name, "command"]} label="Command" rules={[{ required: true, whitespace: true }]}>
+                                  <Input placeholder="docker" />
+                                </Form.Item>
+                                <Form.Item name={[field.name, "argsText"]} label="Arguments">
+                                  <Input.TextArea rows={6} placeholder={"run\n-i\n--rm\nmcp/memory"} />
+                                </Form.Item>
+                              </>
+                            );
+                          }}
+                        </Form.Item>
+                      </Space>
+                    </div>
+                  ))}
+                  <Button
+                    type="dashed"
+                    icon={<PlusOutlined />}
+                    onClick={() =>
+                      add({
+                        name: "",
+                        enabled: true,
+                        transport: "stdio",
+                        command: "",
+                        argsText: "",
+                        url: "",
+                        bearerTokenEnvVar: ""
+                      })
+                    }
+                  >
+                    Add MCP server
+                  </Button>
                   <Form.ErrorList errors={errors} />
                 </Flex>
               )}

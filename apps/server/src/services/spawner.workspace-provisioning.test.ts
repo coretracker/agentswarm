@@ -152,6 +152,37 @@ describe("SpawnerService workspace provisioning", () => {
     });
   });
 
+  it("resolves task runtime MCP servers from the task repository", async () => {
+    const spawner = new SpawnerService(
+      {} as never,
+      {} as never,
+      {
+        getAuthSessionUser: async () => null,
+        listUsers: async () => []
+      } as never,
+      {
+        getRepositoryRuntimeEnvEntries: async () => [],
+        getRepositoryMcpServers: async (repositoryId: string) => [
+          {
+            name: `${repositoryId}-github`,
+            transport: "http",
+            url: "https://api.githubcopilot.com/mcp",
+            bearerTokenEnvVar: "REPO_MCP_TOKEN",
+            enabled: true
+          }
+        ]
+      } as never
+    );
+
+    const runtimeMcp = await spawner.buildRuntimeMcpConfigForTask(createTask({ repoId: "repo-7" }), "run-1");
+
+    assert.equal(runtimeMcp.injectedAgentSwarmMcp, false);
+    assert.deepEqual(
+      runtimeMcp.servers.map((server) => server.name),
+      ["repo-7-github"]
+    );
+  });
+
   it("allows internal checkpoint apply flow to bypass the running-task guard", async () => {
     const spawner = new SpawnerService(
       {

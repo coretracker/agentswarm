@@ -13,6 +13,7 @@ The terms below come from current repository docs and code.
 - Postflight: optional automation that runs after a successful build task.
 - Repository environment variable: non-sensitive key/value configuration passed into repository task runtimes.
 - Repository environment secret: write-only sensitive value stored per repository and exposed only as “configured” in UI/API reads.
+- Repository MCP server: repository-scoped tool server configuration passed only to task runs and interactive terminals for that repository.
 
 ## TODO
 - TODO: Confirm final user-facing wording for “checkpoint” vs “change proposal” in product UI copy.

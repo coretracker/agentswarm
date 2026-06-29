@@ -435,7 +435,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
     if (!runtime.ok) {
       throw new Error(runtime.reason);
     }
-    const runtimeMcp = await deps.spawner.buildRuntimeMcpConfigForTask(task, settings.mcpServers, terminalSessionId);
+    const runtimeMcp = await deps.spawner.buildRuntimeMcpConfigForTask(task, terminalSessionId);
     const codexProviderDefinition = getProviderRuntimeDefinition("codex");
     const claudeProviderDefinition = getProviderRuntimeDefinition("claude");
     await Promise.all([
