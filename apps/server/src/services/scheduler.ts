@@ -291,6 +291,7 @@ export class SchedulerService {
   private async executeTask(queueEntry: QueueEntry, requireQueuedStatus: boolean): Promise<void> {
     const taskId = queueEntry.taskId;
     let completedSuccessfully = false;
+    let cancelledByUser = false;
     try {
       const task = await this.taskStore.getTask(taskId);
       if (!task) {
@@ -323,6 +324,7 @@ export class SchedulerService {
     } catch (error) {
       const task = await this.taskStore.getTask(taskId);
       if (error instanceof CancelledTaskError || task?.executionStatus === "cancelled") {
+        cancelledByUser = true;
         await this.taskStore.appendLog(taskId, "Spawner: task cancelled by user.");
       } else {
         const message = error instanceof Error ? error.message : "Unknown runtime error";
@@ -330,7 +332,7 @@ export class SchedulerService {
       }
     } finally {
       this.activeExecutionCount = Math.max(0, this.activeExecutionCount - 1);
-      if (completedSuccessfully) {
+      if (completedSuccessfully || cancelledByUser) {
         await this.triggerNextPendingAction(taskId, "auto").catch(() => false);
       }
       await this.drainQueue();

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { CancelledTaskError } from "./spawner.js";
 import { SchedulerService } from "./scheduler.js";
 
 describe("SchedulerService.triggerAction", () => {
@@ -305,6 +306,56 @@ describe("SchedulerService.triggerAction", () => {
     assert.deepEqual(autoTriggers, [{ taskId: "task-6", reason: "auto" }]);
   });
 
+  it("advances to the next pending follow-up after a running task is cancelled", async () => {
+    const logs: string[] = [];
+    const autoTriggers: Array<{ taskId: string; reason: string }> = [];
+    let getTaskCalls = 0;
+
+    const taskStore = {
+      getTask: async () => {
+        getTaskCalls += 1;
+        return {
+          id: "task-7",
+          status: "open",
+          executionStatus: getTaskCalls === 1 ? "queued" : "cancelled"
+        };
+      },
+      appendLog: async (_taskId: string, line: string) => {
+        logs.push(line);
+      }
+    };
+    const scheduler = new SchedulerService(
+      taskStore as never,
+      {} as never,
+      {} as never,
+      {
+        runTask: async () => {
+          throw new CancelledTaskError();
+        }
+      } as never
+    );
+    (scheduler as any).triggerNextPendingAction = async (taskId: string, reason: string) => {
+      autoTriggers.push({ taskId, reason });
+      return true;
+    };
+    (scheduler as any).drainQueue = async () => undefined;
+
+    await (scheduler as any).executeTask(
+      {
+        taskId: "task-7",
+        action: "build",
+        reason: "manual",
+        promptMessageId: null,
+        input: { content: "Keep going" }
+      },
+      true
+    );
+
+    assert.equal(logs.length, 1);
+    assert.match(logs[0] ?? "", /task cancelled by user/i);
+    assert.deepEqual(autoTriggers, [{ taskId: "task-7", reason: "auto" }]);
+  });
+
   it("unsticks stale queued tasks before resuming the next pending follow-up", async () => {
     const removedTasks: string[] = [];
     const idleTransitions: Array<{ taskId: string; status: string; patch: unknown }> = [];
@@ -313,7 +364,7 @@ describe("SchedulerService.triggerAction", () => {
 
     const taskStore = {
       getTask: async () => ({
-        id: "task-7",
+        id: "task-8",
         status: "open",
         executionStatus: "queued"
       }),
@@ -340,13 +391,13 @@ describe("SchedulerService.triggerAction", () => {
       return true;
     };
 
-    const accepted = await scheduler.unstickTaskQueue("task-7", "manual");
+    const accepted = await scheduler.unstickTaskQueue("task-8", "manual");
 
     assert.equal(accepted, true);
-    assert.deepEqual(removedTasks, ["task-7"]);
+    assert.deepEqual(removedTasks, ["task-8"]);
     assert.deepEqual(idleTransitions, [
       {
-        taskId: "task-7",
+        taskId: "task-8",
         status: "idle",
         patch: {
           enqueued: false,
@@ -356,7 +407,7 @@ describe("SchedulerService.triggerAction", () => {
       }
     ]);
     assert.match(logs[0] ?? "", /reset stale queued state/i);
-    assert.deepEqual(autoTriggers, [{ taskId: "task-7", reason: "manual" }]);
+    assert.deepEqual(autoTriggers, [{ taskId: "task-8", reason: "manual" }]);
   });
 
   it("does not unstick a task while a run is still active", async () => {
@@ -364,13 +415,13 @@ describe("SchedulerService.triggerAction", () => {
     let triggered = false;
     const taskStore = {
       getTask: async () => ({
-        id: "task-8",
+        id: "task-9",
         status: "open",
         executionStatus: "queued"
       }),
       hasPendingChangeProposal: async () => false,
       getActiveInteractiveSession: async () => null,
-      listRuns: async () => [{ id: "run-1", taskId: "task-8", action: "build", status: "running" }],
+      listRuns: async () => [{ id: "run-1", taskId: "task-9", action: "build", status: "running" }],
       hasPendingActionMessage: async () => true
     };
     const taskQueueStore = {
@@ -384,7 +435,7 @@ describe("SchedulerService.triggerAction", () => {
       return true;
     };
 
-    const accepted = await scheduler.unstickTaskQueue("task-8", "manual");
+    const accepted = await scheduler.unstickTaskQueue("task-9", "manual");
 
     assert.equal(accepted, false);
     assert.equal(removed, false);

@@ -2204,6 +2204,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         ) ?? null,
     [chatTimeline]
   );
+  const activeAutoRunHistoryEntry = useMemo(
+    () =>
+      [...chatTimeline]
+        .reverse()
+        .find(
+          (entry): entry is Extract<(typeof chatTimeline)[number], { kind: "grouped_auto_run" }> =>
+            entry.kind === "grouped_auto_run" && entry.run.status === "running" && entry.run.taskId === task?.id
+        ) ?? null,
+    [chatTimeline, task?.id]
+  );
   const historicalChatTimeline = useMemo(
     () => chatTimeline,
     [chatTimeline]
@@ -2474,6 +2484,30 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       );
     } catch (error) {
       showTaskActionError(error, "Task execution could not be started");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+  const handleCancelTask = async () => {
+    if (!task || !canCancel) {
+      return;
+    }
+
+    setSubmitting("cancel");
+    try {
+      const updatedTask = await api.cancelTask(task.id);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success(isQueued ? "Task cancelled" : "Cancellation requested");
+    } catch (error) {
+      showTaskActionError(error, "Task could not be cancelled");
     } finally {
       setSubmitting(null);
     }
@@ -3488,7 +3522,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         canDelete ? { key: "delete", label: "Delete Task", danger: true } : null
       ].filter(Boolean)
     : [];
-  const hasExecutionButtons = canCancel || canStartDraft;
+  const showHeaderCancel = canCancel && activeAutoRunHistoryEntry === null;
+  const hasExecutionButtons = showHeaderCancel || canStartDraft || canUnstickQueue;
   const assigneeLabel = task?.ownerUserId ? (assigneeNameById.get(task.ownerUserId) ?? task.ownerUserId) : "Unassigned";
   const contextContent = (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
@@ -5361,6 +5396,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     const promptText = entry.promptText;
     const runStatusLabel = entry.run.status;
     const runStatusTagColor = runStatusColor[entry.run.status];
+    const showRunCancel = canCancel && activeAutoRunHistoryEntry?.key === entry.key && !isArchived;
 
     return (
       <Card
@@ -5379,9 +5415,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </Space>
         }
         extra={
-          <Typography.Text type="secondary">
-            {dayjs(entry.run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(entry.run.startedAt, entry.run.finishedAt)}
-          </Typography.Text>
+          <Space size={8} wrap style={{ justifyContent: "flex-end" }}>
+            <Typography.Text type="secondary">
+              {dayjs(entry.run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(entry.run.startedAt, entry.run.finishedAt)}
+            </Typography.Text>
+            {showRunCancel ? (
+              <Button size="small" danger onClick={() => void handleCancelTask()} loading={submitting === "cancel"}>
+                Cancel
+              </Button>
+            ) : null}
+          </Space>
         }
       >
         <Flex vertical gap="middle">
@@ -6220,18 +6263,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                               Start Task
                             </Button>
                           ) : null}
-                          {canCancel ? (
+                          {showHeaderCancel ? (
                             <Button
                               danger
-                              onClick={async () => {
-                                setSubmitting("cancel");
-                                try {
-                                  await api.cancelTask(task.id);
-                                  messageApi.success(isQueued ? "Task cancelled" : "Cancellation requested");
-                                } finally {
-                                  setSubmitting(null);
-                                }
-                              }}
+                              onClick={() => void handleCancelTask()}
                               loading={submitting === "cancel"}
                             >
                               Cancel
