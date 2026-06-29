@@ -286,7 +286,7 @@ export async function getTaskInteractiveTerminalStatus(
     return { available: false, reason: "No workspace folder on disk for this task yet." };
   }
 
-  const credentials = await settingsStore.getRuntimeCredentials(userId, task.codexCredentialSource ?? "auto");
+  const credentials = await settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto");
   const runtime = resolveGitTerminalRuntimeConfig(credentials);
   if (!runtime.ok) {
     return { available: false, reason: runtime.reason };
@@ -418,20 +418,19 @@ async function initializeTaskInteractiveTerminalWebSocket(
     const [
       credentials,
       settings,
-      gitIdentity,
       repositoryRuntimeEnvEntries,
       codexProviderStatePaths,
       claudeProviderStatePaths
     ] = await Promise.all([
-      deps.settingsStore.getRuntimeCredentials(userId, task.codexCredentialSource ?? "auto"),
+      deps.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto"),
       deps.settingsStore.getSettings(),
-      resolveTaskGitCommitIdentity(task, deps.userStore, {
-        ...DEFAULT_GIT_COMMIT_IDENTITY
-      }),
       deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
       ensureTaskProviderStatePaths(task.id, "codex"),
       ensureTaskProviderStatePaths(task.id, "claude")
     ]);
+    const gitIdentity = resolveTaskGitCommitIdentity(settings, {
+      ...DEFAULT_GIT_COMMIT_IDENTITY
+    });
     const runtime = resolveGitTerminalRuntimeConfig(credentials, gitIdentity);
     if (!runtime.ok) {
       throw new Error(runtime.reason);

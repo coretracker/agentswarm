@@ -269,8 +269,6 @@ export class RedisUserStore implements UserStore {
       id: user.id,
       name: user.name,
       email: user.email,
-      gitAuthorName: user.gitAuthorName,
-      gitAuthorEmail: user.gitAuthorEmail,
       active: user.active,
       agentResponsePreference: user.agentResponsePreference,
       roles: this.buildRoleRefs(roles),
@@ -445,8 +443,6 @@ export class RedisUserStore implements UserStore {
   async createUser(input: CreateUserInput): Promise<User> {
     const name = normalizeUserName(input.name);
     const email = normalizeUserEmail(input.email);
-    const gitAuthorName = normalizeOptionalGitAuthorName(input.gitAuthorName);
-    const gitAuthorEmail = normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
     const password = input.password.trim();
 
     if (!name) {
@@ -476,8 +472,8 @@ export class RedisUserStore implements UserStore {
       id: nanoid(),
       name,
       email,
-      gitAuthorName,
-      gitAuthorEmail,
+      gitAuthorName: null,
+      gitAuthorEmail: null,
       active: input.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
@@ -501,10 +497,6 @@ export class RedisUserStore implements UserStore {
 
     const nextName = input.name === undefined ? current.name : normalizeUserName(input.name);
     const nextEmail = input.email === undefined ? current.email : normalizeUserEmail(input.email);
-    const nextGitAuthorName =
-      input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName);
-    const nextGitAuthorEmail =
-      input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
     if (!nextName) {
       throw new HttpError(400, "User name is required");
     }
@@ -544,8 +536,6 @@ export class RedisUserStore implements UserStore {
       ...current,
       name: nextName,
       email: nextEmail,
-      gitAuthorName: nextGitAuthorName,
-      gitAuthorEmail: nextGitAuthorEmail,
       active: nextActive,
       agentResponsePreference:
         input.agentResponsePreference === undefined
@@ -754,8 +744,6 @@ export class PostgresUserStore implements UserStore {
       id: user.id,
       name: user.name,
       email: user.email,
-      gitAuthorName: user.gitAuthorName,
-      gitAuthorEmail: user.gitAuthorEmail,
       active: user.active,
       agentResponsePreference: user.agentResponsePreference,
       roles: this.buildRoleRefs(roles),
@@ -1024,8 +1012,6 @@ export class PostgresUserStore implements UserStore {
   async createUser(input: CreateUserInput): Promise<User> {
     const name = normalizeUserName(input.name);
     const email = normalizeUserEmail(input.email);
-    const gitAuthorName = normalizeOptionalGitAuthorName(input.gitAuthorName);
-    const gitAuthorEmail = normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
     const password = input.password.trim();
 
     if (!name) {
@@ -1055,8 +1041,8 @@ export class PostgresUserStore implements UserStore {
       id: nanoid(),
       name,
       email,
-      gitAuthorName,
-      gitAuthorEmail,
+      gitAuthorName: null,
+      gitAuthorEmail: null,
       active: input.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
@@ -1082,10 +1068,6 @@ export class PostgresUserStore implements UserStore {
 
     const nextName = input.name === undefined ? current.name : normalizeUserName(input.name);
     const nextEmail = input.email === undefined ? current.email : normalizeUserEmail(input.email);
-    const nextGitAuthorName =
-      input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName);
-    const nextGitAuthorEmail =
-      input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail);
     if (!nextName) {
       throw new HttpError(400, "User name is required");
     }
@@ -1126,8 +1108,6 @@ export class PostgresUserStore implements UserStore {
       ...current,
       name: nextName,
       email: nextEmail,
-      gitAuthorName: nextGitAuthorName,
-      gitAuthorEmail: nextGitAuthorEmail,
       active: nextActive,
       agentResponsePreference:
         input.agentResponsePreference === undefined

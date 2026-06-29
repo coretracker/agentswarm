@@ -66,6 +66,8 @@ interface GeneralSettingsForm {
   maxAgents: number;
   branchPrefix: string;
   gitUsername: string;
+  gitAuthorName: string;
+  gitAuthorEmail: string;
   openaiBaseUrl: string;
   taskPromptMagicModel: string;
   taskPromptMagicTemplate: string;
@@ -154,6 +156,8 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   maxAgents: settings.maxAgents,
   branchPrefix: settings.branchPrefix,
   gitUsername: settings.gitUsername,
+  gitAuthorName: settings.gitAuthorName ?? "",
+  gitAuthorEmail: settings.gitAuthorEmail ?? "",
   openaiBaseUrl: settings.openaiBaseUrl ?? "",
   taskPromptMagicModel: settings.taskPromptMagicModel,
   taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
@@ -413,6 +417,8 @@ export function SettingsPage() {
         maxAgents: values.maxAgents,
         branchPrefix: values.branchPrefix,
         gitUsername: values.gitUsername,
+        gitAuthorName: values.gitAuthorName?.trim() || null,
+        gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
         openaiBaseUrl: values.openaiBaseUrl?.trim() ? values.openaiBaseUrl.trim() : null,
         taskPromptMagicModel: values.taskPromptMagicModel,
         taskPromptMagicTemplate: values.taskPromptMagicTemplate,
@@ -691,6 +697,22 @@ export function SettingsPage() {
                       rules={[{ required: true, whitespace: true }]}
                     >
                       <Input placeholder="x-access-token" />
+                    </Form.Item>
+                    <Form.Item
+                      name="gitAuthorName"
+                      label="Git Author Name"
+                      extra="Used for agent-created Git commits. Leave blank to use the system default."
+                      style={{ marginBottom: 0 }}
+                    >
+                      <Input placeholder="AgentSwarm" />
+                    </Form.Item>
+                    <Form.Item
+                      name="gitAuthorEmail"
+                      label="Git Author Email"
+                      extra="Used for agent-created Git commits. Leave blank to use the system default."
+                      rules={[{ type: "email", message: "Enter a valid email address" }]}
+                    >
+                      <Input placeholder="agentswarm@example.com" />
                     </Form.Item>
                   </Flex>
                 </Card>

@@ -92,6 +92,8 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         branch_prefix text NOT NULL,
         workspace_provisioning_mode text NOT NULL DEFAULT 'clone_only',
         git_username text NOT NULL,
+        git_author_name text NULL,
+        git_author_email text NULL,
         mcp_servers jsonb NOT NULL,
         openai_base_url text NULL,
         task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini',
@@ -584,6 +586,14 @@ Feedback:
     sql: `
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS github_pr_review_instructions text NULL;
+    `
+  },
+  {
+    id: "20260629_01_system_git_author_identity",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS git_author_name text NULL,
+      ADD COLUMN IF NOT EXISTS git_author_email text NULL;
     `
   }
 ];

@@ -39,8 +39,6 @@ import { ResponsePolicyFields } from "./response-policy-fields";
 interface UserFormValues {
   name: string;
   email: string;
-  gitAuthorName?: string;
-  gitAuthorEmail?: string;
   password?: string;
   active: boolean;
   audience?: AudienceType;
@@ -106,8 +104,6 @@ export function UsersPage() {
     form.setFieldsValue({
       name: "",
       email: "",
-      gitAuthorName: "",
-      gitAuthorEmail: "",
       password: "",
       active: true,
       audience: undefined,
@@ -129,8 +125,6 @@ export function UsersPage() {
     form.setFieldsValue({
       name: user.name,
       email: user.email,
-      gitAuthorName: user.gitAuthorName ?? "",
-      gitAuthorEmail: user.gitAuthorEmail ?? "",
       password: "",
       active: user.active,
       audience: user.agentResponsePreference.audience,
@@ -284,8 +278,6 @@ export function UsersPage() {
                 await api.updateUser(editingUser.id, {
                   name: values.name,
                   email: values.email,
-                  gitAuthorName: values.gitAuthorName?.trim() || null,
-                  gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
                   password: values.password?.trim() || undefined,
                   active: values.active,
                   agentResponsePreference: {
@@ -305,8 +297,6 @@ export function UsersPage() {
                 await api.createUser({
                   name: values.name,
                   email: values.email,
-                  gitAuthorName: values.gitAuthorName?.trim() || null,
-                  gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
                   password: values.password?.trim() || "",
                   active: values.active,
                   agentResponsePreference: {
@@ -338,24 +328,6 @@ export function UsersPage() {
           </Form.Item>
           <Form.Item name="email" label="Email" rules={[{ required: true, message: "Enter an email address" }]}>
             <Input />
-          </Form.Item>
-          <Divider orientation="left" plain>
-            Git Commit Identity
-          </Divider>
-          <Form.Item
-            name="gitAuthorName"
-            label="Git Author Name"
-            extra="Used for agent-created Git commits. Leave blank to use the user's profile name."
-          >
-            <Input placeholder="Profile name" />
-          </Form.Item>
-          <Form.Item
-            name="gitAuthorEmail"
-            label="Git Author Email"
-            rules={[{ type: "email", message: "Enter a valid email address" }]}
-            extra="Used for agent-created Git commits. Leave blank to use the user's profile email."
-          >
-            <Input placeholder="Profile email" />
           </Form.Item>
           <Form.Item
             name="password"

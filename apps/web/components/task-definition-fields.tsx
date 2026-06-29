@@ -68,8 +68,7 @@ const providerOptions = (
 ];
 
 const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
-  { label: "Auto (Profile then Global)", value: "auto" },
-  { label: "Profile auth.json only", value: "profile" },
+  { label: "Auto (System credentials)", value: "auto" },
   { label: "Global OpenAI key or auth.json", value: "global" }
 ];
 
@@ -181,7 +180,7 @@ export function TaskDefinitionFields({
   const effectiveTaskType = selectedTaskType;
   const isImplementationTask = effectiveTaskType === "build";
   const hasGlobalCodexCredentials = Boolean(settings?.openaiApiKeyConfigured || settings?.codexAuthJsonConfigured);
-  const hasAnyCodexCredentials = Boolean(hasGlobalCodexCredentials || session?.user.codexAuthJsonConfigured);
+  const hasAnyCodexCredentials = hasGlobalCodexCredentials;
   const providerMissingCredentials =
     selectedProvider === "codex"
       ? !hasAnyCodexCredentials
@@ -279,7 +278,7 @@ export function TaskDefinitionFields({
       return;
     }
     const current = form.getFieldValue("codexCredentialSource") as CodexCredentialSource | undefined;
-    if (current === "auto" || current === "profile" || current === "global") {
+    if (current === "auto" || current === "global") {
       return;
     }
     form.setFieldValue("codexCredentialSource", "auto");

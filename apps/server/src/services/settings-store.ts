@@ -63,6 +63,8 @@ const defaultSettings: SystemSettings = {
   branchPrefix: "agentswarm",
   workspaceProvisioningMode: "clone_only",
   gitUsername: "x-access-token",
+  gitAuthorName: null,
+  gitAuthorEmail: null,
   mcpServers: [],
   openaiBaseUrl: null,
   taskPromptMagicModel: "gpt-5.4-mini",
@@ -96,6 +98,16 @@ const normalizeBranchPrefix = (value: string | undefined): string => {
 const normalizeGitUsername = (value: string | undefined): string => {
   const cleaned = (value ?? "").trim();
   return cleaned || defaultSettings.gitUsername;
+};
+
+const normalizeOptionalGitAuthorName = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().replace(/\s+/g, " ");
+  return normalized || null;
+};
+
+const normalizeOptionalGitAuthorEmail = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  return normalized || null;
 };
 
 const normalizeDefaultProvider = (value: AgentProvider | string | undefined): AgentProvider =>
@@ -279,15 +291,19 @@ const normalizeResponsePreferencePresets = (
 
 export interface SettingsRuntimeCredentials extends RuntimeCredentials {
   gitUsername: string;
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
   openaiBaseUrl: string | null;
   defaultProvider: AgentProvider;
 }
+
+type RuntimeCodexCredentialSource = "auto" | "global" | "profile";
 
 export interface SettingsStore {
   getSettings(): Promise<SystemSettings>;
   updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
   updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
-  getRuntimeCredentials(userId?: string | null, codexCredentialSource?: "auto" | "profile" | "global"): Promise<SettingsRuntimeCredentials>;
+  getRuntimeCredentials(userId?: string | null, codexCredentialSource?: RuntimeCodexCredentialSource): Promise<SettingsRuntimeCredentials>;
   getUserNotes(userId: string): Promise<UserNotes>;
   updateUserNotes(userId: string, notes: string): Promise<UserNotes>;
 }
@@ -312,6 +328,8 @@ export class RedisSettingsStore implements SettingsStore {
         branchPrefix: defaultSettings.branchPrefix,
         workspaceProvisioningMode: defaultSettings.workspaceProvisioningMode,
         gitUsername: defaultSettings.gitUsername,
+        gitAuthorName: defaultSettings.gitAuthorName,
+        gitAuthorEmail: defaultSettings.gitAuthorEmail,
         mcpServers: defaultSettings.mcpServers,
         openaiBaseUrl: defaultSettings.openaiBaseUrl,
         taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
@@ -334,6 +352,8 @@ export class RedisSettingsStore implements SettingsStore {
       branchPrefix: normalizeBranchPrefix(parsed.branchPrefix),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(parsed.workspaceProvisioningMode),
       gitUsername: normalizeGitUsername(parsed.gitUsername),
+      gitAuthorName: normalizeOptionalGitAuthorName(parsed.gitAuthorName),
+      gitAuthorEmail: normalizeOptionalGitAuthorEmail(parsed.gitAuthorEmail),
       mcpServers: normalizeMcpServers(parsed.mcpServers),
       openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
       taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
@@ -355,6 +375,8 @@ export class RedisSettingsStore implements SettingsStore {
       parsed.branchPrefix !== normalizedBase.branchPrefix ||
       parsed.workspaceProvisioningMode !== normalizedBase.workspaceProvisioningMode ||
       parsed.gitUsername !== normalizedBase.gitUsername ||
+      (parsed.gitAuthorName ?? null) !== normalizedBase.gitAuthorName ||
+      (parsed.gitAuthorEmail ?? null) !== normalizedBase.gitAuthorEmail ||
       JSON.stringify(parsed.mcpServers ?? []) !== JSON.stringify(normalizedBase.mcpServers) ||
       (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
       (parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel) !== normalizedBase.taskPromptMagicModel ||
@@ -384,6 +406,10 @@ export class RedisSettingsStore implements SettingsStore {
         input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
       ),
       gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
+      gitAuthorName:
+        input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName),
+      gitAuthorEmail:
+        input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail),
       mcpServers:
         input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
       openaiBaseUrl:
@@ -419,26 +445,18 @@ export class RedisSettingsStore implements SettingsStore {
     return settings;
   }
 
-  async getRuntimeCredentials(userId?: string | null, codexCredentialSource: "auto" | "profile" | "global" = "auto"): Promise<SettingsRuntimeCredentials> {
+  async getRuntimeCredentials(_userId?: string | null, _codexCredentialSource: RuntimeCodexCredentialSource = "auto"): Promise<SettingsRuntimeCredentials> {
     const [credentials, settings] = await Promise.all([
       this.credentialStore.getCredentials(),
       this.getSettings()
     ]);
-    const profileCodexAuthJson = userId?.trim()
-      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
-      : null;
-    const globalCodexAuthJson = credentials.codexAuthJson ?? null;
-    const codexAuthJson =
-      codexCredentialSource === "profile"
-        ? profileCodexAuthJson
-        : codexCredentialSource === "global"
-          ? globalCodexAuthJson
-          : profileCodexAuthJson || globalCodexAuthJson;
 
     return {
       ...credentials,
-      codexAuthJson: codexAuthJson || null,
+      codexAuthJson: credentials.codexAuthJson ?? null,
       gitUsername: settings.gitUsername,
+      gitAuthorName: settings.gitAuthorName,
+      gitAuthorEmail: settings.gitAuthorEmail,
       openaiBaseUrl: settings.openaiBaseUrl,
       defaultProvider: settings.defaultProvider
     };
@@ -492,6 +510,8 @@ export class PostgresSettingsStore implements SettingsStore {
           branch_prefix,
           workspace_provisioning_mode,
           git_username,
+          git_author_name,
+          git_author_email,
           mcp_servers,
           openai_base_url,
           task_prompt_magic_model,
@@ -504,7 +524,7 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11::jsonb, $12, $13, $14::jsonb, $15, $16::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13::jsonb, $14, $15, $16::jsonb, $17, $18::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
@@ -513,6 +533,8 @@ export class PostgresSettingsStore implements SettingsStore {
         defaultSettings.branchPrefix,
         defaultSettings.workspaceProvisioningMode,
         defaultSettings.gitUsername,
+        defaultSettings.gitAuthorName,
+        defaultSettings.gitAuthorEmail,
         JSON.stringify(defaultSettings.mcpServers),
         defaultSettings.openaiBaseUrl,
         defaultSettings.taskPromptMagicModel,
@@ -538,6 +560,8 @@ export class PostgresSettingsStore implements SettingsStore {
           branch_prefix,
           workspace_provisioning_mode,
           git_username,
+          git_author_name,
+          git_author_email,
           mcp_servers,
           openai_base_url,
           task_prompt_magic_model,
@@ -560,6 +584,8 @@ export class PostgresSettingsStore implements SettingsStore {
       branchPrefix: normalizeBranchPrefix(typeof row?.branch_prefix === "string" ? row.branch_prefix : undefined),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(row?.workspace_provisioning_mode),
       gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
+      gitAuthorName: normalizeOptionalGitAuthorName(typeof row?.git_author_name === "string" ? row.git_author_name : null),
+      gitAuthorEmail: normalizeOptionalGitAuthorEmail(typeof row?.git_author_email === "string" ? row.git_author_email : null),
       mcpServers: normalizeMcpServers(Array.isArray(row?.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined),
       openaiBaseUrl: typeof row?.openai_base_url === "string" && row.openai_base_url.trim().length > 0 ? row.openai_base_url.trim() : null,
       taskPromptMagicModel:
@@ -611,6 +637,10 @@ export class PostgresSettingsStore implements SettingsStore {
         input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
       ),
       gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
+      gitAuthorName:
+        input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName),
+      gitAuthorEmail:
+        input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail),
       mcpServers: input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
       openaiBaseUrl:
         input.openaiBaseUrl === undefined
@@ -641,6 +671,8 @@ export class PostgresSettingsStore implements SettingsStore {
           branch_prefix,
           workspace_provisioning_mode,
           git_username,
+          git_author_name,
+          git_author_email,
           mcp_servers,
           openai_base_url,
           task_prompt_magic_model,
@@ -653,7 +685,7 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11::jsonb, $12, $13, $14::jsonb, $15, $16::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13::jsonb, $14, $15, $16::jsonb, $17, $18::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
@@ -661,6 +693,8 @@ export class PostgresSettingsStore implements SettingsStore {
           branch_prefix = EXCLUDED.branch_prefix,
           workspace_provisioning_mode = EXCLUDED.workspace_provisioning_mode,
           git_username = EXCLUDED.git_username,
+          git_author_name = EXCLUDED.git_author_name,
+          git_author_email = EXCLUDED.git_author_email,
           mcp_servers = EXCLUDED.mcp_servers,
           openai_base_url = EXCLUDED.openai_base_url,
           task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
@@ -679,6 +713,8 @@ export class PostgresSettingsStore implements SettingsStore {
         nextBase.branchPrefix,
         nextBase.workspaceProvisioningMode,
         nextBase.gitUsername,
+        nextBase.gitAuthorName,
+        nextBase.gitAuthorEmail,
         JSON.stringify(nextBase.mcpServers),
         nextBase.openaiBaseUrl,
         nextBase.taskPromptMagicModel,
@@ -704,26 +740,18 @@ export class PostgresSettingsStore implements SettingsStore {
     return settings;
   }
 
-  async getRuntimeCredentials(userId?: string | null, codexCredentialSource: "auto" | "profile" | "global" = "auto"): Promise<SettingsRuntimeCredentials> {
+  async getRuntimeCredentials(_userId?: string | null, _codexCredentialSource: RuntimeCodexCredentialSource = "auto"): Promise<SettingsRuntimeCredentials> {
     const [credentials, settings] = await Promise.all([
       this.credentialStore.getCredentials(),
       this.getSettings()
     ]);
-    const profileCodexAuthJson = userId?.trim()
-      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
-      : null;
-    const globalCodexAuthJson = credentials.codexAuthJson ?? null;
-    const codexAuthJson =
-      codexCredentialSource === "profile"
-        ? profileCodexAuthJson
-        : codexCredentialSource === "global"
-          ? globalCodexAuthJson
-          : profileCodexAuthJson || globalCodexAuthJson;
 
     return {
       ...credentials,
-      codexAuthJson: codexAuthJson || null,
+      codexAuthJson: credentials.codexAuthJson ?? null,
       gitUsername: settings.gitUsername,
+      gitAuthorName: settings.gitAuthorName,
+      gitAuthorEmail: settings.gitAuthorEmail,
       openaiBaseUrl: settings.openaiBaseUrl,
       defaultProvider: settings.defaultProvider
     };

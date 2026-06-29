@@ -308,8 +308,6 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  gitAuthorName: string | null;
-  gitAuthorEmail: string | null;
   active: boolean;
   agentResponsePreference: AgentResponsePreference;
   roles: UserRoleRef[];
@@ -324,7 +322,6 @@ export interface AuthSessionUser extends User {
   allowedProviders: AgentProvider[];
   allowedModels: string[];
   allowedEfforts: ProviderProfile[];
-  codexAuthJsonConfigured?: boolean;
 }
 
 export interface AuthSession {
@@ -335,10 +332,7 @@ export interface AuthSession {
 export interface AuthProfile {
   name: string;
   email: string;
-  gitAuthorName: string | null;
-  gitAuthorEmail: string | null;
   agentResponsePreference: AgentResponsePreference;
-  codexAuthJsonConfigured: boolean;
 }
 
 export interface PersonalAccessToken {
@@ -382,8 +376,6 @@ export interface UpdateRoleInput {
 export interface CreateUserInput {
   name: string;
   email: string;
-  gitAuthorName?: string | null;
-  gitAuthorEmail?: string | null;
   password: string;
   active?: boolean;
   roleIds?: string[];
@@ -394,8 +386,6 @@ export interface CreateUserInput {
 export interface UpdateUserInput {
   name?: string;
   email?: string;
-  gitAuthorName?: string | null;
-  gitAuthorEmail?: string | null;
   password?: string;
   active?: boolean;
   roleIds?: string[];
@@ -482,7 +472,7 @@ export interface Repository {
 }
 
 export type TaskTerminalSessionMode = "terminal";
-export type CodexCredentialSource = "auto" | "profile" | "global";
+export type CodexCredentialSource = "auto" | "global";
 
 export interface TaskLinkedWorkspace {
   taskId: string;
@@ -866,6 +856,8 @@ export interface SystemSettings {
   branchPrefix: string;
   workspaceProvisioningMode: WorkspaceProvisioningMode;
   gitUsername: string;
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
   mcpServers: McpServerConfig[];
   openaiBaseUrl: string | null;
   taskPromptMagicModel: string;
@@ -1319,6 +1311,8 @@ export interface UpdateSettingsInput {
   branchPrefix?: string;
   workspaceProvisioningMode?: WorkspaceProvisioningMode;
   gitUsername?: string;
+  gitAuthorName?: string | null;
+  gitAuthorEmail?: string | null;
   mcpServers?: McpServerConfig[];
   openaiBaseUrl?: string | null;
   taskPromptMagicModel?: string;
@@ -1345,10 +1339,6 @@ export interface UpdateCredentialSettingsInput {
 
 export interface UpdateAuthProfileInput {
   name?: string;
-  gitAuthorName?: string | null;
-  gitAuthorEmail?: string | null;
-  codexAuthJson?: string;
-  clearCodexAuthJson?: boolean;
   agentResponsePreference?: Partial<AgentResponsePreference>;
 }
 

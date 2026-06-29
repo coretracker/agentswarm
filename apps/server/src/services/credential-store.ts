@@ -14,7 +14,6 @@ interface StoredCredentials {
   openaiApiKey: string | null;
   codexAuthJson: string | null;
   anthropicApiKey: string | null;
-  codexAuthJsonByUserId: Record<string, string>;
 }
 
 interface EncryptedPayload {
@@ -42,9 +41,6 @@ export interface CredentialStore {
   getCredentials(): Promise<RuntimeCredentials>;
   getCredentialStatus(): Promise<CredentialStatus>;
   updateCredentials(input: UpdateCredentialSettingsInput): Promise<CredentialStatus>;
-  getCodexAuthJsonForUser(userId: string): Promise<string | null>;
-  setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void>;
-  hasCodexAuthJsonForUser(userId: string): Promise<boolean>;
 }
 
 export class RedisCredentialStore implements CredentialStore {
@@ -105,19 +101,6 @@ export class RedisCredentialStore implements CredentialStore {
     return plaintext.toString("utf8");
   }
 
-  private normalizeCodexAuthJsonByUserId(value: Record<string, unknown> | undefined): Record<string, string> {
-    const next: Record<string, string> = {};
-    for (const [key, raw] of Object.entries(value ?? {})) {
-      const userId = key.trim();
-      const authJson = typeof raw === "string" ? raw.trim() : "";
-      if (!userId || !authJson) {
-        continue;
-      }
-      next[userId] = authJson;
-    }
-    return next;
-  }
-
   private async readStoredCredentials(): Promise<StoredCredentials> {
     const raw = await this.redis.get(CREDENTIALS_KEY);
     if (!raw) {
@@ -125,36 +108,31 @@ export class RedisCredentialStore implements CredentialStore {
         githubToken: null,
         openaiApiKey: null,
         codexAuthJson: null,
-        anthropicApiKey: null,
-        codexAuthJsonByUserId: {}
+        anthropicApiKey: null
       };
     }
 
     try {
       const decrypted = await this.decrypt(raw);
-      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials> & {
-        codexAuthJsonByUserId?: Record<string, unknown>;
-      };
+      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials>;
       return {
         githubToken: parsed.githubToken?.trim() || null,
         openaiApiKey: parsed.openaiApiKey?.trim() || null,
         codexAuthJson: parsed.codexAuthJson?.trim() || null,
-        anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
-        codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
+        anthropicApiKey: parsed.anthropicApiKey?.trim() || null
       };
     } catch {
       return {
         githubToken: null,
         openaiApiKey: null,
         codexAuthJson: null,
-        anthropicApiKey: null,
-        codexAuthJsonByUserId: {}
+        anthropicApiKey: null
       };
     }
   }
 
   private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
-    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
+    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey) {
       await this.redis.del(CREDENTIALS_KEY);
       return;
     }
@@ -205,44 +183,11 @@ export class RedisCredentialStore implements CredentialStore {
         ? null
         : input.anthropicApiKey?.trim()
           ? input.anthropicApiKey.trim()
-          : current.anthropicApiKey,
-      codexAuthJsonByUserId: current.codexAuthJsonByUserId
+          : current.anthropicApiKey
     };
     await this.writeStoredCredentials(next);
 
     return this.getCredentialStatus();
-  }
-
-  async getCodexAuthJsonForUser(userId: string): Promise<string | null> {
-    const key = userId.trim();
-    if (!key) {
-      return null;
-    }
-    const current = await this.readStoredCredentials();
-    return current.codexAuthJsonByUserId[key]?.trim() || null;
-  }
-
-  async setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void> {
-    const key = userId.trim();
-    if (!key) {
-      return;
-    }
-    const current = await this.readStoredCredentials();
-    const nextByUserId = { ...current.codexAuthJsonByUserId };
-    const normalized = codexAuthJson?.trim() || null;
-    if (normalized) {
-      nextByUserId[key] = normalized;
-    } else {
-      delete nextByUserId[key];
-    }
-    await this.writeStoredCredentials({
-      ...current,
-      codexAuthJsonByUserId: nextByUserId
-    });
-  }
-
-  async hasCodexAuthJsonForUser(userId: string): Promise<boolean> {
-    return Boolean(await this.getCodexAuthJsonForUser(userId));
   }
 }
 
@@ -304,19 +249,6 @@ export class PostgresCredentialStore implements CredentialStore {
     return plaintext.toString("utf8");
   }
 
-  private normalizeCodexAuthJsonByUserId(value: Record<string, unknown> | undefined): Record<string, string> {
-    const next: Record<string, string> = {};
-    for (const [key, raw] of Object.entries(value ?? {})) {
-      const userId = key.trim();
-      const authJson = typeof raw === "string" ? raw.trim() : "";
-      if (!userId || !authJson) {
-        continue;
-      }
-      next[userId] = authJson;
-    }
-    return next;
-  }
-
   private async readStoredCredentials(): Promise<StoredCredentials> {
     const result = await this.pool.query<{ payload_encrypted: string }>(
       "SELECT payload_encrypted FROM credentials WHERE singleton_id = 1"
@@ -328,36 +260,31 @@ export class PostgresCredentialStore implements CredentialStore {
         githubToken: null,
         openaiApiKey: null,
         codexAuthJson: null,
-        anthropicApiKey: null,
-        codexAuthJsonByUserId: {}
+        anthropicApiKey: null
       };
     }
 
     try {
       const decrypted = await this.decrypt(row.payload_encrypted);
-      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials> & {
-        codexAuthJsonByUserId?: Record<string, unknown>;
-      };
+      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials>;
       return {
         githubToken: parsed.githubToken?.trim() || null,
         openaiApiKey: parsed.openaiApiKey?.trim() || null,
         codexAuthJson: parsed.codexAuthJson?.trim() || null,
-        anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
-        codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
+        anthropicApiKey: parsed.anthropicApiKey?.trim() || null
       };
     } catch {
       return {
         githubToken: null,
         openaiApiKey: null,
         codexAuthJson: null,
-        anthropicApiKey: null,
-        codexAuthJsonByUserId: {}
+        anthropicApiKey: null
       };
     }
   }
 
   private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
-    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
+    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey) {
       await this.pool.query("DELETE FROM credentials WHERE singleton_id = 1");
       return;
     }
@@ -422,43 +349,10 @@ export class PostgresCredentialStore implements CredentialStore {
         ? null
         : input.anthropicApiKey?.trim()
           ? input.anthropicApiKey.trim()
-          : current.anthropicApiKey,
-      codexAuthJsonByUserId: current.codexAuthJsonByUserId
+          : current.anthropicApiKey
     };
     await this.writeStoredCredentials(next);
 
     return this.getCredentialStatus();
-  }
-
-  async getCodexAuthJsonForUser(userId: string): Promise<string | null> {
-    const key = userId.trim();
-    if (!key) {
-      return null;
-    }
-    const current = await this.readStoredCredentials();
-    return current.codexAuthJsonByUserId[key]?.trim() || null;
-  }
-
-  async setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void> {
-    const key = userId.trim();
-    if (!key) {
-      return;
-    }
-    const current = await this.readStoredCredentials();
-    const nextByUserId = { ...current.codexAuthJsonByUserId };
-    const normalized = codexAuthJson?.trim() || null;
-    if (normalized) {
-      nextByUserId[key] = normalized;
-    } else {
-      delete nextByUserId[key];
-    }
-    await this.writeStoredCredentials({
-      ...current,
-      codexAuthJsonByUserId: nextByUserId
-    });
-  }
-
-  async hasCodexAuthJsonForUser(userId: string): Promise<boolean> {
-    return Boolean(await this.getCodexAuthJsonForUser(userId));
   }
 }

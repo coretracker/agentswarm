@@ -153,7 +153,6 @@ const bootstrap = async (): Promise<void> => {
     sessionStore,
     cookieName: env.AUTH_COOKIE_NAME,
     taskStore,
-    credentialStore,
     personalAccessTokenStore
   });
   const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore, undefined, personalAccessTokenStore);
@@ -167,7 +166,7 @@ const bootstrap = async (): Promise<void> => {
     password: env.DEFAULT_ADMIN_PASSWORD
   });
 
-  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore, personalAccessTokenStore });
+  registerAuthRoutes(app, { auth, userStore, sessionStore, personalAccessTokenStore });
   registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
   registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
   registerTaskRoutes(app, {
