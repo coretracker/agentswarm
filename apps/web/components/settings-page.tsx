@@ -58,6 +58,7 @@ interface GeneralSettingsForm {
   gitAuthorName: string;
   gitAuthorEmail: string;
   openaiBaseUrl: string;
+  anthropicBaseUrl: string;
   taskPromptMagicModel: string;
   taskPromptMagicTemplate: string;
   codexDefaultModel: string;
@@ -97,8 +98,8 @@ interface ResponsePreferencePresetFormValues {
 }
 
 type ClearCredentialTarget = "github" | "openai" | "codexAuthJson" | "anthropic";
-type SettingsTabKey = "runtime" | "models" | "connections" | "access" | "responses";
-type DirtyGeneralTabKey = "runtime" | "models" | "connections";
+type SettingsTabKey = "general" | "git" | "codex" | "claude";
+type DirtyGeneralTabKey = SettingsTabKey;
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: getAgentProviderLabel("codex"), value: "codex" },
@@ -142,6 +143,7 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   gitAuthorName: settings.gitAuthorName ?? "",
   gitAuthorEmail: settings.gitAuthorEmail ?? "",
   openaiBaseUrl: settings.openaiBaseUrl ?? "",
+  anthropicBaseUrl: settings.anthropicBaseUrl ?? "",
   taskPromptMagicModel: settings.taskPromptMagicModel,
   taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
   codexDefaultModel: settings.codexDefaultModel,
@@ -171,10 +173,11 @@ export function SettingsPage() {
   const [editingRole, setEditingRole] = useState<Role | null>(null);
   const [responsePreferencePresetModalOpen, setResponsePreferencePresetModalOpen] = useState(false);
   const [editingResponsePreferencePreset, setEditingResponsePreferencePreset] = useState<ResponsePreferencePreset | null>(null);
-  const [activeTab, setActiveTab] = useState<SettingsTabKey>("runtime");
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>("general");
   const [generalDirty, setGeneralDirty] = useState(false);
   const [credentialsDirty, setCredentialsDirty] = useState(false);
   const [generalDirtyTabs, setGeneralDirtyTabs] = useState<DirtyGeneralTabKey[]>([]);
+  const [credentialDirtyTabs, setCredentialDirtyTabs] = useState<SettingsTabKey[]>([]);
   const canEditSettings = can("settings:edit");
   const { models: codexModels, loading: codexModelsLoading, source: codexModelsSource } = useProviderModels("codex");
   const { models: claudeModels, loading: claudeModelsLoading, source: claudeModelsSource } = useProviderModels("claude");
@@ -394,6 +397,7 @@ export function SettingsPage() {
         gitAuthorName: values.gitAuthorName?.trim() || null,
         gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
         openaiBaseUrl: values.openaiBaseUrl?.trim() ? values.openaiBaseUrl.trim() : null,
+        anthropicBaseUrl: values.anthropicBaseUrl?.trim() ? values.anthropicBaseUrl.trim() : null,
         taskPromptMagicModel: values.taskPromptMagicModel,
         taskPromptMagicTemplate: values.taskPromptMagicTemplate,
         codexDefaultModel: values.codexDefaultModel,
@@ -414,9 +418,35 @@ export function SettingsPage() {
     }
   };
 
+  const saveCredentials = async (values: CredentialForm): Promise<void> => {
+    setSavingCredentials(true);
+    try {
+      const nextSettings = await api.updateCredentials({
+        githubToken: values.githubToken?.trim() || undefined,
+        openaiApiKey: values.openaiApiKey?.trim() || undefined,
+        codexAuthJson: values.codexAuthJson?.trim() || undefined,
+        anthropicApiKey: values.anthropicApiKey?.trim() || undefined
+      });
+      credentialForm.resetFields();
+      setSettings(nextSettings);
+      setCredentialsDirty(false);
+      setCredentialDirtyTabs([]);
+      message.success("Credentials updated");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to update credentials");
+    } finally {
+      setSavingCredentials(false);
+    }
+  };
+
   const markGeneralTabDirty = (tab: DirtyGeneralTabKey) => {
     setGeneralDirty(true);
     setGeneralDirtyTabs((current) => (current.includes(tab) ? current : [...current, tab]));
+  };
+
+  const markCredentialTabDirty = (tab: SettingsTabKey) => {
+    setCredentialsDirty(true);
+    setCredentialDirtyTabs((current) => (current.includes(tab) ? current : [...current, tab]));
   };
 
   const confirmLeave = (): boolean => {
@@ -460,24 +490,20 @@ export function SettingsPage() {
 
   const tabItems: Array<{ key: SettingsTabKey; label: React.ReactNode }> = [
     {
-      key: "runtime",
-      label: <span>{generalDirtyTabs.includes("runtime") ? "Runtime *" : "Runtime"}</span>
+      key: "general",
+      label: <span>{generalDirtyTabs.includes("general") ? "General *" : "General"}</span>
     },
     {
-      key: "models",
-      label: <span>{generalDirtyTabs.includes("models") ? "Models *" : "Models"}</span>
+      key: "git",
+      label: <span>{generalDirtyTabs.includes("git") || credentialDirtyTabs.includes("git") ? "Git *" : "Git"}</span>
     },
     {
-      key: "connections",
-      label: <span>{generalDirtyTabs.includes("connections") || credentialsDirty ? "Connections *" : "Connections"}</span>
+      key: "codex",
+      label: <span>{generalDirtyTabs.includes("codex") || credentialDirtyTabs.includes("codex") ? "Codex *" : "Codex"}</span>
     },
     {
-      key: "access",
-      label: "Access"
-    },
-    {
-      key: "responses",
-      label: "Response Presets"
+      key: "claude",
+      label: <span>{generalDirtyTabs.includes("claude") || credentialDirtyTabs.includes("claude") ? "Claude Code *" : "Claude Code"}</span>
     }
   ];
 
@@ -504,16 +530,16 @@ export function SettingsPage() {
 
         <Tabs activeKey={activeTab} onChange={(value) => handleTabChange(value as SettingsTabKey)} items={tabItems} />
 
-        {activeTab === "runtime" ? (
+        {activeTab === "general" ? (
           <Form
             form={generalForm}
             layout="vertical"
             disabled={!canEditSettings}
-            onValuesChange={() => markGeneralTabDirty("runtime")}
+            onValuesChange={() => markGeneralTabDirty("general")}
             onFinish={saveGeneralSettings}
           >
             <Space direction="vertical" size={16} style={{ width: "100%" }}>
-              <Card bordered={false} loading={loading} title="Runtime Defaults">
+              <Card bordered={false} loading={loading} title="General">
                 <Flex vertical gap={16} style={{ width: "100%" }}>
                   <Form.Item name="defaultProvider" label="Default Provider" rules={[{ required: true }]}>
                     <Select options={providerOptions} />
@@ -526,172 +552,163 @@ export function SettingsPage() {
                   >
                     <InputNumber min={1} max={20} style={{ width: "100%" }} />
                   </Form.Item>
-                  <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
-                    <Input placeholder="agentswarm" />
-                  </Form.Item>
-                  <Form.Item
-                    name="taskPromptMagicModel"
-                    label="Task Prompt Magic Model"
-                    extra="Model used by the Magic Prompt helper in task creation."
-                    style={{ marginBottom: 0 }}
-                  >
-                    <Input placeholder="gpt-5.4-mini" />
-                  </Form.Item>
-                  <Form.Item
-                    name="taskPromptMagicTemplate"
-                    label="Task Prompt Magic Template"
-                    extra="Use {{user_request}} as the placeholder for the user's current text."
-                    style={{ marginBottom: 0 }}
-                  >
-                    <Input.TextArea autoSize={{ minRows: 6, maxRows: 16 }} placeholder="Template with {{user_request}} placeholder" />
-                  </Form.Item>
-                </Flex>
-              </Card>
-
-              <Card bordered={false} loading={loading} title="Default Effort">
-                <Flex vertical gap={16} style={{ width: "100%" }}>
-                  <Form.Item name="codexDefaultEffort" label="Codex Default Effort" style={{ marginBottom: 0 }}>
-                    <Select options={getEffortOptionsForProvider("codex")} />
-                  </Form.Item>
-                  <Form.Item name="claudeDefaultEffort" label="Claude Default Effort" style={{ marginBottom: 0 }}>
-                    <Select options={getEffortOptionsForProvider("claude")} />
-                  </Form.Item>
                 </Flex>
               </Card>
             </Space>
-            {renderSaveBar({ dirty: generalDirty, label: "Save Runtime Defaults", loading: savingGeneral })}
+            {renderSaveBar({ dirty: generalDirty, label: "Save General Settings", loading: savingGeneral })}
           </Form>
         ) : null}
 
-        {activeTab === "models" ? (
+        {activeTab === "codex" ? (
           <Form
             form={generalForm}
             layout="vertical"
             disabled={!canEditSettings}
-            onValuesChange={() => markGeneralTabDirty("models")}
+            onValuesChange={() => markGeneralTabDirty("codex")}
             onFinish={saveGeneralSettings}
           >
-            <Card bordered={false} loading={loading} title="Provider Models">
-              <Flex vertical gap={24} style={{ width: "100%" }}>
-                <div>
-                  <Typography.Text strong>Codex (OpenAI)</Typography.Text>
-                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
-                    <Form.Item
-                      name="codexDefaultModel"
-                      label="Default Model"
-                      extra={
-                        codexModelsSource === "cache"
-                          ? "Model suggestions come from the saved Codex model list below."
-                          : "Model suggestions use built-in defaults until you save a custom list."
-                      }
-                      style={{ marginBottom: 0 }}
-                    >
-                      <ModelSelect options={codexDefaultModelOptions} loading={codexModelsLoading} />
-                    </Form.Item>
-                    {renderProviderModelsEditor("codex", "codexModels", Boolean(settings?.openaiApiKeyConfigured))}
-                  </Flex>
-                </div>
-
-                <div>
-                  <Typography.Text strong>Claude Code (Anthropic)</Typography.Text>
-                  <Alert
-                    type="warning"
-                    showIcon
-                    style={{ marginTop: 8 }}
-                    message="Experimental"
-                    description="Claude Code in AgentSwarm is experimental; behavior and defaults may change."
-                  />
-                  <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
-                    <Form.Item
-                      name="claudeDefaultModel"
-                      label="Default Model"
-                      extra={
-                        claudeModelsSource === "cache"
-                          ? "Model suggestions come from the saved Claude model list below."
-                          : "Model suggestions use built-in defaults until you save a custom list."
-                      }
-                      style={{ marginBottom: 0 }}
-                    >
-                      <ModelSelect options={claudeDefaultModelOptions} loading={claudeModelsLoading} />
-                    </Form.Item>
-                    {renderProviderModelsEditor("claude", "claudeModels", Boolean(settings?.anthropicApiKeyConfigured))}
-                  </Flex>
-                </div>
+            <Card bordered={false} loading={loading} title="Codex">
+              <Flex vertical gap={16} style={{ width: "100%" }}>
+                <Form.Item name="codexDefaultEffort" label="Default Effort">
+                  <Select options={getEffortOptionsForProvider("codex")} />
+                </Form.Item>
+                <Form.Item
+                  name="codexDefaultModel"
+                  label="Default Model"
+                  extra={
+                    codexModelsSource === "cache"
+                      ? "Model suggestions come from the saved Codex model list below."
+                      : "Model suggestions use built-in defaults until you save a custom list."
+                  }
+                >
+                  <ModelSelect options={codexDefaultModelOptions} loading={codexModelsLoading} />
+                </Form.Item>
+                {renderProviderModelsEditor("codex", "codexModels", Boolean(settings?.openaiApiKeyConfigured))}
+                <Form.Item
+                  name="taskPromptMagicModel"
+                  label="Task Prompt Magic Model"
+                  extra="Model used by the Magic Prompt helper in task creation."
+                >
+                  <Input placeholder="gpt-5.4-mini" />
+                </Form.Item>
+                <Form.Item
+                  name="taskPromptMagicTemplate"
+                  label="Task Prompt Magic Template"
+                  extra="Use {{user_request}} as the placeholder for the user's current text."
+                >
+                  <Input.TextArea autoSize={{ minRows: 6, maxRows: 16 }} placeholder="Template with {{user_request}} placeholder" />
+                </Form.Item>
+                <Form.Item
+                  name="openaiBaseUrl"
+                  label="Base URL Override"
+                  extra="Set when pointing AgentSwarm at an OpenAI-compatible proxy or self-hosted gateway."
+                  style={{ marginBottom: 0 }}
+                >
+                  <Input placeholder="https://api.openai.com/v1" />
+                </Form.Item>
               </Flex>
             </Card>
-            {renderSaveBar({ dirty: generalDirty, label: "Save Model Settings", loading: savingGeneral })}
+            {renderSaveBar({ dirty: generalDirty, label: "Save Codex Settings", loading: savingGeneral })}
           </Form>
         ) : null}
 
-        {activeTab === "connections" ? (
+        {activeTab === "claude" ? (
+          <Form
+            form={generalForm}
+            layout="vertical"
+            disabled={!canEditSettings}
+            onValuesChange={() => markGeneralTabDirty("claude")}
+            onFinish={saveGeneralSettings}
+          >
+            <Card bordered={false} loading={loading} title="Claude Code">
+              <Flex vertical gap={16} style={{ width: "100%" }}>
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="Experimental"
+                  description="Claude Code in AgentSwarm is experimental; behavior and defaults may change."
+                />
+                <Form.Item name="claudeDefaultEffort" label="Default Effort">
+                  <Select options={getEffortOptionsForProvider("claude")} />
+                </Form.Item>
+                <Form.Item
+                  name="claudeDefaultModel"
+                  label="Default Model"
+                  extra={
+                    claudeModelsSource === "cache"
+                      ? "Model suggestions come from the saved Claude model list below."
+                      : "Model suggestions use built-in defaults until you save a custom list."
+                  }
+                >
+                  <ModelSelect options={claudeDefaultModelOptions} loading={claudeModelsLoading} />
+                </Form.Item>
+                {renderProviderModelsEditor("claude", "claudeModels", Boolean(settings?.anthropicApiKeyConfigured))}
+                <Form.Item
+                  name="anthropicBaseUrl"
+                  label="Base URL Override"
+                  extra="Set when pointing AgentSwarm at an Anthropic-compatible proxy or gateway."
+                  style={{ marginBottom: 0 }}
+                >
+                  <Input placeholder="https://api.anthropic.com/v1" />
+                </Form.Item>
+              </Flex>
+            </Card>
+            {renderSaveBar({ dirty: generalDirty, label: "Save Claude Code Settings", loading: savingGeneral })}
+          </Form>
+        ) : null}
+
+        {activeTab === "git" ? (
           <Space direction="vertical" size={16} style={{ width: "100%" }}>
             <Form
               form={generalForm}
               layout="vertical"
               disabled={!canEditSettings}
-              onValuesChange={() => markGeneralTabDirty("connections")}
+              onValuesChange={() => markGeneralTabDirty("git")}
               onFinish={saveGeneralSettings}
             >
-              <Space direction="vertical" size={16} style={{ width: "100%" }}>
-                <Card bordered={false} loading={loading} title="Provider Connections">
-                  <Flex vertical gap={16} style={{ width: "100%" }}>
-                    <Form.Item
-                      name="openaiBaseUrl"
-                      label="OpenAI Base URL Override"
-                      extra="Set when pointing AgentSwarm at a proxy or self-hosted gateway."
-                      style={{ marginBottom: 0 }}
-                    >
-                      <Input placeholder="https://api.openai.com/v1" />
-                    </Form.Item>
-                    <Form.Item
-                      name="gitUsername"
-                      label="Git Username"
-                      extra="Used for authenticated GitHub HTTPS access from server Git actions and Codex or Claude runtimes."
-                      rules={[{ required: true, whitespace: true }]}
-                    >
-                      <Input placeholder="x-access-token" />
-                    </Form.Item>
-                    <Form.Item
-                      name="gitAuthorName"
-                      label="Git Author Name"
-                      extra="Used for agent-created Git commits. Leave blank to use the system default."
-                      style={{ marginBottom: 0 }}
-                    >
-                      <Input placeholder="AgentSwarm" />
-                    </Form.Item>
-                    <Form.Item
-                      name="gitAuthorEmail"
-                      label="Git Author Email"
-                      extra="Used for agent-created Git commits. Leave blank to use the system default."
-                      rules={[{ type: "email", message: "Enter a valid email address" }]}
-                    >
-                      <Input placeholder="agentswarm@example.com" />
-                    </Form.Item>
-                  </Flex>
-                </Card>
-
-              </Space>
-              {renderSaveBar({ dirty: generalDirty, label: "Save Connection Settings", loading: savingGeneral })}
+              <Card bordered={false} loading={loading} title="Git">
+                <Flex vertical gap={16} style={{ width: "100%" }}>
+                  <Form.Item
+                    name="gitUsername"
+                    label="Git Username"
+                    extra="Used for authenticated GitHub HTTPS access from server Git actions and Codex or Claude runtimes."
+                    rules={[{ required: true, whitespace: true }]}
+                  >
+                    <Input placeholder="x-access-token" />
+                  </Form.Item>
+                  <Form.Item
+                    name="gitAuthorName"
+                    label="Git Author Name"
+                    extra="Used for agent-created Git commits. Leave blank to use the system default."
+                    style={{ marginBottom: 0 }}
+                  >
+                    <Input placeholder="AgentSwarm" />
+                  </Form.Item>
+                  <Form.Item
+                    name="gitAuthorEmail"
+                    label="Git Author Email"
+                    extra="Used for agent-created Git commits. Leave blank to use the system default."
+                    rules={[{ type: "email", message: "Enter a valid email address" }]}
+                  >
+                    <Input placeholder="agentswarm@example.com" />
+                  </Form.Item>
+                  <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
+                    <Input placeholder="agentswarm" />
+                  </Form.Item>
+                </Flex>
+              </Card>
+              {renderSaveBar({ dirty: generalDirty, label: "Save Git Settings", loading: savingGeneral })}
             </Form>
 
             <Card
               bordered={false}
               loading={loading}
-              title="Credentials"
+              title="GitHub Token"
               extra={
                 settings ? (
                   <Space wrap>
                     <Tag color={settings.githubTokenConfigured ? "green" : "default"}>
                       GitHub Token {settings.githubTokenConfigured ? "Configured" : "Missing"}
-                    </Tag>
-                    <Tag color={settings.openaiApiKeyConfigured ? "green" : "default"}>
-                      OpenAI API Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
-                    </Tag>
-                    <Tag color={settings.codexAuthJsonConfigured ? "green" : "default"}>
-                      Codex auth.json {settings.codexAuthJsonConfigured ? "Configured" : "Missing"}
-                    </Tag>
-                    <Tag color={settings.anthropicApiKeyConfigured ? "green" : "default"}>
-                      Anthropic API Key {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
                     </Tag>
                   </Space>
                 ) : null
@@ -708,26 +725,8 @@ export function SettingsPage() {
                 form={credentialForm}
                 layout="vertical"
                 disabled={!canEditSettings}
-                onValuesChange={() => setCredentialsDirty(true)}
-                onFinish={async (values) => {
-                  setSavingCredentials(true);
-                  try {
-                    const nextSettings = await api.updateCredentials({
-                      githubToken: values.githubToken?.trim() || undefined,
-                      openaiApiKey: values.openaiApiKey?.trim() || undefined,
-                      codexAuthJson: values.codexAuthJson?.trim() || undefined,
-                      anthropicApiKey: values.anthropicApiKey?.trim() || undefined
-                    });
-                    credentialForm.resetFields();
-                    setSettings(nextSettings);
-                    setCredentialsDirty(false);
-                    message.success("Credentials updated");
-                  } catch (error) {
-                    message.error(error instanceof Error ? error.message : "Failed to update credentials");
-                  } finally {
-                    setSavingCredentials(false);
-                  }
-                }}
+                onValuesChange={() => markCredentialTabDirty("git")}
+                onFinish={saveCredentials}
               >
                 <Form.Item
                   name="githubToken"
@@ -736,31 +735,11 @@ export function SettingsPage() {
                 >
                   <Input.Password placeholder={settings?.githubTokenConfigured ? "Configured. Enter a new token to replace it." : "github_pat_..."} />
                 </Form.Item>
-                <Form.Item name="openaiApiKey" label="OpenAI API Key">
-                  <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
-                </Form.Item>
-                <Form.Item
-                  name="codexAuthJson"
-                  label="Global Codex auth.json"
-                  extra="Used as the Global Codex credential source and as the Auto fallback after profile auth.json."
-                >
-                  <Input.TextArea
-                    autoSize={{ minRows: 4, maxRows: 10 }}
-                    placeholder={settings?.codexAuthJsonConfigured ? "Configured. Paste a new auth.json to replace it." : "{ ... }"}
-                  />
-                </Form.Item>
-                <Form.Item
-                  name="anthropicApiKey"
-                  label="Anthropic API Key"
-                  extra="Used for Claude Code (experimental) runs only."
-                >
-                  <Input.Password placeholder={settings?.anthropicApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-ant-..."} />
-                </Form.Item>
                 {renderSaveBar({
                   dirty: credentialsDirty,
-                  label: "Save Credentials",
+                  label: "Save GitHub Token",
                   loading: savingCredentials,
-                  statusText: credentialsDirty ? "Unsaved credential changes" : "No pending credential changes"
+                  statusText: credentialsDirty ? "Unsaved GitHub token changes" : "No pending GitHub token changes"
                 })}
                 <Space wrap>
                   <Popconfirm
@@ -777,55 +756,156 @@ export function SettingsPage() {
                       Clear GitHub Token
                     </Button>
                   </Popconfirm>
-                  <Popconfirm
-                    title="Clear OpenAI API key?"
-                    description="This removes the stored OpenAI API key from settings."
-                    okText="Clear"
-                    cancelText="Cancel"
-                    okButtonProps={{ danger: true, loading: savingCredentials }}
-                    placement="top"
-                    disabled={!canEditSettings}
-                    onConfirm={() => handleClearCredential("openai")}
-                  >
-                    <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                      Clear OpenAI API Key
-                    </Button>
-                  </Popconfirm>
-                  <Popconfirm
-                    title="Clear Codex auth.json?"
-                    description="This removes the stored global Codex auth.json from settings."
-                    okText="Clear"
-                    cancelText="Cancel"
-                    okButtonProps={{ danger: true, loading: savingCredentials }}
-                    placement="top"
-                    disabled={!canEditSettings}
-                    onConfirm={() => handleClearCredential("codexAuthJson")}
-                  >
-                    <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                      Clear Codex auth.json
-                    </Button>
-                  </Popconfirm>
-                  <Popconfirm
-                    title="Clear Anthropic API key?"
-                    description="This removes the stored Anthropic API key from settings."
-                    okText="Clear"
-                    cancelText="Cancel"
-                    okButtonProps={{ danger: true, loading: savingCredentials }}
-                    placement="top"
-                    disabled={!canEditSettings}
-                    onConfirm={() => handleClearCredential("anthropic")}
-                  >
-                    <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                      Clear Anthropic API Key
-                    </Button>
-                  </Popconfirm>
                 </Space>
               </Form>
             </Card>
           </Space>
         ) : null}
 
-        {activeTab === "access" ? (
+        {activeTab === "codex" ? (
+          <Card
+            bordered={false}
+            loading={loading}
+            title="Codex Credentials"
+            extra={
+              settings ? (
+                <Space wrap>
+                  <Tag color={settings.openaiApiKeyConfigured ? "green" : "default"}>
+                    API Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
+                  </Tag>
+                  <Tag color={settings.codexAuthJsonConfigured ? "green" : "default"}>
+                    auth.json {settings.codexAuthJsonConfigured ? "Configured" : "Missing"}
+                  </Tag>
+                </Space>
+              ) : null
+            }
+          >
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="Credentials are write-only"
+              description="Tokens are encrypted on the server and never returned by the API."
+            />
+            <Form
+              form={credentialForm}
+              layout="vertical"
+              disabled={!canEditSettings}
+              onValuesChange={() => markCredentialTabDirty("codex")}
+              onFinish={saveCredentials}
+            >
+              <Form.Item name="openaiApiKey" label="API Key">
+                <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
+              </Form.Item>
+              <Form.Item
+                name="codexAuthJson"
+                label="auth.json"
+                extra="Used as the Global Codex credential source and as the Auto fallback after profile auth.json."
+              >
+                <Input.TextArea
+                  autoSize={{ minRows: 4, maxRows: 10 }}
+                  placeholder={settings?.codexAuthJsonConfigured ? "Configured. Paste a new auth.json to replace it." : "{ ... }"}
+                />
+              </Form.Item>
+              {renderSaveBar({
+                dirty: credentialsDirty,
+                label: "Save Codex Credentials",
+                loading: savingCredentials,
+                statusText: credentialsDirty ? "Unsaved Codex credential changes" : "No pending Codex credential changes"
+              })}
+              <Space wrap>
+                <Popconfirm
+                  title="Clear Codex API key?"
+                  description="This removes the stored OpenAI API key from settings."
+                  okText="Clear"
+                  cancelText="Cancel"
+                  okButtonProps={{ danger: true, loading: savingCredentials }}
+                  placement="top"
+                  disabled={!canEditSettings}
+                  onConfirm={() => handleClearCredential("openai")}
+                >
+                  <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                    Clear API Key
+                  </Button>
+                </Popconfirm>
+                <Popconfirm
+                  title="Clear Codex auth.json?"
+                  description="This removes the stored global Codex auth.json from settings."
+                  okText="Clear"
+                  cancelText="Cancel"
+                  okButtonProps={{ danger: true, loading: savingCredentials }}
+                  placement="top"
+                  disabled={!canEditSettings}
+                  onConfirm={() => handleClearCredential("codexAuthJson")}
+                >
+                  <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                    Clear auth.json
+                  </Button>
+                </Popconfirm>
+              </Space>
+            </Form>
+          </Card>
+        ) : null}
+
+        {activeTab === "claude" ? (
+          <Card
+            bordered={false}
+            loading={loading}
+            title="Claude Code Credentials"
+            extra={
+              settings ? (
+                <Tag color={settings.anthropicApiKeyConfigured ? "green" : "default"}>
+                  API Key {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
+                </Tag>
+              ) : null
+            }
+          >
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="Credentials are write-only"
+              description="Tokens are encrypted on the server and never returned by the API."
+            />
+            <Form
+              form={credentialForm}
+              layout="vertical"
+              disabled={!canEditSettings}
+              onValuesChange={() => markCredentialTabDirty("claude")}
+              onFinish={saveCredentials}
+            >
+              <Form.Item
+                name="anthropicApiKey"
+                label="API Key"
+                extra="Used for Claude Code (experimental) runs only."
+              >
+                <Input.Password placeholder={settings?.anthropicApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-ant-..."} />
+              </Form.Item>
+              {renderSaveBar({
+                dirty: credentialsDirty,
+                label: "Save Claude Code Credentials",
+                loading: savingCredentials,
+                statusText: credentialsDirty ? "Unsaved Claude Code credential changes" : "No pending Claude Code credential changes"
+              })}
+              <Popconfirm
+                title="Clear Claude Code API key?"
+                description="This removes the stored Anthropic API key from settings."
+                okText="Clear"
+                cancelText="Cancel"
+                okButtonProps={{ danger: true, loading: savingCredentials }}
+                placement="top"
+                disabled={!canEditSettings}
+                onConfirm={() => handleClearCredential("anthropic")}
+              >
+                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                  Clear API Key
+                </Button>
+              </Popconfirm>
+            </Form>
+          </Card>
+        ) : null}
+
+        {activeTab === "general" ? (
           <Card
             bordered={false}
             loading={rolesLoading}
@@ -935,7 +1015,7 @@ export function SettingsPage() {
           </Card>
         ) : null}
 
-        {activeTab === "responses" ? (
+        {activeTab === "general" ? (
           <Card
             bordered={false}
             loading={loading}

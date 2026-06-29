@@ -96,6 +96,7 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         git_author_email text NULL,
         mcp_servers jsonb NOT NULL,
         openai_base_url text NULL,
+        anthropic_base_url text NULL,
         task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini',
         task_prompt_magic_template text NOT NULL DEFAULT '',
         codex_default_model text NOT NULL,
@@ -604,6 +605,13 @@ Feedback:
 
       ALTER TABLE system_settings
       ALTER COLUMN mcp_servers SET DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260629_03_settings_anthropic_base_url",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS anthropic_base_url text NULL;
     `
   }
 ];

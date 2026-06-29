@@ -96,6 +96,7 @@ interface SettingsRecord extends JsonRecord {
   branchPrefix?: string;
   gitUsername?: string;
   openaiBaseUrl?: string | null;
+  anthropicBaseUrl?: string | null;
   codexDefaultModel?: string;
   codexDefaultEffort?: string;
   claudeDefaultModel?: string;
@@ -594,6 +595,7 @@ const main = async (): Promise<void> => {
               workspace_provisioning_mode,
               git_username,
               openai_base_url,
+              anthropic_base_url,
               task_prompt_magic_model,
               task_prompt_magic_template,
               codex_default_model,
@@ -602,7 +604,7 @@ const main = async (): Promise<void> => {
               claude_default_effort,
               response_preference_presets
             )
-            VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
+            VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
           `,
           [
             trimString(settings.defaultProvider) ?? "codex",
@@ -611,6 +613,7 @@ const main = async (): Promise<void> => {
             trimString((settings as { workspaceProvisioningMode?: string }).workspaceProvisioningMode) ?? "clone_only",
             trimString(settings.gitUsername) ?? "x-access-token",
             trimString(settings.openaiBaseUrl),
+            trimString(settings.anthropicBaseUrl),
             trimString((settings as { taskPromptMagicModel?: string }).taskPromptMagicModel) ?? "gpt-5.4-mini",
             trimString((settings as { taskPromptMagicTemplate?: string }).taskPromptMagicTemplate) ?? "",
             trimString(settings.codexDefaultModel) ?? "gpt-5.4",

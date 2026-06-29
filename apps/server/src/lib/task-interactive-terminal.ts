@@ -100,6 +100,7 @@ function resolveGitTerminalRuntimeConfig(
       : null
   );
   addCredentialEnv("ANTHROPIC_API_KEY", credentials.anthropicApiKey);
+  addCredentialEnv("ANTHROPIC_BASE_URL", credentials.anthropicBaseUrl);
 
   return {
     ok: true,

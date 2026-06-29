@@ -65,6 +65,7 @@ const defaultSettings: SystemSettings = {
   gitAuthorName: null,
   gitAuthorEmail: null,
   openaiBaseUrl: null,
+  anthropicBaseUrl: null,
   taskPromptMagicModel: "gpt-5.4-mini",
   taskPromptMagicTemplate:
     "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
@@ -105,6 +106,11 @@ const normalizeOptionalGitAuthorName = (value: string | null | undefined): strin
 
 const normalizeOptionalGitAuthorEmail = (value: string | null | undefined): string | null => {
   const normalized = (value ?? "").trim().toLowerCase();
+  return normalized || null;
+};
+
+const normalizeOptionalUrl = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim();
   return normalized || null;
 };
 
@@ -224,6 +230,7 @@ export interface SettingsRuntimeCredentials extends RuntimeCredentials {
   gitAuthorName: string | null;
   gitAuthorEmail: string | null;
   openaiBaseUrl: string | null;
+  anthropicBaseUrl: string | null;
   defaultProvider: AgentProvider;
 }
 
@@ -261,6 +268,7 @@ export class RedisSettingsStore implements SettingsStore {
         gitAuthorName: defaultSettings.gitAuthorName,
         gitAuthorEmail: defaultSettings.gitAuthorEmail,
         openaiBaseUrl: defaultSettings.openaiBaseUrl,
+        anthropicBaseUrl: defaultSettings.anthropicBaseUrl,
         taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
         taskPromptMagicTemplate: defaultSettings.taskPromptMagicTemplate,
         codexDefaultModel: defaultSettings.codexDefaultModel,
@@ -285,7 +293,8 @@ export class RedisSettingsStore implements SettingsStore {
       gitUsername: normalizeGitUsername(parsed.gitUsername),
       gitAuthorName: normalizeOptionalGitAuthorName(parsed.gitAuthorName),
       gitAuthorEmail: normalizeOptionalGitAuthorEmail(parsed.gitAuthorEmail),
-      openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
+      openaiBaseUrl: normalizeOptionalUrl(parsed.openaiBaseUrl),
+      anthropicBaseUrl: normalizeOptionalUrl(parsed.anthropicBaseUrl),
       taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
       taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
       codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
@@ -308,7 +317,8 @@ export class RedisSettingsStore implements SettingsStore {
       (parsed.gitAuthorName ?? null) !== normalizedBase.gitAuthorName ||
       (parsed.gitAuthorEmail ?? null) !== normalizedBase.gitAuthorEmail ||
       Object.prototype.hasOwnProperty.call(parsed, "mcpServers") ||
-      (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
+      normalizeOptionalUrl(parsed.openaiBaseUrl) !== normalizedBase.openaiBaseUrl ||
+      normalizeOptionalUrl(parsed.anthropicBaseUrl) !== normalizedBase.anthropicBaseUrl ||
       (parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel) !== normalizedBase.taskPromptMagicModel ||
       (parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate) !== normalizedBase.taskPromptMagicTemplate ||
       JSON.stringify(parsed.codexModels ?? []) !== JSON.stringify(normalizedBase.codexModels) ||
@@ -343,9 +353,11 @@ export class RedisSettingsStore implements SettingsStore {
       openaiBaseUrl:
         input.openaiBaseUrl === undefined
           ? current.openaiBaseUrl
-          : input.openaiBaseUrl?.trim()
-            ? input.openaiBaseUrl.trim()
-            : null,
+          : normalizeOptionalUrl(input.openaiBaseUrl),
+      anthropicBaseUrl:
+        input.anthropicBaseUrl === undefined
+          ? current.anthropicBaseUrl
+          : normalizeOptionalUrl(input.anthropicBaseUrl),
       taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
       taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
       codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
@@ -386,6 +398,7 @@ export class RedisSettingsStore implements SettingsStore {
       gitAuthorName: settings.gitAuthorName,
       gitAuthorEmail: settings.gitAuthorEmail,
       openaiBaseUrl: settings.openaiBaseUrl,
+      anthropicBaseUrl: settings.anthropicBaseUrl,
       defaultProvider: settings.defaultProvider
     };
   }
@@ -441,6 +454,7 @@ export class PostgresSettingsStore implements SettingsStore {
           git_author_name,
           git_author_email,
           openai_base_url,
+          anthropic_base_url,
           task_prompt_magic_model,
           task_prompt_magic_template,
           codex_default_model,
@@ -451,7 +465,7 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15::jsonb, $16, $17::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16::jsonb, $17, $18::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
@@ -463,6 +477,7 @@ export class PostgresSettingsStore implements SettingsStore {
         defaultSettings.gitAuthorName,
         defaultSettings.gitAuthorEmail,
         defaultSettings.openaiBaseUrl,
+        defaultSettings.anthropicBaseUrl,
         defaultSettings.taskPromptMagicModel,
         defaultSettings.taskPromptMagicTemplate,
         defaultSettings.codexDefaultModel,
@@ -489,6 +504,7 @@ export class PostgresSettingsStore implements SettingsStore {
           git_author_name,
           git_author_email,
           openai_base_url,
+          anthropic_base_url,
           task_prompt_magic_model,
           task_prompt_magic_template,
           codex_default_model,
@@ -511,7 +527,8 @@ export class PostgresSettingsStore implements SettingsStore {
       gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
       gitAuthorName: normalizeOptionalGitAuthorName(typeof row?.git_author_name === "string" ? row.git_author_name : null),
       gitAuthorEmail: normalizeOptionalGitAuthorEmail(typeof row?.git_author_email === "string" ? row.git_author_email : null),
-      openaiBaseUrl: typeof row?.openai_base_url === "string" && row.openai_base_url.trim().length > 0 ? row.openai_base_url.trim() : null,
+      openaiBaseUrl: normalizeOptionalUrl(typeof row?.openai_base_url === "string" ? row.openai_base_url : null),
+      anthropicBaseUrl: normalizeOptionalUrl(typeof row?.anthropic_base_url === "string" ? row.anthropic_base_url : null),
       taskPromptMagicModel:
         typeof row?.task_prompt_magic_model === "string" && row.task_prompt_magic_model.trim().length > 0
           ? row.task_prompt_magic_model.trim()
@@ -568,9 +585,11 @@ export class PostgresSettingsStore implements SettingsStore {
       openaiBaseUrl:
         input.openaiBaseUrl === undefined
           ? current.openaiBaseUrl
-          : input.openaiBaseUrl?.trim()
-            ? input.openaiBaseUrl.trim()
-            : null,
+          : normalizeOptionalUrl(input.openaiBaseUrl),
+      anthropicBaseUrl:
+        input.anthropicBaseUrl === undefined
+          ? current.anthropicBaseUrl
+          : normalizeOptionalUrl(input.anthropicBaseUrl),
       taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
       taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
       codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
@@ -597,6 +616,7 @@ export class PostgresSettingsStore implements SettingsStore {
           git_author_name,
           git_author_email,
           openai_base_url,
+          anthropic_base_url,
           task_prompt_magic_model,
           task_prompt_magic_template,
           codex_default_model,
@@ -607,7 +627,7 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15::jsonb, $16, $17::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16::jsonb, $17, $18::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
@@ -618,6 +638,7 @@ export class PostgresSettingsStore implements SettingsStore {
           git_author_name = EXCLUDED.git_author_name,
           git_author_email = EXCLUDED.git_author_email,
           openai_base_url = EXCLUDED.openai_base_url,
+          anthropic_base_url = EXCLUDED.anthropic_base_url,
           task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
           task_prompt_magic_template = EXCLUDED.task_prompt_magic_template,
           codex_default_model = EXCLUDED.codex_default_model,
@@ -637,6 +658,7 @@ export class PostgresSettingsStore implements SettingsStore {
         nextBase.gitAuthorName,
         nextBase.gitAuthorEmail,
         nextBase.openaiBaseUrl,
+        nextBase.anthropicBaseUrl,
         nextBase.taskPromptMagicModel,
         nextBase.taskPromptMagicTemplate,
         nextBase.codexDefaultModel,
@@ -673,6 +695,7 @@ export class PostgresSettingsStore implements SettingsStore {
       gitAuthorName: settings.gitAuthorName,
       gitAuthorEmail: settings.gitAuthorEmail,
       openaiBaseUrl: settings.openaiBaseUrl,
+      anthropicBaseUrl: settings.anthropicBaseUrl,
       defaultProvider: settings.defaultProvider
     };
   }

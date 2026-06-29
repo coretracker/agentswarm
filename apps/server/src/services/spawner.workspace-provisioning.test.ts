@@ -477,6 +477,7 @@ describe("SpawnerService workspace provisioning", () => {
       anthropicApiKey: null,
       codexAuthJson: null,
       openaiBaseUrl: null,
+      anthropicBaseUrl: null,
       defaultProvider: "codex"
     };
     spawnerAny.settingsStore = {
