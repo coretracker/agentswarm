@@ -11,9 +11,13 @@ interface ProviderModelEntry {
   value: string;
 }
 
+function providerModelsUrl(baseUrl: string | null, defaultBaseUrl: string): string {
+  const base = (baseUrl?.replace(/\/$/, "") ?? defaultBaseUrl);
+  return `${base.endsWith("/v1") ? base : `${base}/v1`}/models`;
+}
+
 async function fetchOpenAiModels(apiKey: string, baseUrl: string | null): Promise<ProviderModelEntry[]> {
-  const base = (baseUrl?.replace(/\/$/, "") ?? "https://api.openai.com") + "/v1";
-  const response = await fetch(`${base}/models`, {
+  const response = await fetch(providerModelsUrl(baseUrl, "https://api.openai.com"), {
     headers: { Authorization: `Bearer ${apiKey}` }
   });
 
@@ -27,8 +31,8 @@ async function fetchOpenAiModels(apiKey: string, baseUrl: string | null): Promis
     .sort((a, b) => a.value.localeCompare(b.value));
 }
 
-async function fetchAnthropicModels(apiKey: string): Promise<ProviderModelEntry[]> {
-  const response = await fetch("https://api.anthropic.com/v1/models", {
+async function fetchAnthropicModels(apiKey: string, baseUrl: string | null): Promise<ProviderModelEntry[]> {
+  const response = await fetch(providerModelsUrl(baseUrl, "https://api.anthropic.com"), {
     headers: {
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01"
@@ -76,6 +80,7 @@ const updateSettingsSchema = z.object({
   gitAuthorName: z.string().trim().min(1).max(120).nullable().optional(),
   gitAuthorEmail: z.string().trim().email().nullable().optional(),
   openaiBaseUrl: z.string().trim().url().nullable().optional(),
+  anthropicBaseUrl: z.string().trim().url().nullable().optional(),
   taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
   taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),
   codexDefaultModel: z.string().trim().min(1).max(120).optional(),
@@ -132,7 +137,7 @@ export const registerSettingsRoutes = (
         if (!credentials.anthropicApiKey) {
           return reply.send({ models: configured.length > 0 ? configured : fallback, source: configured.length > 0 ? "cache" : "fallback" });
         }
-        const models = await fetchAnthropicModels(credentials.anthropicApiKey);
+        const models = await fetchAnthropicModels(credentials.anthropicApiKey, settings.anthropicBaseUrl);
         return reply.send({ models, source: "api" });
       }
 

@@ -35,11 +35,11 @@ Notes:
 
 ## Settings And Credentials Flow (Current)
 1. Open `/settings`.
-2. Set `Git Username` and optional system `Git Author Name` / `Git Author Email` in the connections settings. Default GitHub PAT HTTPS auth uses `x-access-token`.
-3. Save the general settings form.
-4. In `Credentials`, add or replace the write-only `GitHub Token`.
-5. Add provider credentials for Codex and/or Claude as needed.
-6. Open your profile to manage response preferences and personal access tokens.
+2. Use `General` to set the default provider, concurrent agents, access roles, and response presets.
+3. Use `Git` to set the GitHub token, Git username, optional commit author identity, and feature branch prefix. Default GitHub PAT HTTPS auth uses `x-access-token`.
+4. Use `Codex` to set the OpenAI API key or Codex `auth.json`, default effort/model, model list, prompt magic settings, and base URL override.
+5. Use `Claude Code` to set the Anthropic API key, default effort/model, model list, and base URL override.
+6. Open your profile to manage personal access tokens.
 
 Notes:
 - The GitHub token is used for both server-side Git actions and in-agent `git pull` / `git push` inside Codex and Claude runtimes.

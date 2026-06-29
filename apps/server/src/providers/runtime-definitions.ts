@@ -19,7 +19,9 @@ export interface ProviderRuntimeDefinition {
   command: string[];
   configFileName: string;
   getMissingCredentialMessage(credentials: RuntimeCredentials): string | null;
-  getRuntimeEnv(credentials: RuntimeCredentials & { openaiBaseUrl: string | null }): Record<string, string | undefined>;
+  getRuntimeEnv(
+    credentials: RuntimeCredentials & { openaiBaseUrl: string | null; anthropicBaseUrl: string | null }
+  ): Record<string, string | undefined>;
   getProviderConfig(servers: McpServerConfig[]): string;
   getResolvedModel(modelOverride: string | null, profile: ProviderProfile): string | null;
   getResolvedProfileSettings(
@@ -59,7 +61,8 @@ export const providerRuntimeDefinitions: Record<AgentProvider, ProviderRuntimeDe
     getMissingCredentialMessage: (credentials) =>
       credentials.anthropicApiKey ? null : "Anthropic API key is not configured in Settings.",
     getRuntimeEnv: (credentials) => ({
-      ANTHROPIC_API_KEY: credentials.anthropicApiKey ?? undefined
+      ANTHROPIC_API_KEY: credentials.anthropicApiKey ?? undefined,
+      ANTHROPIC_BASE_URL: credentials.anthropicBaseUrl ?? undefined
     }),
     getProviderConfig: serializeClaudeMcpConfig,
     getResolvedModel: (modelOverride, profile) => modelOverride ?? defaultModelForProvider("claude", profile),

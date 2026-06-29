@@ -80,6 +80,29 @@ describe("RedisSettingsStore runtime credentials", () => {
     assert.equal(credentials.gitAuthorEmail, "agentswarm@example.com");
   });
 
+  it("returns provider base URL overrides with runtime credentials", async () => {
+    const settingsStore = new RedisSettingsStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never,
+      createCredentialStore({
+        githubToken: null,
+        openaiApiKey: null,
+        anthropicApiKey: null,
+        codexAuthJson: null
+      })
+    );
+
+    await settingsStore.updateSettings({
+      openaiBaseUrl: " https://openai.example.test ",
+      anthropicBaseUrl: " https://anthropic.example.test "
+    });
+
+    const credentials = await settingsStore.getRuntimeCredentials("user-1", "auto");
+
+    assert.equal(credentials.openaiBaseUrl, "https://openai.example.test");
+    assert.equal(credentials.anthropicBaseUrl, "https://anthropic.example.test");
+  });
+
   it("does not expose legacy global MCP servers", async () => {
     const redis = new FakeRedis();
     redis.seed("agentswarm:settings", {

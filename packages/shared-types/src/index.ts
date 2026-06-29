@@ -860,6 +860,7 @@ export interface SystemSettings {
   gitAuthorName: string | null;
   gitAuthorEmail: string | null;
   openaiBaseUrl: string | null;
+  anthropicBaseUrl: string | null;
   taskPromptMagicModel: string;
   taskPromptMagicTemplate: string;
   githubTokenConfigured: boolean;
@@ -1316,6 +1317,7 @@ export interface UpdateSettingsInput {
   gitAuthorName?: string | null;
   gitAuthorEmail?: string | null;
   openaiBaseUrl?: string | null;
+  anthropicBaseUrl?: string | null;
   taskPromptMagicModel?: string;
   taskPromptMagicTemplate?: string;
   codexDefaultModel?: string;
