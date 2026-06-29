@@ -70,7 +70,7 @@ const createTaskSchema = z
     provider: z.enum(["codex", "claude"]).optional(),
     providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
     modelOverride: z.string().trim().min(1).optional(),
-    codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+    codexCredentialSource: z.enum(["auto", "global"]).optional(),
     baseBranch: z.string().min(1).optional(),
     branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
     model: z.string().min(1).optional(),
@@ -95,7 +95,7 @@ const updateTaskConfigSchema = z.object({
   provider: z.enum(["codex", "claude"]),
   providerProfile: z.enum(["low", "medium", "high", "max"]),
   modelOverride: z.string().trim().nullable().optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+  codexCredentialSource: z.enum(["auto", "global"]).optional(),
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
   autoApplyCheckpoints: z.boolean().optional()
 });
@@ -121,7 +121,7 @@ const updateTaskDraftSchema = z
     provider: z.enum(["codex", "claude"]),
     providerProfile: z.enum(["low", "medium", "high", "max"]),
     modelOverride: z.string().trim().min(1).nullable().optional(),
-    codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+    codexCredentialSource: z.enum(["auto", "global"]).optional(),
     baseBranch: z.string().trim().min(1),
     branchStrategy: z.enum(["feature_branch", "work_on_branch"])
   })
@@ -1100,7 +1100,7 @@ export const registerTaskRoutes = (
 
       const [settings, credentials] = await Promise.all([
         deps.settingsStore.getSettings(),
-        deps.settingsStore.getRuntimeCredentials(auth.user.id, "auto")
+        deps.settingsStore.getRuntimeCredentials(null, "auto")
       ]);
       if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
         return reply.status(400).send({ message: "Codex auth.json or OpenAI API key is not configured." });
@@ -1184,7 +1184,7 @@ export const registerTaskRoutes = (
 
       const [settings, credentials] = await Promise.all([
         deps.settingsStore.getSettings(),
-        deps.settingsStore.getRuntimeCredentials(request.auth!.user.id, "auto")
+        deps.settingsStore.getRuntimeCredentials(null, "auto")
       ]);
       if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
         return reply.status(400).send({ message: "Codex auth.json or OpenAI API key is not configured." });

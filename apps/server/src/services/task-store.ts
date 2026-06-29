@@ -289,8 +289,8 @@ const getUserVisiblePendingCheckpoint = (
 ): boolean => (task.autoApplyCheckpoints ? false : hasPendingProposal);
 
 const normalizeCodexCredentialSource = (value: string | null | undefined): CodexCredentialSource => {
-  if (value === "profile" || value === "global") {
-    return value;
+  if (value === "global" || value === "profile") {
+    return "global";
   }
   return "auto";
 };

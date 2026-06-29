@@ -90,7 +90,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [profileOpen, setProfileOpen] = useState(false);
   const [savingProfile, setSavingProfile] = useState(false);
   const [profileLoading, setProfileLoading] = useState(false);
-  const [profileCodexConfigured, setProfileCodexConfigured] = useState(false);
   const [personalAccessTokens, setPersonalAccessTokens] = useState<PersonalAccessToken[]>([]);
   const [personalAccessTokenLoading, setPersonalAccessTokenLoading] = useState(false);
   const [generatedPersonalAccessToken, setGeneratedPersonalAccessToken] = useState<string | null>(null);
@@ -104,9 +103,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const workspaceNotesSaveRequestIdRef = useRef(0);
   const [profileForm] = Form.useForm<{
     name: string;
-    gitAuthorName?: string;
-    gitAuthorEmail?: string;
-    codexAuthJson?: string;
     audience?: AudienceType;
     explanationDepth?: AgentExplanationDepth;
     jargonLevel?: AgentJargonLevel;
@@ -313,9 +309,6 @@ export function AppShell({ children }: { children: ReactNode }) {
       const [profile, tokens] = await Promise.all([api.getProfile(), api.listPersonalAccessTokens()]);
       profileForm.setFieldsValue({
         name: profile.name,
-        gitAuthorName: profile.gitAuthorName ?? "",
-        gitAuthorEmail: profile.gitAuthorEmail ?? "",
-        codexAuthJson: "",
         audience: profile.agentResponsePreference.audience,
         explanationDepth: profile.agentResponsePreference.explanationDepth,
         jargonLevel: profile.agentResponsePreference.jargonLevel,
@@ -324,7 +317,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         formattingStyle: profile.agentResponsePreference.formattingStyle,
         extraInstructions: profile.agentResponsePreference.extraInstructions ?? ""
       });
-      setProfileCodexConfigured(profile.codexAuthJsonConfigured);
       setPersonalAccessTokens(tokens);
     } catch (error) {
       message.error(error instanceof Error ? error.message : "Failed to load profile");
@@ -340,9 +332,6 @@ export function AppShell({ children }: { children: ReactNode }) {
       setSavingProfile(true);
       const next = await api.updateProfile({
         name: values.name,
-        gitAuthorName: values.gitAuthorName?.trim() || null,
-        gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
-        codexAuthJson: values.codexAuthJson?.trim() || undefined,
         agentResponsePreference: {
           audience: values.audience,
           explanationDepth: values.explanationDepth,
@@ -353,14 +342,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           extraInstructions: values.extraInstructions?.trim() || undefined
         }
       });
-      setProfileCodexConfigured(next.codexAuthJsonConfigured);
-      profileForm.setFieldValue("codexAuthJson", "");
       setSessionUser({
         name: next.name,
-        gitAuthorName: next.gitAuthorName,
-        gitAuthorEmail: next.gitAuthorEmail,
-        agentResponsePreference: next.agentResponsePreference,
-        codexAuthJsonConfigured: next.codexAuthJsonConfigured
+        agentResponsePreference: next.agentResponsePreference
       });
       message.success("Profile updated");
     } catch (error) {
@@ -368,24 +352,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         return;
       }
       message.error(error instanceof Error ? error.message : "Failed to update profile");
-    } finally {
-      setSavingProfile(false);
-    }
-  };
-
-  const clearCodexAuthJson = async (): Promise<void> => {
-    setSavingProfile(true);
-    try {
-      const next = await api.updateProfile({ clearCodexAuthJson: true });
-      setProfileCodexConfigured(next.codexAuthJsonConfigured);
-      profileForm.setFieldValue("codexAuthJson", "");
-      setSessionUser({
-        agentResponsePreference: next.agentResponsePreference,
-        codexAuthJsonConfigured: next.codexAuthJsonConfigured
-      });
-      message.success("Codex auth.json cleared");
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
     } finally {
       setSavingProfile(false);
     }
@@ -719,9 +685,6 @@ export function AppShell({ children }: { children: ReactNode }) {
             layout="vertical"
             initialValues={{
               name: session.user.name,
-              gitAuthorName: session.user.gitAuthorName ?? "",
-              gitAuthorEmail: session.user.gitAuthorEmail ?? "",
-              codexAuthJson: "",
               audience: session.user.agentResponsePreference.audience,
               explanationDepth: session.user.agentResponsePreference.explanationDepth,
               jargonLevel: session.user.agentResponsePreference.jargonLevel,
@@ -735,46 +698,11 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Input />
             </Form.Item>
             <Divider orientation="left" plain>
-              Git Commit Identity
-            </Divider>
-            <Form.Item
-              name="gitAuthorName"
-              label="Git Author Name"
-              extra="Used for agent-created Git commits. Leave blank to use your profile name."
-            >
-              <Input placeholder={session.user.name} />
-            </Form.Item>
-            <Form.Item
-              name="gitAuthorEmail"
-              label="Git Author Email"
-              rules={[{ type: "email", message: "Enter a valid email address" }]}
-              extra="Used for agent-created Git commits. Leave blank to use your profile email."
-            >
-              <Input placeholder={session.user.email} />
-            </Form.Item>
-            <Divider orientation="left" plain>
               Response Format Preferences
             </Divider>
             <Card size="small">
               <ResponsePolicyFields />
             </Card>
-            <Divider orientation="left" plain>
-              Credentials
-            </Divider>
-            <Form.Item name="codexAuthJson" label="Codex auth.json">
-              <Input.TextArea
-                autoSize={{ minRows: 6, maxRows: 14 }}
-                placeholder={profileCodexConfigured ? "Configured. Paste new JSON to replace." : "{\"...\": \"...\"}"}
-              />
-            </Form.Item>
-            <Typography.Text type="secondary">
-              Stored write-only and encrypted. Existing value is never returned.
-            </Typography.Text>
-            <div style={{ marginTop: 12 }}>
-              <Button danger onClick={() => { void clearCodexAuthJson(); }} loading={savingProfile}>
-                Clear Codex auth.json
-              </Button>
-            </div>
             <Divider orientation="left" plain>
               Personal Access Token
             </Divider>

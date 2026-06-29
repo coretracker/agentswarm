@@ -1,30 +1,16 @@
-import type { Task, User } from "@agentswarm/shared-types";
+import type { SystemSettings } from "@agentswarm/shared-types";
 
 export interface GitCommitIdentity {
   name: string;
   email: string;
 }
 
-type UserLookup = {
-  getUser(userId: string): Promise<Pick<User, "name" | "email" | "gitAuthorName" | "gitAuthorEmail"> | null>;
-};
-
-export async function resolveTaskGitCommitIdentity(
-  task: Pick<Task, "ownerUserId">,
-  userLookup: UserLookup,
+export function resolveTaskGitCommitIdentity(
+  settings: Pick<SystemSettings, "gitAuthorName" | "gitAuthorEmail">,
   fallback: GitCommitIdentity
-): Promise<GitCommitIdentity> {
-  if (!task.ownerUserId) {
-    return fallback;
-  }
-
-  const user = await userLookup.getUser(task.ownerUserId);
-  if (!user) {
-    return fallback;
-  }
-
-  const name = (user.gitAuthorName?.trim() || user.name.trim());
-  const email = (user.gitAuthorEmail?.trim() || user.email.trim());
+): GitCommitIdentity {
+  const name = settings.gitAuthorName?.trim() ?? "";
+  const email = settings.gitAuthorEmail?.trim() ?? "";
   if (!name || !email) {
     return fallback;
   }

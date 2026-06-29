@@ -668,7 +668,7 @@ export const registerGitHubPrWebhookRoutes = (
         return reply.status(202).send({ queued: false, reason: "missing_github_task_owner" });
       }
 
-      const credentials = await deps.settingsStore.getRuntimeCredentials(ownerUserId, "auto");
+      const credentials = await deps.settingsStore.getRuntimeCredentials(null, "auto");
       const branchDetails = await resolveGitHubPrBranchDetails(feedback, credentials.githubToken);
       if (!branchDetails) {
         return reply.status(202).send({ queued: false, reason: "pr_branch_unavailable" });

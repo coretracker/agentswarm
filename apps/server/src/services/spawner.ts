@@ -612,8 +612,9 @@ export class SpawnerService {
     task?: Pick<Task, "ownerUserId">
   ): Promise<NodeJS.ProcessEnv> {
     const workspacePath = args[0] === "-C" && typeof args[1] === "string" && args[1].startsWith("/") ? args[1] : null;
+    const settings = task ? await this.settingsStore.getSettings() : null;
     const gitIdentity = task
-      ? await resolveTaskGitCommitIdentity(task, this.userStore, {
+      ? resolveTaskGitCommitIdentity(settings!, {
           ...DEFAULT_GIT_COMMIT_IDENTITY
         })
       : null;
@@ -3121,7 +3122,7 @@ export class SpawnerService {
 
     const [settings, credentials] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials(task.ownerUserId, task.codexCredentialSource ?? "auto")
+      this.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto")
     ]);
 
     try {
@@ -5017,12 +5018,9 @@ export class SpawnerService {
   async prepareTaskWorkspaceOnly(task: Task): Promise<Task> {
     const [settings, runtimeCredentialsRaw] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials(task.ownerUserId, task.codexCredentialSource ?? "auto")
+      this.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto")
     ]);
     const runtimeCredentials = runtimeCredentialsRaw;
-    if (task.provider === "codex" && task.codexCredentialSource === "profile" && !runtimeCredentials.codexAuthJson) {
-      throw new Error("Codex credential source is set to Profile, but your profile Codex auth.json is not configured.");
-    }
     const providerDefinition = getProviderRuntimeDefinition(task.provider);
     const missingCredentialMessage = providerDefinition.getMissingCredentialMessage(runtimeCredentials);
     if (missingCredentialMessage) {
@@ -5123,12 +5121,9 @@ export class SpawnerService {
 
     const [settings, runtimeCredentialsRaw] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials(task.ownerUserId, task.codexCredentialSource ?? "auto")
+      this.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto")
     ]);
     const runtimeCredentials = runtimeCredentialsRaw;
-    if (task.provider === "codex" && task.codexCredentialSource === "profile" && !runtimeCredentials.codexAuthJson) {
-      throw new Error("Codex credential source is set to Profile, but your profile Codex auth.json is not configured.");
-    }
 
     const branchName =
       task.branchStrategy === "work_on_branch"
@@ -5303,19 +5298,16 @@ export class SpawnerService {
 
   async runTask(task: Task, action: TaskAction, input?: TaskExecutionInput | string, promptMessageId: string | null = null): Promise<void> {
     this.cancelRequestedTaskIds.delete(task.id);
-    const [settings, runtimeCredentialsRaw, repositoryRuntimeEnvEntries, responsePreferenceUser, gitIdentity] = await Promise.all([
+    const [settings, runtimeCredentialsRaw, repositoryRuntimeEnvEntries, responsePreferenceUser] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials(task.ownerUserId, task.codexCredentialSource ?? "auto"),
+      this.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto"),
       this.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
-      task.ownerUserId ? this.userStore.getAuthSessionUser(task.ownerUserId) : Promise.resolve(null),
-      resolveTaskGitCommitIdentity(task, this.userStore, {
-        ...DEFAULT_GIT_COMMIT_IDENTITY
-      })
+      task.ownerUserId ? this.userStore.getAuthSessionUser(task.ownerUserId) : Promise.resolve(null)
     ]);
+    const gitIdentity = resolveTaskGitCommitIdentity(settings, {
+      ...DEFAULT_GIT_COMMIT_IDENTITY
+    });
     const runtimeCredentials = runtimeCredentialsRaw;
-    if (task.provider === "codex" && task.codexCredentialSource === "profile" && !runtimeCredentials.codexAuthJson) {
-      throw new Error("Codex credential source is set to Profile, but your profile Codex auth.json is not configured.");
-    }
     const providerDefinition = getProviderRuntimeDefinition(task.provider);
     const missingCredentialMessage = providerDefinition.getMissingCredentialMessage(runtimeCredentials);
     if (missingCredentialMessage) {

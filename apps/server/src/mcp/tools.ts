@@ -79,7 +79,7 @@ const createTaskSchema = z
     provider: z.enum(["codex", "claude"]).optional(),
     providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
     modelOverride: z.string().trim().min(1).optional(),
-    codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+    codexCredentialSource: z.enum(["auto", "global"]).optional(),
     baseBranch: z.string().trim().min(1).optional(),
     branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
     deadline: z.string().trim().min(1).nullable().optional()

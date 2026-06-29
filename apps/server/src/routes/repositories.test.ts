@@ -10,8 +10,6 @@ const createUser = (overrides: Partial<User> = {}): User => ({
   id: "user-1",
   name: "User One",
   email: "user-1@example.com",
-  gitAuthorName: null,
-  gitAuthorEmail: null,
   active: true,
   agentResponsePreference: {},
   roles: [],
@@ -28,7 +26,6 @@ const createAuthUser = (overrides: Partial<AuthSessionUser> = {}): AuthSessionUs
   allowedProviders: [],
   allowedModels: [],
   allowedEfforts: [],
-  codexAuthJsonConfigured: false,
   ...overrides
 });
 

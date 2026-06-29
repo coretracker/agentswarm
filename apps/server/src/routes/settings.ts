@@ -97,6 +97,8 @@ const updateSettingsSchema = z.object({
   branchPrefix: z.string().trim().min(1).max(80).optional(),
   workspaceProvisioningMode: z.enum(["clone_only", "hybrid"]).optional(),
   gitUsername: z.string().trim().min(1).max(120).optional(),
+  gitAuthorName: z.string().trim().min(1).max(120).nullable().optional(),
+  gitAuthorEmail: z.string().trim().email().nullable().optional(),
   mcpServers: z.array(mcpServerSchema).max(25).optional(),
   openaiBaseUrl: z.string().trim().url().nullable().optional(),
   taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),

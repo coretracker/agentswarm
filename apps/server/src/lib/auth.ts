@@ -2,7 +2,6 @@ import type { IncomingHttpHeaders } from "node:http";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuthSession, PermissionScope, RealtimeEvent } from "@agentswarm/shared-types";
 import type { Server as SocketIOServer, Socket } from "socket.io";
-import type { CredentialStore } from "../services/credential-store.js";
 import type { PersonalAccessTokenStore } from "../services/personal-access-token-store.js";
 import type { SessionStore } from "../services/session-store.js";
 import type { TaskStore } from "../services/task-store.js";
@@ -83,14 +82,12 @@ export const createAuthService = ({
   sessionStore,
   userStore,
   taskStore,
-  credentialStore,
   personalAccessTokenStore
 }: {
   cookieName: string;
   sessionStore: SessionStore;
   userStore: UserStore;
   taskStore: TaskStore;
-  credentialStore: CredentialStore;
   personalAccessTokenStore?: PersonalAccessTokenStore;
 }): AuthService => {
   const getRequestToken = (request: FastifyRequest): string | null => {
@@ -113,19 +110,13 @@ export const createAuthService = ({
       await sessionStore.deleteSession(token);
       return null;
     }
-    const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
-    const sessionUser = {
-      ...user,
-      codexAuthJsonConfigured
-    };
-
     return {
-      user: sessionUser,
-      scopes: new Set(sessionUser.scopes),
+      user,
+      scopes: new Set(user.scopes),
       sessionToken: token,
       expiresAt: session.expiresAt,
       session: {
-        user: sessionUser,
+        user,
         expiresAt: session.expiresAt
       }
     };
@@ -140,20 +131,15 @@ export const createAuthService = ({
     if (!user) {
       return null;
     }
-    const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
-    const sessionUser = {
-      ...user,
-      codexAuthJsonConfigured
-    };
     const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
 
     return {
-      user: sessionUser,
-      scopes: new Set(sessionUser.scopes),
+      user,
+      scopes: new Set(user.scopes),
       sessionToken: "",
       expiresAt,
       session: {
-        user: sessionUser,
+        user,
         expiresAt
       }
     };
@@ -331,13 +317,8 @@ export const createAuthService = ({
       if (!user) {
         throw new Error("Active session user not found");
       }
-      const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
-
       return {
-        user: {
-          ...user,
-          codexAuthJsonConfigured
-        },
+        user,
         expiresAt
       };
     },
