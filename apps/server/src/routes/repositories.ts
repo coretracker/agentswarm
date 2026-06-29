@@ -20,6 +20,60 @@ const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENG
 const GITHUB_ALLOWED_USERS_MAX_COUNT = 100;
 const GITHUB_LOGIN_PATTERN = /^@?[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 
+const normalizeMcpServerNameForComparison = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const mcpServerSchema = z.discriminatedUnion("transport", [
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("stdio"),
+    command: z.string().trim().min(1).max(300),
+    args: z.array(z.string().trim().min(1).max(300)).max(40).optional()
+  }),
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("http"),
+    url: z.string().trim().url(),
+    bearerTokenEnvVar: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
+      .nullable()
+      .optional()
+  })
+]);
+
+const mcpServersSchema = z
+  .array(mcpServerSchema)
+  .max(25)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const normalized = normalizeMcpServerNameForComparison(entries[index]?.name ?? "");
+      if (!normalized) {
+        continue;
+      }
+      if (seen.has(normalized)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "name"],
+          message: `Duplicate MCP server name: ${entries[index]?.name}`
+        });
+      } else {
+        seen.add(normalized);
+      }
+    }
+  });
+
 const repositoryEnvKeySchema = z
   .string()
   .trim()
@@ -138,6 +192,7 @@ const createRepositorySchema = z.object({
   defaultBranch: z.string().min(1).optional(),
   envVars: repositoryEnvVarsSchema.optional(),
   envSecrets: repositoryEnvSecretsSchema.optional(),
+  mcpServers: mcpServersSchema.optional(),
   webhookUrl: z.string().trim().url().nullable().optional(),
   webhookEnabled: z.boolean().optional(),
   webhookSecret: z.string().trim().min(1).optional(),

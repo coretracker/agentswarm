@@ -19,11 +19,15 @@ Notes:
 2. Create or edit a repository.
 3. Add environment variables (plaintext key/value).
 4. Add environment secrets (write-only values).
-5. Save.
+5. Add MCP servers that should be available to task runs and interactive terminals for this repository.
+6. Save.
 
 Notes:
 - Existing secrets are shown as configured placeholders only; values are never shown again after save.
 - Editing can keep an existing secret by leaving its value blank, replace it by entering a new value, or delete it by removing the row.
+- Repository MCP servers are scoped to the repository being edited. They are not inherited from Settings and are not shared with other repositories.
+- MCP bearer token environment variable names resolve from the AgentSwarm server process environment. Missing values are reported in task runtime logs.
+- Installations that previously used global MCP server settings must recreate the intended MCP servers on each repository that should expose them.
 - GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
 - GitHub Integration can optionally archive linked tasks when a GitHub pull request webhook reports the PR as merged.
 - GitHub Integration creates or queues build-mode tasks when a `pull_request.review_requested` webhook targets the configured integration bot.

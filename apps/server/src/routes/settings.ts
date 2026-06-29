@@ -45,30 +45,6 @@ async function fetchAnthropicModels(apiKey: string): Promise<ProviderModelEntry[
     .sort((a, b) => a.value.localeCompare(b.value));
 }
 
-const mcpServerSchema = z.discriminatedUnion("transport", [
-  z.object({
-    name: z.string().trim().min(1).max(120),
-    enabled: z.boolean(),
-    transport: z.literal("stdio"),
-    command: z.string().trim().min(1).max(300),
-    args: z.array(z.string().trim().min(1).max(300)).max(40).optional()
-  }),
-  z.object({
-    name: z.string().trim().min(1).max(120),
-    enabled: z.boolean(),
-    transport: z.literal("http"),
-    url: z.string().trim().url(),
-    bearerTokenEnvVar: z
-      .string()
-      .trim()
-      .min(1)
-      .max(120)
-      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
-      .nullable()
-      .optional()
-  })
-]);
-
 const providerProfileEnum = z.enum(["low", "medium", "high", "max"]);
 const providerModelSchema = z.object({
   label: z.string().trim().min(1).max(160),
@@ -99,7 +75,6 @@ const updateSettingsSchema = z.object({
   gitUsername: z.string().trim().min(1).max(120).optional(),
   gitAuthorName: z.string().trim().min(1).max(120).nullable().optional(),
   gitAuthorEmail: z.string().trim().email().nullable().optional(),
-  mcpServers: z.array(mcpServerSchema).max(25).optional(),
   openaiBaseUrl: z.string().trim().url().nullable().optional(),
   taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
   taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),

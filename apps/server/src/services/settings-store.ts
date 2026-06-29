@@ -6,7 +6,6 @@ import type {
   AgentResponsePreference,
   AudienceType,
   SystemDataStores,
-  McpServerConfig,
   ProviderModelOption,
   ProviderProfile,
   WorkspaceProvisioningMode,
@@ -65,7 +64,6 @@ const defaultSettings: SystemSettings = {
   gitUsername: "x-access-token",
   gitAuthorName: null,
   gitAuthorEmail: null,
-  mcpServers: [],
   openaiBaseUrl: null,
   taskPromptMagicModel: "gpt-5.4-mini",
   taskPromptMagicTemplate:
@@ -115,74 +113,6 @@ const normalizeDefaultProvider = (value: AgentProvider | string | undefined): Ag
 
 const normalizeWorkspaceProvisioningMode = (value: WorkspaceProvisioningMode | string | undefined): WorkspaceProvisioningMode =>
   value === "hybrid" ? "hybrid" : "clone_only";
-
-const normalizeMcpServerName = (value: string | undefined): string =>
-  (value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-const normalizeMcpServerArgs = (value: string[] | undefined): string[] =>
-  (value ?? []).map((item) => item.trim()).filter(Boolean);
-
-const MCP_BEARER_TOKEN_ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-const normalizeMcpBearerTokenEnvVar = (value: string | null | undefined): string | null => {
-  const trimmed = value?.trim() ?? "";
-  if (!trimmed || !MCP_BEARER_TOKEN_ENV_VAR_PATTERN.test(trimmed)) {
-    return null;
-  }
-  return trimmed;
-};
-
-const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerConfig[] => {
-  const normalized: McpServerConfig[] = [];
-  const seenNames = new Set<string>();
-
-  for (const server of value ?? []) {
-    const name = normalizeMcpServerName(server.name);
-    if (!name || seenNames.has(name)) {
-      continue;
-    }
-
-    const transport = server.transport === "http" ? "http" : "stdio";
-    const baseServer: McpServerConfig = {
-      name,
-      enabled: server.enabled !== false,
-      transport
-    };
-
-    if (transport === "http") {
-      const url = server.url?.trim() || null;
-      if (!url) {
-        continue;
-      }
-
-      normalized.push({
-        ...baseServer,
-        url,
-        bearerTokenEnvVar: normalizeMcpBearerTokenEnvVar(server.bearerTokenEnvVar)
-      });
-    } else {
-      const command = server.command?.trim() || null;
-      if (!command) {
-        continue;
-      }
-
-      normalized.push({
-        ...baseServer,
-        command,
-        args: normalizeMcpServerArgs(server.args)
-      });
-    }
-
-    seenNames.add(name);
-  }
-
-  return normalized;
-};
 
 const normalizeProviderModels = (value: ProviderModelOption[] | undefined, fallback: ProviderModelOption[]): ProviderModelOption[] => {
   const normalized: ProviderModelOption[] = [];
@@ -330,7 +260,6 @@ export class RedisSettingsStore implements SettingsStore {
         gitUsername: defaultSettings.gitUsername,
         gitAuthorName: defaultSettings.gitAuthorName,
         gitAuthorEmail: defaultSettings.gitAuthorEmail,
-        mcpServers: defaultSettings.mcpServers,
         openaiBaseUrl: defaultSettings.openaiBaseUrl,
         taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
         taskPromptMagicTemplate: defaultSettings.taskPromptMagicTemplate,
@@ -345,7 +274,9 @@ export class RedisSettingsStore implements SettingsStore {
       await this.redis.set(SETTINGS_KEY, JSON.stringify(baseSettings));
     }
 
-    const parsed = raw ? (JSON.parse(raw) as Partial<SystemSettings> & { agentRules?: string; autoModeEnabled?: boolean }) : {};
+    const parsed = raw
+      ? (JSON.parse(raw) as Partial<SystemSettings> & { agentRules?: string; autoModeEnabled?: boolean; mcpServers?: unknown })
+      : {};
     const normalizedBase = {
       defaultProvider: normalizeDefaultProvider(parsed.defaultProvider),
       maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
@@ -354,7 +285,6 @@ export class RedisSettingsStore implements SettingsStore {
       gitUsername: normalizeGitUsername(parsed.gitUsername),
       gitAuthorName: normalizeOptionalGitAuthorName(parsed.gitAuthorName),
       gitAuthorEmail: normalizeOptionalGitAuthorEmail(parsed.gitAuthorEmail),
-      mcpServers: normalizeMcpServers(parsed.mcpServers),
       openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
       taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
       taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
@@ -377,7 +307,7 @@ export class RedisSettingsStore implements SettingsStore {
       parsed.gitUsername !== normalizedBase.gitUsername ||
       (parsed.gitAuthorName ?? null) !== normalizedBase.gitAuthorName ||
       (parsed.gitAuthorEmail ?? null) !== normalizedBase.gitAuthorEmail ||
-      JSON.stringify(parsed.mcpServers ?? []) !== JSON.stringify(normalizedBase.mcpServers) ||
+      Object.prototype.hasOwnProperty.call(parsed, "mcpServers") ||
       (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
       (parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel) !== normalizedBase.taskPromptMagicModel ||
       (parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate) !== normalizedBase.taskPromptMagicTemplate ||
@@ -410,8 +340,6 @@ export class RedisSettingsStore implements SettingsStore {
         input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName),
       gitAuthorEmail:
         input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail),
-      mcpServers:
-        input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
       openaiBaseUrl:
         input.openaiBaseUrl === undefined
           ? current.openaiBaseUrl
@@ -512,7 +440,6 @@ export class PostgresSettingsStore implements SettingsStore {
           git_username,
           git_author_name,
           git_author_email,
-          mcp_servers,
           openai_base_url,
           task_prompt_magic_model,
           task_prompt_magic_template,
@@ -524,7 +451,7 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13::jsonb, $14, $15, $16::jsonb, $17, $18::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15::jsonb, $16, $17::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
@@ -535,7 +462,6 @@ export class PostgresSettingsStore implements SettingsStore {
         defaultSettings.gitUsername,
         defaultSettings.gitAuthorName,
         defaultSettings.gitAuthorEmail,
-        JSON.stringify(defaultSettings.mcpServers),
         defaultSettings.openaiBaseUrl,
         defaultSettings.taskPromptMagicModel,
         defaultSettings.taskPromptMagicTemplate,
@@ -562,7 +488,6 @@ export class PostgresSettingsStore implements SettingsStore {
           git_username,
           git_author_name,
           git_author_email,
-          mcp_servers,
           openai_base_url,
           task_prompt_magic_model,
           task_prompt_magic_template,
@@ -586,7 +511,6 @@ export class PostgresSettingsStore implements SettingsStore {
       gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
       gitAuthorName: normalizeOptionalGitAuthorName(typeof row?.git_author_name === "string" ? row.git_author_name : null),
       gitAuthorEmail: normalizeOptionalGitAuthorEmail(typeof row?.git_author_email === "string" ? row.git_author_email : null),
-      mcpServers: normalizeMcpServers(Array.isArray(row?.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined),
       openaiBaseUrl: typeof row?.openai_base_url === "string" && row.openai_base_url.trim().length > 0 ? row.openai_base_url.trim() : null,
       taskPromptMagicModel:
         typeof row?.task_prompt_magic_model === "string" && row.task_prompt_magic_model.trim().length > 0
@@ -641,7 +565,6 @@ export class PostgresSettingsStore implements SettingsStore {
         input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName),
       gitAuthorEmail:
         input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail),
-      mcpServers: input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
       openaiBaseUrl:
         input.openaiBaseUrl === undefined
           ? current.openaiBaseUrl
@@ -673,7 +596,6 @@ export class PostgresSettingsStore implements SettingsStore {
           git_username,
           git_author_name,
           git_author_email,
-          mcp_servers,
           openai_base_url,
           task_prompt_magic_model,
           task_prompt_magic_template,
@@ -685,7 +607,7 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13::jsonb, $14, $15, $16::jsonb, $17, $18::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15::jsonb, $16, $17::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
@@ -695,7 +617,6 @@ export class PostgresSettingsStore implements SettingsStore {
           git_username = EXCLUDED.git_username,
           git_author_name = EXCLUDED.git_author_name,
           git_author_email = EXCLUDED.git_author_email,
-          mcp_servers = EXCLUDED.mcp_servers,
           openai_base_url = EXCLUDED.openai_base_url,
           task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
           task_prompt_magic_template = EXCLUDED.task_prompt_magic_template,
@@ -715,7 +636,6 @@ export class PostgresSettingsStore implements SettingsStore {
         nextBase.gitUsername,
         nextBase.gitAuthorName,
         nextBase.gitAuthorEmail,
-        JSON.stringify(nextBase.mcpServers),
         nextBase.openaiBaseUrl,
         nextBase.taskPromptMagicModel,
         nextBase.taskPromptMagicTemplate,

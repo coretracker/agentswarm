@@ -36,6 +36,7 @@ const createRepository = (input: CreateRepositoryInput, overrides: Partial<Repos
   defaultBranch: input.defaultBranch ?? "develop",
   envVars: [],
   envSecrets: [],
+  mcpServers: input.mcpServers ?? [],
   webhookUrl: null,
   webhookEnabled: false,
   webhookSecretConfigured: false,
@@ -105,6 +106,7 @@ const createTestApp = ({
       getRepository: async (repositoryId: string) => repositories.get(repositoryId) ?? null,
       listRepositories: async () => Array.from(repositories.values()),
       getRepositoryRuntimeEnvEntries: async () => [],
+      getRepositoryMcpServers: async () => [],
       updateRepository: async () => null,
       getRepositoryWebhookTarget: async () => null,
       getRepositoryGitHubPrWebhookSecret: async () => null,
@@ -170,6 +172,42 @@ test("repository create accepts GitHub PR auto-archive setting", async () => {
   await app.close();
 });
 
+test("repository create accepts repository MCP servers", async () => {
+  const authUser = createAuthUser({ id: "user-1" });
+  const { app } = createTestApp({ authUser, users: [createUser({ id: "user-1" })] });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/repositories",
+    payload: {
+      name: "repo",
+      url: "https://github.com/acme/repo.git",
+      mcpServers: [
+        {
+          name: "github",
+          enabled: true,
+          transport: "http",
+          url: "https://api.githubcopilot.com/mcp",
+          bearerTokenEnvVar: "GITHUB_MCP_TOKEN"
+        }
+      ]
+    }
+  });
+
+  assert.equal(response.statusCode, 201);
+  assert.deepEqual(JSON.parse(response.body).mcpServers, [
+    {
+      name: "github",
+      enabled: true,
+      transport: "http",
+      url: "https://api.githubcopilot.com/mcp",
+      bearerTokenEnvVar: "GITHUB_MCP_TOKEN"
+    }
+  ]);
+
+  await app.close();
+});
+
 test("repository create rejects a GitHub-created task owner who cannot already access the new repository", async () => {
   const authUser = createAuthUser({ id: "user-1" });
   const { app, updateUserCalls } = createTestApp({
@@ -212,6 +250,39 @@ test("repository create rejects duplicate GitHub allowed users", async () => {
 
   assert.equal(response.statusCode, 400);
   assert.match(JSON.parse(response.body).message, /Duplicate GitHub user/);
+
+  await app.close();
+});
+
+test("repository create rejects duplicate MCP server names", async () => {
+  const authUser = createAuthUser({ id: "user-1" });
+  const { app } = createTestApp({ authUser, users: [createUser({ id: "user-1" })] });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/repositories",
+    payload: {
+      name: "repo",
+      url: "https://github.com/acme/repo.git",
+      mcpServers: [
+        {
+          name: "github",
+          enabled: true,
+          transport: "http",
+          url: "https://api.githubcopilot.com/mcp"
+        },
+        {
+          name: "Github",
+          enabled: true,
+          transport: "stdio",
+          command: "docker"
+        }
+      ]
+    }
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.match(JSON.parse(response.body).message, /Duplicate MCP server name/);
 
   await app.close();
 });

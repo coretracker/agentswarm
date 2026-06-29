@@ -595,5 +595,15 @@ Feedback:
       ADD COLUMN IF NOT EXISTS git_author_name text NULL,
       ADD COLUMN IF NOT EXISTS git_author_email text NULL;
     `
+  },
+  {
+    id: "20260629_02_repository_mcp_servers",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS mcp_servers jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+      ALTER TABLE system_settings
+      ALTER COLUMN mcp_servers SET DEFAULT '[]'::jsonb;
+    `
   }
 ];

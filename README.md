@@ -277,6 +277,8 @@ Phase 1 tools:
 
 Task agents receive the AgentSwarm MCP server automatically at runtime through an internal stdio bridge and a short-lived run token.
 
+Repository-specific MCP servers are configured on each repository. Task runs and interactive terminals receive only the MCP servers configured for the task repository, plus the internal AgentSwarm MCP bridge. Legacy global MCP server settings are no longer used; recreate any previously global MCP server on each repository that should expose it.
+
 Checkpoint mutation, push/merge, attachments, terminal control, and summarization are intentionally deferred to later phases.
 
 ## FAQ

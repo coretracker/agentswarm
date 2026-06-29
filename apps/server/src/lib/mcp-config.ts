@@ -22,6 +22,64 @@ const validEnvEntries = (env: Record<string, string> | undefined): Array<[string
     return [[validName, value]];
   });
 
+const normalizeMcpServerName = (value: string | undefined): string =>
+  (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const normalizeMcpServerArgs = (value: string[] | undefined): string[] =>
+  (value ?? []).map((item) => item.trim()).filter(Boolean);
+
+export const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerConfig[] => {
+  const normalized: McpServerConfig[] = [];
+  const seenNames = new Set<string>();
+
+  for (const server of value ?? []) {
+    const name = normalizeMcpServerName(server.name);
+    if (!name || seenNames.has(name)) {
+      continue;
+    }
+
+    const transport = server.transport === "http" ? "http" : "stdio";
+    const baseServer: McpServerConfig = {
+      name,
+      enabled: server.enabled !== false,
+      transport
+    };
+
+    if (transport === "http") {
+      const url = server.url?.trim() || null;
+      if (!url) {
+        continue;
+      }
+
+      normalized.push({
+        ...baseServer,
+        url,
+        bearerTokenEnvVar: server.bearerTokenEnvVar ? validEnvVarName(server.bearerTokenEnvVar) : null
+      });
+    } else {
+      const command = server.command?.trim() || null;
+      if (!command) {
+        continue;
+      }
+
+      normalized.push({
+        ...baseServer,
+        command,
+        args: normalizeMcpServerArgs(server.args)
+      });
+    }
+
+    seenNames.add(name);
+  }
+
+  return normalized;
+};
+
 export function serializeCodexMcpConfig(servers: McpServerConfig[]): string {
   const enabledServers = enabledMcpServers(servers);
   if (enabledServers.length === 0) {

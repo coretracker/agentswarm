@@ -9,7 +9,6 @@ import type {
   AgentFormattingStyle,
   AgentJargonLevel,
   AudienceType,
-  McpServerTransport,
   PermissionScope,
   ProviderModelOption,
   ProviderProfile,
@@ -51,16 +50,6 @@ import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useAuth } from "./auth-provider";
 import { ModelSelect } from "./model-select";
 
-interface McpServerFormItem {
-  name: string;
-  enabled: boolean;
-  transport: McpServerTransport;
-  command?: string;
-  argsText?: string;
-  url?: string;
-  bearerTokenEnvVar?: string;
-}
-
 interface GeneralSettingsForm {
   defaultProvider: AgentProvider;
   maxAgents: number;
@@ -71,7 +60,6 @@ interface GeneralSettingsForm {
   openaiBaseUrl: string;
   taskPromptMagicModel: string;
   taskPromptMagicTemplate: string;
-  mcpServers: McpServerFormItem[];
   codexDefaultModel: string;
   codexModels: ProviderModelOption[];
   codexDefaultEffort: ProviderProfile;
@@ -111,11 +99,6 @@ interface ResponsePreferencePresetFormValues {
 type ClearCredentialTarget = "github" | "openai" | "codexAuthJson" | "anthropic";
 type SettingsTabKey = "runtime" | "models" | "connections" | "access" | "responses";
 type DirtyGeneralTabKey = "runtime" | "models" | "connections";
-
-const transportOptions: Array<{ label: string; value: McpServerTransport }> = [
-  { label: "stdio", value: "stdio" },
-  { label: "http", value: "http" }
-];
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: getAgentProviderLabel("codex"), value: "codex" },
@@ -161,15 +144,6 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   openaiBaseUrl: settings.openaiBaseUrl ?? "",
   taskPromptMagicModel: settings.taskPromptMagicModel,
   taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
-  mcpServers: settings.mcpServers.map((server) => ({
-    name: server.name,
-    enabled: server.enabled,
-    transport: server.transport,
-    command: server.command ?? "",
-    argsText: (server.args ?? []).join("\n"),
-    url: server.url ?? "",
-    bearerTokenEnvVar: server.bearerTokenEnvVar ?? ""
-  })),
   codexDefaultModel: settings.codexDefaultModel,
   codexModels: settings.codexModels,
   codexDefaultEffort: settings.codexDefaultEffort,
@@ -427,28 +401,7 @@ export function SettingsPage() {
         codexDefaultEffort: values.codexDefaultEffort,
         claudeDefaultModel: values.claudeDefaultModel,
         claudeModels: values.claudeModels,
-        claudeDefaultEffort: values.claudeDefaultEffort,
-        mcpServers: (values.mcpServers ?? []).map((server) =>
-          server.transport === "http"
-            ? {
-                name: server.name,
-                enabled: server.enabled,
-                transport: "http" as const,
-                url: server.url?.trim() || "",
-                bearerTokenEnvVar: server.bearerTokenEnvVar?.trim() || null
-              }
-            : {
-                name: server.name,
-                enabled: server.enabled,
-                transport: "stdio" as const,
-                command: server.command?.trim() || "",
-                args:
-                  server.argsText
-                    ?.split("\n")
-                    .map((item) => item.trim())
-                    .filter(Boolean) ?? []
-              }
-        )
+        claudeDefaultEffort: values.claudeDefaultEffort
       });
       setSettings(nextSettings);
       setGeneralDirty(false);
@@ -717,111 +670,6 @@ export function SettingsPage() {
                   </Flex>
                 </Card>
 
-                <Card bordered={false} loading={loading} title="Legacy MCP Servers">
-                  <Alert
-                    type="warning"
-                    showIcon
-                    style={{ marginBottom: 16 }}
-                    message="Temporary location"
-                    description="This global MCP configuration is legacy. Repository-level MCP configuration is the intended workflow and will replace this section."
-                  />
-                  <Form.List name="mcpServers">
-                    {(fields, { add, remove }) => (
-                      <Space direction="vertical" size={16} style={{ width: "100%" }}>
-                        {fields.map((field) => (
-                          <Card
-                            key={field.key}
-                            size="small"
-                            title={`Server ${field.name + 1}`}
-                            extra={
-                              <Button
-                                danger
-                                type="text"
-                                icon={<DeleteOutlined />}
-                                disabled={!canEditSettings}
-                                onClick={() => remove(field.name)}
-                              >
-                                Remove
-                              </Button>
-                            }
-                          >
-                            <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                              <Form.Item name={[field.name, "name"]} label="Name" rules={[{ required: true, whitespace: true }]}>
-                                <Input placeholder="memory" />
-                              </Form.Item>
-                              <Form.Item name={[field.name, "enabled"]} label="Enabled" valuePropName="checked">
-                                <Switch />
-                              </Form.Item>
-                              <Form.Item name={[field.name, "transport"]} label="Transport" rules={[{ required: true }]}>
-                                <Select options={transportOptions} />
-                              </Form.Item>
-                              <Form.Item noStyle shouldUpdate>
-                                {() => {
-                                  const transport = generalForm.getFieldValue(["mcpServers", field.name, "transport"]) ?? "stdio";
-                                  return transport === "http" ? (
-                                    <>
-                                      <Form.Item name={[field.name, "url"]} label="URL" rules={[{ required: true, whitespace: true }]}>
-                                        <Input placeholder="https://example.com/mcp" />
-                                      </Form.Item>
-                                      <Form.Item
-                                        name={[field.name, "bearerTokenEnvVar"]}
-                                        label="Bearer Token Env Var"
-                                        extra="Environment variable name available to the server process, for example MCP_TOKEN."
-                                        rules={[
-                                          {
-                                            validator: (_rule, value?: string) => {
-                                              if (!value || value.trim().length === 0) {
-                                                return Promise.resolve();
-                                              }
-
-                                              return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.trim())
-                                                ? Promise.resolve()
-                                                : Promise.reject(
-                                                    new Error("Use a valid environment variable name with letters, numbers, and underscores.")
-                                                  );
-                                            }
-                                          }
-                                        ]}
-                                      >
-                                        <Input placeholder="MY_MCP_TOKEN" />
-                                      </Form.Item>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Form.Item name={[field.name, "command"]} label="Command" rules={[{ required: true, whitespace: true }]}>
-                                        <Input placeholder="docker" />
-                                      </Form.Item>
-                                      <Form.Item name={[field.name, "argsText"]} label="Arguments">
-                                        <Input.TextArea rows={6} placeholder={"run\n-i\n--rm\nmcp/memory"} />
-                                      </Form.Item>
-                                    </>
-                                  );
-                                }}
-                              </Form.Item>
-                            </Space>
-                          </Card>
-                        ))}
-
-                        <Button
-                          type="dashed"
-                          icon={<PlusOutlined />}
-                          disabled={!canEditSettings}
-                          onClick={() =>
-                            add({
-                              name: "",
-                              enabled: true,
-                              transport: "stdio",
-                              command: "",
-                              argsText: ""
-                            })
-                          }
-                        >
-                          Add MCP Server
-                        </Button>
-                      </Space>
-                    )}
-                  </Form.List>
-                </Card>
               </Space>
               {renderSaveBar({ dirty: generalDirty, label: "Save Connection Settings", loading: savingGeneral })}
             </Form>

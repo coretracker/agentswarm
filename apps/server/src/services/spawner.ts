@@ -296,7 +296,7 @@ export class SpawnerService {
     private readonly taskStore: TaskStore,
     private readonly settingsStore: SettingsStore,
     private readonly userStore: UserStore,
-    private readonly repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries">,
+    private readonly repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries" | "getRepositoryMcpServers">,
     private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore(),
     private readonly personalAccessTokenStore?: PersonalAccessTokenStore
   ) {}
@@ -3088,9 +3088,9 @@ export class SpawnerService {
 
   async buildRuntimeMcpConfigForTask(
     task: Task,
-    configuredServers: McpServerConfig[],
     executionId: string
   ): Promise<{ servers: McpServerConfig[]; env: Record<string, string>; injectedAgentSwarmMcp: boolean }> {
+    const configuredServers = await this.repositoryStore.getRepositoryMcpServers(task.repoId);
     return this.buildRuntimeMcpConfig(task, configuredServers, executionId);
   }
 
@@ -5361,7 +5361,7 @@ export class SpawnerService {
       if (action === "build" && !task.workspaceBaseRef) {
         await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
       }
-      const runtimeMcp = await this.buildRuntimeMcpConfig(task, settings.mcpServers, executionId);
+      const runtimeMcp = await this.buildRuntimeMcpConfigForTask(task, executionId);
       const runtimeMcpEnv = runtimeMcp.env;
       const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(runtimeMcp.servers, {
         ...process.env,
