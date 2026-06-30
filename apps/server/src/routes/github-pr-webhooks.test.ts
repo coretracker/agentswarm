@@ -1405,6 +1405,186 @@ test("GitHub webhook queues linked issue comments", async () => {
   await app.close();
 });
 
+test("GitHub webhook reacts with eyes to linked issue comments", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const appendedMessages: unknown[] = [];
+  const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    fetchCalls.push({ url: String(url), init });
+    return Response.json({ id: 1 }, { status: 201 });
+  }) as typeof fetch;
+
+  const secret = "webhook-secret";
+
+  try {
+    registerGitHubPrWebhookRoutes(app, {
+      repositoryStore: {
+        getRepository: async () => ({ id: "repo-1" }),
+        getRepositoryGitHubPrWebhookSecret: async () => secret
+      } as never,
+      taskStore: {
+        findTaskByGitHubIssueNumber: async () => ({
+          id: "task-issue",
+          executionStatus: "queued"
+        }),
+        listMessages: async () => [],
+        appendMessage: async (_taskId: string, input: unknown) => {
+          appendedMessages.push(input);
+          return {
+            id: "message-issue",
+            content: (input as { content: string }).content
+          };
+        }
+      } as never,
+      scheduler: {} as never,
+      settingsStore: {
+        getRuntimeCredentials: async () => ({
+          githubToken: "github-token"
+        })
+      } as never,
+      spawner: defaultSpawner as never
+    });
+
+    const payload = JSON.stringify({
+      action: "created",
+      repository: {
+        full_name: "acme/repo"
+      },
+      issue: {
+        id: 9001,
+        number: 77,
+        title: "Import customers fails"
+      },
+      comment: {
+        id: 3001,
+        body: "Please fix the import failure.",
+        html_url: "https://github.com/acme/repo/issues/77#issuecomment-3001"
+      },
+      sender: {
+        login: "alice",
+        type: "User"
+      }
+    });
+    const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/github/webhooks/repo-1",
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": "issue_comment",
+        "x-hub-signature-256": signature
+      },
+      payload
+    });
+
+    assert.equal(response.statusCode, 202);
+    assert.deepEqual(JSON.parse(response.body), { queued: true, taskId: "task-issue", messageId: "message-issue" });
+    assert.equal(appendedMessages.length, 1);
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0]?.url, "https://api.github.com/repos/acme/repo/issues/comments/3001/reactions");
+    assert.equal(fetchCalls[0]?.init?.method, "POST");
+    assert.equal((fetchCalls[0]?.init?.headers as Record<string, string>).Authorization, "Bearer github-token");
+    assert.deepEqual(JSON.parse(String(fetchCalls[0]?.init?.body)), { content: "eyes" });
+  } finally {
+    globalThis.fetch = originalFetch;
+    await app.close();
+  }
+});
+
+test("GitHub webhook ignores task-created issue comments without reacting", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    fetchCalls.push({ url: String(url), init });
+    return Response.json({ id: 1 }, { status: 201 });
+  }) as typeof fetch;
+
+  let lookupCount = 0;
+  const secret = "webhook-secret";
+
+  try {
+    registerGitHubPrWebhookRoutes(app, {
+      repositoryStore: {
+        getRepository: async () => ({ id: "repo-1" }),
+        getRepositoryGitHubPrWebhookSecret: async () => secret
+      } as never,
+      taskStore: {
+        findTaskByGitHubIssueNumber: async () => {
+          lookupCount += 1;
+          return {
+            id: "task-issue",
+            executionStatus: "queued"
+          };
+        }
+      } as never,
+      scheduler: {} as never,
+      settingsStore: {
+        getRuntimeCredentials: async () => ({
+          githubToken: "github-token"
+        })
+      } as never,
+      spawner: defaultSpawner as never
+    });
+
+    const payload = JSON.stringify({
+      action: "created",
+      repository: {
+        full_name: "acme/repo"
+      },
+      issue: {
+        id: 9001,
+        number: 77,
+        title: "Import customers fails"
+      },
+      comment: {
+        id: 3002,
+        body:
+          "🤖 A new task has been created and will start working on this shortly.\n\nTask: http://localhost:3217/tasks/task-issue\n\nI’ll post progress updates here as work continues.\n\n<!-- agentswarm-task-created:task-issue -->",
+        html_url: "https://github.com/acme/repo/issues/77#issuecomment-3002"
+      },
+      sender: {
+        login: "agentswarmbot",
+        type: "User"
+      }
+    });
+    const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/github/webhooks/repo-1",
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": "issue_comment",
+        "x-hub-signature-256": signature
+      },
+      payload
+    });
+
+    assert.equal(response.statusCode, 202);
+    assert.deepEqual(JSON.parse(response.body), { queued: false, reason: "ignored_event" });
+    assert.equal(lookupCount, 0);
+    assert.equal(fetchCalls.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await app.close();
+  }
+});
+
 test("GitHub webhook ignores assigned issue comments without required bot mention", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {

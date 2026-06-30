@@ -36,6 +36,7 @@ interface GitHubPrFeedback {
   diffHunk?: string;
   reviewState?: string;
   requestedReviewer?: string;
+  commentId?: number;
 }
 
 interface GitHubIssueFeedback {
@@ -49,6 +50,7 @@ interface GitHubIssueFeedback {
   body: string;
   url: string;
   repositoryFullName?: string;
+  commentId?: number;
 }
 
 type GitHubFeedback = GitHubPrFeedback | GitHubIssueFeedback;
@@ -98,6 +100,10 @@ const booleanValue = (record: Record<string, unknown>, key: string): boolean | n
   const value = record[key];
   return typeof value === "boolean" ? value : null;
 };
+
+const GITHUB_TASK_CREATED_COMMENT_MARKER_PREFIX = "<!-- agentswarm-task-created:";
+
+const isGitHubTaskCreatedCommentBody = (body: string): boolean => body.includes(GITHUB_TASK_CREATED_COMMENT_MARKER_PREFIX);
 
 const readRepositoryFullName = (payload: Record<string, unknown>): string | undefined => {
   const repository = recordValue(payload, "repository");
@@ -180,6 +186,9 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
     if (!commentId || body.trim().length === 0) {
       return null;
     }
+    if (isGitHubTaskCreatedCommentBody(body)) {
+      return null;
+    }
     if (!isRecord(payload.issue.pull_request)) {
       const issueNumber = numberValue(payload.issue, "number");
       if (!issueNumber) {
@@ -195,7 +204,8 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
         author,
         body,
         url,
-        repositoryFullName: readRepositoryFullName(payload)
+        repositoryFullName: readRepositoryFullName(payload),
+        commentId
       };
     }
     const prNumber = numberValue(payload.issue, "number");
@@ -212,7 +222,8 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
       body,
       url,
       prApiUrl: stringValue(payload.issue.pull_request, "url") ?? undefined,
-      repositoryFullName: readRepositoryFullName(payload)
+      repositoryFullName: readRepositoryFullName(payload),
+      commentId
     };
   }
 
@@ -457,7 +468,6 @@ const formatNewIssueTaskTitle = (feedback: GitHubIssueFeedback): string =>
 
 const GITHUB_API_BASE_URL = "https://api.github.com";
 const GITHUB_USER_AGENT = "AgentSwarm GitHub PR webhook";
-const GITHUB_TASK_CREATED_COMMENT_MARKER_PREFIX = "<!-- agentswarm-task-created:";
 
 const buildTaskUrl = (taskId: string): string => `${env.CORS_ORIGIN.replace(/\/+$/, "")}/tasks/${encodeURIComponent(taskId)}`;
 
@@ -534,6 +544,29 @@ const postGitHubTaskCreatedComment = async (input: {
     body: JSON.stringify({ body })
   });
   return createResponse.ok;
+};
+
+const postGitHubFeedbackCommentReaction = async (input: {
+  feedback: GitHubFeedback;
+  githubToken: string | null | undefined;
+}): Promise<boolean> => {
+  const githubToken = input.githubToken?.trim();
+  const { feedback } = input;
+  if (!githubToken || !feedback.repositoryFullName || (feedback.kind !== "issue_comment" && feedback.kind !== "pr_comment") || !feedback.commentId) {
+    return false;
+  }
+
+  const response = await fetch(`${GITHUB_API_BASE_URL}/repos/${feedback.repositoryFullName}/issues/comments/${feedback.commentId}/reactions`, {
+    method: "POST",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${githubToken}`,
+      "Content-Type": "application/json",
+      "User-Agent": GITHUB_USER_AGENT
+    },
+    body: JSON.stringify({ content: "eyes" })
+  });
+  return response.ok;
 };
 
 export const registerGitHubPrWebhookRoutes = (
@@ -709,6 +742,10 @@ export const registerGitHubPrWebhookRoutes = (
         }
 
         const credentials = await deps.settingsStore.getRuntimeCredentials(null, "auto").catch(() => ({ githubToken: null }));
+        await postGitHubFeedbackCommentReaction({
+          feedback,
+          githubToken: credentials.githubToken
+        }).catch(() => false);
         await postGitHubTaskCreatedComment({
           feedback,
           taskId: openedTask.id,
@@ -748,6 +785,13 @@ export const registerGitHubPrWebhookRoutes = (
         !(await deps.taskStore.hasPendingChangeProposal(task.id))
       ) {
         await deps.scheduler.triggerNextPendingAction(task.id, "auto");
+      }
+      if (message) {
+        const credentials = await deps.settingsStore.getRuntimeCredentials(null, "auto").catch(() => ({ githubToken: null }));
+        await postGitHubFeedbackCommentReaction({
+          feedback,
+          githubToken: credentials.githubToken
+        }).catch(() => false);
       }
 
       return reply.status(202).send({ queued: true, taskId: task.id, messageId: message?.id ?? null });
@@ -835,6 +879,10 @@ export const registerGitHubPrWebhookRoutes = (
         return reply.status(startResult.statusCode).send({ message: startResult.message });
       }
 
+      await postGitHubFeedbackCommentReaction({
+        feedback,
+        githubToken: credentials.githubToken
+      }).catch(() => false);
       await postGitHubTaskCreatedComment({
         feedback,
         taskId: openedTask.id,
@@ -875,6 +923,13 @@ export const registerGitHubPrWebhookRoutes = (
       !(await deps.taskStore.hasPendingChangeProposal(task.id))
     ) {
       await deps.scheduler.triggerNextPendingAction(task.id, "auto");
+    }
+    if (message) {
+      const credentials = await deps.settingsStore.getRuntimeCredentials(null, "auto").catch(() => ({ githubToken: null }));
+      await postGitHubFeedbackCommentReaction({
+        feedback,
+        githubToken: credentials.githubToken
+      }).catch(() => false);
     }
 
     return reply.status(202).send({ queued: true, taskId: task.id, messageId: message?.id ?? null });
