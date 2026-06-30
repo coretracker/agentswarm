@@ -605,6 +605,162 @@ test("GitHub PR webhook queues comments with required bot mention", async () => 
   await app.close();
 });
 
+test("GitHub PR webhook queues edited comments with required bot mention", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const appendedMessages: unknown[] = [];
+  const secret = "webhook-secret";
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({
+        id: "repo-1",
+        githubIntegrationBotLogin: "agentswarm-bot",
+        githubPrRequireBotMention: true
+      }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubPrNumber: async () => ({
+        id: "task-1",
+        executionStatus: "queued"
+      }),
+      listMessages: async () => [],
+      appendMessage: async (_taskId: string, input: unknown) => {
+        appendedMessages.push(input);
+        return {
+          id: "message-1",
+          content: (input as { content: string }).content
+        };
+      }
+    } as never,
+    scheduler: {} as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "edited",
+    issue: {
+      number: 42,
+      pull_request: {}
+    },
+    comment: {
+      id: 1001,
+      body: "@agentswarm-bot please add a regression test after this edit.",
+      html_url: "https://github.com/acme/repo/pull/42#issuecomment-1001"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issue_comment",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { queued: true, taskId: "task-1", messageId: "message-1" });
+  assert.equal(appendedMessages.length, 1);
+  assert.deepEqual(appendedMessages[0], {
+    role: "user",
+    action: "build",
+    queueState: "pending",
+    queueSource: "github_pr",
+    externalId: "github:pr_comment:1001",
+    content: (appendedMessages[0] as { content: string }).content
+  });
+  assert.match((appendedMessages[0] as { content: string }).content, /after this edit\./);
+
+  await app.close();
+});
+
+test("GitHub PR webhook ignores edited comments that were already processed", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  let appendCount = 0;
+  const secret = "webhook-secret";
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({
+        id: "repo-1",
+        githubIntegrationBotLogin: "agentswarm-bot",
+        githubPrRequireBotMention: true
+      }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubPrNumber: async () => ({
+        id: "task-1",
+        executionStatus: "idle"
+      }),
+      listMessages: async () => [{ externalId: "github:pr_comment:1001" }],
+      appendMessage: async () => {
+        appendCount += 1;
+        return null;
+      }
+    } as never,
+    scheduler: {} as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "edited",
+    issue: {
+      number: 42,
+      pull_request: {}
+    },
+    comment: {
+      id: 1001,
+      body: "@agentswarm-bot please add one more test.",
+      html_url: "https://github.com/acme/repo/pull/42#issuecomment-1001"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issue_comment",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { queued: false, reason: "duplicate" });
+  assert.equal(appendCount, 0);
+
+  await app.close();
+});
+
 test("GitHub PR webhook uses repository feedback instructions as a full template", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
@@ -1326,6 +1482,164 @@ test("GitHub webhook ignores assigned issue comments without required bot mentio
   assert.equal(response.statusCode, 202);
   assert.deepEqual(JSON.parse(response.body), { queued: false, reason: "missing_bot_mention" });
   assert.equal(lookupCount, 0);
+  assert.equal(appendCount, 0);
+
+  await app.close();
+});
+
+test("GitHub webhook queues edited issue comments with required bot mention", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const appendedMessages: unknown[] = [];
+  const secret = "webhook-secret";
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({
+        id: "repo-1",
+        githubIntegrationBotLogin: "agentswarm-bot",
+        githubPrRequireBotMention: true
+      }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubIssueNumber: async () => ({
+        id: "task-issue",
+        executionStatus: "queued"
+      }),
+      listMessages: async () => [],
+      appendMessage: async (_taskId: string, input: unknown) => {
+        appendedMessages.push(input);
+        return {
+          id: "message-issue",
+          content: (input as { content: string }).content
+        };
+      }
+    } as never,
+    scheduler: {} as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "edited",
+    issue: {
+      id: 9001,
+      number: 77,
+      title: "Import customers fails"
+    },
+    comment: {
+      id: 3001,
+      body: "@agentswarm-bot please fix the import failure after this edit.",
+      html_url: "https://github.com/acme/repo/issues/77#issuecomment-3001"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issue_comment",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { queued: true, taskId: "task-issue", messageId: "message-issue" });
+  assert.equal(appendedMessages.length, 1);
+  assert.deepEqual(appendedMessages[0], {
+    role: "user",
+    action: "build",
+    queueState: "pending",
+    queueSource: "github_issue",
+    externalId: "github:issue_comment:3001",
+    content: (appendedMessages[0] as { content: string }).content
+  });
+  assert.match((appendedMessages[0] as { content: string }).content, /after this edit\./);
+
+  await app.close();
+});
+
+test("GitHub webhook ignores edited issue comments that were already processed", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  let appendCount = 0;
+  const secret = "webhook-secret";
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({
+        id: "repo-1",
+        githubIntegrationBotLogin: "agentswarm-bot",
+        githubPrRequireBotMention: true
+      }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubIssueNumber: async () => ({
+        id: "task-issue",
+        executionStatus: "idle"
+      }),
+      listMessages: async () => [{ externalId: "github:issue_comment:3001" }],
+      appendMessage: async () => {
+        appendCount += 1;
+        return null;
+      }
+    } as never,
+    scheduler: {} as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "edited",
+    issue: {
+      id: 9001,
+      number: 77,
+      title: "Import customers fails"
+    },
+    comment: {
+      id: 3001,
+      body: "@agentswarm-bot please add one more issue test.",
+      html_url: "https://github.com/acme/repo/issues/77#issuecomment-3001"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issue_comment",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { queued: false, reason: "duplicate" });
   assert.equal(appendCount, 0);
 
   await app.close();

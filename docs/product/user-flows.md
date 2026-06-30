@@ -31,6 +31,7 @@ Notes:
 - GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
 - GitHub Integration can optionally archive linked tasks when a GitHub pull request webhook reports the PR as merged.
 - GitHub Integration creates or queues build-mode tasks when a `pull_request.review_requested` webhook targets the configured integration bot.
+- GitHub Integration processes created or edited issue comments and pull request conversation comments when the comment body passes the configured bot mention and user filters.
 - GitHub Integration supports separate editable agent templates for newly created GitHub tasks, feedback comments on linked tasks, and requested PR reviews. Templates can include markers such as `{{target_ref}}`, `{{title}}`, `{{title_line}}`, `{{author}}`, `{{requested_reviewer}}`, `{{url_line}}`, and `{{feedback_body}}`.
 
 ## Settings And Credentials Flow (Current)
