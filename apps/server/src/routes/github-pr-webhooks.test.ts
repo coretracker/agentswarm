@@ -1392,6 +1392,217 @@ test("GitHub webhook creates feature branch task from issue body mention without
   await app.close();
 });
 
+test("GitHub webhook posts an initial task comment when creating an issue task", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const secret = "webhook-secret";
+  const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    fetchCalls.push({ url: String(url), init });
+    if (init?.method === "POST") {
+      return Response.json({ id: 1 }, { status: 201 });
+    }
+    return Response.json([]);
+  }) as typeof fetch;
+
+  try {
+    const openedTask = {
+      id: "task-issue-created",
+      executionStatus: "idle",
+      taskType: "build"
+    };
+
+    registerGitHubPrWebhookRoutes(app, {
+      repositoryStore: {
+        getRepository: async () => ({
+          id: "repo-1",
+          name: "repo",
+          url: "https://github.com/acme/repo.git",
+          defaultBranch: "main",
+          githubIntegrationBotLogin: "agentswarm-bot",
+          githubPrRequireBotMention: true,
+          githubPrTaskOwnerUserId: "user-1"
+        }),
+        getRepositoryGitHubPrWebhookSecret: async () => secret
+      } as never,
+      taskStore: {
+        findTaskByGitHubIssueNumber: async () => null,
+        createTask: async () => ({ id: "task-issue-created" }),
+        patchTask: async () => openedTask,
+        appendMessage: async (_taskId: string, input: unknown) => ({
+          id: "message-issue-created",
+          content: (input as { content: string }).content
+        }),
+        setExecutionState: async () => openedTask
+      } as never,
+      scheduler: {
+        triggerAction: async () => true
+      } as never,
+      settingsStore: {
+        getRuntimeCredentials: async () => ({
+          githubToken: "github-token"
+        })
+      } as never,
+      spawner: defaultSpawner as never
+    });
+
+    const payload = JSON.stringify({
+      action: "opened",
+      repository: {
+        full_name: "acme/repo"
+      },
+      issue: {
+        id: 9001,
+        number: 77,
+        title: "Import customers fails",
+        body: "@agentswarm-bot please fix customer imports.",
+        html_url: "https://github.com/acme/repo/issues/77"
+      },
+      sender: {
+        login: "alice",
+        type: "User"
+      }
+    });
+    const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/github/webhooks/repo-1",
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": "issues",
+        "x-hub-signature-256": signature
+      },
+      payload
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(response.statusCode, 202);
+    assert.equal(fetchCalls.length, 2);
+    assert.equal(fetchCalls[0]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments?per_page=100");
+    assert.equal(fetchCalls[1]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments");
+    assert.equal(fetchCalls[1]?.init?.method, "POST");
+    assert.equal((fetchCalls[1]?.init?.headers as Record<string, string>).Authorization, "Bearer github-token");
+    assert.deepEqual(JSON.parse(String(fetchCalls[1]?.init?.body)), {
+      body:
+        "🤖 A new task has been created and will start working on this shortly.\n\nTask: http://localhost:3217/tasks/task-issue-created\n\nI’ll post progress updates here as work continues.\n\n<!-- agentswarm-task-created:task-issue-created -->"
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+    await app.close();
+  }
+});
+
+test("GitHub webhook skips duplicate initial task comments for retried issue task creation", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const secret = "webhook-secret";
+  const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    fetchCalls.push({ url: String(url), init });
+    return Response.json([
+      {
+        body:
+          "🤖 A new task has been created and will start working on this shortly.\n\nTask: http://localhost:3217/tasks/task-issue-created\n\nI’ll post progress updates here as work continues.\n\n<!-- agentswarm-task-created:task-issue-created -->"
+      }
+    ]);
+  }) as typeof fetch;
+
+  try {
+    const openedTask = {
+      id: "task-issue-created",
+      executionStatus: "idle",
+      taskType: "build"
+    };
+
+    registerGitHubPrWebhookRoutes(app, {
+      repositoryStore: {
+        getRepository: async () => ({
+          id: "repo-1",
+          name: "repo",
+          url: "https://github.com/acme/repo.git",
+          defaultBranch: "main",
+          githubIntegrationBotLogin: "agentswarm-bot",
+          githubPrRequireBotMention: true,
+          githubPrTaskOwnerUserId: "user-1"
+        }),
+        getRepositoryGitHubPrWebhookSecret: async () => secret
+      } as never,
+      taskStore: {
+        findTaskByGitHubIssueNumber: async () => null,
+        createTask: async () => ({ id: "task-issue-created" }),
+        patchTask: async () => openedTask,
+        appendMessage: async (_taskId: string, input: unknown) => ({
+          id: "message-issue-created",
+          content: (input as { content: string }).content
+        }),
+        setExecutionState: async () => openedTask
+      } as never,
+      scheduler: {
+        triggerAction: async () => true
+      } as never,
+      settingsStore: {
+        getRuntimeCredentials: async () => ({
+          githubToken: "github-token"
+        })
+      } as never,
+      spawner: defaultSpawner as never
+    });
+
+    const payload = JSON.stringify({
+      action: "opened",
+      repository: {
+        full_name: "acme/repo"
+      },
+      issue: {
+        id: 9001,
+        number: 77,
+        title: "Import customers fails",
+        body: "@agentswarm-bot please fix customer imports.",
+        html_url: "https://github.com/acme/repo/issues/77"
+      },
+      sender: {
+        login: "alice",
+        type: "User"
+      }
+    });
+    const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/github/webhooks/repo-1",
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": "issues",
+        "x-hub-signature-256": signature
+      },
+      payload
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.equal(response.statusCode, 202);
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments?per_page=100");
+  } finally {
+    globalThis.fetch = originalFetch;
+    await app.close();
+  }
+});
+
 test("GitHub webhook creates feature branch task when bot is assigned to an unlinked issue", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
