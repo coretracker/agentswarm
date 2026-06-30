@@ -13,7 +13,8 @@ import type {
 import {
   DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
   DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
-  DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS
+  DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
+  DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
 } from "@agentswarm/shared-types";
 import { Alert, Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
@@ -54,6 +55,7 @@ type RepositoryFormValues = {
   githubPrInitialInstructions: string;
   githubPrFeedbackInstructions: string;
   githubPrReviewInstructions: string;
+  githubPrTaskCreatedCommentTemplate: string;
   githubPrTaskOwnerUserId: string;
   harnessWhatExists: string;
   harnessAllowedActions: string;
@@ -82,6 +84,7 @@ const emptyValues = (): RepositoryFormValues => ({
   githubPrInitialInstructions: DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
   githubPrFeedbackInstructions: DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
   githubPrReviewInstructions: DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
+  githubPrTaskCreatedCommentTemplate: DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE,
   githubPrTaskOwnerUserId: "",
   harnessWhatExists: "",
   harnessAllowedActions: "",
@@ -139,6 +142,10 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
     typeof values?.githubPrReviewInstructions === "string"
       ? values.githubPrReviewInstructions
       : DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
+  githubPrTaskCreatedCommentTemplate:
+    typeof values?.githubPrTaskCreatedCommentTemplate === "string"
+      ? values.githubPrTaskCreatedCommentTemplate
+      : DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE,
   githubPrTaskOwnerUserId: typeof values?.githubPrTaskOwnerUserId === "string" ? values.githubPrTaskOwnerUserId : "",
   harnessWhatExists: typeof values?.harnessWhatExists === "string" ? values.harnessWhatExists : "",
   harnessAllowedActions: typeof values?.harnessAllowedActions === "string" ? values.harnessAllowedActions : "",
@@ -334,6 +341,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           githubPrInitialInstructions: repository.githubPrInitialInstructions ?? DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
           githubPrFeedbackInstructions: repository.githubPrFeedbackInstructions ?? DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
           githubPrReviewInstructions: repository.githubPrReviewInstructions ?? DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
+          githubPrTaskCreatedCommentTemplate:
+            repository.githubPrTaskCreatedCommentTemplate ?? DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE,
           githubPrTaskOwnerUserId: repository.githubPrTaskOwnerUserId ?? "",
           harnessWhatExists: repository.harnessWhatExists ?? "",
           harnessAllowedActions: repository.harnessAllowedActions ?? "",
@@ -567,6 +576,10 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 normalized.githubPrReviewInstructions.trim() === DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS
                   ? null
                   : normalized.githubPrReviewInstructions.trim() || null,
+              githubPrTaskCreatedCommentTemplate:
+                normalized.githubPrTaskCreatedCommentTemplate.trim() === DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
+                  ? null
+                  : normalized.githubPrTaskCreatedCommentTemplate.trim() || null,
               githubPrTaskOwnerUserId: normalized.githubPrTaskOwnerUserId.trim() || null,
               harnessWhatExists: normalized.harnessWhatExists.trim() || null,
               harnessAllowedActions: normalized.harnessAllowedActions.trim() || null,
@@ -706,6 +719,21 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                       }))}
                     />
                   </Form.Item>
+                  <Form.Item
+                    name="githubPrTaskCreatedCommentTemplate"
+                    label="Task Created Comment"
+                    extra="Posted back to GitHub when AgentSwarm creates a new task. Supports {{task_url}}, {{task_id}}, {{target_ref}}, {{author}}, and {{repository_full_name}}."
+                    rules={[{ max: 8000, message: "Comment template must be 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 5, maxRows: 12 }} />
+                  </Form.Item>
+                  <Button
+                    onClick={() => {
+                      form.setFieldValue("githubPrTaskCreatedCommentTemplate", DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE);
+                    }}
+                  >
+                    Reset task created comment
+                  </Button>
                   <Form.Item
                     name="githubPrInitialInstructions"
                     label="Initial Agent Instructions"

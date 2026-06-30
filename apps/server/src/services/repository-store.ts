@@ -13,7 +13,8 @@ import type {
 import {
   DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
   DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
-  DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS
+  DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
+  DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
 } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
 import { HttpError } from "../lib/http-error.js";
@@ -694,6 +695,10 @@ export class RedisRepositoryStore implements RepositoryStore {
       repository.githubPrReviewInstructions,
       DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS
     );
+    const githubPrTaskCreatedCommentTemplate = normalizeGitHubInstructions(
+      repository.githubPrTaskCreatedCommentTemplate,
+      DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
+    );
     const githubPrTaskOwnerUserId = normalizeUserId(repository.githubPrTaskOwnerUserId);
     const harnessWhatExists = normalizeRepositoryHarnessValue(repository.harnessWhatExists);
     const harnessAllowedActions = normalizeRepositoryHarnessValue(repository.harnessAllowedActions);
@@ -724,6 +729,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubPrInitialInstructions,
       githubPrFeedbackInstructions,
       githubPrReviewInstructions,
+      githubPrTaskCreatedCommentTemplate,
       githubPrTaskOwnerUserId,
       harnessWhatExists,
       harnessAllowedActions,
@@ -760,6 +766,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubPrInitialInstructions: normalized.githubPrInitialInstructions ?? null,
       githubPrFeedbackInstructions: normalized.githubPrFeedbackInstructions ?? null,
       githubPrReviewInstructions: normalized.githubPrReviewInstructions ?? null,
+      githubPrTaskCreatedCommentTemplate: normalized.githubPrTaskCreatedCommentTemplate ?? null,
       githubPrTaskOwnerUserId: normalized.githubPrTaskOwnerUserId ?? null,
       harnessWhatExists: normalized.harnessWhatExists ?? null,
       harnessAllowedActions: normalized.harnessAllowedActions ?? null,
@@ -796,6 +803,10 @@ export class RedisRepositoryStore implements RepositoryStore {
     );
     const githubPrFeedbackInstructions = normalizeGitHubInstructions(input.githubPrFeedbackInstructions, DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS);
     const githubPrReviewInstructions = normalizeGitHubInstructions(input.githubPrReviewInstructions, DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS);
+    const githubPrTaskCreatedCommentTemplate = normalizeGitHubInstructions(
+      input.githubPrTaskCreatedCommentTemplate,
+      DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
+    );
     const githubPrTaskOwnerUserId = normalizeUserId(input.githubPrTaskOwnerUserId);
     const harnessWhatExists = normalizeRepositoryHarnessValue(input.harnessWhatExists);
     const harnessAllowedActions = normalizeRepositoryHarnessValue(input.harnessAllowedActions);
@@ -831,6 +842,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubPrInitialInstructions,
       githubPrFeedbackInstructions,
       githubPrReviewInstructions,
+      githubPrTaskCreatedCommentTemplate,
       githubPrTaskOwnerUserId,
       harnessWhatExists,
       harnessAllowedActions,
@@ -947,6 +959,10 @@ export class RedisRepositoryStore implements RepositoryStore {
       input.githubPrReviewInstructions !== undefined
         ? normalizeGitHubInstructions(input.githubPrReviewInstructions, DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS)
         : current.githubPrReviewInstructions ?? null;
+    const nextGithubPrTaskCreatedCommentTemplate =
+      input.githubPrTaskCreatedCommentTemplate !== undefined
+        ? normalizeGitHubInstructions(input.githubPrTaskCreatedCommentTemplate, DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE)
+        : current.githubPrTaskCreatedCommentTemplate ?? null;
     const nextGithubPrTaskOwnerUserId =
       input.githubPrTaskOwnerUserId !== undefined
         ? normalizeUserId(input.githubPrTaskOwnerUserId)
@@ -1011,6 +1027,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubPrInitialInstructions: nextGithubPrInitialInstructions,
       githubPrFeedbackInstructions: nextGithubPrFeedbackInstructions,
       githubPrReviewInstructions: nextGithubPrReviewInstructions,
+      githubPrTaskCreatedCommentTemplate: nextGithubPrTaskCreatedCommentTemplate,
       githubPrTaskOwnerUserId: nextGithubPrTaskOwnerUserId,
       harnessWhatExists: nextHarnessWhatExists,
       harnessAllowedActions: nextHarnessAllowedActions,
@@ -1168,6 +1185,11 @@ export class PostgresRepositoryStore implements RepositoryStore {
         typeof row.github_pr_review_instructions === "string" && row.github_pr_review_instructions.trim().length > 0
           ? row.github_pr_review_instructions.trim()
           : null,
+      githubPrTaskCreatedCommentTemplate:
+        typeof row.github_pr_task_created_comment_template === "string" &&
+        row.github_pr_task_created_comment_template.trim().length > 0
+          ? row.github_pr_task_created_comment_template.trim()
+          : null,
       githubPrTaskOwnerUserId:
         typeof row.github_pr_task_owner_user_id === "string" && row.github_pr_task_owner_user_id.trim().length > 0
           ? row.github_pr_task_owner_user_id.trim()
@@ -1220,6 +1242,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
     );
     const githubPrFeedbackInstructions = normalizeGitHubInstructions(input.githubPrFeedbackInstructions, DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS);
     const githubPrReviewInstructions = normalizeGitHubInstructions(input.githubPrReviewInstructions, DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS);
+    const githubPrTaskCreatedCommentTemplate = normalizeGitHubInstructions(
+      input.githubPrTaskCreatedCommentTemplate,
+      DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
+    );
     const githubPrTaskOwnerUserId = normalizeUserId(input.githubPrTaskOwnerUserId);
     const harnessWhatExists = normalizeRepositoryHarnessValue(input.harnessWhatExists);
     const harnessAllowedActions = normalizeRepositoryHarnessValue(input.harnessAllowedActions);
@@ -1255,6 +1281,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       githubPrInitialInstructions,
       githubPrFeedbackInstructions,
       githubPrReviewInstructions,
+      githubPrTaskCreatedCommentTemplate,
       githubPrTaskOwnerUserId,
       harnessWhatExists,
       harnessAllowedActions,
@@ -1293,6 +1320,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             github_pr_initial_instructions,
             github_pr_feedback_instructions,
             github_pr_review_instructions,
+            github_pr_task_created_comment_template,
             github_pr_task_owner_user_id,
             harness_what_exists,
             harness_allowed_actions,
@@ -1305,7 +1333,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
+          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
         `,
         [
           repository.id,
@@ -1326,6 +1354,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           repository.githubPrInitialInstructions,
           repository.githubPrFeedbackInstructions,
           repository.githubPrReviewInstructions,
+          repository.githubPrTaskCreatedCommentTemplate,
           repository.githubPrTaskOwnerUserId,
           repository.harnessWhatExists,
           repository.harnessAllowedActions,
@@ -1425,6 +1454,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
       input.githubPrReviewInstructions !== undefined
         ? normalizeGitHubInstructions(input.githubPrReviewInstructions, DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS)
         : current.githubPrReviewInstructions ?? null;
+    const nextGithubPrTaskCreatedCommentTemplate =
+      input.githubPrTaskCreatedCommentTemplate !== undefined
+        ? normalizeGitHubInstructions(input.githubPrTaskCreatedCommentTemplate, DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE)
+        : current.githubPrTaskCreatedCommentTemplate ?? null;
     const nextGithubPrTaskOwnerUserId =
       input.githubPrTaskOwnerUserId !== undefined
         ? normalizeUserId(input.githubPrTaskOwnerUserId)
@@ -1489,6 +1522,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       githubPrInitialInstructions: nextGithubPrInitialInstructions,
       githubPrFeedbackInstructions: nextGithubPrFeedbackInstructions,
       githubPrReviewInstructions: nextGithubPrReviewInstructions,
+      githubPrTaskCreatedCommentTemplate: nextGithubPrTaskCreatedCommentTemplate,
       githubPrTaskOwnerUserId: nextGithubPrTaskOwnerUserId,
       harnessWhatExists: nextHarnessWhatExists,
       harnessAllowedActions: nextHarnessAllowedActions,
@@ -1523,17 +1557,18 @@ export class PostgresRepositoryStore implements RepositoryStore {
             github_pr_initial_instructions = $16,
             github_pr_feedback_instructions = $17,
             github_pr_review_instructions = $18,
-            github_pr_task_owner_user_id = $19,
-            harness_what_exists = $20,
-            harness_allowed_actions = $21,
-            harness_how_to_work = $22,
-            harness_definition_of_done = $23,
-            harness_evidence_expectations = $24,
-            webhook_last_attempt_at = $25,
-            webhook_last_status = $26,
-            webhook_last_error = $27,
-            created_at = $28,
-            updated_at = $29
+            github_pr_task_created_comment_template = $19,
+            github_pr_task_owner_user_id = $20,
+            harness_what_exists = $21,
+            harness_allowed_actions = $22,
+            harness_how_to_work = $23,
+            harness_definition_of_done = $24,
+            harness_evidence_expectations = $25,
+            webhook_last_attempt_at = $26,
+            webhook_last_status = $27,
+            webhook_last_error = $28,
+            created_at = $29,
+            updated_at = $30
           WHERE id = $1
         `,
         [
@@ -1555,6 +1590,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           next.githubPrInitialInstructions,
           next.githubPrFeedbackInstructions,
           next.githubPrReviewInstructions,
+          next.githubPrTaskCreatedCommentTemplate,
           next.githubPrTaskOwnerUserId,
           next.harnessWhatExists,
           next.harnessAllowedActions,

@@ -624,5 +624,12 @@ Feedback:
       ADD COLUMN IF NOT EXISTS harness_definition_of_done text NULL,
       ADD COLUMN IF NOT EXISTS harness_evidence_expectations text NULL;
     `
+  },
+  {
+    id: "20260630_02_repository_github_task_created_comment_template",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_task_created_comment_template text NULL;
+    `
   }
 ];

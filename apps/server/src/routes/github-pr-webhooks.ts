@@ -3,7 +3,8 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
   DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
-  DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS
+  DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
+  DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
 } from "@agentswarm/shared-types";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
 import type { RepositoryStore } from "../services/repository-store.js";
@@ -460,14 +461,25 @@ const GITHUB_TASK_CREATED_COMMENT_MARKER_PREFIX = "<!-- agentswarm-task-created:
 
 const buildTaskUrl = (taskId: string): string => `${env.CORS_ORIGIN.replace(/\/+$/, "")}/tasks/${encodeURIComponent(taskId)}`;
 
-const buildTaskCreatedCommentBody = (taskId: string): string => {
+const renderTaskCreatedCommentTemplate = (template: string | null | undefined, input: { feedback: GitHubFeedback; taskId: string; taskUrl: string }): string => {
+  const targetRef = input.feedback.target === "pr" ? `PR #${input.feedback.prNumber}` : `issue #${input.feedback.issueNumber}`;
+  const replacements: Record<string, string> = {
+    task_id: input.taskId,
+    task_url: input.taskUrl,
+    target_ref: targetRef,
+    author: input.feedback.author,
+    repository_full_name: input.feedback.repositoryFullName ?? ""
+  };
+  const source = template?.trim() || DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE;
+  return source.replace(/\{\{([a-zA-Z0-9_]+)\}\}/g, (match, key: string) => replacements[key] ?? match).trim();
+};
+
+const buildTaskCreatedCommentBody = (input: { feedback: GitHubFeedback; taskId: string; template?: string | null }): string => {
+  const taskId = input.taskId;
   const taskUrl = buildTaskUrl(taskId);
+  const body = renderTaskCreatedCommentTemplate(input.template, { feedback: input.feedback, taskId, taskUrl });
   return [
-    "🤖 A new task has been created and will start working on this shortly.",
-    "",
-    `Task: ${taskUrl}`,
-    "",
-    "I’ll post progress updates here as work continues.",
+    body,
     "",
     `${GITHUB_TASK_CREATED_COMMENT_MARKER_PREFIX}${taskId} -->`
   ].join("\n");
@@ -477,6 +489,7 @@ const postGitHubTaskCreatedComment = async (input: {
   feedback: GitHubFeedback;
   taskId: string;
   githubToken: string | null | undefined;
+  template?: string | null;
 }): Promise<boolean> => {
   const githubToken = input.githubToken?.trim();
   if (!githubToken || !input.feedback.repositoryFullName) {
@@ -485,7 +498,7 @@ const postGitHubTaskCreatedComment = async (input: {
 
   const issueNumber = input.feedback.target === "pr" ? input.feedback.prNumber : input.feedback.issueNumber;
   const commentsUrl = `${GITHUB_API_BASE_URL}/repos/${input.feedback.repositoryFullName}/issues/${issueNumber}/comments`;
-  const body = buildTaskCreatedCommentBody(input.taskId);
+  const body = buildTaskCreatedCommentBody({ feedback: input.feedback, taskId: input.taskId, template: input.template });
   const marker = `${GITHUB_TASK_CREATED_COMMENT_MARKER_PREFIX}${input.taskId}`;
   const taskUrl = buildTaskUrl(input.taskId);
   const headers = {
@@ -699,7 +712,8 @@ export const registerGitHubPrWebhookRoutes = (
         await postGitHubTaskCreatedComment({
           feedback,
           taskId: openedTask.id,
-          githubToken: credentials.githubToken
+          githubToken: credentials.githubToken,
+          template: repository.githubPrTaskCreatedCommentTemplate
         }).catch(() => false);
 
         return reply.status(202).send({ queued: true, taskId: openedTask.id, messageId: message.id, createdTask: true });
@@ -824,7 +838,8 @@ export const registerGitHubPrWebhookRoutes = (
       await postGitHubTaskCreatedComment({
         feedback,
         taskId: openedTask.id,
-        githubToken: credentials.githubToken
+        githubToken: credentials.githubToken,
+        template: repository.githubPrTaskCreatedCommentTemplate
       }).catch(() => false);
 
       return reply.status(202).send({ queued: true, taskId: openedTask.id, messageId: message.id, createdTask: true });

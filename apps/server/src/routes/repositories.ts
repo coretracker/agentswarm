@@ -204,6 +204,7 @@ const createRepositorySchema = z.object({
   githubPrInitialInstructions: z.string().trim().max(8000).nullable().optional(),
   githubPrFeedbackInstructions: z.string().trim().max(8000).nullable().optional(),
   githubPrReviewInstructions: z.string().trim().max(8000).nullable().optional(),
+  githubPrTaskCreatedCommentTemplate: z.string().trim().max(8000).nullable().optional(),
   githubPrTaskOwnerUserId: z.string().trim().min(1).nullable().optional(),
   harnessWhatExists: z.string().trim().max(8000).nullable().optional(),
   harnessAllowedActions: z.string().trim().max(8000).nullable().optional(),
