@@ -108,6 +108,12 @@ const AUTO_APPLY_COMMIT_MESSAGE_PROMPT =
 const sanitizeChunk = (chunk: string): string =>
   chunk.replace(/\r/g, "\n").replace(ansiPattern, "").replace(/[^\x09\x0A\x20-\x7E]/g, "");
 
+const redactUrlCredentials = (value: string): string =>
+  value.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@[^\s/]+/gi, (match, protocol: string) => {
+    const host = match.slice(protocol.length).replace(/^[^@]+@/, "");
+    return `${protocol}<redacted>@${host}`;
+  });
+
 const normalizeGeneratedCommitSubject = (raw: string): string | null => {
   const firstLine = raw
     .replace(/\r/g, "\n")
@@ -312,6 +318,27 @@ export class SpawnerService {
     }
 
     return raw || `${command} exited with code ${code ?? "unknown"}`;
+  }
+
+  private formatWorkspacePrepareErrorMessage(error: unknown): string {
+    if (!(error instanceof WorkspacePrepareError)) {
+      if (error instanceof Error) {
+        return error.message;
+      }
+      return error == null ? "Unknown runtime error" : String(error);
+    }
+
+    const detail = redactUrlCredentials(sanitizeChunk(error.causeDetail ?? ""))
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .filter((line) => line.trim().length > 0)
+      .join("\n")
+      .trim();
+    if (!detail || detail === error.message) {
+      return error.message;
+    }
+
+    return `${error.message}\n\nGit error:\n${truncate(detail, 4000)}`;
   }
 
   private registerCurrentExecutionProcess(command: string, args: string[], process: ReturnType<typeof spawn>): void {
@@ -998,7 +1025,7 @@ export class SpawnerService {
         return result;
       } catch (error) {
         const failureCode = this.classifyTaskGitOperationFailure(operationType, error);
-        const message = error instanceof Error ? error.message : String(error);
+        const message = this.formatWorkspacePrepareErrorMessage(error);
         const failedStatus: TaskGitOperation["status"] = error instanceof CancelledTaskError ? "cancelled" : "failed";
         const failed =
           (await this.taskStore.updateGitOperation(running.operationId, {
@@ -5042,51 +5069,64 @@ export class SpawnerService {
 
     const action: TaskAction = workingTask.taskType === "ask" ? "ask" : "build";
     let workspace: WorkspacePreparation;
-    const preparedWorkspace = await this.withTrackedTaskGitOperation(workingTask, "clone_for_task", async () => {
-      this.emitWorkspacePrepareEvent("workspace_prepare_started", {
-        taskId: workingTask.id,
-        taskType: workingTask.taskType,
-        workspaceKind: WORKSPACE_KIND,
-        mode: settings.workspaceProvisioningMode
+    try {
+      const preparedWorkspace = await this.withTrackedTaskGitOperation(workingTask, "clone_for_task", async () => {
+        this.emitWorkspacePrepareEvent("workspace_prepare_started", {
+          taskId: workingTask.id,
+          taskType: workingTask.taskType,
+          workspaceKind: WORKSPACE_KIND,
+          mode: settings.workspaceProvisioningMode
+        });
+        try {
+          const prepared = await this.withFreshManagedRepo(
+            workingTask,
+            runtimeCredentials.githubToken,
+            runtimeCredentials.gitUsername,
+            "workspace_prepare",
+            async (managedRepoPath) => ({
+              workspace: await this.prepareWorkspace(
+                workingTask,
+                action,
+                branchName,
+                managedRepoPath,
+                settings.workspaceProvisioningMode,
+                runtimeCredentials.githubToken,
+                runtimeCredentials.gitUsername
+              )
+            })
+          );
+          this.emitWorkspacePrepareEvent("workspace_prepare_succeeded", {
+            taskId: workingTask.id,
+            taskType: workingTask.taskType,
+            workspaceKind: WORKSPACE_KIND,
+            mode: settings.workspaceProvisioningMode
+          });
+          return prepared.workspace;
+        } catch (error) {
+          const reason = error instanceof WorkspacePrepareError ? error.reason : this.classifyWorkspacePrepareFailure(error);
+          this.emitWorkspacePrepareEvent("workspace_prepare_failed", {
+            taskId: workingTask.id,
+            taskType: workingTask.taskType,
+            workspaceKind: WORKSPACE_KIND,
+            failureReason: reason,
+            mode: settings.workspaceProvisioningMode
+          });
+          throw error;
+        }
       });
-      try {
-        const prepared = await this.withFreshManagedRepo(
-          workingTask,
-          runtimeCredentials.githubToken,
-          runtimeCredentials.gitUsername,
-          "workspace_prepare",
-          async (managedRepoPath) => ({
-            workspace: await this.prepareWorkspace(
-              workingTask,
-              action,
-              branchName,
-              managedRepoPath,
-              settings.workspaceProvisioningMode,
-              runtimeCredentials.githubToken,
-              runtimeCredentials.gitUsername
-            )
-          })
-        );
-        this.emitWorkspacePrepareEvent("workspace_prepare_succeeded", {
-          taskId: workingTask.id,
-          taskType: workingTask.taskType,
-          workspaceKind: WORKSPACE_KIND,
-          mode: settings.workspaceProvisioningMode
-        });
-        return prepared.workspace;
-      } catch (error) {
-        const reason = error instanceof WorkspacePrepareError ? error.reason : this.classifyWorkspacePrepareFailure(error);
-        this.emitWorkspacePrepareEvent("workspace_prepare_failed", {
-          taskId: workingTask.id,
-          taskType: workingTask.taskType,
-          workspaceKind: WORKSPACE_KIND,
-          failureReason: reason,
-          mode: settings.workspaceProvisioningMode
-        });
-        throw error;
-      }
-    });
-    workspace = preparedWorkspace;
+      workspace = preparedWorkspace;
+    } catch (error) {
+      const finishedAt = new Date().toISOString();
+      const message = this.formatWorkspacePrepareErrorMessage(error);
+      const isCancelled = error instanceof CancelledTaskError || this.isCancellationRequested(workingTask.id);
+      await this.taskStore.setExecutionState(workingTask.id, isCancelled ? "cancelled" : "failed", {
+        finishedAt,
+        enqueued: false,
+        errorMessage: isCancelled ? "Cancelled by user" : message,
+        lastAction: action
+      });
+      throw error;
+    }
 
     let nextTask = (await this.taskStore.getTask(workingTask.id)) ?? workingTask;
     if (action === "build" && !nextTask.workspaceBaseRef) {
@@ -5256,7 +5296,7 @@ export class SpawnerService {
       );
     } catch (error) {
       const finishedAt = new Date().toISOString();
-      const message = error instanceof Error ? error.message : "Unknown runtime error";
+      const message = this.formatWorkspacePrepareErrorMessage(error);
       const isCancelled = error instanceof CancelledTaskError || this.isCancellationRequested(task.id);
 
       if (runId) {
@@ -5789,7 +5829,7 @@ export class SpawnerService {
       await appendRunLog("Spawner: task finished successfully.");
     } catch (error) {
       const finishedAt = new Date().toISOString();
-      const message = error instanceof Error ? error.message : "Unknown runtime error";
+      const message = this.formatWorkspacePrepareErrorMessage(error);
       const isCancelled = error instanceof CancelledTaskError || this.isCancellationRequested(task.id);
       if (liveTimelineStream) {
         await liveTimelineStream.stop();

@@ -346,6 +346,32 @@ describe("SpawnerService workspace provisioning", () => {
     assert.deepEqual(workspace, fallbackWorkspace);
   });
 
+  it("formats workspace preparation failures with git error details", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const task = createTask();
+
+    spawnerAny.resolveWorkspacePath = () => "/tmp/workspace";
+    spawnerAny.cloneWorkspaceFromSource = async () => {
+      throw new Error("fatal: repository 'https://secret-token@github.com/example/missing.git/' not found");
+    };
+    spawnerAny.classifyWorkspacePrepareFailure = () => "auth";
+
+    await assert.rejects(
+      async () => {
+        await spawnerAny.prepareWorkspace(task, "build", "feature/task-1", "/repo-cache/path", "clone_only");
+      },
+      (error: unknown) => {
+        const message = spawnerAny.formatWorkspacePrepareErrorMessage(error);
+        assert.match(message, /Workspace setup failed: repository access was denied/);
+        assert.match(message, /Git error:/);
+        assert.match(message, /fatal: repository 'https:\/\/<redacted>@github\.com\/example\/missing\.git\/' not found/);
+        assert.doesNotMatch(message, /secret-token/);
+        return true;
+      }
+    );
+  });
+
   it("reuses the existing task workspace for ask runs", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;

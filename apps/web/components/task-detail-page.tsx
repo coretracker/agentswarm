@@ -4944,6 +4944,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </div>
     ) : null;
 
+  const taskErrorNotice =
+    task?.errorMessage && task.executionStatus === "failed" ? (
+      <Alert
+        type="error"
+        showIcon
+        message="Task failed"
+        description={
+          <Typography.Paragraph type="danger" style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {task.errorMessage}
+          </Typography.Paragraph>
+        }
+      />
+    ) : null;
+
   const renderCheckpointDiffSection = (proposal: TaskChangeProposal, keyPrefix: string) => {
     const canRevertApplied = proposal.status === "applied" && !proposal.diffTruncated;
     const canRevertThisCheckpointNow = canRevertApplied && proposal.id === latestAppliedChangeProposalId;
@@ -5650,6 +5664,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       label: "History",
       children: (
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
+          {taskErrorNotice}
           {pendingChangeProposal && canEditTask && task && !isArchived ? (
             <Alert
               type="warning"
