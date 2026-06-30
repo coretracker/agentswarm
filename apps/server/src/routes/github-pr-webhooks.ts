@@ -15,6 +15,7 @@ import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import { beginTaskStart } from "../lib/task-start-orchestrator.js";
 import { env } from "../config/env.js";
+import type { Task } from "@agentswarm/shared-types";
 
 type RawBodyRequest = FastifyRequest & { rawBody?: string };
 
@@ -63,6 +64,15 @@ interface GitHubMergedPullRequest {
   prNumber: number;
   sourceBranch?: string;
   targetBranch?: string;
+}
+
+interface GitHubPrLinkEvent {
+  prNumber: number;
+  body: string;
+  url: string;
+  repositoryFullName?: string;
+  headBranch: string;
+  headRepositoryFullName?: string;
 }
 
 const readHeader = (value: string | string[] | undefined): string | null => {
@@ -352,6 +362,92 @@ const normalizeGitHubMergedPullRequest = (event: string | null, payload: unknown
   };
 };
 
+const normalizeGitHubPrLinkEvent = (event: string | null, payload: unknown): GitHubPrLinkEvent | null => {
+  if (event !== "pull_request" || !isRecord(payload)) {
+    return null;
+  }
+
+  const action = stringValue(payload, "action");
+  if (action !== "opened" && action !== "reopened" && action !== "edited") {
+    return null;
+  }
+  if (!isRecord(payload.pull_request)) {
+    return null;
+  }
+
+  const prNumber = numberValue(payload.pull_request, "number");
+  const headDetails = readPullRequestHeadDetails(payload.pull_request);
+  if (!prNumber || !headDetails) {
+    return null;
+  }
+
+  return {
+    prNumber,
+    body: stringValue(payload.pull_request, "body") ?? "",
+    url: stringValue(payload.pull_request, "html_url") ?? "",
+    repositoryFullName: readRepositoryFullName(payload),
+    headBranch: headDetails.headBranch,
+    headRepositoryFullName: headDetails.headRepositoryFullName
+  };
+};
+
+const extractGitHubIssueNumberReference = (body: string): number | null => {
+  const match = body.match(/\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|references?)\s+(?:[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)?#([1-9][0-9]*)\b/i);
+  if (!match?.[1]) {
+    return null;
+  }
+  const issueNumber = Number(match[1]);
+  return Number.isInteger(issueNumber) && issueNumber > 0 ? issueNumber : null;
+};
+
+const githubBodyReferencesIssue = (body: string, issueNumber: number): boolean => {
+  const escapedIssueNumber = escapeRegExp(String(issueNumber));
+  return new RegExp(`(?:^|\\s)(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#${escapedIssueNumber}\\b`).test(body);
+};
+
+const appendIssueReferenceToPullRequestBody = async (input: {
+  feedback: GitHubPrLinkEvent;
+  issueNumber: number;
+  githubToken: string | null | undefined;
+}): Promise<boolean> => {
+  const githubToken = input.githubToken?.trim();
+  if (!githubToken || !input.feedback.repositoryFullName || githubBodyReferencesIssue(input.feedback.body, input.issueNumber)) {
+    return false;
+  }
+
+  const currentBody = input.feedback.body.trimEnd();
+  const nextBody = `${currentBody}${currentBody ? "\n\n" : ""}Refs #${input.issueNumber}`;
+  const response = await fetch(`${GITHUB_API_BASE_URL}/repos/${input.feedback.repositoryFullName}/pulls/${input.feedback.prNumber}`, {
+    method: "PATCH",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${githubToken}`,
+      "Content-Type": "application/json",
+      "User-Agent": GITHUB_USER_AGENT
+    },
+    body: JSON.stringify({ body: nextBody })
+  });
+  return response.ok;
+};
+
+const patchTaskGitHubLinks = async (
+  taskStore: TaskStore,
+  task: Task,
+  patch: { githubPrNumber?: number; githubIssueNumber?: number }
+): Promise<Task> => {
+  const nextPatch: Partial<Pick<Task, "githubPrNumber" | "githubIssueNumber">> = {};
+  if (patch.githubPrNumber !== undefined && task.githubPrNumber !== patch.githubPrNumber) {
+    nextPatch.githubPrNumber = patch.githubPrNumber;
+  }
+  if (patch.githubIssueNumber !== undefined && task.githubIssueNumber !== patch.githubIssueNumber) {
+    nextPatch.githubIssueNumber = patch.githubIssueNumber;
+  }
+  if (Object.keys(nextPatch).length === 0) {
+    return task;
+  }
+  return (await taskStore.patchTask(task.id, nextPatch)) ?? task;
+};
+
 const replaceTemplateMarkers = (template: string, markers: Record<string, string>): string => {
   let rendered = template;
   for (const [marker, value] of Object.entries(markers)) {
@@ -596,6 +692,65 @@ export const registerGitHubPrWebhookRoutes = (
       await deps.taskStore.archiveTask(task.id);
       await deps.taskStore.appendLog(task.id, `Task archived after GitHub PR #${mergedPullRequest.prNumber} was merged.`);
       return reply.status(202).send({ archived: true, taskId: task.id });
+    }
+
+    const prLinkEvent = normalizeGitHubPrLinkEvent(event, request.body);
+    if (prLinkEvent) {
+      if (
+        prLinkEvent.headRepositoryFullName &&
+        prLinkEvent.repositoryFullName &&
+        prLinkEvent.headRepositoryFullName.toLowerCase() !== prLinkEvent.repositoryFullName.toLowerCase()
+      ) {
+        return reply.status(202).send({ linked: false, reason: "fork_pr_branch_unsupported" });
+      }
+
+      const existingPrTask = await deps.taskStore.findTaskByGitHubPrNumber(repository.id, prLinkEvent.prNumber);
+      const branchTask = existingPrTask ? null : await deps.taskStore.findTaskByBranchName(repository.id, prLinkEvent.headBranch);
+      const task = existingPrTask ?? branchTask;
+      if (!task) {
+        return reply.status(202).send({ linked: false, reason: "task_branch_not_found" });
+      }
+      if (task.githubPrNumber && task.githubPrNumber !== prLinkEvent.prNumber) {
+        return reply.status(202).send({ linked: false, reason: "task_already_linked_to_different_pr", taskId: task.id });
+      }
+
+      const referencedIssueNumber = extractGitHubIssueNumberReference(prLinkEvent.body);
+      const nextIssueNumber = task.githubIssueNumber ?? referencedIssueNumber ?? undefined;
+      const githubPrNumberChanged = task.githubPrNumber !== prLinkEvent.prNumber;
+      const githubIssueNumberChanged = nextIssueNumber !== undefined && task.githubIssueNumber !== nextIssueNumber;
+      const patchedTask = await patchTaskGitHubLinks(deps.taskStore, task, {
+        githubPrNumber: prLinkEvent.prNumber,
+        ...(nextIssueNumber !== undefined ? { githubIssueNumber: nextIssueNumber } : {})
+      });
+
+      const credentials =
+        nextIssueNumber !== undefined ? await deps.settingsStore.getRuntimeCredentials(null, "auto").catch(() => ({ githubToken: null })) : { githubToken: null };
+      const prBodyUpdated =
+        nextIssueNumber !== undefined
+          ? await appendIssueReferenceToPullRequestBody({
+              feedback: prLinkEvent,
+              issueNumber: nextIssueNumber,
+              githubToken: credentials.githubToken
+            }).catch(() => false)
+          : false;
+
+      if (githubPrNumberChanged || githubIssueNumberChanged || prBodyUpdated) {
+        const linkNotes = [
+          githubPrNumberChanged ? `PR #${prLinkEvent.prNumber}` : null,
+          githubIssueNumberChanged ? `issue #${nextIssueNumber}` : null,
+          prBodyUpdated ? `added PR body reference to issue #${nextIssueNumber}` : null
+        ].filter((note): note is string => Boolean(note));
+        await deps.taskStore.appendLog(patchedTask.id, `GitHub webhook linked ${linkNotes.join(", ")}.`);
+      }
+
+      return reply.status(202).send({
+        linked: true,
+        taskId: patchedTask.id,
+        matchedBy: existingPrTask ? "github_pr" : "branch",
+        githubPrNumber: patchedTask.githubPrNumber ?? prLinkEvent.prNumber,
+        githubIssueNumber: patchedTask.githubIssueNumber ?? null,
+        prBodyUpdated
+      });
     }
 
     const feedback = normalizeGitHubFeedback(event, request.body);

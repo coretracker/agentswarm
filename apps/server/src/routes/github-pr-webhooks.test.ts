@@ -254,6 +254,299 @@ test("GitHub PR merged webhook archives linked task when repository toggle is en
   await app.close();
 });
 
+test("GitHub PR opened webhook links task by head branch and adds issue reference", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const originalFetch = globalThis.fetch;
+  const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    fetchCalls.push({ url: String(url), init });
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+
+  const secret = "webhook-secret";
+  const patches: unknown[] = [];
+  const logs: Array<{ taskId: string; line: string }> = [];
+
+  try {
+    registerGitHubPrWebhookRoutes(app, {
+      repositoryStore: {
+        getRepository: async () => ({ id: "repo-1", defaultBranch: "develop" }),
+        getRepositoryGitHubPrWebhookSecret: async () => secret
+      } as never,
+      taskStore: {
+        findTaskByGitHubPrNumber: async () => null,
+        findTaskByBranchName: async (_repositoryId: string, branchName: string) =>
+          branchName === "agentswarm/task-1"
+            ? {
+                id: "task-1",
+                branchName,
+                githubPrNumber: null,
+                githubIssueNumber: 88
+              }
+            : null,
+        patchTask: async (taskId: string, patch: unknown) => {
+          patches.push({ taskId, patch });
+          return {
+            id: taskId,
+            branchName: "agentswarm/task-1",
+            githubPrNumber: 42,
+            githubIssueNumber: 88
+          };
+        },
+        appendLog: async (taskId: string, line: string) => {
+          logs.push({ taskId, line });
+        }
+      } as never,
+      scheduler: {} as never,
+      settingsStore: {
+        getRuntimeCredentials: async () => ({
+          githubToken: "github-token"
+        })
+      } as never,
+      spawner: defaultSpawner as never
+    });
+
+    const payload = JSON.stringify({
+      action: "opened",
+      repository: {
+        full_name: "acme/repo"
+      },
+      pull_request: {
+        number: 42,
+        body: "Implementation is ready.",
+        html_url: "https://github.com/acme/repo/pull/42",
+        head: {
+          ref: "agentswarm/task-1",
+          repo: {
+            full_name: "acme/repo"
+          }
+        }
+      },
+      sender: {
+        login: "alice",
+        type: "User"
+      }
+    });
+    const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/github/webhooks/repo-1",
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": "pull_request",
+        "x-hub-signature-256": signature
+      },
+      payload
+    });
+
+    assert.equal(response.statusCode, 202);
+    assert.deepEqual(JSON.parse(response.body), {
+      linked: true,
+      taskId: "task-1",
+      matchedBy: "branch",
+      githubPrNumber: 42,
+      githubIssueNumber: 88,
+      prBodyUpdated: true
+    });
+    assert.deepEqual(patches, [{ taskId: "task-1", patch: { githubPrNumber: 42 } }]);
+    assert.deepEqual(logs, [{ taskId: "task-1", line: "GitHub webhook linked PR #42, added PR body reference to issue #88." }]);
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0]?.url, "https://api.github.com/repos/acme/repo/pulls/42");
+    assert.equal((fetchCalls[0]?.init?.headers as Record<string, string>).Authorization, "Bearer github-token");
+    assert.equal(fetchCalls[0]?.init?.body, JSON.stringify({ body: "Implementation is ready.\n\nRefs #88" }));
+  } finally {
+    globalThis.fetch = originalFetch;
+    await app.close();
+  }
+});
+
+test("GitHub PR opened webhook extracts issue reference while linking task by branch", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const secret = "webhook-secret";
+  const patches: unknown[] = [];
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({ id: "repo-1", defaultBranch: "develop" }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubPrNumber: async () => null,
+      findTaskByBranchName: async () => ({
+        id: "task-1",
+        branchName: "agentswarm/task-1",
+        githubPrNumber: null,
+        githubIssueNumber: null
+      }),
+      patchTask: async (taskId: string, patch: unknown) => {
+        patches.push({ taskId, patch });
+        return {
+          id: taskId,
+          branchName: "agentswarm/task-1",
+          githubPrNumber: 42,
+          githubIssueNumber: 77
+        };
+      },
+      appendLog: async () => undefined
+    } as never,
+    scheduler: {} as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "opened",
+    repository: {
+      full_name: "acme/repo"
+    },
+    pull_request: {
+      number: 42,
+      body: "Closes #77",
+      html_url: "https://github.com/acme/repo/pull/42",
+      head: {
+        ref: "agentswarm/task-1",
+        repo: {
+          full_name: "acme/repo"
+        }
+      }
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "pull_request",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), {
+    linked: true,
+    taskId: "task-1",
+    matchedBy: "branch",
+    githubPrNumber: 42,
+    githubIssueNumber: 77,
+    prBodyUpdated: false
+  });
+  assert.deepEqual(patches, [{ taskId: "task-1", patch: { githubPrNumber: 42, githubIssueNumber: 77 } }]);
+
+  await app.close();
+});
+
+test("GitHub PR opened webhook no-ops when PR is already linked", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const secret = "webhook-secret";
+  let branchLookupCount = 0;
+  let patchCount = 0;
+  let logCount = 0;
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({ id: "repo-1", defaultBranch: "develop" }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubPrNumber: async () => ({
+        id: "task-1",
+        branchName: "agentswarm/task-1",
+        githubPrNumber: 42,
+        githubIssueNumber: null
+      }),
+      findTaskByBranchName: async () => {
+        branchLookupCount += 1;
+        return null;
+      },
+      patchTask: async () => {
+        patchCount += 1;
+        return null;
+      },
+      appendLog: async () => {
+        logCount += 1;
+      }
+    } as never,
+    scheduler: {} as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "reopened",
+    repository: {
+      full_name: "acme/repo"
+    },
+    pull_request: {
+      number: 42,
+      body: "",
+      html_url: "https://github.com/acme/repo/pull/42",
+      head: {
+        ref: "agentswarm/task-1",
+        repo: {
+          full_name: "acme/repo"
+        }
+      }
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "pull_request",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), {
+    linked: true,
+    taskId: "task-1",
+    matchedBy: "github_pr",
+    githubPrNumber: 42,
+    githubIssueNumber: null,
+    prBodyUpdated: false
+  });
+  assert.equal(branchLookupCount, 0);
+  assert.equal(patchCount, 0);
+  assert.equal(logCount, 0);
+
+  await app.close();
+});
+
 test("GitHub PR webhook ignores configured integration bot login", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {

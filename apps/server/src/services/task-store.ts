@@ -414,6 +414,7 @@ export interface TaskStore {
   getTask(taskId: string): Promise<Task | null>;
   findTaskByGitHubPrNumber(repositoryId: string, githubPrNumber: number): Promise<Task | null>;
   findTaskByGitHubIssueNumber(repositoryId: string, githubIssueNumber: number): Promise<Task | null>;
+  findTaskByBranchName(repositoryId: string, branchName: string): Promise<Task | null>;
   getTaskMetadata(taskId: string): Promise<TaskMetadata | null>;
   listTasks(options?: ListTasksOptions): Promise<Task[]>;
   patchTask(taskId: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<Task | null>;
@@ -804,6 +805,15 @@ export class RedisTaskStore implements TaskStore {
   async findTaskByGitHubIssueNumber(repositoryId: string, githubIssueNumber: number): Promise<Task | null> {
     const tasks = await this.listTasks({ view: "active", limit: 1000 });
     return tasks.find((task) => task.repoId === repositoryId && task.githubIssueNumber === githubIssueNumber) ?? null;
+  }
+
+  async findTaskByBranchName(repositoryId: string, branchName: string): Promise<Task | null> {
+    const normalizedBranchName = branchName.trim();
+    if (!normalizedBranchName) {
+      return null;
+    }
+    const tasks = await this.listTasks({ view: "active", limit: 1000 });
+    return tasks.find((task) => task.repoId === repositoryId && task.branchName === normalizedBranchName) ?? null;
   }
 
   async getTaskMetadata(taskId: string): Promise<TaskMetadata | null> {
@@ -2266,6 +2276,27 @@ export class PostgresTaskStore implements TaskStore {
         LIMIT 1
       `,
       [repositoryId, String(githubIssueNumber)]
+    );
+    const row = result.rows[0];
+    return row ? this.withPendingCheckpointState({ ...this.mapTaskRow(row), logs: [] }) : null;
+  }
+
+  async findTaskByBranchName(repositoryId: string, branchName: string): Promise<Task | null> {
+    const normalizedBranchName = branchName.trim();
+    if (!normalizedBranchName) {
+      return null;
+    }
+    const result = await this.pool.query(
+      `
+        SELECT task_data
+        FROM tasks
+        WHERE task_data->>'repoId' = $1
+          AND task_data->>'branchName' = $2
+          AND status <> 'archived'
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [repositoryId, normalizedBranchName]
     );
     const row = result.rows[0];
     return row ? this.withPendingCheckpointState({ ...this.mapTaskRow(row), logs: [] }) : null;

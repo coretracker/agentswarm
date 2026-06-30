@@ -631,5 +631,13 @@ Feedback:
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS github_pr_task_created_comment_template text NULL;
     `
+  },
+  {
+    id: "20260630_03_task_branch_lookup_index",
+    sql: `
+      CREATE INDEX IF NOT EXISTS tasks_repo_branch_active_idx
+      ON tasks ((task_data->>'repoId'), (task_data->>'branchName'), created_at DESC)
+      WHERE status <> 'archived';
+    `
   }
 ];
