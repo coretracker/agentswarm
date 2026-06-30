@@ -170,7 +170,7 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
   }
 
   if (event === "issue_comment") {
-    if (action !== "created" || !isRecord(payload.issue) || !isRecord(payload.comment)) {
+    if ((action !== "created" && action !== "edited") || !isRecord(payload.issue) || !isRecord(payload.comment)) {
       return null;
     }
     const commentId = numberValue(payload.comment, "id");
