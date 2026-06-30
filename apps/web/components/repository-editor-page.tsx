@@ -647,7 +647,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     name="githubPrRequireBotMention"
                     label="Only Process Bot Mentions"
                     valuePropName="checked"
-                    extra="When enabled and an ignored Github bot user is configured, PR feedback is ignored unless the body mentions that bot user."
+                    extra="When enabled and an ignored GitHub bot user is configured, issue and PR comments are ignored unless the body mentions that bot user."
                   >
                     <Switch />
                   </Form.Item>

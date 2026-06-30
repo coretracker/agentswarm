@@ -1249,6 +1249,88 @@ test("GitHub webhook queues linked issue comments", async () => {
   await app.close();
 });
 
+test("GitHub webhook ignores assigned issue comments without required bot mention", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  let lookupCount = 0;
+  let appendCount = 0;
+  const secret = "webhook-secret";
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({
+        id: "repo-1",
+        githubIntegrationBotLogin: "agentswarm-bot",
+        githubPrRequireBotMention: true
+      }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubIssueNumber: async () => {
+        lookupCount += 1;
+        return {
+          id: "task-issue",
+          executionStatus: "idle"
+        };
+      },
+      appendMessage: async () => {
+        appendCount += 1;
+        return null;
+      }
+    } as never,
+    scheduler: {} as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "created",
+    issue: {
+      id: 9001,
+      number: 77,
+      title: "Import customers fails",
+      assignees: [
+        {
+          login: "agentswarm-bot"
+        }
+      ]
+    },
+    comment: {
+      id: 3001,
+      body: "Please fix the import failure.",
+      html_url: "https://github.com/acme/repo/issues/77#issuecomment-3001"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issue_comment",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { queued: false, reason: "missing_bot_mention" });
+  assert.equal(lookupCount, 0);
+  assert.equal(appendCount, 0);
+
+  await app.close();
+});
+
 test("GitHub webhook creates feature branch task from issue body mention without linked task", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
