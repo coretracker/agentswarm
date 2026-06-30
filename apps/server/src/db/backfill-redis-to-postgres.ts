@@ -523,6 +523,7 @@ const main = async (): Promise<void> => {
               github_pr_initial_instructions,
               github_pr_feedback_instructions,
               github_pr_review_instructions,
+              github_pr_task_created_comment_template,
               github_pr_task_owner_user_id,
               harness_what_exists,
               harness_allowed_actions,
@@ -535,7 +536,7 @@ const main = async (): Promise<void> => {
               created_at,
               updated_at
             )
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
           `,
           [
             repository.id,
@@ -555,6 +556,7 @@ const main = async (): Promise<void> => {
             trimString(repository.githubPrInitialInstructions),
             trimString(repository.githubPrFeedbackInstructions),
             trimString(repository.githubPrReviewInstructions),
+            trimString((repository as { githubPrTaskCreatedCommentTemplate?: string | null }).githubPrTaskCreatedCommentTemplate),
             trimString(repository.githubPrTaskOwnerUserId),
             trimString((repository as { harnessWhatExists?: string | null }).harnessWhatExists),
             trimString((repository as { harnessAllowedActions?: string | null }).harnessAllowedActions),

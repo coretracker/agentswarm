@@ -43,6 +43,14 @@ export const DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS = [
   "After completing the review, reply on GitHub at the URL above with a brief status."
 ].join("\n");
 
+export const DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE = [
+  "🤖 A new task has been created and will start working on this shortly.",
+  "",
+  "Task: {{task_url}}",
+  "",
+  "I’ll post progress updates here as work continues."
+].join("\n");
+
 /** Native effort values from providers. "max" is Claude-only. */
 export type ProviderProfile = "low" | "medium" | "high" | "max";
 
@@ -464,6 +472,7 @@ export interface Repository {
   githubPrInitialInstructions?: string | null;
   githubPrFeedbackInstructions?: string | null;
   githubPrReviewInstructions?: string | null;
+  githubPrTaskCreatedCommentTemplate?: string | null;
   githubPrTaskOwnerUserId?: string | null;
   harnessWhatExists?: string | null;
   harnessAllowedActions?: string | null;
@@ -905,6 +914,7 @@ export interface CreateRepositoryInput {
   githubPrInitialInstructions?: string | null;
   githubPrFeedbackInstructions?: string | null;
   githubPrReviewInstructions?: string | null;
+  githubPrTaskCreatedCommentTemplate?: string | null;
   githubPrTaskOwnerUserId?: string | null;
   harnessWhatExists?: string | null;
   harnessAllowedActions?: string | null;
@@ -933,6 +943,7 @@ export interface UpdateRepositoryInput {
   githubPrInitialInstructions?: string | null;
   githubPrFeedbackInstructions?: string | null;
   githubPrReviewInstructions?: string | null;
+  githubPrTaskCreatedCommentTemplate?: string | null;
   githubPrTaskOwnerUserId?: string | null;
   harnessWhatExists?: string | null;
   harnessAllowedActions?: string | null;
