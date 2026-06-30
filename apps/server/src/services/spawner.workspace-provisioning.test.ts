@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
@@ -181,6 +181,63 @@ describe("SpawnerService workspace provisioning", () => {
       runtimeMcp.servers.map((server) => server.name),
       ["repo-7-github"]
     );
+  });
+
+  it("builds repository harness markdown only when fields are populated", () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+
+    const empty = spawnerAny.buildRepositoryHarnessMarkdown({
+      harnessWhatExists: null,
+      harnessAllowedActions: "",
+      harnessHowToWork: "   ",
+      harnessDefinitionOfDone: null,
+      harnessEvidenceExpectations: undefined
+    });
+    assert.equal(empty, null);
+
+    const populated = spawnerAny.buildRepositoryHarnessMarkdown({
+      harnessWhatExists: "Monorepo with apps/web and apps/server.",
+      harnessAllowedActions: null,
+      harnessHowToWork: "Prefer harness scripts in scripts/harness.",
+      harnessDefinitionOfDone: "check.sh and test.sh pass.",
+      harnessEvidenceExpectations: ""
+    });
+    assert.match(populated, /# Repository Harness/);
+    assert.match(populated, /## What exists\?/);
+    assert.match(populated, /## How should you work\?/);
+    assert.match(populated, /## How do you know you are done\?/);
+    assert.doesNotMatch(populated, /## What is allowed\?/);
+    assert.doesNotMatch(populated, /## How do you prove it\?/);
+  });
+
+  it("writes and removes runtime harness files based on repository harness content", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-runtime-harness-"));
+    const workspacePath = path.join(root, "workspace");
+    await mkdir(workspacePath, { recursive: true });
+
+    const markdown = spawnerAny.buildRepositoryHarnessMarkdown({
+      harnessWhatExists: "apps/web, apps/server",
+      harnessAllowedActions: "You can edit TypeScript and docs.",
+      harnessHowToWork: "Use existing patterns.",
+      harnessDefinitionOfDone: "All required checks pass.",
+      harnessEvidenceExpectations: "Share test command output."
+    });
+    const harnessPath = await spawnerAny.syncWorkspaceRuntimeHarnessFile(workspacePath, markdown);
+    assert.equal(harnessPath, path.join(workspacePath, ".agentswarm-runtime", "harness.md"));
+    const written = await readFile(harnessPath, "utf8");
+    assert.match(written, /## What exists\?/);
+    assert.match(written, /## What is allowed\?/);
+    assert.match(written, /## How do you prove it\?/);
+
+    const removedPath = await spawnerAny.syncWorkspaceRuntimeHarnessFile(workspacePath, null);
+    assert.equal(removedPath, null);
+    const exists = await access(harnessPath)
+      .then(() => true)
+      .catch(() => false);
+    assert.equal(exists, false);
   });
 
   it("allows internal checkpoint apply flow to bypass the running-task guard", async () => {

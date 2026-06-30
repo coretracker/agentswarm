@@ -55,6 +55,11 @@ type RepositoryFormValues = {
   githubPrFeedbackInstructions: string;
   githubPrReviewInstructions: string;
   githubPrTaskOwnerUserId: string;
+  harnessWhatExists: string;
+  harnessAllowedActions: string;
+  harnessHowToWork: string;
+  harnessDefinitionOfDone: string;
+  harnessEvidenceExpectations: string;
 };
 
 const emptyValues = (): RepositoryFormValues => ({
@@ -77,7 +82,12 @@ const emptyValues = (): RepositoryFormValues => ({
   githubPrInitialInstructions: DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
   githubPrFeedbackInstructions: DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
   githubPrReviewInstructions: DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
-  githubPrTaskOwnerUserId: ""
+  githubPrTaskOwnerUserId: "",
+  harnessWhatExists: "",
+  harnessAllowedActions: "",
+  harnessHowToWork: "",
+  harnessDefinitionOfDone: "",
+  harnessEvidenceExpectations: ""
 });
 
 const normalizeValues = (values?: Partial<RepositoryFormValues> | null): RepositoryFormValues => ({
@@ -129,7 +139,12 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
     typeof values?.githubPrReviewInstructions === "string"
       ? values.githubPrReviewInstructions
       : DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
-  githubPrTaskOwnerUserId: typeof values?.githubPrTaskOwnerUserId === "string" ? values.githubPrTaskOwnerUserId : ""
+  githubPrTaskOwnerUserId: typeof values?.githubPrTaskOwnerUserId === "string" ? values.githubPrTaskOwnerUserId : "",
+  harnessWhatExists: typeof values?.harnessWhatExists === "string" ? values.harnessWhatExists : "",
+  harnessAllowedActions: typeof values?.harnessAllowedActions === "string" ? values.harnessAllowedActions : "",
+  harnessHowToWork: typeof values?.harnessHowToWork === "string" ? values.harnessHowToWork : "",
+  harnessDefinitionOfDone: typeof values?.harnessDefinitionOfDone === "string" ? values.harnessDefinitionOfDone : "",
+  harnessEvidenceExpectations: typeof values?.harnessEvidenceExpectations === "string" ? values.harnessEvidenceExpectations : ""
 });
 
 const snapshotValues = (values?: Partial<RepositoryFormValues> | null): string => JSON.stringify(normalizeValues(values));
@@ -319,7 +334,12 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           githubPrInitialInstructions: repository.githubPrInitialInstructions ?? DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
           githubPrFeedbackInstructions: repository.githubPrFeedbackInstructions ?? DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
           githubPrReviewInstructions: repository.githubPrReviewInstructions ?? DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
-          githubPrTaskOwnerUserId: repository.githubPrTaskOwnerUserId ?? ""
+          githubPrTaskOwnerUserId: repository.githubPrTaskOwnerUserId ?? "",
+          harnessWhatExists: repository.harnessWhatExists ?? "",
+          harnessAllowedActions: repository.harnessAllowedActions ?? "",
+          harnessHowToWork: repository.harnessHowToWork ?? "",
+          harnessDefinitionOfDone: repository.harnessDefinitionOfDone ?? "",
+          harnessEvidenceExpectations: repository.harnessEvidenceExpectations ?? ""
         });
         form.setFieldsValue(initial);
         setInitialSnapshot(snapshotValues(initial));
@@ -547,7 +567,12 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 normalized.githubPrReviewInstructions.trim() === DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS
                   ? null
                   : normalized.githubPrReviewInstructions.trim() || null,
-              githubPrTaskOwnerUserId: normalized.githubPrTaskOwnerUserId.trim() || null
+              githubPrTaskOwnerUserId: normalized.githubPrTaskOwnerUserId.trim() || null,
+              harnessWhatExists: normalized.harnessWhatExists.trim() || null,
+              harnessAllowedActions: normalized.harnessAllowedActions.trim() || null,
+              harnessHowToWork: normalized.harnessHowToWork.trim() || null,
+              harnessDefinitionOfDone: normalized.harnessDefinitionOfDone.trim() || null,
+              harnessEvidenceExpectations: normalized.harnessEvidenceExpectations.trim() || null
             };
             if (mode === "edit" && editingRepository) {
               await api.updateRepository(editingRepository.id, payload);
@@ -1192,6 +1217,53 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 <Checkbox>Clear stored webhook secret</Checkbox>
               </Form.Item>
             ) : null}
+          </Card>
+          <Card bordered={false} title="Harness">
+            <Flex vertical gap={12}>
+              <Typography.Text type="secondary">
+                Write standing repository guidance for agents. These fields are optional and are used to guide task runs for this repository.
+              </Typography.Text>
+              <Form.Item
+                name="harnessWhatExists"
+                label="1. What exists?"
+                extra="Repository understanding: apps, packages, docs, important folders, generated files, and runtime services."
+                rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+              >
+                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+              </Form.Item>
+              <Form.Item
+                name="harnessAllowedActions"
+                label="2. What is allowed?"
+                extra="Constraints and policies: what agents may edit, what is protected, secret handling, network/Docker limits, and PR rules."
+                rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+              >
+                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+              </Form.Item>
+              <Form.Item
+                name="harnessHowToWork"
+                label="3. How should you work?"
+                extra="Process and decision-making: planning expectations, approval points, branch flow, preferred commands, and when to ask questions."
+                rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+              >
+                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+              </Form.Item>
+              <Form.Item
+                name="harnessDefinitionOfDone"
+                label="4. How do you know you are done?"
+                extra="Validation and quality gates: required checks, tests, builds, and review criteria."
+                rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+              >
+                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+              </Form.Item>
+              <Form.Item
+                name="harnessEvidenceExpectations"
+                label="5. How do you prove it?"
+                extra="Expected proof: command outcomes, links, screenshots, changed docs, and skipped-check explanations."
+                rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+              >
+                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+              </Form.Item>
+            </Flex>
           </Card>
         </Flex>
       </Form>

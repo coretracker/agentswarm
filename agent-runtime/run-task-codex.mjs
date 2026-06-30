@@ -259,6 +259,14 @@ const buildPrompt = () => {
   if (responsePreferencePreamble) {
     promptSections.push(responsePreferencePreamble, "");
   }
+  if (typeof manifest.harnessFilePath === "string" && manifest.harnessFilePath.trim().length > 0) {
+    promptSections.push(
+      "Repository harness:",
+      `- ${manifest.harnessFilePath.trim()}`,
+      "Use this file as standing repository guidance for this task run.",
+      ""
+    );
+  }
   promptSections.push("Current user request:", "", rawContent);
   return promptSections.join("\n");
 };
