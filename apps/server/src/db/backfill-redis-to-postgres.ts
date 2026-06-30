@@ -524,13 +524,18 @@ const main = async (): Promise<void> => {
               github_pr_feedback_instructions,
               github_pr_review_instructions,
               github_pr_task_owner_user_id,
+              harness_what_exists,
+              harness_allowed_actions,
+              harness_how_to_work,
+              harness_definition_of_done,
+              harness_evidence_expectations,
               webhook_last_attempt_at,
               webhook_last_status,
               webhook_last_error,
               created_at,
               updated_at
             )
-            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
+            VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
           `,
           [
             repository.id,
@@ -551,6 +556,11 @@ const main = async (): Promise<void> => {
             trimString(repository.githubPrFeedbackInstructions),
             trimString(repository.githubPrReviewInstructions),
             trimString(repository.githubPrTaskOwnerUserId),
+            trimString((repository as { harnessWhatExists?: string | null }).harnessWhatExists),
+            trimString((repository as { harnessAllowedActions?: string | null }).harnessAllowedActions),
+            trimString((repository as { harnessHowToWork?: string | null }).harnessHowToWork),
+            trimString((repository as { harnessDefinitionOfDone?: string | null }).harnessDefinitionOfDone),
+            trimString((repository as { harnessEvidenceExpectations?: string | null }).harnessEvidenceExpectations),
             repository.webhookLastAttemptAt ?? null,
             trimString(repository.webhookLastStatus),
             trimString(repository.webhookLastError),

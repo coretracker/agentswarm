@@ -70,6 +70,11 @@ const normalizeGitHubInstructions = (value: string | null | undefined, defaultVa
   return normalized.length > 0 && normalized !== defaultValue ? normalized : null;
 };
 
+const normalizeRepositoryHarnessValue = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
 const normalizeUserId = (value: string | null | undefined): string | null => {
   const normalized = (value ?? "").trim();
   return normalized.length > 0 ? normalized : null;
@@ -690,6 +695,11 @@ export class RedisRepositoryStore implements RepositoryStore {
       DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS
     );
     const githubPrTaskOwnerUserId = normalizeUserId(repository.githubPrTaskOwnerUserId);
+    const harnessWhatExists = normalizeRepositoryHarnessValue(repository.harnessWhatExists);
+    const harnessAllowedActions = normalizeRepositoryHarnessValue(repository.harnessAllowedActions);
+    const harnessHowToWork = normalizeRepositoryHarnessValue(repository.harnessHowToWork);
+    const harnessDefinitionOfDone = normalizeRepositoryHarnessValue(repository.harnessDefinitionOfDone);
+    const harnessEvidenceExpectations = normalizeRepositoryHarnessValue(repository.harnessEvidenceExpectations);
     const webhookUrl = this.normalizeWebhookUrl(repository.webhookUrl as string | null | undefined);
     const webhookEnabled = repository.webhookEnabled === true;
     const envVars = normalizeRepositoryEnvVars(repository.envVars);
@@ -715,6 +725,11 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubPrFeedbackInstructions,
       githubPrReviewInstructions,
       githubPrTaskOwnerUserId,
+      harnessWhatExists,
+      harnessAllowedActions,
+      harnessHowToWork,
+      harnessDefinitionOfDone,
+      harnessEvidenceExpectations,
       githubPrAutoArchiveOnMerge: repository.githubPrAutoArchiveOnMerge === true,
       webhookLastAttemptAt: typeof repository.webhookLastAttemptAt === "string" ? repository.webhookLastAttemptAt : null,
       webhookLastStatus: repository.webhookLastStatus === "success" || repository.webhookLastStatus === "failed" ? repository.webhookLastStatus : null,
@@ -746,6 +761,11 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubPrFeedbackInstructions: normalized.githubPrFeedbackInstructions ?? null,
       githubPrReviewInstructions: normalized.githubPrReviewInstructions ?? null,
       githubPrTaskOwnerUserId: normalized.githubPrTaskOwnerUserId ?? null,
+      harnessWhatExists: normalized.harnessWhatExists ?? null,
+      harnessAllowedActions: normalized.harnessAllowedActions ?? null,
+      harnessHowToWork: normalized.harnessHowToWork ?? null,
+      harnessDefinitionOfDone: normalized.harnessDefinitionOfDone ?? null,
+      harnessEvidenceExpectations: normalized.harnessEvidenceExpectations ?? null,
       webhookLastAttemptAt: normalized.webhookLastAttemptAt ?? null,
       webhookLastStatus: normalized.webhookLastStatus ?? null,
       webhookLastError: normalized.webhookLastError ?? null,
@@ -777,6 +797,11 @@ export class RedisRepositoryStore implements RepositoryStore {
     const githubPrFeedbackInstructions = normalizeGitHubInstructions(input.githubPrFeedbackInstructions, DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS);
     const githubPrReviewInstructions = normalizeGitHubInstructions(input.githubPrReviewInstructions, DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS);
     const githubPrTaskOwnerUserId = normalizeUserId(input.githubPrTaskOwnerUserId);
+    const harnessWhatExists = normalizeRepositoryHarnessValue(input.harnessWhatExists);
+    const harnessAllowedActions = normalizeRepositoryHarnessValue(input.harnessAllowedActions);
+    const harnessHowToWork = normalizeRepositoryHarnessValue(input.harnessHowToWork);
+    const harnessDefinitionOfDone = normalizeRepositoryHarnessValue(input.harnessDefinitionOfDone);
+    const harnessEvidenceExpectations = normalizeRepositoryHarnessValue(input.harnessEvidenceExpectations);
     const webhookEnabled = input.webhookEnabled === true;
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
@@ -807,6 +832,11 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubPrFeedbackInstructions,
       githubPrReviewInstructions,
       githubPrTaskOwnerUserId,
+      harnessWhatExists,
+      harnessAllowedActions,
+      harnessHowToWork,
+      harnessDefinitionOfDone,
+      harnessEvidenceExpectations,
       webhookLastAttemptAt: null,
       webhookLastStatus: null,
       webhookLastError: null,
@@ -921,6 +951,22 @@ export class RedisRepositoryStore implements RepositoryStore {
       input.githubPrTaskOwnerUserId !== undefined
         ? normalizeUserId(input.githubPrTaskOwnerUserId)
         : current.githubPrTaskOwnerUserId ?? null;
+    const nextHarnessWhatExists =
+      input.harnessWhatExists !== undefined ? normalizeRepositoryHarnessValue(input.harnessWhatExists) : current.harnessWhatExists ?? null;
+    const nextHarnessAllowedActions =
+      input.harnessAllowedActions !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessAllowedActions)
+        : current.harnessAllowedActions ?? null;
+    const nextHarnessHowToWork =
+      input.harnessHowToWork !== undefined ? normalizeRepositoryHarnessValue(input.harnessHowToWork) : current.harnessHowToWork ?? null;
+    const nextHarnessDefinitionOfDone =
+      input.harnessDefinitionOfDone !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessDefinitionOfDone)
+        : current.harnessDefinitionOfDone ?? null;
+    const nextHarnessEvidenceExpectations =
+      input.harnessEvidenceExpectations !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessEvidenceExpectations)
+        : current.harnessEvidenceExpectations ?? null;
     const nextGithubPrRequireBotMention =
       input.githubPrRequireBotMention !== undefined ? input.githubPrRequireBotMention === true : current.githubPrRequireBotMention === true;
     const nextGithubPrAutoArchiveOnMerge =
@@ -966,6 +1012,11 @@ export class RedisRepositoryStore implements RepositoryStore {
       githubPrFeedbackInstructions: nextGithubPrFeedbackInstructions,
       githubPrReviewInstructions: nextGithubPrReviewInstructions,
       githubPrTaskOwnerUserId: nextGithubPrTaskOwnerUserId,
+      harnessWhatExists: nextHarnessWhatExists,
+      harnessAllowedActions: nextHarnessAllowedActions,
+      harnessHowToWork: nextHarnessHowToWork,
+      harnessDefinitionOfDone: nextHarnessDefinitionOfDone,
+      harnessEvidenceExpectations: nextHarnessEvidenceExpectations,
       updatedAt: nowIso()
     };
     const next = this.normalizeRepository(nextStored);
@@ -1121,6 +1172,26 @@ export class PostgresRepositoryStore implements RepositoryStore {
         typeof row.github_pr_task_owner_user_id === "string" && row.github_pr_task_owner_user_id.trim().length > 0
           ? row.github_pr_task_owner_user_id.trim()
           : null,
+      harnessWhatExists:
+        typeof row.harness_what_exists === "string" && row.harness_what_exists.trim().length > 0
+          ? row.harness_what_exists.trim()
+          : null,
+      harnessAllowedActions:
+        typeof row.harness_allowed_actions === "string" && row.harness_allowed_actions.trim().length > 0
+          ? row.harness_allowed_actions.trim()
+          : null,
+      harnessHowToWork:
+        typeof row.harness_how_to_work === "string" && row.harness_how_to_work.trim().length > 0
+          ? row.harness_how_to_work.trim()
+          : null,
+      harnessDefinitionOfDone:
+        typeof row.harness_definition_of_done === "string" && row.harness_definition_of_done.trim().length > 0
+          ? row.harness_definition_of_done.trim()
+          : null,
+      harnessEvidenceExpectations:
+        typeof row.harness_evidence_expectations === "string" && row.harness_evidence_expectations.trim().length > 0
+          ? row.harness_evidence_expectations.trim()
+          : null,
       webhookLastAttemptAt: typeof row.webhook_last_attempt_at === "string" ? row.webhook_last_attempt_at : null,
       webhookLastStatus:
         row.webhook_last_status === "success" || row.webhook_last_status === "failed" ? row.webhook_last_status : null,
@@ -1150,6 +1221,11 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const githubPrFeedbackInstructions = normalizeGitHubInstructions(input.githubPrFeedbackInstructions, DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS);
     const githubPrReviewInstructions = normalizeGitHubInstructions(input.githubPrReviewInstructions, DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS);
     const githubPrTaskOwnerUserId = normalizeUserId(input.githubPrTaskOwnerUserId);
+    const harnessWhatExists = normalizeRepositoryHarnessValue(input.harnessWhatExists);
+    const harnessAllowedActions = normalizeRepositoryHarnessValue(input.harnessAllowedActions);
+    const harnessHowToWork = normalizeRepositoryHarnessValue(input.harnessHowToWork);
+    const harnessDefinitionOfDone = normalizeRepositoryHarnessValue(input.harnessDefinitionOfDone);
+    const harnessEvidenceExpectations = normalizeRepositoryHarnessValue(input.harnessEvidenceExpectations);
     const webhookEnabled = input.webhookEnabled === true;
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
@@ -1180,6 +1256,11 @@ export class PostgresRepositoryStore implements RepositoryStore {
       githubPrFeedbackInstructions,
       githubPrReviewInstructions,
       githubPrTaskOwnerUserId,
+      harnessWhatExists,
+      harnessAllowedActions,
+      harnessHowToWork,
+      harnessDefinitionOfDone,
+      harnessEvidenceExpectations,
       webhookLastAttemptAt: null,
       webhookLastStatus: null,
       webhookLastError: null,
@@ -1213,13 +1294,18 @@ export class PostgresRepositoryStore implements RepositoryStore {
             github_pr_feedback_instructions,
             github_pr_review_instructions,
             github_pr_task_owner_user_id,
+            harness_what_exists,
+            harness_allowed_actions,
+            harness_how_to_work,
+            harness_definition_of_done,
+            harness_evidence_expectations,
             webhook_last_attempt_at,
             webhook_last_status,
             webhook_last_error,
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
         `,
         [
           repository.id,
@@ -1241,6 +1327,11 @@ export class PostgresRepositoryStore implements RepositoryStore {
           repository.githubPrFeedbackInstructions,
           repository.githubPrReviewInstructions,
           repository.githubPrTaskOwnerUserId,
+          repository.harnessWhatExists,
+          repository.harnessAllowedActions,
+          repository.harnessHowToWork,
+          repository.harnessDefinitionOfDone,
+          repository.harnessEvidenceExpectations,
           repository.webhookLastAttemptAt,
           repository.webhookLastStatus,
           repository.webhookLastError,
@@ -1338,6 +1429,22 @@ export class PostgresRepositoryStore implements RepositoryStore {
       input.githubPrTaskOwnerUserId !== undefined
         ? normalizeUserId(input.githubPrTaskOwnerUserId)
         : current.githubPrTaskOwnerUserId ?? null;
+    const nextHarnessWhatExists =
+      input.harnessWhatExists !== undefined ? normalizeRepositoryHarnessValue(input.harnessWhatExists) : current.harnessWhatExists ?? null;
+    const nextHarnessAllowedActions =
+      input.harnessAllowedActions !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessAllowedActions)
+        : current.harnessAllowedActions ?? null;
+    const nextHarnessHowToWork =
+      input.harnessHowToWork !== undefined ? normalizeRepositoryHarnessValue(input.harnessHowToWork) : current.harnessHowToWork ?? null;
+    const nextHarnessDefinitionOfDone =
+      input.harnessDefinitionOfDone !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessDefinitionOfDone)
+        : current.harnessDefinitionOfDone ?? null;
+    const nextHarnessEvidenceExpectations =
+      input.harnessEvidenceExpectations !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessEvidenceExpectations)
+        : current.harnessEvidenceExpectations ?? null;
     const nextGithubPrRequireBotMention =
       input.githubPrRequireBotMention !== undefined ? input.githubPrRequireBotMention === true : current.githubPrRequireBotMention === true;
     const nextGithubPrAutoArchiveOnMerge =
@@ -1383,6 +1490,11 @@ export class PostgresRepositoryStore implements RepositoryStore {
       githubPrFeedbackInstructions: nextGithubPrFeedbackInstructions,
       githubPrReviewInstructions: nextGithubPrReviewInstructions,
       githubPrTaskOwnerUserId: nextGithubPrTaskOwnerUserId,
+      harnessWhatExists: nextHarnessWhatExists,
+      harnessAllowedActions: nextHarnessAllowedActions,
+      harnessHowToWork: nextHarnessHowToWork,
+      harnessDefinitionOfDone: nextHarnessDefinitionOfDone,
+      harnessEvidenceExpectations: nextHarnessEvidenceExpectations,
       updatedAt: nowIso()
     };
 
@@ -1412,11 +1524,16 @@ export class PostgresRepositoryStore implements RepositoryStore {
             github_pr_feedback_instructions = $17,
             github_pr_review_instructions = $18,
             github_pr_task_owner_user_id = $19,
-            webhook_last_attempt_at = $20,
-            webhook_last_status = $21,
-            webhook_last_error = $22,
-            created_at = $23,
-            updated_at = $24
+            harness_what_exists = $20,
+            harness_allowed_actions = $21,
+            harness_how_to_work = $22,
+            harness_definition_of_done = $23,
+            harness_evidence_expectations = $24,
+            webhook_last_attempt_at = $25,
+            webhook_last_status = $26,
+            webhook_last_error = $27,
+            created_at = $28,
+            updated_at = $29
           WHERE id = $1
         `,
         [
@@ -1439,6 +1556,11 @@ export class PostgresRepositoryStore implements RepositoryStore {
           next.githubPrFeedbackInstructions,
           next.githubPrReviewInstructions,
           next.githubPrTaskOwnerUserId,
+          next.harnessWhatExists,
+          next.harnessAllowedActions,
+          next.harnessHowToWork,
+          next.harnessDefinitionOfDone,
+          next.harnessEvidenceExpectations,
           next.webhookLastAttemptAt,
           next.webhookLastStatus,
           next.webhookLastError,

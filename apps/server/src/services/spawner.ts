@@ -19,6 +19,7 @@ import {
   type PermissionScope,
   type NormalizedAgentEvent,
   type McpServerConfig,
+  type Repository,
   type Task,
   type TaskChangeProposal,
   type TaskExecutionInput,
@@ -93,6 +94,8 @@ const AGENTSWARM_RUNTIME_MCP_ENDPOINT_ENV = "AGENTSWARM_MCP_ENDPOINT";
 const AGENTSWARM_RUNTIME_MCP_ENDPOINTS_ENV = "AGENTSWARM_MCP_ENDPOINTS";
 const AGENTSWARM_RUNTIME_MCP_TOKEN_ENV = "AGENTSWARM_MCP_TOKEN";
 const AGENTSWARM_RUNTIME_MCP_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const AGENTSWARM_RUNTIME_DIRNAME = ".agentswarm-runtime";
+const AGENTSWARM_RUNTIME_HARNESS_FILE_NAME = "harness.md";
 const AGENTSWARM_RUNTIME_MCP_SCOPES: PermissionScope[] = [
   "repo:list",
   "repo:read",
@@ -199,6 +202,7 @@ interface RuntimeManifest {
   resultJsonPath: string;
   rawEventsJsonlPath: string;
   providerConfigPath: string;
+  harnessFilePath?: string | null;
 }
 
 interface RuntimeResultPayload {
@@ -302,7 +306,10 @@ export class SpawnerService {
     private readonly taskStore: TaskStore,
     private readonly settingsStore: SettingsStore,
     private readonly userStore: UserStore,
-    private readonly repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries" | "getRepositoryMcpServers">,
+    private readonly repositoryStore: Pick<
+      RepositoryStore,
+      "getRepositoryRuntimeEnvEntries" | "getRepositoryMcpServers" | "getRepository"
+    >,
     private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore(),
     private readonly personalAccessTokenStore?: PersonalAccessTokenStore
   ) {}
@@ -1312,6 +1319,53 @@ export class SpawnerService {
   private async stripEphemeralWorkspaceFiles(workspacePath: string): Promise<void> {
     await rm(path.join(workspacePath, ".agentswarm-runtime"), { recursive: true, force: true }).catch(() => undefined);
     await rm(path.join(workspacePath, LINKED_WORKSPACE_DIRNAME), { recursive: true, force: true }).catch(() => undefined);
+  }
+
+  private resolveRuntimeHarnessFilePath(workspacePath: string): string {
+    return path.join(workspacePath, AGENTSWARM_RUNTIME_DIRNAME, AGENTSWARM_RUNTIME_HARNESS_FILE_NAME);
+  }
+
+  private normalizeRepositoryHarnessSection(value: string | null | undefined): string | null {
+    const normalized = (value ?? "").trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private buildRepositoryHarnessMarkdown(repository: Repository | null): string | null {
+    const sections: Array<{ heading: string; content: string | null }> = [
+      { heading: "What exists?", content: this.normalizeRepositoryHarnessSection(repository?.harnessWhatExists) },
+      { heading: "What is allowed?", content: this.normalizeRepositoryHarnessSection(repository?.harnessAllowedActions) },
+      { heading: "How should you work?", content: this.normalizeRepositoryHarnessSection(repository?.harnessHowToWork) },
+      {
+        heading: "How do you know you are done?",
+        content: this.normalizeRepositoryHarnessSection(repository?.harnessDefinitionOfDone)
+      },
+      { heading: "How do you prove it?", content: this.normalizeRepositoryHarnessSection(repository?.harnessEvidenceExpectations) }
+    ];
+
+    const populatedSections = sections.filter((section) => section.content);
+    if (populatedSections.length === 0) {
+      return null;
+    }
+
+    const lines: string[] = ["# Repository Harness", ""];
+    for (const section of populatedSections) {
+      lines.push(`## ${section.heading}`, "", section.content!, "");
+    }
+
+    return `${lines.join("\n").trim()}\n`;
+  }
+
+  private async syncWorkspaceRuntimeHarnessFile(workspacePath: string, harnessMarkdown: string | null): Promise<string | null> {
+    const harnessFilePath = this.resolveRuntimeHarnessFilePath(workspacePath);
+    if (!harnessMarkdown) {
+      await rm(harnessFilePath, { force: true }).catch(() => undefined);
+      await rm(path.dirname(harnessFilePath), { force: true }).catch(() => undefined);
+      return null;
+    }
+
+    await mkdir(path.dirname(harnessFilePath), { recursive: true });
+    await writeFile(harnessFilePath, harnessMarkdown, "utf8");
+    return harnessFilePath;
   }
 
   private async loadPostflightConfig(workspacePath: string): Promise<PostflightConfig | null> {
@@ -5338,10 +5392,11 @@ export class SpawnerService {
 
   async runTask(task: Task, action: TaskAction, input?: TaskExecutionInput | string, promptMessageId: string | null = null): Promise<void> {
     this.cancelRequestedTaskIds.delete(task.id);
-    const [settings, runtimeCredentialsRaw, repositoryRuntimeEnvEntries, responsePreferenceUser] = await Promise.all([
+    const [settings, runtimeCredentialsRaw, repositoryRuntimeEnvEntries, repository, responsePreferenceUser] = await Promise.all([
       this.settingsStore.getSettings(),
       this.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto"),
       this.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
+      this.repositoryStore.getRepository(task.repoId),
       task.ownerUserId ? this.userStore.getAuthSessionUser(task.ownerUserId) : Promise.resolve(null)
     ]);
     const gitIdentity = resolveTaskGitCommitIdentity(settings, {
@@ -5436,6 +5491,8 @@ export class SpawnerService {
           absolutePath
         };
       });
+      const repositoryHarnessMarkdown = this.buildRepositoryHarnessMarkdown(repository);
+      const harnessFilePath = repositoryHarnessMarkdown ? this.resolveRuntimeHarnessFilePath(workspace.workspacePath) : null;
       const manifest: RuntimeManifest = {
         taskId: task.id,
         provider: task.provider,
@@ -5461,7 +5518,8 @@ export class SpawnerService {
         resultMarkdownPath,
         resultJsonPath,
         rawEventsJsonlPath,
-        providerConfigPath
+        providerConfigPath,
+        harnessFilePath
       };
       await appendRunLog(`Spawner: preparing ${task.provider} runtime image (${action}).`);
       await this.ensureRuntimeImage(task.provider);
@@ -5476,6 +5534,7 @@ export class SpawnerService {
       });
       await appendRunLog(`Spawner: runtime payload files ready at ${payloadDir}.`);
       this.ensureTaskNotCancelled(task.id);
+      await this.syncWorkspaceRuntimeHarnessFile(workspace.workspacePath, null);
 
       if (action === "build") {
         await this.ensureWorkspaceGitHooks(workspace.workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
@@ -5517,6 +5576,10 @@ export class SpawnerService {
           changeProposalCheckpointRef: checkpointRef,
           changeProposalUntrackedPaths
         });
+      }
+      const runtimeHarnessFilePath = await this.syncWorkspaceRuntimeHarnessFile(workspace.workspacePath, repositoryHarnessMarkdown);
+      if (runtimeHarnessFilePath) {
+        await appendRunLog(`Spawner: runtime harness guidance available at ${runtimeHarnessFilePath}.`);
       }
 
       const containerName = `agentswarm-task-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;

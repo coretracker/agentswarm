@@ -110,4 +110,39 @@ describe("RedisRepositoryStore MCP servers", () => {
       }
     ]);
   });
+
+  it("persists repository harness guidance and normalizes empty updates to null", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const created = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git",
+      harnessWhatExists: "  apps/server and apps/web  ",
+      harnessAllowedActions: "Only edit TypeScript and docs.",
+      harnessHowToWork: "Use harness scripts first.",
+      harnessDefinitionOfDone: "check.sh and test.sh pass.",
+      harnessEvidenceExpectations: "Include commands and outcomes."
+    });
+
+    assert.equal(created.harnessWhatExists, "apps/server and apps/web");
+    assert.equal(created.harnessAllowedActions, "Only edit TypeScript and docs.");
+    assert.equal(created.harnessHowToWork, "Use harness scripts first.");
+    assert.equal(created.harnessDefinitionOfDone, "check.sh and test.sh pass.");
+    assert.equal(created.harnessEvidenceExpectations, "Include commands and outcomes.");
+
+    const updated = await store.updateRepository(created.id, {
+      harnessAllowedActions: "   ",
+      harnessHowToWork: null,
+      harnessDefinitionOfDone: "  Run targeted tests and pr-ready.sh. "
+    });
+
+    assert.equal(updated?.harnessWhatExists, "apps/server and apps/web");
+    assert.equal(updated?.harnessAllowedActions, null);
+    assert.equal(updated?.harnessHowToWork, null);
+    assert.equal(updated?.harnessDefinitionOfDone, "Run targeted tests and pr-ready.sh.");
+    assert.equal(updated?.harnessEvidenceExpectations, "Include commands and outcomes.");
+  });
 });

@@ -465,6 +465,11 @@ export interface Repository {
   githubPrFeedbackInstructions?: string | null;
   githubPrReviewInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
   webhookLastAttemptAt: string | null;
   webhookLastStatus: "success" | "failed" | null;
   webhookLastError: string | null;
@@ -901,6 +906,11 @@ export interface CreateRepositoryInput {
   githubPrFeedbackInstructions?: string | null;
   githubPrReviewInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
 }
 
 export interface UpdateRepositoryInput {
@@ -924,6 +934,11 @@ export interface UpdateRepositoryInput {
   githubPrFeedbackInstructions?: string | null;
   githubPrReviewInstructions?: string | null;
   githubPrTaskOwnerUserId?: string | null;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
 }
 
 export interface CreateTaskInput {
