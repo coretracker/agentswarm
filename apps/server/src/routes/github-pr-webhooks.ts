@@ -13,6 +13,7 @@ import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import { beginTaskStart } from "../lib/task-start-orchestrator.js";
+import { env } from "../config/env.js";
 
 type RawBodyRequest = FastifyRequest & { rawBody?: string };
 
@@ -453,6 +454,75 @@ const formatNewTaskTitle = (feedback: GitHubPrFeedback): string =>
 const formatNewIssueTaskTitle = (feedback: GitHubIssueFeedback): string =>
   feedback.issueTitle?.trim() || `GitHub issue #${feedback.issueNumber} feedback from @${feedback.author}`;
 
+const GITHUB_API_BASE_URL = "https://api.github.com";
+const GITHUB_USER_AGENT = "AgentSwarm GitHub PR webhook";
+const GITHUB_TASK_CREATED_COMMENT_MARKER_PREFIX = "<!-- agentswarm-task-created:";
+
+const buildTaskUrl = (taskId: string): string => `${env.CORS_ORIGIN.replace(/\/+$/, "")}/tasks/${encodeURIComponent(taskId)}`;
+
+const buildTaskCreatedCommentBody = (taskId: string): string => {
+  const taskUrl = buildTaskUrl(taskId);
+  return [
+    "🤖 A new task has been created and will start working on this shortly.",
+    "",
+    `Task: ${taskUrl}`,
+    "",
+    "I’ll post progress updates here as work continues.",
+    "",
+    `${GITHUB_TASK_CREATED_COMMENT_MARKER_PREFIX}${taskId} -->`
+  ].join("\n");
+};
+
+const postGitHubTaskCreatedComment = async (input: {
+  feedback: GitHubFeedback;
+  taskId: string;
+  githubToken: string | null | undefined;
+}): Promise<boolean> => {
+  const githubToken = input.githubToken?.trim();
+  if (!githubToken || !input.feedback.repositoryFullName) {
+    return false;
+  }
+
+  const issueNumber = input.feedback.target === "pr" ? input.feedback.prNumber : input.feedback.issueNumber;
+  const commentsUrl = `${GITHUB_API_BASE_URL}/repos/${input.feedback.repositoryFullName}/issues/${issueNumber}/comments`;
+  const body = buildTaskCreatedCommentBody(input.taskId);
+  const marker = `${GITHUB_TASK_CREATED_COMMENT_MARKER_PREFIX}${input.taskId}`;
+  const taskUrl = buildTaskUrl(input.taskId);
+  const headers = {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${githubToken}`,
+    "User-Agent": GITHUB_USER_AGENT
+  };
+
+  const commentsResponse = await fetch(`${commentsUrl}?per_page=100`, { headers });
+  if (!commentsResponse.ok) {
+    return false;
+  }
+  const commentsPayload: unknown = await commentsResponse.json();
+  if (
+    Array.isArray(commentsPayload) &&
+    commentsPayload.some((comment) => {
+      if (!isRecord(comment)) {
+        return false;
+      }
+      const commentBody = stringValue(comment, "body") ?? "";
+      return commentBody.includes(marker) || commentBody.includes(`Task: ${taskUrl}`);
+    })
+  ) {
+    return false;
+  }
+
+  const createResponse = await fetch(commentsUrl, {
+    method: "POST",
+    headers: {
+      ...headers,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ body })
+  });
+  return createResponse.ok;
+};
+
 export const registerGitHubPrWebhookRoutes = (
   app: FastifyInstance,
   deps: {
@@ -624,6 +694,13 @@ export const registerGitHubPrWebhookRoutes = (
           return reply.status(startResult.statusCode).send({ message: startResult.message });
         }
 
+        const credentials = await deps.settingsStore.getRuntimeCredentials(null, "auto").catch(() => ({ githubToken: null }));
+        await postGitHubTaskCreatedComment({
+          feedback,
+          taskId: openedTask.id,
+          githubToken: credentials.githubToken
+        }).catch(() => false);
+
         return reply.status(202).send({ queued: true, taskId: openedTask.id, messageId: message.id, createdTask: true });
       }
 
@@ -742,6 +819,12 @@ export const registerGitHubPrWebhookRoutes = (
       if (!startResult.ok) {
         return reply.status(startResult.statusCode).send({ message: startResult.message });
       }
+
+      await postGitHubTaskCreatedComment({
+        feedback,
+        taskId: openedTask.id,
+        githubToken: credentials.githubToken
+      }).catch(() => false);
 
       return reply.status(202).send({ queued: true, taskId: openedTask.id, messageId: message.id, createdTask: true });
     }
