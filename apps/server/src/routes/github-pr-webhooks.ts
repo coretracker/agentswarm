@@ -612,6 +612,7 @@ export const registerGitHubPrWebhookRoutes = (
       feedback.target === "issue" &&
       ignoredBotLogin !== null &&
       feedback.assigneeLogins.some((login) => normalizeGitHubLogin(login) === ignoredBotLogin);
+    const issueAssignmentSatisfiesMentionGate = issueAssignedToBot && feedback.kind === "issue";
     if (feedback.target === "issue" && feedback.body.trim().length === 0 && !issueAssignedToBot) {
       return reply.status(202).send({ queued: false, reason: "ignored_event" });
     }
@@ -620,7 +621,7 @@ export const registerGitHubPrWebhookRoutes = (
       ignoredBotLogin &&
       !(feedback.target === "pr" && feedback.kind === "review_requested") &&
       !mentionsGitHubLogin(feedback.body, ignoredBotLogin) &&
-      !issueAssignedToBot
+      !issueAssignmentSatisfiesMentionGate
     ) {
       return reply.status(202).send({ queued: false, reason: "missing_bot_mention" });
     }
