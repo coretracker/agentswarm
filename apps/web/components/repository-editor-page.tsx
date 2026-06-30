@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type {
@@ -21,6 +22,8 @@ import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { ApiError, api } from "../src/api/client";
 import { trackEvent } from "../src/utils/analytics";
 import { buildApiUrl } from "../src/lib/public-url";
+import { isDarkAppTheme } from "../src/theme/antd-theme";
+import { useThemeMode } from "./theme-provider";
 
 interface RepositoryEditorPageProps {
   mode: "create" | "edit";
@@ -63,6 +66,57 @@ type RepositoryFormValues = {
   harnessDefinitionOfDone: string;
   harnessEvidenceExpectations: string;
 };
+
+const MonacoEditor = dynamic(
+  () => import("@monaco-editor/react").then((mod) => mod.Editor),
+  { ssr: false }
+);
+
+interface HarnessTextEditorProps {
+  value?: string;
+  onChange?: (value: string) => void;
+  ariaLabel: string;
+}
+
+function HarnessTextEditor({ value = "", onChange, ariaLabel }: HarnessTextEditorProps) {
+  const { mode } = useThemeMode();
+  const darkTheme = isDarkAppTheme(mode);
+
+  return (
+    <div className="repository-harness-monaco-editor">
+      <MonacoEditor
+        height="180px"
+        theme={darkTheme ? "vs-dark" : "vs"}
+        language="markdown"
+        value={value}
+        onChange={(nextValue) => onChange?.(nextValue ?? "")}
+        loading={<div className="repository-harness-monaco-editor-loading">Loading editor...</div>}
+        options={{
+          ariaLabel,
+          automaticLayout: true,
+          folding: false,
+          fontSize: 13,
+          glyphMargin: false,
+          hideCursorInOverviewRuler: true,
+          lineDecorationsWidth: 0,
+          lineNumbers: "off",
+          lineNumbersMinChars: 0,
+          minimap: { enabled: false },
+          overviewRulerLanes: 0,
+          padding: { top: 10, bottom: 10 },
+          renderLineHighlight: "none",
+          scrollBeyondLastLine: false,
+          scrollbar: {
+            alwaysConsumeMouseWheel: false,
+            horizontalScrollbarSize: 8,
+            verticalScrollbarSize: 8
+          },
+          wordWrap: "on"
+        }}
+      />
+    </div>
+  );
+}
 
 const emptyValues = (): RepositoryFormValues => ({
   name: "",
@@ -1257,7 +1311,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 extra="Repository understanding: apps, packages, docs, important folders, generated files, and runtime services."
                 rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
               >
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                <HarnessTextEditor ariaLabel="What exists harness guidance" />
               </Form.Item>
               <Form.Item
                 name="harnessAllowedActions"
@@ -1265,7 +1319,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 extra="Constraints and policies: what agents may edit, what is protected, secret handling, network/Docker limits, and PR rules."
                 rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
               >
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                <HarnessTextEditor ariaLabel="Allowed actions harness guidance" />
               </Form.Item>
               <Form.Item
                 name="harnessHowToWork"
@@ -1273,7 +1327,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 extra="Process and decision-making: planning expectations, approval points, branch flow, preferred commands, and when to ask questions."
                 rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
               >
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                <HarnessTextEditor ariaLabel="How to work harness guidance" />
               </Form.Item>
               <Form.Item
                 name="harnessDefinitionOfDone"
@@ -1281,7 +1335,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 extra="Validation and quality gates: required checks, tests, builds, and review criteria."
                 rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
               >
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                <HarnessTextEditor ariaLabel="Definition of done harness guidance" />
               </Form.Item>
               <Form.Item
                 name="harnessEvidenceExpectations"
@@ -1289,7 +1343,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 extra="Expected proof: command outcomes, links, screenshots, changed docs, and skipped-check explanations."
                 rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
               >
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                <HarnessTextEditor ariaLabel="Evidence expectations harness guidance" />
               </Form.Item>
             </Flex>
           </Card>
