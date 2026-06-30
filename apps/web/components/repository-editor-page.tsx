@@ -580,7 +580,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             </Space>
           </Flex>
 
-          <Card bordered={false}>
+          <Card bordered={false} title="General">
             <Form.Item name="name" label="Name" rules={[{ required: true }]}>
               <Input />
             </Form.Item>
@@ -590,6 +590,175 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             <Form.Item name="defaultBranch" label="Default Branch" rules={[{ required: true }]}>
               <Input />
             </Form.Item>
+          </Card>
+          <Card bordered={false} title="Github Integration">
+            <Flex vertical gap={12}>
+              {mode === "edit" && editingRepository ? (
+                <>
+                  <Form.Item label="Payload URL">
+                    <Input
+                      readOnly
+                      value={buildApiUrl(`/github/webhooks/${editingRepository.id}`)}
+                      addonAfter={
+                        <Button
+                          type="link"
+                          size="small"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(buildApiUrl(`/github/webhooks/${editingRepository.id}`));
+                            messageApi.success("Webhook URL copied");
+                          }}
+                        >
+                          Copy
+                        </Button>
+                      }
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    name="githubPrWebhookSecret"
+                    label={
+                      editingRepository.githubPrWebhookSecretConfigured
+                        ? "Github Webhook Secret (leave blank to keep existing)"
+                        : "Github Webhook Secret"
+                    }
+                  >
+                    <Input.Password />
+                  </Form.Item>
+                  {editingRepository.githubPrWebhookSecretConfigured ? (
+                    <Form.Item name="clearGithubPrWebhookSecret" valuePropName="checked">
+                      <Checkbox>Clear stored Github webhook secret</Checkbox>
+                    </Form.Item>
+                  ) : null}
+                  <Form.Item
+                    name="githubIntegrationBotLogin"
+                    label="Ignored Github Bot User"
+                    tooltip="Comments from this GitHub login are ignored by the PR feedback webhook to prevent reply loops."
+                    rules={[{ max: 255, message: "Login must be 255 characters or fewer." }]}
+                  >
+                    <Input placeholder="agentswarm-bot" addonBefore="@" autoComplete="off" />
+                  </Form.Item>
+                  <Form.Item
+                    name="githubPrAllowedUsers"
+                    label="Allowed GitHub Users"
+                    extra="Optional. When set, only feedback from these GitHub users is processed. Enter one login per line or separate logins with commas."
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder={"alice\nbob"} />
+                  </Form.Item>
+                  <Form.Item
+                    name="githubPrRequireBotMention"
+                    label="Only Process Bot Mentions"
+                    valuePropName="checked"
+                    extra="When enabled and an ignored Github bot user is configured, PR feedback is ignored unless the body mentions that bot user."
+                  >
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item
+                    name="githubPrAutoArchiveOnMerge"
+                    label="Archive Task When PR Merges"
+                    valuePropName="checked"
+                    extra="When enabled, a GitHub pull request merged webhook archives the linked task."
+                  >
+                    <Switch />
+                  </Form.Item>
+                  <Form.Item
+                    name="githubPrTaskOwnerUserId"
+                    label="GitHub-Created Task Owner"
+                    extra={
+                      usersLoadError
+                        ? `Users could not be loaded: ${usersLoadError}`
+                        : "Required for creating a new task from unlinked GitHub issue, pull request feedback, or pull request review request events."
+                    }
+                  >
+                    <Select
+                      allowClear
+                      showSearch
+                      disabled={Boolean(usersLoadError)}
+                      placeholder="Select task owner"
+                      optionFilterProp="label"
+                      options={users.map((user) => ({
+                        value: user.id,
+                        label: `${user.name} <${user.email}>${user.active ? "" : " (inactive)"}`,
+                        disabled: !user.active
+                      }))}
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    name="githubPrInitialInstructions"
+                    label="Initial Agent Instructions"
+                    extra={`Used when GitHub creates a new AgentSwarm task. ${GITHUB_TEMPLATE_MARKER_HELP}`}
+                    rules={[{ max: 8000, message: "Instructions must be 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 8, maxRows: 16 }} />
+                  </Form.Item>
+                  <Button
+                    onClick={() => {
+                      form.setFieldValue("githubPrInitialInstructions", DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS);
+                    }}
+                  >
+                    Reset initial instructions
+                  </Button>
+                  <Form.Item
+                    name="githubPrFeedbackInstructions"
+                    label="Agent Feedback Instructions"
+                    extra={`Used when GitHub adds feedback to an existing linked task. ${GITHUB_TEMPLATE_MARKER_HELP}`}
+                    rules={[{ max: 8000, message: "Instructions must be 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 8, maxRows: 16 }} />
+                  </Form.Item>
+                  <Button
+                    onClick={() => {
+                      form.setFieldValue("githubPrFeedbackInstructions", DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS);
+                    }}
+                  >
+                    Reset feedback instructions
+                  </Button>
+                  <Form.Item
+                    name="githubPrReviewInstructions"
+                    label="Review Agent Instructions"
+                    extra={`Used when GitHub requests a pull request review from the integration bot. ${GITHUB_TEMPLATE_MARKER_HELP}`}
+                    rules={[{ max: 8000, message: "Instructions must be 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 8, maxRows: 16 }} />
+                  </Form.Item>
+                  <Button
+                    onClick={() => {
+                      form.setFieldValue("githubPrReviewInstructions", DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS);
+                    }}
+                  >
+                    Reset review instructions
+                  </Button>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="Pull request flow"
+                    description={
+                      <Space direction="vertical" size={4}>
+                        <Typography.Text>
+                          1. Keep GitHub MCP available to agents so they can create pull requests.
+                        </Typography.Text>
+                        <Typography.Text>
+                          2. AgentSwarm MCP is connected to agents automatically. After creating a PR, agents call{" "}
+                          <Typography.Text code>agentswarm_link_pull_request</Typography.Text> with:
+                        </Typography.Text>
+                        <Typography.Text code>{`{ "taskId": "task_id", "prNumber": 123 }`}</Typography.Text>
+                        <Typography.Text>
+                          3. In GitHub, create a webhook with content type <Typography.Text code>application/json</Typography.Text>, this payload URL,
+                          this secret, and events: pull requests, issue comments, pull request review comments, pull request reviews.
+                        </Typography.Text>
+                      </Space>
+                    }
+                  />
+                </>
+              ) : (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Save the repository first"
+                  description="After creation, AgentSwarm will show the repository-scoped Github webhook URL and webhook secret setup."
+                />
+              )}
+            </Flex>
+          </Card>
+          <Card bordered={false} title="Environment">
             <Form.List
               name="envVars"
               rules={[
@@ -841,6 +1010,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 </Flex>
               )}
             </Form.List>
+          </Card>
+          <Card bordered={false} title="MCP">
             <Form.List
               name="mcpServers"
               rules={[
@@ -961,6 +1132,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 </Flex>
               )}
             </Form.List>
+          </Card>
+          <Card bordered={false} title="Webhooks">
             <Form.Item name="webhookEnabled" label="Enable Webhooks" valuePropName="checked">
               <Switch />
             </Form.Item>
@@ -1019,181 +1192,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 <Checkbox>Clear stored webhook secret</Checkbox>
               </Form.Item>
             ) : null}
-          </Card>
-          <Card bordered={false}>
-            <Flex vertical gap={12}>
-              <Flex vertical gap={4}>
-                <Typography.Title level={4} style={{ margin: 0 }}>
-                  Github Integration
-                </Typography.Title>
-                <Typography.Text type="secondary">
-                  Connect GitHub pull request activity with linked AgentSwarm tasks.
-                </Typography.Text>
-              </Flex>
-              {mode === "edit" && editingRepository ? (
-                <>
-                  <Form.Item label="Payload URL">
-                    <Input
-                      readOnly
-                      value={buildApiUrl(`/github/webhooks/${editingRepository.id}`)}
-                      addonAfter={
-                        <Button
-                          type="link"
-                          size="small"
-                          onClick={() => {
-                            void navigator.clipboard.writeText(buildApiUrl(`/github/webhooks/${editingRepository.id}`));
-                            messageApi.success("Webhook URL copied");
-                          }}
-                        >
-                          Copy
-                        </Button>
-                      }
-                    />
-                  </Form.Item>
-                  <Form.Item
-                    name="githubPrWebhookSecret"
-                    label={
-                      editingRepository.githubPrWebhookSecretConfigured
-                        ? "Github Webhook Secret (leave blank to keep existing)"
-                        : "Github Webhook Secret"
-                    }
-                  >
-                    <Input.Password />
-                  </Form.Item>
-                  {editingRepository.githubPrWebhookSecretConfigured ? (
-                    <Form.Item name="clearGithubPrWebhookSecret" valuePropName="checked">
-                      <Checkbox>Clear stored Github webhook secret</Checkbox>
-                    </Form.Item>
-                  ) : null}
-                  <Form.Item
-                    name="githubIntegrationBotLogin"
-                    label="Ignored Github Bot User"
-                    tooltip="Comments from this GitHub login are ignored by the PR feedback webhook to prevent reply loops."
-                    rules={[{ max: 255, message: "Login must be 255 characters or fewer." }]}
-                  >
-                    <Input placeholder="agentswarm-bot" addonBefore="@" autoComplete="off" />
-                  </Form.Item>
-                  <Form.Item
-                    name="githubPrAllowedUsers"
-                    label="Allowed GitHub Users"
-                    extra="Optional. When set, only feedback from these GitHub users is processed. Enter one login per line or separate logins with commas."
-                  >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder={"alice\nbob"} />
-                  </Form.Item>
-                  <Form.Item
-                    name="githubPrRequireBotMention"
-                    label="Only Process Bot Mentions"
-                    valuePropName="checked"
-                    extra="When enabled and an ignored Github bot user is configured, PR feedback is ignored unless the body mentions that bot user."
-                  >
-                    <Switch />
-                  </Form.Item>
-                  <Form.Item
-                    name="githubPrAutoArchiveOnMerge"
-                    label="Archive Task When PR Merges"
-                    valuePropName="checked"
-                    extra="When enabled, a GitHub pull request merged webhook archives the linked task."
-                  >
-                    <Switch />
-                  </Form.Item>
-                  <Form.Item
-                    name="githubPrTaskOwnerUserId"
-                    label="GitHub-Created Task Owner"
-                    extra={
-                      usersLoadError
-                        ? `Users could not be loaded: ${usersLoadError}`
-                        : "Required for creating a new task from unlinked GitHub issue, pull request feedback, or pull request review request events."
-                    }
-                  >
-                    <Select
-                      allowClear
-                      showSearch
-                      disabled={Boolean(usersLoadError)}
-                      placeholder="Select task owner"
-                      optionFilterProp="label"
-                      options={users.map((user) => ({
-                        value: user.id,
-                        label: `${user.name} <${user.email}>${user.active ? "" : " (inactive)"}`,
-                        disabled: !user.active
-                      }))}
-                    />
-                  </Form.Item>
-                  <Form.Item
-                    name="githubPrInitialInstructions"
-                    label="Initial Agent Instructions"
-                    extra={`Used when GitHub creates a new AgentSwarm task. ${GITHUB_TEMPLATE_MARKER_HELP}`}
-                    rules={[{ max: 8000, message: "Instructions must be 8000 characters or fewer." }]}
-                  >
-                    <Input.TextArea autoSize={{ minRows: 8, maxRows: 16 }} />
-                  </Form.Item>
-                  <Button
-                    onClick={() => {
-                      form.setFieldValue("githubPrInitialInstructions", DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS);
-                    }}
-                  >
-                    Reset initial instructions
-                  </Button>
-                  <Form.Item
-                    name="githubPrFeedbackInstructions"
-                    label="Agent Feedback Instructions"
-                    extra={`Used when GitHub adds feedback to an existing linked task. ${GITHUB_TEMPLATE_MARKER_HELP}`}
-                    rules={[{ max: 8000, message: "Instructions must be 8000 characters or fewer." }]}
-                  >
-                    <Input.TextArea autoSize={{ minRows: 8, maxRows: 16 }} />
-                  </Form.Item>
-                  <Button
-                    onClick={() => {
-                      form.setFieldValue("githubPrFeedbackInstructions", DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS);
-                    }}
-                  >
-                    Reset feedback instructions
-                  </Button>
-                  <Form.Item
-                    name="githubPrReviewInstructions"
-                    label="Review Agent Instructions"
-                    extra={`Used when GitHub requests a pull request review from the integration bot. ${GITHUB_TEMPLATE_MARKER_HELP}`}
-                    rules={[{ max: 8000, message: "Instructions must be 8000 characters or fewer." }]}
-                  >
-                    <Input.TextArea autoSize={{ minRows: 8, maxRows: 16 }} />
-                  </Form.Item>
-                  <Button
-                    onClick={() => {
-                      form.setFieldValue("githubPrReviewInstructions", DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS);
-                    }}
-                  >
-                    Reset review instructions
-                  </Button>
-                  <Alert
-                    type="info"
-                    showIcon
-                    message="Pull request flow"
-                    description={
-                      <Space direction="vertical" size={4}>
-                        <Typography.Text>
-                          1. Keep GitHub MCP available to agents so they can create pull requests.
-                        </Typography.Text>
-                        <Typography.Text>
-                          2. AgentSwarm MCP is connected to agents automatically. After creating a PR, agents call{" "}
-                          <Typography.Text code>agentswarm_link_pull_request</Typography.Text> with:
-                        </Typography.Text>
-                        <Typography.Text code>{`{ "taskId": "task_id", "prNumber": 123 }`}</Typography.Text>
-                        <Typography.Text>
-                          3. In GitHub, create a webhook with content type <Typography.Text code>application/json</Typography.Text>, this payload URL,
-                          this secret, and events: pull requests, issue comments, pull request review comments, pull request reviews.
-                        </Typography.Text>
-                      </Space>
-                    }
-                  />
-                </>
-              ) : (
-                <Alert
-                  type="info"
-                  showIcon
-                  message="Save the repository first"
-                  description="After creation, AgentSwarm will show the repository-scoped Github webhook URL and webhook secret setup."
-                />
-              )}
-            </Flex>
           </Card>
         </Flex>
       </Form>
