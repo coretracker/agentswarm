@@ -7,7 +7,8 @@ Bring a clean checkout to a running app with one predictable flow.
 - Docker with Docker Compose.
 - Bash shell.
 - Optional for Docker-only startup: Node 20+ and npm.
-- Required for local check/test/pr-ready flows: Node 20+ and npm.
+- Required for Dockerized CI: Docker.
+- Required for host-local lint/test flows: Node 20+ and npm.
 - Required when installing dependencies locally: `python3` (needed by `node-gyp` for native modules such as `node-pty`).
 
 ## Remote Build Environment
@@ -53,7 +54,7 @@ HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
 HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
 ```
 
-If you plan to run `./scripts/harness/check.sh`, `./scripts/harness/test.sh`, or `./scripts/harness/pr-ready.sh`, install dependencies first.
+If you plan to run `npm run ci`, host dependencies are not required. If you plan to run `npm run lint` or `npm test` directly on the host, install dependencies first.
 
 ## 2) Environment Template
 Use `.env.example` as the template.

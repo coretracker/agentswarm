@@ -1,21 +1,20 @@
 # Testing
 
 ## Canonical Test Command
-- `./scripts/harness/test.sh`
+- `npm run ci`
 
-This is the single recommended test entry point for agents and local development.
+This is the recommended verification entry point for agents and local development. It runs dependency install, lint, build, and tests inside a single Node Docker container, removes the container and image when done, and does not start Docker Compose.
 
 ## Test Levels
-The harness separates tests into:
-- Unit: focused logic tests in `apps/server/src/lib` and `apps/web/src/utils`.
-- Integration: server/service tests that touch more app behavior.
-- E2E (browser): Playwright tests in `apps/web/e2e`.
+The root test command runs the server and web workspace test scripts:
+- Server tests: `npm run test -w @agentswarm/server`
+- Web tests: `npm run test -w @agentswarm/web`
 
 ## Scope Selection
-- All tests: `./scripts/harness/test.sh`
-- Unit only: `TEST_SCOPE=unit ./scripts/harness/test.sh`
-- Integration only: `TEST_SCOPE=integration ./scripts/harness/test.sh`
-- Browser E2E only: `TEST_SCOPE=e2e ./scripts/harness/test.sh`
+- All current tests: `npm test`
+- Server only: `npm run test -w @agentswarm/server`
+- Web only: `npm run test -w @agentswarm/web`
+- Legacy scoped harness runner: `TEST_SCOPE=unit|integration|e2e ./scripts/harness/test.sh`
 
 ## UI Test Harness (Playwright)
 Added files:
@@ -32,7 +31,7 @@ Stable selectors used:
 - `data-testid="login-submit-button"`
 
 ## UI Test Prerequisites
-`test.sh` handles most setup automatically for E2E:
+The legacy `test.sh` runner handles most setup automatically for E2E:
 1. Checks app health at `/api/health`.
 2. Starts the app stack via `./scripts/harness/start.sh` if needed.
 3. Installs Chromium headless shell for Playwright unless skipped.
@@ -57,7 +56,7 @@ Artifact locations:
 - `playwright-report/`
 
 ## Deterministic Behavior
-The harness sets stable defaults for repeatable runs:
+The legacy harness runner sets stable defaults for repeatable runs:
 - `CI=1`
 - `NODE_ENV=test`
 - `TZ=UTC`

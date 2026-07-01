@@ -1,15 +1,15 @@
 # Development Commands
 
-## Canonical Agent Harness Commands
+## Harness Commands
 - `./scripts/harness/doctor.sh`: verify tools and script availability.
 - `./scripts/harness/setup.sh`: initialize Docker stack and local runtime folders.
-- `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh`: also install npm dependencies for check/test/pr-ready.
+- `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh`: also install npm dependencies.
 - `./scripts/harness/check-docs.sh`: scan docs for broken internal links, TODO/FIXME counts, and stale review metadata warnings.
 - `./scripts/harness/check-human-gated-flow.sh`: verify active execution plans contain required human-gated flow evidence.
-- `./scripts/harness/check.sh`: run docs checks + human-gated flow checks + boundary checks + lint + build.
+- `./scripts/harness/check.sh`: compatibility wrapper for `npm run ci`.
 - `node ./scripts/harness/boundary-check.mjs`: run architecture boundary checks only.
-- `./scripts/harness/test.sh`: run server + web tests.
-- `./scripts/harness/pr-ready.sh`: run pull request readiness verification.
+- `./scripts/harness/test.sh`: legacy scoped test runner.
+- `./scripts/harness/pr-ready.sh`: compatibility wrapper for `npm run ci`.
 - `./scripts/harness/start.sh`: start dev processes (foreground).
 
 ## Remote Build Mode
@@ -28,19 +28,19 @@
 - `npm run dev`: runs server and web dev processes together.
 - `npm run dev:server`: runs backend only.
 - `npm run dev:web`: runs frontend only.
-- `npm run test`: canonical harness test run (`./scripts/harness/test.sh`).
+- `npm run ci`: runs dependency install, lint, build, and tests inside a single Node Docker container, then removes the container and image.
+- `npm test`: runs server and web tests.
 - `npm run typecheck`: alias to repository type checks (`npm run lint`).
 - `npm run build`: builds shared-types, server, and web.
 - `npm run lint`: TypeScript no-emit checks for server and web.
 
 Notes:
 - `setup.sh` only installs npm dependencies when `HARNESS_INSTALL_NPM_DEPS=1` is set.
-- On clean checkout, install dependencies before running `check.sh`, `test.sh`, or `pr-ready.sh`.
-- `pr-ready.sh` forces dependency installation automatically when `node_modules` is missing.
+- `npm run ci` does not require host `node_modules`; it runs `npm ci --include=dev` inside Docker.
+- `npm run ci` removes its Docker container and image when it exits. Set `CI_DOCKER_KEEP_IMAGE=1` only when deliberately debugging image reuse.
+- On clean checkout, install dependencies before running host-local lint or tests directly.
 - Harness setup installs dependencies with `npm ci --include=dev`.
 - `npm ci` requires `python3` in this repo because `node-pty` may need local native build steps.
-- `check.sh` and `pr-ready.sh` enforce human-gated flow evidence for active execution plans.
-- Set `HARNESS_REQUIRE_ACTIVE_EXEC_PLAN=1` to fail when no active execution plan exists.
 
 ## Workspace Commands
 - Server (`@agentswarm/server`):
@@ -69,14 +69,11 @@ Notes:
 `init` and `rebuild` build the unified agent toolbox image from `agent-runtime/Dockerfile`. Override the tag with `AGENT_RUNTIME_IMAGE` when testing a custom runtime image.
 
 ## CI / Local Parity Notes
-- CI workflow: `.github/workflows/harness-check.yml`.
+- CI workflow: `.github/workflows/lint-and-tests.yml`.
 - CI runs:
-  - `./scripts/harness/doctor.sh` when Docker is available on the runner.
-  - `./scripts/harness/check.sh`.
-  - `./scripts/harness/test.sh`.
-- CI does **not** run `./scripts/harness/pr-ready.sh` because that would duplicate expensive checks already covered by doctor/check/test.
+  - `./scripts/ci.sh`, which runs `npm ci`, lint, build, and tests in `node:22-bookworm`.
 - Local pre-PR flow remains:
-  - `./scripts/harness/pr-ready.sh`
+  - `npm run ci`
 
 ## TODO
 - TODO: Add a canonical root format-check command (`format:check` or `fmt:check`) if/when a formatter is adopted.
