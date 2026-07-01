@@ -859,6 +859,7 @@ export interface HostexecAvailability {
   available: boolean;
   enabled: boolean;
   url: string | null;
+  allowAll: boolean;
   commands: string[];
   message: string;
 }

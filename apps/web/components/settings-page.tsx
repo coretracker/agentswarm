@@ -860,7 +860,11 @@ export function SettingsPage() {
                     <Tag color={hostexecAvailability.available ? "green" : "red"}>{hostexecAvailability.message}</Tag>
                   ) : null}
                 </Space>
-                {hostexecAvailability?.commands.length ? (
+                {hostexecAvailability?.allowAll ? (
+                  <Typography.Text type="secondary">
+                    Daemon allows all valid command names. Repository Host Commands still restrict which shims are mounted.
+                  </Typography.Text>
+                ) : hostexecAvailability?.commands.length ? (
                   <Typography.Text type="secondary">
                     Commands: {hostexecAvailability.commands.join(", ")}
                   </Typography.Text>

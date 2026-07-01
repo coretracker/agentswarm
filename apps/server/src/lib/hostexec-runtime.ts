@@ -19,7 +19,24 @@ export interface HostexecRuntimeConfig {
   message: string | null;
 }
 
-async function fetchHostexecCapabilities(settings: HostexecSettings): Promise<string[]> {
+interface HostexecCapabilities {
+  allowAll: boolean;
+  commands: string[];
+}
+
+function parseHostexecCapabilities(raw: string): HostexecCapabilities {
+  if (!raw.trim()) {
+    return { allowAll: false, commands: [] };
+  }
+  const parsed = JSON.parse(raw) as unknown;
+  const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  return {
+    allowAll: record.allowAll === true,
+    commands: normalizeHostCommands(record.commands)
+  };
+}
+
+async function fetchHostexecCapabilities(settings: HostexecSettings): Promise<HostexecCapabilities> {
   const token =
     settings.bearerTokenEnvVar && process.env[settings.bearerTokenEnvVar]
       ? process.env[settings.bearerTokenEnvVar]
@@ -39,13 +56,7 @@ async function fetchHostexecCapabilities(settings: HostexecSettings): Promise<st
     if (!response.ok) {
       throw new Error(`Hostexec returned HTTP ${response.status}`);
     }
-    const raw = await response.text();
-    if (!raw.trim()) {
-      return [];
-    }
-    const parsed = JSON.parse(raw) as unknown;
-    const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-    return normalizeHostCommands(record.commands);
+    return parseHostexecCapabilities(await response.text());
   } finally {
     clearTimeout(timeout);
   }
@@ -81,9 +92,11 @@ export async function buildHostexecRuntimeConfig(options: {
     };
   }
 
-  const daemonCommands = await fetchHostexecCapabilities(settings);
-  const daemonCommandsByName = new Map(daemonCommands.map((command) => [command.toLowerCase(), command]));
-  const commands = repositoryCommands.filter((command) => daemonCommandsByName.has(command.toLowerCase()));
+  const capabilities = await fetchHostexecCapabilities(settings);
+  const daemonCommandsByName = new Map(capabilities.commands.map((command) => [command.toLowerCase(), command]));
+  const commands = capabilities.allowAll
+    ? repositoryCommands
+    : repositoryCommands.filter((command) => daemonCommandsByName.has(command.toLowerCase()));
   if (commands.length === 0) {
     return {
       enabled: false,

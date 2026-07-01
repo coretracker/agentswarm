@@ -15,6 +15,18 @@ afterEach(() => {
 });
 
 describe("buildHostexecRuntimeConfig", () => {
+  async function withPayloadDir<T>(run: (payloadDir: string) => Promise<T>): Promise<T> {
+    const fixtureRoot = process.env.AGENTSWARM_TEST_FIXTURE_ROOT ?? path.join(process.cwd(), ".tmp", "harness-tests");
+    env.RUNTIME_PAYLOAD_ROOT = path.join(fixtureRoot, "runtime-payloads");
+    const payloadDir = path.join(env.RUNTIME_PAYLOAD_ROOT, `hostexec-runtime-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    await mkdir(payloadDir, { recursive: true });
+    try {
+      return await run(payloadDir);
+    } finally {
+      await rm(payloadDir, { recursive: true, force: true });
+    }
+  }
+
   it("creates read-only shims only for daemon-allowed repository commands", async () => {
     process.env.HOSTEXEC_TOKEN_TEST = "secret-token";
     globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -26,11 +38,7 @@ describe("buildHostexecRuntimeConfig", () => {
       });
     }) as typeof fetch;
 
-    const fixtureRoot = process.env.AGENTSWARM_TEST_FIXTURE_ROOT ?? path.join(process.cwd(), ".tmp", "harness-tests");
-    env.RUNTIME_PAYLOAD_ROOT = path.join(fixtureRoot, "runtime-payloads");
-    const payloadDir = path.join(env.RUNTIME_PAYLOAD_ROOT, `hostexec-runtime-${Date.now()}`);
-    await mkdir(payloadDir, { recursive: true });
-    try {
+    await withPayloadDir(async (payloadDir) => {
       const result = await buildHostexecRuntimeConfig({
         settings: {
           enabled: true,
@@ -61,9 +69,37 @@ describe("buildHostexecRuntimeConfig", () => {
       const shim = await readFile(path.join(payloadDir, "hostexec-bin", "xcodebuild"), "utf8");
       assert.match(shim, /hostexec-proxy\.mjs/);
       assert.match(shim, /xcodebuild/);
-    } finally {
-      await rm(payloadDir, { recursive: true, force: true });
-    }
+    });
+  });
+
+  it("uses repository commands when daemon capabilities allow all commands", async () => {
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      assert.equal(String(input), "http://hostexec.test/capabilities");
+      return new Response(JSON.stringify({ allowAll: true, commands: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    await withPayloadDir(async (payloadDir) => {
+      const result = await buildHostexecRuntimeConfig({
+        settings: {
+          enabled: true,
+          url: "http://hostexec.test",
+          bearerTokenEnvVar: null
+        },
+        repositoryCommands: ["xcodebuild", "security"],
+        payloadDir,
+        taskId: "task-1",
+        repoId: "repo-1",
+        containerWorkspacePath: "/task-workspaces/task-1",
+        hostWorkspacePath: "/host/task-workspaces/task-1"
+      });
+
+      assert.equal(result.enabled, true);
+      assert.deepEqual(result.commands, ["xcodebuild", "security"]);
+      assert.match(await readFile(path.join(payloadDir, "hostexec-bin", "security"), "utf8"), /security/);
+    });
   });
 
   it("skips hostexec when disabled or no repository commands are configured", async () => {

@@ -131,6 +131,7 @@ async function checkHostexecAvailability(settings: HostexecSettings): Promise<Ho
       available: false,
       enabled: normalized.enabled,
       url: normalized.url,
+      allowAll: false,
       commands: [],
       message: "Hostexec is disabled or missing a URL."
     };
@@ -145,6 +146,7 @@ async function checkHostexecAvailability(settings: HostexecSettings): Promise<Ho
       available: false,
       enabled: normalized.enabled,
       url: normalized.url,
+      allowAll: false,
       commands: [],
       message: `Hostexec token env var is not set: ${normalized.bearerTokenEnvVar}`
     };
@@ -164,6 +166,7 @@ async function checkHostexecAvailability(settings: HostexecSettings): Promise<Ho
         available: false,
         enabled: normalized.enabled,
         url: normalized.url,
+        allowAll: false,
         commands: [],
         message: `Hostexec returned HTTP ${response.status}.`
       };
@@ -174,19 +177,26 @@ async function checkHostexecAvailability(settings: HostexecSettings): Promise<Ho
       parsed = JSON.parse(raw) as unknown;
     }
     const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    const allowAll = record.allowAll === true;
     const commands = normalizeHostCommands(record.commands);
     return {
       available: true,
       enabled: normalized.enabled,
       url: normalized.url,
+      allowAll,
       commands,
-      message: commands.length > 0 ? `Hostexec is reachable with ${commands.length} command(s).` : "Hostexec is reachable."
+      message: allowAll
+        ? "Hostexec is reachable and allows all daemon commands."
+        : commands.length > 0
+          ? `Hostexec is reachable with ${commands.length} command(s).`
+          : "Hostexec is reachable."
     };
   } catch (error) {
     return {
       available: false,
       enabled: normalized.enabled,
       url: normalized.url,
+      allowAll: false,
       commands: [],
       message: error instanceof Error ? error.message : "Hostexec availability check failed."
     };

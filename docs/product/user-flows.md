@@ -42,7 +42,7 @@ Notes:
 1. Open `/settings`.
 2. Use `General` to set the default provider, concurrent agents, access roles, and response presets.
 3. Use `Git` to set the GitHub token, Git username, optional commit author identity, and feature branch prefix. Default GitHub PAT HTTPS auth uses `x-access-token`.
-4. Use `Hostexec` to enable a manually started hostexec daemon, set its URL, set the bearer token env var reference, and check availability.
+4. Start the host daemon with `npm run hostexec`, then use `Hostexec` to enable it, set its URL, set the bearer token env var reference, and check availability. The daemon reads `HOSTEXEC_COMMANDS` from `.env`; blank allows all valid command names while repository Host Commands still restrict mounted shims.
 5. Use `Codex` to set the OpenAI API key or Codex `auth.json`, default effort/model, model list, prompt magic settings, and base URL override.
 6. Use `Claude Code` to set the Anthropic API key, default effort/model, model list, and base URL override.
 7. Open your profile to manage personal access tokens.
