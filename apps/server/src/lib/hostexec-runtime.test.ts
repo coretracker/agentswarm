@@ -2,12 +2,15 @@ import assert from "node:assert/strict";
 import { mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
+import { env } from "../config/env.js";
 import { buildHostexecRuntimeConfig, HOSTEXEC_CONTAINER_BIN_PATH } from "./hostexec-runtime.js";
 
 const originalFetch = globalThis.fetch;
+const originalRuntimePayloadRoot = env.RUNTIME_PAYLOAD_ROOT;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  env.RUNTIME_PAYLOAD_ROOT = originalRuntimePayloadRoot;
   delete process.env.HOSTEXEC_TOKEN_TEST;
 });
 
@@ -23,7 +26,9 @@ describe("buildHostexecRuntimeConfig", () => {
       });
     }) as typeof fetch;
 
-    const payloadDir = path.join("/runtime-payloads", `hostexec-runtime-${Date.now()}`);
+    const fixtureRoot = process.env.AGENTSWARM_TEST_FIXTURE_ROOT ?? path.join(process.cwd(), ".tmp", "harness-tests");
+    env.RUNTIME_PAYLOAD_ROOT = path.join(fixtureRoot, "runtime-payloads");
+    const payloadDir = path.join(env.RUNTIME_PAYLOAD_ROOT, `hostexec-runtime-${Date.now()}`);
     await mkdir(payloadDir, { recursive: true });
     try {
       const result = await buildHostexecRuntimeConfig({
@@ -44,14 +49,14 @@ describe("buildHostexecRuntimeConfig", () => {
       assert.deepEqual(result.commands, ["xcodebuild"]);
       assert.deepEqual(result.mountArgs, [
         "--mount",
-        `type=volume,src=agentswarm_runtime_payloads,dst=${HOSTEXEC_CONTAINER_BIN_PATH},volume-subpath=${path.relative("/runtime-payloads", path.join(payloadDir, "hostexec-bin"))},readonly`
+        `type=volume,src=agentswarm_runtime_payloads,dst=${HOSTEXEC_CONTAINER_BIN_PATH},volume-subpath=${path.relative(env.RUNTIME_PAYLOAD_ROOT, path.join(payloadDir, "hostexec-bin"))},readonly`
       ]);
-      const env = Object.fromEntries(result.envEntries);
-      assert.equal(env.HOSTEXEC_URL, "http://hostexec.test");
-      assert.equal(env.HOSTEXEC_TOKEN, "secret-token");
-      assert.equal(env.HOSTEXEC_WORKSPACE_ROOT, "/task-workspaces/task-1");
-      assert.equal(env.HOSTEXEC_HOST_WORKSPACE_ROOT, "/host/task-workspaces/task-1");
-      assert.match(env.PATH, new RegExp(`^${HOSTEXEC_CONTAINER_BIN_PATH}:`));
+      const resultEnv = Object.fromEntries(result.envEntries);
+      assert.equal(resultEnv.HOSTEXEC_URL, "http://hostexec.test");
+      assert.equal(resultEnv.HOSTEXEC_TOKEN, "secret-token");
+      assert.equal(resultEnv.HOSTEXEC_WORKSPACE_ROOT, "/task-workspaces/task-1");
+      assert.equal(resultEnv.HOSTEXEC_HOST_WORKSPACE_ROOT, "/host/task-workspaces/task-1");
+      assert.match(resultEnv.PATH, new RegExp(`^${HOSTEXEC_CONTAINER_BIN_PATH}:`));
 
       const shim = await readFile(path.join(payloadDir, "hostexec-bin", "xcodebuild"), "utf8");
       assert.match(shim, /hostexec-proxy\.mjs/);
