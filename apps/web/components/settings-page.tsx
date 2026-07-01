@@ -109,7 +109,6 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: getAgentProviderLabel("claude"), value: "claude" }
 ];
 
-const summarizeAllowlist = (label: string, values: string[]): string => `${label}: ${values.length === 0 ? "All" : values.join(", ")}`;
 const toSentenceValue = (value: string): string => value.replace(/_/g, " ");
 const normalizeProviderModelOptions = (models: ProviderModelOption[] | undefined, fallback: ProviderModelOption[]): ProviderModelOption[] => {
   const normalized: ProviderModelOption[] = [];
@@ -1081,26 +1080,6 @@ export function SettingsPage() {
                   title: "Description",
                   dataIndex: "description",
                   render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
-                },
-                {
-                  title: "Scopes",
-                  render: (_, role) => (
-                    <Space size={[4, 4]} wrap>
-                      {role.scopes.map((scope) => (
-                        <Tag key={scope}>{scope}</Tag>
-                      ))}
-                    </Space>
-                  )
-                },
-                {
-                  title: "Allowlists",
-                  render: (_, role) => (
-                    <Space direction="vertical" size={4}>
-                      <Typography.Text type="secondary">{summarizeAllowlist("Providers", role.allowedProviders)}</Typography.Text>
-                      <Typography.Text type="secondary">{summarizeAllowlist("Models", role.allowedModels)}</Typography.Text>
-                      <Typography.Text type="secondary">{summarizeAllowlist("Efforts", role.allowedEfforts)}</Typography.Text>
-                    </Space>
-                  )
                 },
                 {
                   title: "Actions",
