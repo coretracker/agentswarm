@@ -1,5 +1,9 @@
 import type { HostexecSettings } from "@agentswarm/shared-types";
-import { normalizeHostCommands, normalizeHostexecSettings } from "./hostexec-config.js";
+import {
+  normalizeHostexecCapabilities,
+  normalizeHostexecSettings,
+  type HostexecCapabilities
+} from "./hostexec-config.js";
 
 export const HOSTEXEC_DEFAULT_URLS = [
   "http://host.docker.internal:38128",
@@ -8,11 +12,6 @@ export const HOSTEXEC_DEFAULT_URLS = [
 ] as const;
 
 const DEFAULT_HOSTEXEC_DISCOVERY_TIMEOUT_MS = 1_500;
-
-export interface HostexecCapabilities {
-  allowAll: boolean;
-  commands: string[];
-}
 
 export interface HostexecEndpoint {
   url: string;
@@ -32,12 +31,7 @@ function parseHostexecCapabilities(raw: string): HostexecCapabilities {
   if (!raw.trim()) {
     return { allowAll: false, commands: [] };
   }
-  const parsed = JSON.parse(raw) as unknown;
-  const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-  return {
-    allowAll: record.allowAll === true,
-    commands: normalizeHostCommands(record.commands)
-  };
+  return normalizeHostexecCapabilities(JSON.parse(raw) as unknown);
 }
 
 function buildCandidateUrls(configuredUrl: string | null): string[] {
