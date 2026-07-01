@@ -4,7 +4,10 @@ import type { HostexecSettings } from "@agentswarm/shared-types";
 import { env } from "../config/env.js";
 import { buildDockerWorkspaceMountArgs } from "./docker-workspace-mounts.js";
 import { normalizeHostCommands } from "./hostexec-config.js";
-import { discoverHostexecEndpoint } from "./hostexec-discovery.js";
+import {
+  discoverHostexecEndpoint,
+  HOSTEXEC_SHARED_CONTAINER_NETWORK_DEFAULT_URLS
+} from "./hostexec-discovery.js";
 
 export const HOSTEXEC_CONTAINER_BIN_PATH = "/hostexec/bin";
 export const HOSTEXEC_PROXY_BIN = "/usr/local/bin/hostexec-proxy.mjs";
@@ -19,8 +22,8 @@ export interface HostexecRuntimeConfig {
   message: string | null;
 }
 
-function buildHostexecDockerArgs(): string[] {
-  return ["--add-host", "host.docker.internal:host-gateway"];
+function buildHostexecDockerArgs(sharedNetworkWithCurrentContainer: boolean): string[] {
+  return sharedNetworkWithCurrentContainer ? [] : ["--add-host", "host.docker.internal:host-gateway"];
 }
 
 function buildHostexecShim(command: string): string {
@@ -35,6 +38,7 @@ export async function buildHostexecRuntimeConfig(options: {
   repoId: string;
   containerWorkspacePath: string;
   hostWorkspacePath: string;
+  sharedNetworkWithCurrentContainer?: boolean;
 }): Promise<HostexecRuntimeConfig> {
   const repositoryCommands = normalizeHostCommands(options.repositoryCommands);
   if (repositoryCommands.length === 0) {
@@ -48,7 +52,10 @@ export async function buildHostexecRuntimeConfig(options: {
     };
   }
 
-  const discovery = await discoverHostexecEndpoint(options.settings);
+  const sharedNetworkWithCurrentContainer = options.sharedNetworkWithCurrentContainer === true;
+  const discovery = await discoverHostexecEndpoint(options.settings, {
+    defaultUrls: sharedNetworkWithCurrentContainer ? HOSTEXEC_SHARED_CONTAINER_NETWORK_DEFAULT_URLS : undefined
+  });
   if (!discovery.endpoint) {
     return {
       enabled: false,
@@ -96,7 +103,7 @@ export async function buildHostexecRuntimeConfig(options: {
       targetPath: HOSTEXEC_CONTAINER_BIN_PATH,
       mode: "ro"
     }),
-    dockerArgs: buildHostexecDockerArgs(),
+    dockerArgs: buildHostexecDockerArgs(sharedNetworkWithCurrentContainer),
     envEntries: [
       ["HOSTEXEC_URL", discovery.endpoint.url],
       ...(discovery.endpoint.token ? [["HOSTEXEC_TOKEN", discovery.endpoint.token] as [string, string]] : []),

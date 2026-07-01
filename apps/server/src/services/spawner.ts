@@ -5533,6 +5533,7 @@ export class SpawnerService {
         entries: repositoryRuntimeEnvEntries,
         fileStore: this.repositoryEnvFileStore
       });
+      const runtimeMcpDockerArgs = this.buildRuntimeMcpDockerArgs(runtimeMcp.injectedAgentSwarmMcp);
       const hostexecRuntime = await buildHostexecRuntimeConfig({
         settings: settings.hostexec,
         repositoryCommands: repository?.hostCommands ?? [],
@@ -5540,7 +5541,8 @@ export class SpawnerService {
         taskId: task.id,
         repoId: task.repoId,
         containerWorkspacePath: workspace.workspacePath,
-        hostWorkspacePath: workspace.hostWorkspacePath
+        hostWorkspacePath: workspace.hostWorkspacePath,
+        sharedNetworkWithCurrentContainer: runtimeMcpDockerArgs.includes("--network")
       });
       await appendRunLog(`Spawner: runtime payload files ready at ${payloadDir}.`);
       this.ensureTaskNotCancelled(task.id);
@@ -5641,7 +5643,7 @@ export class SpawnerService {
         "--rm",
         "--name",
         containerName,
-        ...(runtimeMcp.injectedAgentSwarmMcp ? this.buildInternalAgentSwarmMcpDockerArgs() : []),
+        ...runtimeMcpDockerArgs,
         ...hostexecRuntime.dockerArgs,
         "-v",
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,

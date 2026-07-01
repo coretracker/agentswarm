@@ -132,6 +132,37 @@ describe("buildHostexecRuntimeConfig", () => {
     });
   });
 
+  it("avoids add-host and prefers the bridge host URL when sharing the server container network", async () => {
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      assert.equal(String(input), "http://172.17.0.1:38128/capabilities");
+      return new Response(JSON.stringify({ allowAll: true, commands: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    await withPayloadDir(async (payloadDir) => {
+      const result = await buildHostexecRuntimeConfig({
+        settings: {
+          enabled: false,
+          url: null,
+          bearerTokenEnvVar: null
+        },
+        repositoryCommands: ["xcodebuild"],
+        payloadDir,
+        taskId: "task-1",
+        repoId: "repo-1",
+        containerWorkspacePath: "/workspace",
+        hostWorkspacePath: "/host/workspace",
+        sharedNetworkWithCurrentContainer: true
+      });
+
+      assert.equal(result.enabled, true);
+      assert.deepEqual(result.dockerArgs, []);
+      assert.equal(Object.fromEntries(result.envEntries).HOSTEXEC_URL, "http://172.17.0.1:38128");
+    });
+  });
+
   it("skips hostexec when no repository commands are configured", async () => {
     const result = await buildHostexecRuntimeConfig({
       settings: {
