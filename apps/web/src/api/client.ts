@@ -12,6 +12,7 @@ import type {
   CreateUserInput,
   LoginInput,
   CreatedPersonalAccessToken,
+  HostexecAvailability,
   PersonalAccessToken,
   PermissionScope,
   ProviderModelOption,
@@ -555,6 +556,7 @@ export const api = {
       method: "DELETE"
     }),
   getSettings: () => request<SystemSettings>("/settings"),
+  checkHostexec: () => request<HostexecAvailability>("/settings/hostexec/check"),
   listModels: (provider: AgentProvider, options?: { refresh?: boolean }) =>
     request<ProviderModelsResponse>(`/settings/models?provider=${encodeURIComponent(provider)}${options?.refresh ? "&refresh=1" : ""}`),
   updateSettings: (input: UpdateSettingsInput) =>

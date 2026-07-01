@@ -27,6 +27,7 @@ const repository: Repository = {
   defaultBranch: "main",
   envVars: [],
   mcpServers: [],
+  hostCommands: [],
   webhookUrl: null,
   webhookEnabled: false,
   webhookSecretConfigured: false,

@@ -42,6 +42,7 @@ type RepositoryFormValues = {
     url: string;
     bearerTokenEnvVar: string;
   }>;
+  hostCommands: Array<{ name: string }>;
   webhookEnabled: boolean;
   webhookUrl: string;
   webhookSecret: string;
@@ -71,6 +72,7 @@ const emptyValues = (): RepositoryFormValues => ({
   envVars: [],
   envSecrets: [],
   mcpServers: [],
+  hostCommands: [],
   webhookEnabled: false,
   webhookUrl: "",
   webhookSecret: "",
@@ -119,6 +121,9 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
     argsText: typeof entry?.argsText === "string" ? entry.argsText : "",
     url: typeof entry?.url === "string" ? entry.url : "",
     bearerTokenEnvVar: typeof entry?.bearerTokenEnvVar === "string" ? entry.bearerTokenEnvVar : ""
+  })),
+  hostCommands: (values?.hostCommands ?? []).map((entry) => ({
+    name: typeof entry?.name === "string" ? entry.name : ""
   })),
   webhookEnabled: values?.webhookEnabled === true,
   webhookUrl: typeof values?.webhookUrl === "string" ? values.webhookUrl : "",
@@ -172,6 +177,9 @@ const normalizeMcpServerName = (value: string | undefined): string =>
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "");
+
+const normalizeHostCommandName = (value: string | undefined): string => (value ?? "").trim();
+const HOST_COMMAND_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 
 const parseAllowedGitHubUsers = (value: string): string[] => {
   const seen = new Set<string>();
@@ -328,6 +336,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             url: server.url ?? "",
             bearerTokenEnvVar: server.bearerTokenEnvVar ?? ""
           })),
+          hostCommands: (repository.hostCommands ?? []).map((name) => ({ name })),
           webhookEnabled: repository.webhookEnabled,
           webhookUrl: repository.webhookUrl ?? "",
           webhookSecret: "",
@@ -554,6 +563,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                         .filter(Boolean)
                     }
               ),
+              hostCommands: normalized.hostCommands.map((entry) => entry.name.trim()).filter(Boolean),
               webhookEnabled: normalized.webhookEnabled,
               webhookUrl: normalized.webhookUrl.trim().length > 0 ? normalized.webhookUrl.trim() : null,
               ...(normalized.webhookSecret.trim().length > 0 ? { webhookSecret: normalized.webhookSecret.trim() } : {}),
@@ -1059,6 +1069,68 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     );
                   })}
                   <Button onClick={() => add({ key: "", type: "text", value: "", fileName: "", fileContentBase64: "" })}>Add secret</Button>
+                  <Form.ErrorList errors={errors} />
+                </Flex>
+              )}
+            </Form.List>
+          </Card>
+          <Card bordered={false} title="Host Commands">
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="Hostexec bridge commands"
+              description="These simple command names are mounted as read-only shims for this repository when hostexec is enabled in Settings. Existing runtime binaries are not overwritten."
+            />
+            <Form.List
+              name="hostCommands"
+              rules={[
+                {
+                  validator: async (_, value: RepositoryFormValues["hostCommands"]) => {
+                    const seen = new Set<string>();
+                    for (const entry of value ?? []) {
+                      const name = normalizeHostCommandName(entry?.name);
+                      if (!name) {
+                        continue;
+                      }
+                      if (!HOST_COMMAND_PATTERN.test(name)) {
+                        throw new Error(`Invalid host command name: ${name}`);
+                      }
+                      const comparable = name.toLowerCase();
+                      if (seen.has(comparable)) {
+                        throw new Error(`Duplicate host command: ${name}`);
+                      }
+                      seen.add(comparable);
+                    }
+                  }
+                }
+              ]}
+            >
+              {(fields, { add, remove }, { errors }) => (
+                <Flex vertical gap={8} style={{ marginBottom: 16 }}>
+                  <Typography.Text strong>Mounted Commands</Typography.Text>
+                  {fields.map((field) => (
+                    <Flex key={field.key} gap={8} align="start" wrap="wrap">
+                      <Form.Item
+                        {...field}
+                        name={[field.name, "name"]}
+                        rules={[
+                          { required: true, whitespace: true },
+                          {
+                            pattern: HOST_COMMAND_PATTERN,
+                            message: "Use a simple command name without slashes."
+                          }
+                        ]}
+                        style={{ flex: "1 1 260px", marginBottom: 0 }}
+                      >
+                        <Input placeholder="xcodebuild" />
+                      </Form.Item>
+                      <Button danger onClick={() => remove(field.name)}>
+                        Remove
+                      </Button>
+                    </Flex>
+                  ))}
+                  <Button onClick={() => add({ name: "" })}>Add command</Button>
                   <Form.ErrorList errors={errors} />
                 </Flex>
               )}

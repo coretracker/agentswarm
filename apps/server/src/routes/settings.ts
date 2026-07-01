@@ -1,8 +1,9 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import type { AgentProvider } from "@agentswarm/shared-types";
+import type { AgentProvider, HostexecAvailability, HostexecSettings } from "@agentswarm/shared-types";
 import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
+import { discoverHostexecEndpoint } from "../lib/hostexec-discovery.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
 
@@ -70,6 +71,21 @@ const responsePreferencePresetSchema = z.object({
   description: z.string().trim().max(500).optional(),
   preference: responsePreferenceSchema
 });
+const hostexecSettingsSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    url: z.string().trim().url().nullable().optional(),
+    bearerTokenEnvVar: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
+      .nullable()
+      .optional()
+  })
+  .nullable()
+  .optional();
 
 const updateSettingsSchema = z.object({
   defaultProvider: z.enum(["codex", "claude"]).optional(),
@@ -79,6 +95,7 @@ const updateSettingsSchema = z.object({
   gitUsername: z.string().trim().min(1).max(120).optional(),
   gitAuthorName: z.string().trim().min(1).max(120).nullable().optional(),
   gitAuthorEmail: z.string().trim().email().nullable().optional(),
+  hostexec: hostexecSettingsSchema,
   openaiBaseUrl: z.string().trim().url().nullable().optional(),
   anthropicBaseUrl: z.string().trim().url().nullable().optional(),
   taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
@@ -107,6 +124,37 @@ const updateUserNotesSchema = z.object({
   notes: z.string().max(200_000)
 });
 
+async function checkHostexecAvailability(settings: HostexecSettings): Promise<HostexecAvailability> {
+  const discovery = await discoverHostexecEndpoint(settings);
+  const endpoint = discovery.endpoint;
+  if (!endpoint) {
+    return {
+      available: false,
+      enabled: discovery.enabled,
+      url: discovery.configuredUrl,
+      detected: false,
+      allowAll: false,
+      commands: [],
+      message: discovery.message
+    };
+  }
+
+  const { allowAll, commands } = endpoint.capabilities;
+  return {
+    available: true,
+    enabled: discovery.enabled,
+    url: endpoint.url,
+    detected: endpoint.detected,
+    allowAll,
+    commands,
+    message: allowAll
+      ? "Hostexec daemon detected and allows repository Host Commands."
+      : commands.length > 0
+        ? `Hostexec daemon detected with ${commands.length} daemon command(s).`
+        : "Hostexec daemon detected."
+  };
+}
+
 export const registerSettingsRoutes = (
   app: FastifyInstance,
   deps: {
@@ -116,6 +164,11 @@ export const registerSettingsRoutes = (
   }
 ): void => {
   app.get("/settings", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => deps.settingsStore.getSettings());
+
+  app.get("/settings/hostexec/check", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => {
+    const settings = await deps.settingsStore.getSettings();
+    return checkHostexecAvailability(settings.hostexec);
+  });
 
   app.get("/settings/models", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async (request, reply) => {
     const providerParam = (request.query as Record<string, string>).provider as AgentProvider | undefined;

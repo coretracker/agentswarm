@@ -631,5 +631,17 @@ Feedback:
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS github_pr_task_created_comment_template text NULL;
     `
+  },
+  {
+    id: "20260701_01_hostexec_bridge_settings",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS hostexec_enabled boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS hostexec_url text NULL,
+      ADD COLUMN IF NOT EXISTS hostexec_bearer_token_env_var text NULL;
+
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS host_commands jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
   }
 ];

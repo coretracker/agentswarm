@@ -157,6 +157,7 @@ const baseRepository = (): Repository => ({
   defaultBranch: "main",
   envVars: [],
   mcpServers: [],
+  hostCommands: [],
   webhookUrl: "https://example.com/webhook",
   webhookEnabled: true,
   webhookSecretConfigured: true,

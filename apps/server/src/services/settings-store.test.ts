@@ -103,6 +103,40 @@ describe("RedisSettingsStore runtime credentials", () => {
     assert.equal(credentials.anthropicBaseUrl, "https://anthropic.example.test");
   });
 
+  it("persists normalized hostexec connection settings", async () => {
+    const settingsStore = new RedisSettingsStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never,
+      createCredentialStore({
+        githubToken: null,
+        openaiApiKey: null,
+        anthropicApiKey: null,
+        codexAuthJson: null
+      })
+    );
+
+    const settings = await settingsStore.updateSettings({
+      hostexec: {
+        enabled: true,
+        url: " http://host.docker.internal:38128/ ",
+        bearerTokenEnvVar: " HOSTEXEC_TOKEN "
+      }
+    });
+
+    assert.deepEqual(settings.hostexec, {
+      enabled: true,
+      url: "http://host.docker.internal:38128",
+      bearerTokenEnvVar: "HOSTEXEC_TOKEN"
+    });
+
+    const reset = await settingsStore.updateSettings({ hostexec: null });
+    assert.deepEqual(reset.hostexec, {
+      enabled: false,
+      url: null,
+      bearerTokenEnvVar: null
+    });
+  });
+
   it("does not expose legacy global MCP servers", async () => {
     const redis = new FakeRedis();
     redis.seed("agentswarm:settings", {

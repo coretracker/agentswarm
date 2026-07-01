@@ -111,6 +111,28 @@ describe("RedisRepositoryStore MCP servers", () => {
     ]);
   });
 
+  it("persists and normalizes repository host commands", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const created = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git",
+      hostCommands: ["xcodebuild", "XCODEBUILD", "gradlew", "../bad", "tool.name"]
+    });
+
+    assert.deepEqual(created.hostCommands, ["xcodebuild", "gradlew", "tool.name"]);
+    assert.deepEqual(await store.getRepositoryHostCommands(created.id), created.hostCommands);
+
+    const updated = await store.updateRepository(created.id, {
+      hostCommands: ["security", "bad/name", "codesign"]
+    });
+
+    assert.deepEqual(updated?.hostCommands, ["security", "codesign"]);
+  });
+
   it("persists repository harness guidance and normalizes empty updates to null", async () => {
     const store = new RedisRepositoryStore(
       new FakeRedis() as never,
