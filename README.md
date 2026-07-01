@@ -17,6 +17,7 @@ The project is built for developers and teams who want agent-assisted coding wor
 - Open task workspaces in an interactive browser terminal.
 - Configure repositories, credentials, roles, users, provider defaults, and snippets.
 - Add repository-local postflight checks with `.agentswarm/postflight.yml`.
+- Optionally expose selected manually started host commands through hostexec bridge shims.
 
 ## Requirements
 
@@ -117,6 +118,18 @@ Task workspaces are isolated under `task-workspaces/` and are runtime data. Do n
 ### Postflight Checks
 
 Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
+
+### Hostexec Bridge Commands
+
+Hostexec is optional and disabled by default. It lets a manually started host daemon expose selected host commands, such as macOS `xcodebuild`, to agent containers through bridge shims.
+
+1. Start the `hostexec` daemon manually on the host.
+2. Open **Settings -> Hostexec**, enable it, set the daemon URL, and set a bearer token environment variable name such as `HOSTEXEC_TOKEN`.
+3. Open a repository and add simple command names to **Host Commands**, for example `xcodebuild`, `xcrun`, or `gradlew`.
+
+At runtime AgentSwarm creates a read-only shim directory, mounts it at `/hostexec/bin`, and prepends that directory to `PATH`. Existing container bin directories are not overwritten; configured command names only shadow matching commands through `PATH` order.
+
+Bridge commands execute on the host with the task workspace as `cwd`. Nested workspace directories preserve their relative `cwd`, and execution is rejected if the resolved host directory escapes the task workspace. v1 requires the task workspace path to be visible to the host daemon.
 
 Example:
 

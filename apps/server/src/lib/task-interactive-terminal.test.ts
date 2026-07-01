@@ -43,6 +43,7 @@ describe("buildTerminalStartScript", () => {
     assert.match(dockerfile, /COPY run-task-codex\.mjs/);
     assert.match(dockerfile, /COPY run-task-claude\.mjs/);
     assert.match(dockerfile, /COPY agentswarm-mcp-bridge\.mjs/);
+    assert.match(dockerfile, /COPY hostexec-proxy\.mjs/);
   });
 });
 

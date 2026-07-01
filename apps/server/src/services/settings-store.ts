@@ -18,6 +18,7 @@ import type {
 } from "@agentswarm/shared-types";
 import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
+import { defaultHostexecSettings, normalizeHostexecSettings } from "../lib/hostexec-config.js";
 import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from "../lib/provider-config.js";
 import { defaultModelForProvider } from "../lib/provider-config.js";
 import type { CredentialStore, RuntimeCredentials } from "./credential-store.js";
@@ -64,6 +65,7 @@ const defaultSettings: SystemSettings = {
   gitUsername: "x-access-token",
   gitAuthorName: null,
   gitAuthorEmail: null,
+  hostexec: defaultHostexecSettings,
   openaiBaseUrl: null,
   anthropicBaseUrl: null,
   taskPromptMagicModel: "gpt-5.4-mini",
@@ -267,6 +269,7 @@ export class RedisSettingsStore implements SettingsStore {
         gitUsername: defaultSettings.gitUsername,
         gitAuthorName: defaultSettings.gitAuthorName,
         gitAuthorEmail: defaultSettings.gitAuthorEmail,
+        hostexec: defaultSettings.hostexec,
         openaiBaseUrl: defaultSettings.openaiBaseUrl,
         anthropicBaseUrl: defaultSettings.anthropicBaseUrl,
         taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
@@ -293,6 +296,7 @@ export class RedisSettingsStore implements SettingsStore {
       gitUsername: normalizeGitUsername(parsed.gitUsername),
       gitAuthorName: normalizeOptionalGitAuthorName(parsed.gitAuthorName),
       gitAuthorEmail: normalizeOptionalGitAuthorEmail(parsed.gitAuthorEmail),
+      hostexec: normalizeHostexecSettings(parsed.hostexec),
       openaiBaseUrl: normalizeOptionalUrl(parsed.openaiBaseUrl),
       anthropicBaseUrl: normalizeOptionalUrl(parsed.anthropicBaseUrl),
       taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
@@ -316,6 +320,7 @@ export class RedisSettingsStore implements SettingsStore {
       parsed.gitUsername !== normalizedBase.gitUsername ||
       (parsed.gitAuthorName ?? null) !== normalizedBase.gitAuthorName ||
       (parsed.gitAuthorEmail ?? null) !== normalizedBase.gitAuthorEmail ||
+      JSON.stringify(parsed.hostexec ?? defaultHostexecSettings) !== JSON.stringify(normalizedBase.hostexec) ||
       Object.prototype.hasOwnProperty.call(parsed, "mcpServers") ||
       normalizeOptionalUrl(parsed.openaiBaseUrl) !== normalizedBase.openaiBaseUrl ||
       normalizeOptionalUrl(parsed.anthropicBaseUrl) !== normalizedBase.anthropicBaseUrl ||
@@ -350,6 +355,12 @@ export class RedisSettingsStore implements SettingsStore {
         input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName),
       gitAuthorEmail:
         input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail),
+      hostexec:
+        input.hostexec === undefined
+          ? current.hostexec
+          : input.hostexec === null
+            ? defaultHostexecSettings
+            : normalizeHostexecSettings({ ...current.hostexec, ...input.hostexec }),
       openaiBaseUrl:
         input.openaiBaseUrl === undefined
           ? current.openaiBaseUrl
@@ -453,6 +464,9 @@ export class PostgresSettingsStore implements SettingsStore {
           git_username,
           git_author_name,
           git_author_email,
+          hostexec_enabled,
+          hostexec_url,
+          hostexec_bearer_token_env_var,
           openai_base_url,
           anthropic_base_url,
           task_prompt_magic_model,
@@ -465,7 +479,7 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16::jsonb, $17, $18::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19::jsonb, $20, $21::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
@@ -476,6 +490,9 @@ export class PostgresSettingsStore implements SettingsStore {
         defaultSettings.gitUsername,
         defaultSettings.gitAuthorName,
         defaultSettings.gitAuthorEmail,
+        defaultSettings.hostexec.enabled,
+        defaultSettings.hostexec.url,
+        defaultSettings.hostexec.bearerTokenEnvVar,
         defaultSettings.openaiBaseUrl,
         defaultSettings.anthropicBaseUrl,
         defaultSettings.taskPromptMagicModel,
@@ -503,6 +520,9 @@ export class PostgresSettingsStore implements SettingsStore {
           git_username,
           git_author_name,
           git_author_email,
+          hostexec_enabled,
+          hostexec_url,
+          hostexec_bearer_token_env_var,
           openai_base_url,
           anthropic_base_url,
           task_prompt_magic_model,
@@ -527,6 +547,12 @@ export class PostgresSettingsStore implements SettingsStore {
       gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
       gitAuthorName: normalizeOptionalGitAuthorName(typeof row?.git_author_name === "string" ? row.git_author_name : null),
       gitAuthorEmail: normalizeOptionalGitAuthorEmail(typeof row?.git_author_email === "string" ? row.git_author_email : null),
+      hostexec: normalizeHostexecSettings({
+        enabled: row?.hostexec_enabled === true,
+        url: typeof row?.hostexec_url === "string" ? row.hostexec_url : null,
+        bearerTokenEnvVar:
+          typeof row?.hostexec_bearer_token_env_var === "string" ? row.hostexec_bearer_token_env_var : null
+      }),
       openaiBaseUrl: normalizeOptionalUrl(typeof row?.openai_base_url === "string" ? row.openai_base_url : null),
       anthropicBaseUrl: normalizeOptionalUrl(typeof row?.anthropic_base_url === "string" ? row.anthropic_base_url : null),
       taskPromptMagicModel:
@@ -582,6 +608,12 @@ export class PostgresSettingsStore implements SettingsStore {
         input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName),
       gitAuthorEmail:
         input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail),
+      hostexec:
+        input.hostexec === undefined
+          ? current.hostexec
+          : input.hostexec === null
+            ? defaultHostexecSettings
+            : normalizeHostexecSettings({ ...current.hostexec, ...input.hostexec }),
       openaiBaseUrl:
         input.openaiBaseUrl === undefined
           ? current.openaiBaseUrl
@@ -615,6 +647,9 @@ export class PostgresSettingsStore implements SettingsStore {
           git_username,
           git_author_name,
           git_author_email,
+          hostexec_enabled,
+          hostexec_url,
+          hostexec_bearer_token_env_var,
           openai_base_url,
           anthropic_base_url,
           task_prompt_magic_model,
@@ -627,7 +662,7 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16::jsonb, $17, $18::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19::jsonb, $20, $21::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
@@ -637,6 +672,9 @@ export class PostgresSettingsStore implements SettingsStore {
           git_username = EXCLUDED.git_username,
           git_author_name = EXCLUDED.git_author_name,
           git_author_email = EXCLUDED.git_author_email,
+          hostexec_enabled = EXCLUDED.hostexec_enabled,
+          hostexec_url = EXCLUDED.hostexec_url,
+          hostexec_bearer_token_env_var = EXCLUDED.hostexec_bearer_token_env_var,
           openai_base_url = EXCLUDED.openai_base_url,
           anthropic_base_url = EXCLUDED.anthropic_base_url,
           task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
@@ -657,6 +695,9 @@ export class PostgresSettingsStore implements SettingsStore {
         nextBase.gitUsername,
         nextBase.gitAuthorName,
         nextBase.gitAuthorEmail,
+        nextBase.hostexec.enabled,
+        nextBase.hostexec.url,
+        nextBase.hostexec.bearerTokenEnvVar,
         nextBase.openaiBaseUrl,
         nextBase.anthropicBaseUrl,
         nextBase.taskPromptMagicModel,

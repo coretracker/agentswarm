@@ -71,6 +71,7 @@ import {
 } from "../lib/docker-socket-access.js";
 import { buildDockerWorkspaceMountArgs } from "../lib/docker-workspace-mounts.js";
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
+import { buildHostexecRuntimeConfig } from "../lib/hostexec-runtime.js";
 import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
 import { AGENT_RUNTIME_IMAGE, DEFAULT_GIT_COMMIT_IDENTITY, env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
@@ -5532,6 +5533,15 @@ export class SpawnerService {
         entries: repositoryRuntimeEnvEntries,
         fileStore: this.repositoryEnvFileStore
       });
+      const hostexecRuntime = await buildHostexecRuntimeConfig({
+        settings: settings.hostexec,
+        repositoryCommands: repository?.hostCommands ?? [],
+        payloadDir: payloadPaths.payloadDir,
+        taskId: task.id,
+        repoId: task.repoId,
+        containerWorkspacePath: workspace.workspacePath,
+        hostWorkspacePath: workspace.hostWorkspacePath
+      });
       await appendRunLog(`Spawner: runtime payload files ready at ${payloadDir}.`);
       this.ensureTaskNotCancelled(task.id);
       await this.syncWorkspaceRuntimeHarnessFile(workspace.workspacePath, null);
@@ -5554,6 +5564,9 @@ export class SpawnerService {
         await appendRunLog(
           `Spawner: warning - missing MCP bearer token env var${missingMcpBearerEnvVars.length === 1 ? "" : "s"}: ${missingMcpBearerEnvVars.join(", ")}`
         );
+      }
+      if (hostexecRuntime.message) {
+        await appendRunLog(`Spawner: ${hostexecRuntime.message}`);
       }
 
       this.ensureTaskNotCancelled(task.id);
@@ -5629,6 +5642,7 @@ export class SpawnerService {
         "--name",
         containerName,
         ...(runtimeMcp.injectedAgentSwarmMcp ? this.buildInternalAgentSwarmMcpDockerArgs() : []),
+        ...hostexecRuntime.dockerArgs,
         "-v",
         `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
         ...this.buildTaskWorkspaceMountArgs(task.id, workspace.workspacePath, workspaceMountMode),
@@ -5644,6 +5658,7 @@ export class SpawnerService {
           : []),
         ...linkedWorkspaceMountPlan.mountArgs,
         ...gitRuntimeMounts,
+        ...hostexecRuntime.mountArgs,
         ...this.buildTaskWorkspaceMountArgs(
           path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, providerStatePaths.hostPath),
           providerStateContainerPath,
@@ -5683,6 +5698,9 @@ export class SpawnerService {
         addRuntimeEnv(name, value);
       }
       for (const [name, value] of repositoryRuntimeEnv) {
+        addRuntimeEnv(name, value);
+      }
+      for (const [name, value] of hostexecRuntime.envEntries) {
         addRuntimeEnv(name, value);
       }
       args.push(providerDefinition.image, ...providerDefinition.command);

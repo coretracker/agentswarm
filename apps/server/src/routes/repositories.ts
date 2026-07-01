@@ -19,6 +19,8 @@ const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
 const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
 const GITHUB_ALLOWED_USERS_MAX_COUNT = 100;
 const GITHUB_LOGIN_PATTERN = /^@?[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const HOST_COMMAND_MAX_COUNT = 80;
+const HOST_COMMAND_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 
 const normalizeMcpServerNameForComparison = (value: string): string =>
   value
@@ -67,6 +69,35 @@ const mcpServersSchema = z
           code: z.ZodIssueCode.custom,
           path: [index, "name"],
           message: `Duplicate MCP server name: ${entries[index]?.name}`
+        });
+      } else {
+        seen.add(normalized);
+      }
+    }
+  });
+
+const hostCommandsSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(HOST_COMMAND_PATTERN, "Host command names must be simple command names, not paths.")
+  )
+  .max(HOST_COMMAND_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const normalized = entries[index]?.trim().toLowerCase();
+      if (!normalized) {
+        continue;
+      }
+      if (seen.has(normalized)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index],
+          message: `Duplicate host command: ${entries[index]}`
         });
       } else {
         seen.add(normalized);
@@ -193,6 +224,7 @@ const createRepositorySchema = z.object({
   envVars: repositoryEnvVarsSchema.optional(),
   envSecrets: repositoryEnvSecretsSchema.optional(),
   mcpServers: mcpServersSchema.optional(),
+  hostCommands: hostCommandsSchema.optional(),
   webhookUrl: z.string().trim().url().nullable().optional(),
   webhookEnabled: z.boolean().optional(),
   webhookSecret: z.string().trim().min(1).optional(),

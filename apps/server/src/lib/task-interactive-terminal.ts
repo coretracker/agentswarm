@@ -36,6 +36,7 @@ import {
   buildTerminalEnvEntries
 } from "./task-interactive-terminal-git-env.js";
 import { buildDockerWorkspaceMountArgs } from "./docker-workspace-mounts.js";
+import { buildHostexecRuntimeConfig } from "./hostexec-runtime.js";
 import type { UserStore } from "../services/user-store.js";
 import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
 import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
@@ -147,7 +148,7 @@ export interface TaskInteractiveTerminalDeps {
   settingsStore: SettingsStore;
   spawner: SpawnerService;
   userStore: Pick<UserStore, "getUser">;
-  repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries">;
+  repositoryStore: Pick<RepositoryStore, "getRepositoryRuntimeEnvEntries" | "getRepositoryHostCommands">;
 }
 
 interface ActiveInteractiveTerminalController {
@@ -420,12 +421,14 @@ async function initializeTaskInteractiveTerminalWebSocket(
       credentials,
       settings,
       repositoryRuntimeEnvEntries,
+      repositoryHostCommands,
       codexProviderStatePaths,
       claudeProviderStatePaths
     ] = await Promise.all([
       deps.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto"),
       deps.settingsStore.getSettings(),
       deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
+      deps.repositoryStore.getRepositoryHostCommands(task.repoId),
       ensureTaskProviderStatePaths(task.id, "codex"),
       ensureTaskProviderStatePaths(task.id, "claude")
     ]);
@@ -460,9 +463,18 @@ async function initializeTaskInteractiveTerminalWebSocket(
       entries: repositoryRuntimeEnvEntries,
       fileStore: repositoryEnvFileStore
     });
+    const hostexecRuntime = await buildHostexecRuntimeConfig({
+      settings: settings.hostexec,
+      repositoryCommands: repositoryHostCommands,
+      payloadDir: repositoryEnvDir,
+      taskId,
+      repoId: task.repoId,
+      containerWorkspacePath: INTERACTIVE_WORKSPACE_PATH,
+      hostWorkspacePath: dockerBindSource
+    });
     const dockerEnv: string[] = [];
     for (const [name, value] of buildTerminalDockerEnvEntries({
-      runtimeEnvEntries: [...runtime.envEntries, ...Object.entries(runtimeMcp.env)],
+      runtimeEnvEntries: [...runtime.envEntries, ...Object.entries(runtimeMcp.env), ...hostexecRuntime.envEntries],
       repositoryEnvEntries: repositoryRuntimeEnv
     })) {
       dockerEnv.push("-e", `${name}=${value}`);
@@ -477,11 +489,13 @@ async function initializeTaskInteractiveTerminalWebSocket(
       "--name",
       sessionName,
       ...deps.spawner.buildRuntimeMcpDockerArgs(runtimeMcp.injectedAgentSwarmMcp),
+      ...hostexecRuntime.dockerArgs,
       "-v",
       `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
       ...buildTaskWorkspaceMountArgs(taskId, INTERACTIVE_WORKSPACE_PATH, "rw"),
       ...linkedWorkspaceMountPlan.mountArgs,
       ...gitRuntimeMounts,
+      ...hostexecRuntime.mountArgs,
       ...buildTaskWorkspaceMountArgs(
         path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, codexProviderStatePaths.hostPath),
         "/root/.codex",

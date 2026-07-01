@@ -7,6 +7,7 @@ import type {
   AgentCodePreference,
   AgentExplanationDepth,
   AgentFormattingStyle,
+  HostexecAvailability,
   AgentJargonLevel,
   AudienceType,
   PermissionScope,
@@ -61,6 +62,9 @@ interface GeneralSettingsForm {
   anthropicBaseUrl: string;
   taskPromptMagicModel: string;
   taskPromptMagicTemplate: string;
+  hostexecEnabled: boolean;
+  hostexecUrl: string;
+  hostexecBearerTokenEnvVar: string;
   codexDefaultModel: string;
   codexModels: ProviderModelOption[];
   codexDefaultEffort: ProviderProfile;
@@ -98,7 +102,7 @@ interface ResponsePreferencePresetFormValues {
 }
 
 type ClearCredentialTarget = "github" | "openai" | "codexAuthJson" | "anthropic";
-type SettingsTabKey = "general" | "git" | "codex" | "claude";
+type SettingsTabKey = "general" | "git" | "hostexec" | "codex" | "claude";
 type DirtyGeneralTabKey = SettingsTabKey;
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
@@ -146,6 +150,9 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   anthropicBaseUrl: settings.anthropicBaseUrl ?? "",
   taskPromptMagicModel: settings.taskPromptMagicModel,
   taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
+  hostexecEnabled: settings.hostexec?.enabled === true,
+  hostexecUrl: settings.hostexec?.url ?? "",
+  hostexecBearerTokenEnvVar: settings.hostexec?.bearerTokenEnvVar ?? "",
   codexDefaultModel: settings.codexDefaultModel,
   codexModels: settings.codexModels,
   codexDefaultEffort: settings.codexDefaultEffort,
@@ -166,6 +173,8 @@ export function SettingsPage() {
   const [rolesLoading, setRolesLoading] = useState(true);
   const [savingGeneral, setSavingGeneral] = useState(false);
   const [savingCredentials, setSavingCredentials] = useState(false);
+  const [checkingHostexec, setCheckingHostexec] = useState(false);
+  const [hostexecAvailability, setHostexecAvailability] = useState<HostexecAvailability | null>(null);
   const [autoFillingProvider, setAutoFillingProvider] = useState<AgentProvider | null>(null);
   const [savingRole, setSavingRole] = useState(false);
   const [savingResponsePreferencePreset, setSavingResponsePreferencePreset] = useState(false);
@@ -396,6 +405,11 @@ export function SettingsPage() {
         gitUsername: values.gitUsername,
         gitAuthorName: values.gitAuthorName?.trim() || null,
         gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
+        hostexec: {
+          enabled: values.hostexecEnabled === true,
+          url: values.hostexecUrl?.trim() ? values.hostexecUrl.trim() : null,
+          bearerTokenEnvVar: values.hostexecBearerTokenEnvVar?.trim() ? values.hostexecBearerTokenEnvVar.trim() : null
+        },
         openaiBaseUrl: values.openaiBaseUrl?.trim() ? values.openaiBaseUrl.trim() : null,
         anthropicBaseUrl: values.anthropicBaseUrl?.trim() ? values.anthropicBaseUrl.trim() : null,
         taskPromptMagicModel: values.taskPromptMagicModel,
@@ -449,6 +463,23 @@ export function SettingsPage() {
     setCredentialDirtyTabs((current) => (current.includes(tab) ? current : [...current, tab]));
   };
 
+  const checkHostexec = async () => {
+    setCheckingHostexec(true);
+    try {
+      const result = await api.checkHostexec();
+      setHostexecAvailability(result);
+      if (result.available) {
+        message.success(result.message);
+      } else {
+        message.warning(result.message);
+      }
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to check hostexec");
+    } finally {
+      setCheckingHostexec(false);
+    }
+  };
+
   const confirmLeave = (): boolean => {
     if (!hasUnsavedChanges || typeof window === "undefined") {
       return true;
@@ -496,6 +527,10 @@ export function SettingsPage() {
     {
       key: "git",
       label: <span>{generalDirtyTabs.includes("git") || credentialDirtyTabs.includes("git") ? "Git *" : "Git"}</span>
+    },
+    {
+      key: "hostexec",
+      label: <span>{generalDirtyTabs.includes("hostexec") ? "Hostexec *" : "Hostexec"}</span>
     },
     {
       key: "codex",
@@ -760,6 +795,80 @@ export function SettingsPage() {
               </Form>
             </Card>
           </Space>
+        ) : null}
+
+        {activeTab === "hostexec" ? (
+          <Form
+            form={generalForm}
+            layout="vertical"
+            disabled={!canEditSettings}
+            onValuesChange={() => markGeneralTabDirty("hostexec")}
+            onFinish={saveGeneralSettings}
+          >
+            <Card
+              bordered={false}
+              loading={loading}
+              title="Hostexec"
+              extra={
+                <Tag color={settings?.hostexec?.enabled ? "green" : "default"}>
+                  Hostexec {settings?.hostexec?.enabled ? "Enabled" : "Disabled"}
+                </Tag>
+              }
+            >
+              <Flex vertical gap={16} style={{ width: "100%" }}>
+                <Alert
+                  type="warning"
+                  showIcon
+                  message="Privileged host access"
+                  description="Hostexec runs configured bridge commands on the host machine. Enable it only for trusted repositories and daemon allowlists."
+                />
+                <Form.Item name="hostexecEnabled" label="Enabled" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+                <Form.Item
+                  name="hostexecUrl"
+                  label="URL"
+                  rules={[{ type: "url", message: "Enter a valid absolute URL." }]}
+                  extra="Daemon capabilities are read from /capabilities."
+                >
+                  <Input placeholder="http://host.docker.internal:38128" />
+                </Form.Item>
+                <Form.Item
+                  name="hostexecBearerTokenEnvVar"
+                  label="Bearer Token Env Var"
+                  rules={[
+                    {
+                      validator: (_rule, value?: string) => {
+                        if (!value || value.trim().length === 0) {
+                          return Promise.resolve();
+                        }
+                        return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.trim())
+                          ? Promise.resolve()
+                          : Promise.reject(new Error("Use a valid environment variable name with letters, numbers, and underscores."));
+                      }
+                    }
+                  ]}
+                  extra="The server reads this environment variable when calling hostexec; the token value is not stored in settings."
+                >
+                  <Input placeholder="HOSTEXEC_TOKEN" />
+                </Form.Item>
+                <Space wrap>
+                  <Button icon={<ReloadOutlined />} loading={checkingHostexec} disabled={!settings} onClick={checkHostexec}>
+                    Check availability
+                  </Button>
+                  {hostexecAvailability ? (
+                    <Tag color={hostexecAvailability.available ? "green" : "red"}>{hostexecAvailability.message}</Tag>
+                  ) : null}
+                </Space>
+                {hostexecAvailability?.commands.length ? (
+                  <Typography.Text type="secondary">
+                    Commands: {hostexecAvailability.commands.join(", ")}
+                  </Typography.Text>
+                ) : null}
+              </Flex>
+            </Card>
+            {renderSaveBar({ dirty: generalDirty, label: "Save Hostexec Settings", loading: savingGeneral })}
+          </Form>
         ) : null}
 
         {activeTab === "codex" ? (

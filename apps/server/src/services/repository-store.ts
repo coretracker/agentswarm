@@ -17,6 +17,7 @@ import {
   DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
 } from "@agentswarm/shared-types";
 import { EventBus } from "../lib/events.js";
+import { normalizeHostCommands } from "../lib/hostexec-config.js";
 import { HttpError } from "../lib/http-error.js";
 import { normalizeMcpServers } from "../lib/mcp-config.js";
 import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
@@ -569,6 +570,7 @@ export interface RepositoryStore {
   getRepository(repositoryId: string): Promise<Repository | null>;
   getRepositoryRuntimeEnvEntries(repositoryId: string): Promise<RepositoryRuntimeEnvEntry[]>;
   getRepositoryMcpServers(repositoryId: string): Promise<McpServerConfig[]>;
+  getRepositoryHostCommands(repositoryId: string): Promise<string[]>;
   updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null>;
   getRepositoryWebhookTarget(repositoryId: string): Promise<RepositoryWebhookTarget | null>;
   getRepositoryGitHubPrWebhookSecret(repositoryId: string): Promise<string | null>;
@@ -712,6 +714,7 @@ export class RedisRepositoryStore implements RepositoryStore {
     const mcpServers = normalizeMcpServers(
       Array.isArray(repository.mcpServers) ? (repository.mcpServers as McpServerConfig[]) : undefined
     );
+    const hostCommands = normalizeHostCommands(repository.hostCommands);
     return {
       ...repository,
       name: String(repository.name ?? "").trim(),
@@ -720,6 +723,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       envVars,
       envSecrets,
       mcpServers,
+      hostCommands,
       webhookUrl,
       webhookEnabled,
       webhookSecret,
@@ -755,6 +759,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       envVars: toRepositoryEnvVars(normalized.envVars),
       envSecrets: toConfiguredRepositoryEnvSecrets(normalized.envSecrets),
       mcpServers: normalized.mcpServers,
+      hostCommands: normalized.hostCommands,
       webhookUrl: normalized.webhookUrl,
       webhookEnabled: normalized.webhookEnabled,
       webhookSecretConfigured: Boolean(normalized.webhookSecret),
@@ -817,6 +822,7 @@ export class RedisRepositoryStore implements RepositoryStore {
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
     const mcpServers = normalizeMcpServers(input.mcpServers);
+    const hostCommands = normalizeHostCommands(input.hostCommands);
     this.assertValidWebhookConfiguration({
       webhookEnabled,
       webhookUrl,
@@ -831,6 +837,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       envVars: resolvedEnvVars.entries,
       envSecrets: resolvedEnvSecrets.entries,
       mcpServers,
+      hostCommands,
       webhookUrl,
       webhookEnabled,
       webhookSecret,
@@ -921,6 +928,11 @@ export class RedisRepositoryStore implements RepositoryStore {
     return stored?.mcpServers ?? [];
   }
 
+  async getRepositoryHostCommands(repositoryId: string): Promise<string[]> {
+    const stored = await this.getStoredRepository(repositoryId);
+    return stored?.hostCommands ?? [];
+  }
+
   async updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null> {
     const current = await this.getStoredRepository(repositoryId);
     if (!current) {
@@ -1001,6 +1013,8 @@ export class RedisRepositoryStore implements RepositoryStore {
     );
     const nextMcpServers =
       input.mcpServers === undefined ? normalizeMcpServers(current.mcpServers) : normalizeMcpServers(input.mcpServers);
+    const nextHostCommands =
+      input.hostCommands === undefined ? normalizeHostCommands(current.hostCommands) : normalizeHostCommands(input.hostCommands);
 
     this.assertValidWebhookConfiguration({
       webhookEnabled: nextWebhookEnabled,
@@ -1016,6 +1030,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       envVars: resolvedEnvVars.entries,
       envSecrets: resolvedEnvSecrets.entries,
       mcpServers: nextMcpServers,
+      hostCommands: nextHostCommands,
       webhookUrl: nextWebhookUrl,
       webhookEnabled: nextWebhookEnabled,
       webhookSecret: nextWebhookSecret,
@@ -1153,6 +1168,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const envSecrets = normalizeRepositoryEnvSecretValues(row.env_secrets);
     const envVars = normalizeRepositoryEnvVars(row.env_vars);
     const mcpServers = normalizeMcpServers(Array.isArray(row.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined);
+    const hostCommands = normalizeHostCommands(row.host_commands);
     return {
       id: String(row.id),
       name: String(row.name ?? "").trim(),
@@ -1161,6 +1177,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       envVars: toRepositoryEnvVars(envVars),
       envSecrets: toConfiguredRepositoryEnvSecrets(envSecrets),
       mcpServers,
+      hostCommands,
       webhookUrl: typeof row.webhook_url === "string" && row.webhook_url.trim().length > 0 ? row.webhook_url.trim() : null,
       webhookEnabled: row.webhook_enabled === true,
       webhookSecretConfigured: typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0,
@@ -1256,6 +1273,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
     const mcpServers = normalizeMcpServers(input.mcpServers);
+    const hostCommands = normalizeHostCommands(input.hostCommands);
     this.assertValidWebhookConfiguration({
       webhookEnabled,
       webhookUrl,
@@ -1270,6 +1288,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
       envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
       mcpServers,
+      hostCommands,
       webhookUrl,
       webhookEnabled,
       webhookSecretConfigured: Boolean(webhookSecret),
@@ -1309,6 +1328,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             env_vars,
             env_secrets,
             mcp_servers,
+            host_commands,
             webhook_url,
             webhook_enabled,
             webhook_secret,
@@ -1333,7 +1353,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12, $13::jsonb, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30)
+          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31)
         `,
         [
           repository.id,
@@ -1343,6 +1363,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           JSON.stringify(resolvedEnvVars.entries),
           JSON.stringify(resolvedEnvSecrets.entries),
           JSON.stringify(repository.mcpServers),
+          JSON.stringify(repository.hostCommands),
           repository.webhookUrl,
           repository.webhookEnabled,
           webhookSecret,
@@ -1405,6 +1426,14 @@ export class PostgresRepositoryStore implements RepositoryStore {
       return [];
     }
     return normalizeMcpServers(Array.isArray(row.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined);
+  }
+
+  async getRepositoryHostCommands(repositoryId: string): Promise<string[]> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    if (!row) {
+      return [];
+    }
+    return normalizeHostCommands(row.host_commands);
   }
 
   async updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null> {
@@ -1496,6 +1525,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
     );
     const nextMcpServers =
       input.mcpServers === undefined ? normalizeMcpServers(current.mcpServers) : normalizeMcpServers(input.mcpServers);
+    const nextHostCommands =
+      input.hostCommands === undefined ? normalizeHostCommands(current.hostCommands) : normalizeHostCommands(input.hostCommands);
 
     this.assertValidWebhookConfiguration({
       webhookEnabled: nextWebhookEnabled,
@@ -1511,6 +1542,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
       envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
       mcpServers: nextMcpServers,
+      hostCommands: nextHostCommands,
       webhookUrl: nextWebhookUrl,
       webhookEnabled: nextWebhookEnabled,
       webhookSecretConfigured: Boolean(nextWebhookSecret),
@@ -1546,29 +1578,30 @@ export class PostgresRepositoryStore implements RepositoryStore {
             env_vars = $5::jsonb,
             env_secrets = $6::jsonb,
             mcp_servers = $7::jsonb,
-            webhook_url = $8,
-            webhook_enabled = $9,
-            webhook_secret = $10,
-            github_pr_webhook_secret = $11,
-            github_integration_bot_login = $12,
-            github_pr_allowed_users = $13::jsonb,
-            github_pr_require_bot_mention = $14,
-            github_pr_auto_archive_on_merge = $15,
-            github_pr_initial_instructions = $16,
-            github_pr_feedback_instructions = $17,
-            github_pr_review_instructions = $18,
-            github_pr_task_created_comment_template = $19,
-            github_pr_task_owner_user_id = $20,
-            harness_what_exists = $21,
-            harness_allowed_actions = $22,
-            harness_how_to_work = $23,
-            harness_definition_of_done = $24,
-            harness_evidence_expectations = $25,
-            webhook_last_attempt_at = $26,
-            webhook_last_status = $27,
-            webhook_last_error = $28,
-            created_at = $29,
-            updated_at = $30
+            host_commands = $8::jsonb,
+            webhook_url = $9,
+            webhook_enabled = $10,
+            webhook_secret = $11,
+            github_pr_webhook_secret = $12,
+            github_integration_bot_login = $13,
+            github_pr_allowed_users = $14::jsonb,
+            github_pr_require_bot_mention = $15,
+            github_pr_auto_archive_on_merge = $16,
+            github_pr_initial_instructions = $17,
+            github_pr_feedback_instructions = $18,
+            github_pr_review_instructions = $19,
+            github_pr_task_created_comment_template = $20,
+            github_pr_task_owner_user_id = $21,
+            harness_what_exists = $22,
+            harness_allowed_actions = $23,
+            harness_how_to_work = $24,
+            harness_definition_of_done = $25,
+            harness_evidence_expectations = $26,
+            webhook_last_attempt_at = $27,
+            webhook_last_status = $28,
+            webhook_last_error = $29,
+            created_at = $30,
+            updated_at = $31
           WHERE id = $1
         `,
         [
@@ -1579,6 +1612,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           JSON.stringify(resolvedEnvVars.entries),
           JSON.stringify(resolvedEnvSecrets.entries),
           JSON.stringify(next.mcpServers),
+          JSON.stringify(next.hostCommands),
           next.webhookUrl,
           next.webhookEnabled,
           nextWebhookSecret,

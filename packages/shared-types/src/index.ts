@@ -461,6 +461,7 @@ export interface Repository {
   envVars: RepositoryEnvVarValue[];
   envSecrets?: RepositoryEnvSecret[];
   mcpServers: McpServerConfig[];
+  hostCommands: string[];
   webhookUrl: string | null;
   webhookEnabled: boolean;
   webhookSecretConfigured: boolean;
@@ -848,6 +849,20 @@ export interface McpServerConfig {
   bearerTokenEnvVar?: string | null;
 }
 
+export interface HostexecSettings {
+  enabled: boolean;
+  url: string | null;
+  bearerTokenEnvVar: string | null;
+}
+
+export interface HostexecAvailability {
+  available: boolean;
+  enabled: boolean;
+  url: string | null;
+  commands: string[];
+  message: string;
+}
+
 export type DataStoreBackend = "redis" | "postgres";
 export type WorkspaceProvisioningMode = "clone_only" | "hybrid";
 
@@ -873,6 +888,7 @@ export interface SystemSettings {
   gitUsername: string;
   gitAuthorName: string | null;
   gitAuthorEmail: string | null;
+  hostexec: HostexecSettings;
   openaiBaseUrl: string | null;
   anthropicBaseUrl: string | null;
   taskPromptMagicModel: string;
@@ -903,6 +919,7 @@ export interface CreateRepositoryInput {
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   mcpServers?: McpServerConfig[];
+  hostCommands?: string[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
@@ -930,6 +947,7 @@ export interface UpdateRepositoryInput {
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   mcpServers?: McpServerConfig[];
+  hostCommands?: string[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
@@ -1342,6 +1360,7 @@ export interface UpdateSettingsInput {
   gitUsername?: string;
   gitAuthorName?: string | null;
   gitAuthorEmail?: string | null;
+  hostexec?: Partial<HostexecSettings> | null;
   openaiBaseUrl?: string | null;
   anthropicBaseUrl?: string | null;
   taskPromptMagicModel?: string;
