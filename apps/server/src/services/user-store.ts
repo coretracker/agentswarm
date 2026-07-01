@@ -66,7 +66,7 @@ const normalizeOptionalGitAuthorEmail = (value: string | null | undefined): stri
   return normalized || null;
 };
 const normalizeSlackUsername = (value: string | null | undefined): string | null => {
-  const normalized = (value ?? "").trim().replace(/^@+/, "").toLowerCase();
+  const normalized = (value ?? "").trim().replace(/^@+/, "").replace(/\s+/g, " ");
   return normalized || null;
 };
 const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};

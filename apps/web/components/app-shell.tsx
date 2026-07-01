@@ -704,10 +704,11 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Form.Item>
             <Form.Item
               name="slackUsername"
-              label="Slack Username"
+              label="Slack User ID or Name"
+              extra="Use the Slack user ID, for example U06HSV9LHCH, or the name shown in Slack."
               rules={[{ max: 80, message: "Slack username must be 80 characters or fewer." }]}
             >
-              <Input addonBefore="@" autoComplete="off" />
+              <Input autoComplete="off" placeholder="U06HSV9LHCH or @Andreas Ehrlich-Gruber" />
             </Form.Item>
             <Divider orientation="left" plain>
               Response Format Preferences

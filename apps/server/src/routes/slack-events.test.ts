@@ -136,6 +136,7 @@ const createApp = () => {
   const posts: Array<{ channel: string; text: string }> = [];
   const reactions: Array<{ channel: string; timestamp: string; name: string }> = [];
   const slackEvents: Array<{ status: string; eventType?: string | null; errorMessage?: string | null }> = [];
+  let profileLookups = 0;
   const store = new MemorySlackAssistantStore();
   registerSlackEventRoutes(app, {
     repositoryStore: {
@@ -162,7 +163,10 @@ const createApp = () => {
     } as never,
     slackAssistantStore: store,
     slackClient: {
-      getUserProfile: async () => ({ id: "U1", name: "Alice" }),
+      getUserProfile: async () => {
+        profileLookups += 1;
+        return { id: "U1", name: "Alice" };
+      },
       postMessage: async (_botToken, channel, text) => {
         posts.push({ channel, text });
       },
@@ -174,7 +178,7 @@ const createApp = () => {
       respond: async (input) => `Reply to ${input.user.slackUsername}: ${input.text}`
     }
   });
-  return { app, posts, reactions, slackEvents, store };
+  return { app, posts, reactions, slackEvents, store, getProfileLookups: () => profileLookups };
 };
 
 const createAppWithUsers = (users: User[]) => {
@@ -187,6 +191,7 @@ const createAppWithUsers = (users: User[]) => {
   const posts: Array<{ channel: string; text: string }> = [];
   const reactions: Array<{ channel: string; timestamp: string; name: string }> = [];
   const slackEvents: Array<{ status: string; eventType?: string | null; errorMessage?: string | null }> = [];
+  let profileLookups = 0;
   const store = new MemorySlackAssistantStore();
   registerSlackEventRoutes(app, {
     repositoryStore: {
@@ -213,7 +218,10 @@ const createAppWithUsers = (users: User[]) => {
     } as never,
     slackAssistantStore: store,
     slackClient: {
-      getUserProfile: async () => ({ id: "U1", name: "Alice" }),
+      getUserProfile: async () => {
+        profileLookups += 1;
+        return { id: "U1", name: "Alice" };
+      },
       postMessage: async (_botToken, channel, text) => {
         posts.push({ channel, text });
       },
@@ -222,10 +230,10 @@ const createAppWithUsers = (users: User[]) => {
       }
     },
     runtime: {
-      respond: async () => "should not run"
+      respond: async () => "Reply by id"
     }
   });
-  return { app, posts, reactions, slackEvents, store };
+  return { app, posts, reactions, slackEvents, store, getProfileLookups: () => profileLookups };
 };
 
 test("Slack event route responds to URL verification", async () => {
@@ -301,6 +309,33 @@ test("Slack event route replies with setup message when no active profile matche
   assert.equal(slackEvents.at(-1)?.status, "ignored");
   assert.equal(slackEvents.at(-1)?.errorMessage, "unmatched_user");
   assert.equal(store.conversations.size, 0);
+  await app.close();
+});
+
+test("Slack event route matches a user by Slack user ID without profile lookup", async () => {
+  const { app, posts, getProfileLookups } = createAppWithUsers([{ ...user, slackUsername: "U1" }]);
+  const payload = JSON.stringify({
+    type: "event_callback",
+    team_id: "T1",
+    event: {
+      type: "message",
+      channel_type: "im",
+      user: "U1",
+      channel: "D1",
+      text: "hello"
+    }
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/repositories/repo-1/slack/events",
+    headers: { "content-type": "application/json", ...sign(payload) },
+    payload
+  });
+
+  assert.equal(response.statusCode, 200);
+  await waitForBackgroundWork();
+  assert.equal(getProfileLookups(), 0);
+  assert.deepEqual(posts, [{ channel: "D1", text: "Reply by id" }]);
   await app.close();
 });
 

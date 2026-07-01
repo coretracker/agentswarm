@@ -27,18 +27,20 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const stringValue = (record: Record<string, unknown>, key: string): string | null =>
   typeof record[key] === "string" && record[key].trim().length > 0 ? record[key].trim() : null;
 
-const normalizeSlackUsername = (value: string | null | undefined): string | null => {
-  const normalized = (value ?? "").trim().replace(/^@+/, "").toLowerCase();
+const normalizeSlackIdentity = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().replace(/^@+/, "").replace(/\s+/g, " ").toLowerCase();
   return normalized || null;
 };
 
-const findUserBySlackUsername = async (userStore: UserStore, slackUsername: string): Promise<User | null> => {
-  const normalized = normalizeSlackUsername(slackUsername);
-  if (!normalized) {
+const findUserBySlackIdentity = async (userStore: UserStore, identities: Array<string | null | undefined>): Promise<User | null> => {
+  const normalizedIdentities = new Set(
+    identities.map((identity) => normalizeSlackIdentity(identity)).filter((identity): identity is string => Boolean(identity))
+  );
+  if (normalizedIdentities.size === 0) {
     return null;
   }
   const users = await userStore.listUsers();
-  return users.find((user) => user.active && normalizeSlackUsername(user.slackUsername) === normalized) ?? null;
+  return users.find((user) => user.active && normalizedIdentities.has(normalizeSlackIdentity(user.slackUsername) ?? "")) ?? null;
 };
 
 export const registerSlackEventRoutes = (
@@ -125,15 +127,17 @@ export const registerSlackEventRoutes = (
         .catch((error) => request.log.warn({ err: error, repositoryId: integration.repository.id }, "slack.reaction.failed"));
     }
 
-    let profile: Awaited<ReturnType<SlackClient["getUserProfile"]>>;
-    try {
-      profile = await slackClient.getUserProfile(integration.botToken, slackUserId);
-    } catch (error) {
-      await recordSlackEvent("failed", "message.im", error instanceof Error ? error.message : "profile_lookup_failed");
-      throw error;
+    let user = await findUserBySlackIdentity(deps.userStore, [slackUserId]);
+    if (!user) {
+      let profile: Awaited<ReturnType<SlackClient["getUserProfile"]>>;
+      try {
+        profile = await slackClient.getUserProfile(integration.botToken, slackUserId);
+      } catch (error) {
+        await recordSlackEvent("failed", "message.im", error instanceof Error ? error.message : "profile_lookup_failed");
+        throw error;
+      }
+      user = await findUserBySlackIdentity(deps.userStore, [profile?.id, profile?.name, profile?.displayName, profile?.realName]);
     }
-    const slackUsername = normalizeSlackUsername(profile?.name);
-    const user = slackUsername ? await findUserBySlackUsername(deps.userStore, slackUsername) : null;
     if (!user) {
       await slackClient.postMessage(
         integration.botToken,

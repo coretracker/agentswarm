@@ -1,6 +1,8 @@
 export interface SlackUserProfile {
   id: string;
   name: string | null;
+  displayName?: string | null;
+  realName?: string | null;
 }
 
 export interface SlackClient {
@@ -44,7 +46,9 @@ export class FetchSlackClient implements SlackClient {
       id: stringValue(user, "id") ?? slackUserId,
       name:
         stringValue(user, "name") ??
-        (profile ? stringValue(profile, "display_name_normalized") ?? stringValue(profile, "real_name_normalized") : null)
+        (profile ? stringValue(profile, "display_name_normalized") ?? stringValue(profile, "real_name_normalized") : null),
+      displayName: profile ? stringValue(profile, "display_name") ?? stringValue(profile, "display_name_normalized") : null,
+      realName: profile ? stringValue(profile, "real_name") ?? stringValue(profile, "real_name_normalized") : null
     };
   }
 
