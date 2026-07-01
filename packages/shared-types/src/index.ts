@@ -923,6 +923,11 @@ export interface SystemSettings {
   slackAgentMcpServers: McpServerConfig[];
   slackAssistantProvider: AgentProvider;
   slackAssistantModel: string;
+  slackHarnessWhatExists: string | null;
+  slackHarnessAllowedActions: string | null;
+  slackHarnessHowToWork: string | null;
+  slackHarnessDefinitionOfDone: string | null;
+  slackHarnessEvidenceExpectations: string | null;
   slackBotTokenConfigured: boolean;
   slackSigningSecretConfigured: boolean;
   slackLastEventAt: string | null;
@@ -1408,6 +1413,11 @@ export interface UpdateSettingsInput {
   slackAgentMcpServers?: McpServerConfig[];
   slackAssistantProvider?: AgentProvider;
   slackAssistantModel?: string;
+  slackHarnessWhatExists?: string | null;
+  slackHarnessAllowedActions?: string | null;
+  slackHarnessHowToWork?: string | null;
+  slackHarnessDefinitionOfDone?: string | null;
+  slackHarnessEvidenceExpectations?: string | null;
   slackBotToken?: string;
   clearSlackBotToken?: boolean;
   slackSigningSecret?: string;

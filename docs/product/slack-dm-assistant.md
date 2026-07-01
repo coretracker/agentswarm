@@ -7,6 +7,7 @@ In the first implementation slice:
 - Users add a Slack username to their profile.
 - Workspace admins configure a Slack bot token and signing secret in Settings -> Integrations.
 - Workspace admins can configure extra Slack agent MCP servers in Settings -> Integrations.
+- Workspace admins can configure Slack-specific Harness guidance in Settings -> Integrations. AgentSwarm writes it as `AGENTS.md` in Slack assistant workspaces.
 - Slack sends DM events to the global Slack events URL.
 - AgentSwarm verifies Slack signatures, resolves the Slack sender to an active AgentSwarm user by username, persists a detached conversation record, and posts a reply back to the same DM.
 - AgentSwarm starts a detached Codex or Claude runtime using the system default provider and the matched user's runtime credentials.

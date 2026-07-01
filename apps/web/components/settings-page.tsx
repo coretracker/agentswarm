@@ -75,6 +75,11 @@ interface GeneralSettingsForm {
   claudeDefaultEffort: ProviderProfile;
   slackAssistantProvider: AgentProvider;
   slackAssistantModel: string;
+  slackHarnessWhatExists: string;
+  slackHarnessAllowedActions: string;
+  slackHarnessHowToWork: string;
+  slackHarnessDefinitionOfDone: string;
+  slackHarnessEvidenceExpectations: string;
   slackAgentMcpServers: Array<{
     name: string;
     enabled: boolean;
@@ -206,6 +211,11 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   claudeDefaultEffort: settings.claudeDefaultEffort,
   slackAssistantProvider: settings.slackAssistantProvider,
   slackAssistantModel: settings.slackAssistantModel,
+  slackHarnessWhatExists: settings.slackHarnessWhatExists ?? "",
+  slackHarnessAllowedActions: settings.slackHarnessAllowedActions ?? "",
+  slackHarnessHowToWork: settings.slackHarnessHowToWork ?? "",
+  slackHarnessDefinitionOfDone: settings.slackHarnessDefinitionOfDone ?? "",
+  slackHarnessEvidenceExpectations: settings.slackHarnessEvidenceExpectations ?? "",
   slackAgentMcpServers: (settings.slackAgentMcpServers ?? []).map((server) => ({
     name: server.name,
     enabled: server.enabled,
@@ -621,6 +631,11 @@ export function SettingsPage() {
         claudeDefaultEffort: values.claudeDefaultEffort,
         slackAssistantProvider: values.slackAssistantProvider,
         slackAssistantModel: values.slackAssistantModel.trim(),
+        slackHarnessWhatExists: values.slackHarnessWhatExists.trim() || null,
+        slackHarnessAllowedActions: values.slackHarnessAllowedActions.trim() || null,
+        slackHarnessHowToWork: values.slackHarnessHowToWork.trim() || null,
+        slackHarnessDefinitionOfDone: values.slackHarnessDefinitionOfDone.trim() || null,
+        slackHarnessEvidenceExpectations: values.slackHarnessEvidenceExpectations.trim() || null,
         slackAgentMcpServers: values.slackAgentMcpServers.map((server) =>
           server.transport === "http"
             ? {
@@ -1131,97 +1146,154 @@ export function SettingsPage() {
             onValuesChange={() => markGeneralTabDirty("integrations")}
             onFinish={saveGeneralSettings}
           >
-            <Card bordered={false} loading={loading} title="Slack Integration">
-              <Flex vertical gap={16} style={{ width: "100%" }}>
-                <Form.Item label="Events URL">
-                  <Input
-                    readOnly
-                    value={buildApiUrl("/slack/events")}
-                    addonAfter={
-                      <Button
-                        type="link"
-                        size="small"
-                        onClick={() => {
-                          void navigator.clipboard.writeText(buildApiUrl("/slack/events"));
-                          message.success("Slack events URL copied");
-                        }}
-                      >
-                        Copy
-                      </Button>
+            <Space direction="vertical" size={16} style={{ width: "100%" }}>
+              <Card bordered={false} loading={loading} title="General">
+                <Flex vertical gap={16} style={{ width: "100%" }}>
+                  <Form.Item label="Events URL">
+                    <Input
+                      readOnly
+                      value={buildApiUrl("/slack/events")}
+                      addonAfter={
+                        <Button
+                          type="link"
+                          size="small"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(buildApiUrl("/slack/events"));
+                            message.success("Slack events URL copied");
+                          }}
+                        >
+                          Copy
+                        </Button>
+                      }
+                    />
+                  </Form.Item>
+                  <Space size={[8, 8]} wrap>
+                    <Tag color={settings?.slackBotTokenConfigured ? "green" : "default"}>Bot token</Tag>
+                    <Tag color={settings?.slackSigningSecretConfigured ? "green" : "default"}>Signing secret</Tag>
+                    <Tag color={slackEventStatusColor(settings?.slackLastEventStatus)}>{settings?.slackLastEventStatus ?? "waiting"}</Tag>
+                  </Space>
+                  <Space direction="vertical" size={2}>
+                    <Typography.Text>{formatNullableDate(settings?.slackLastEventAt)}</Typography.Text>
+                    {settings?.slackLastEventType ? (
+                      <Typography.Text type="secondary">{settings.slackLastEventType}</Typography.Text>
+                    ) : null}
+                    {settings?.slackLastEventError ? (
+                      <Typography.Text type="secondary">{settings.slackLastEventError}</Typography.Text>
+                    ) : null}
+                  </Space>
+                  <Form.Item
+                    name="slackBotToken"
+                    label={
+                      settings?.slackBotTokenConfigured ? "Slack Bot Token (leave blank to keep existing)" : "Slack Bot Token"
                     }
-                  />
-                </Form.Item>
-                <Space size={[8, 8]} wrap>
-                  <Tag color={settings?.slackBotTokenConfigured ? "green" : "default"}>Bot token</Tag>
-                  <Tag color={settings?.slackSigningSecretConfigured ? "green" : "default"}>Signing secret</Tag>
-                  <Tag color={slackEventStatusColor(settings?.slackLastEventStatus)}>{settings?.slackLastEventStatus ?? "waiting"}</Tag>
-                </Space>
-                <Space direction="vertical" size={2}>
-                  <Typography.Text>{formatNullableDate(settings?.slackLastEventAt)}</Typography.Text>
-                  {settings?.slackLastEventType ? (
-                    <Typography.Text type="secondary">{settings.slackLastEventType}</Typography.Text>
-                  ) : null}
-                  {settings?.slackLastEventError ? (
-                    <Typography.Text type="secondary">{settings.slackLastEventError}</Typography.Text>
-                  ) : null}
-                </Space>
-                <Form.Item
-                  name="slackBotToken"
-                  label={
-                    settings?.slackBotTokenConfigured ? "Slack Bot Token (leave blank to keep existing)" : "Slack Bot Token"
-                  }
-                >
-                  <Input.Password placeholder="xoxb-..." autoComplete="off" />
-                </Form.Item>
-                {settings?.slackBotTokenConfigured ? (
-                  <Form.Item name="clearSlackBotToken" valuePropName="checked">
-                    <Checkbox>Clear stored Slack bot token</Checkbox>
+                  >
+                    <Input.Password placeholder="xoxb-..." autoComplete="off" />
                   </Form.Item>
-                ) : null}
-                <Form.Item
-                  name="slackSigningSecret"
-                  label={
-                    settings?.slackSigningSecretConfigured
-                      ? "Slack Signing Secret (leave blank to keep existing)"
-                      : "Slack Signing Secret"
-                  }
-                >
-                  <Input.Password autoComplete="off" />
-                </Form.Item>
-                {settings?.slackSigningSecretConfigured ? (
-                  <Form.Item name="clearSlackSigningSecret" valuePropName="checked">
-                    <Checkbox>Clear stored Slack signing secret</Checkbox>
+                  {settings?.slackBotTokenConfigured ? (
+                    <Form.Item name="clearSlackBotToken" valuePropName="checked">
+                      <Checkbox>Clear stored Slack bot token</Checkbox>
+                    </Form.Item>
+                  ) : null}
+                  <Form.Item
+                    name="slackSigningSecret"
+                    label={
+                      settings?.slackSigningSecretConfigured
+                        ? "Slack Signing Secret (leave blank to keep existing)"
+                        : "Slack Signing Secret"
+                    }
+                  >
+                    <Input.Password autoComplete="off" />
                   </Form.Item>
-                ) : null}
-                <Alert
-                  type="info"
-                  showIcon
-                  message="Slack agent MCP"
-                  description="AgentSwarm MCP is added automatically. Add extra MCP servers here for Slack DM assistant runs."
-                />
-                <Form.Item name="slackAssistantProvider" label="Assistant Provider" rules={[{ required: true }]}>
-                  <Select
-                    options={providerOptions}
-                    onChange={(provider: AgentProvider) => {
-                      const fallbackModel =
-                        provider === "claude"
-                          ? generalForm.getFieldValue("claudeDefaultModel") || settings?.claudeDefaultModel || ""
-                          : generalForm.getFieldValue("codexDefaultModel") || settings?.codexDefaultModel || "";
-                      generalForm.setFieldValue("slackAssistantModel", fallbackModel);
-                    }}
+                  {settings?.slackSigningSecretConfigured ? (
+                    <Form.Item name="clearSlackSigningSecret" valuePropName="checked">
+                      <Checkbox>Clear stored Slack signing secret</Checkbox>
+                    </Form.Item>
+                  ) : null}
+                </Flex>
+              </Card>
+              <Card bordered={false} loading={loading} title="AI Defaults">
+                <Flex vertical gap={16} style={{ width: "100%" }}>
+                  <Form.Item name="slackAssistantProvider" label="Assistant Provider" rules={[{ required: true }]}>
+                    <Select
+                      options={providerOptions}
+                      onChange={(provider: AgentProvider) => {
+                        const fallbackModel =
+                          provider === "claude"
+                            ? generalForm.getFieldValue("claudeDefaultModel") || settings?.claudeDefaultModel || ""
+                            : generalForm.getFieldValue("codexDefaultModel") || settings?.codexDefaultModel || "";
+                        generalForm.setFieldValue("slackAssistantModel", fallbackModel);
+                      }}
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    name="slackAssistantModel"
+                    label="Assistant Model"
+                    extra="Model used by Slack assistant DM sessions."
+                    rules={[{ required: true, whitespace: true, message: "Select or enter a model" }]}
+                  >
+                    <ModelSelect options={slackAssistantModelOptions} loading={slackAssistantProviderFormValue === "claude" ? claudeModelsLoading : codexModelsLoading} />
+                  </Form.Item>
+                </Flex>
+              </Card>
+              <Card bordered={false} loading={loading} title="MCP">
+                <Flex vertical gap={16} style={{ width: "100%" }}>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="Slack agent MCP"
+                    description="AgentSwarm MCP is added automatically. Add extra MCP servers here for Slack DM assistant runs."
                   />
-                </Form.Item>
-                <Form.Item
-                  name="slackAssistantModel"
-                  label="Assistant Model"
-                  extra="Model used by Slack assistant DM sessions."
-                  rules={[{ required: true, whitespace: true, message: "Select or enter a model" }]}
-                >
-                  <ModelSelect options={slackAssistantModelOptions} loading={slackAssistantProviderFormValue === "claude" ? claudeModelsLoading : codexModelsLoading} />
-                </Form.Item>
-                {renderSlackMcpServerList()}
-              </Flex>
-            </Card>
+                  {renderSlackMcpServerList()}
+                </Flex>
+              </Card>
+              <Card bordered={false} loading={loading} title="Harness">
+                <Flex vertical gap={12}>
+                  <Typography.Text type="secondary">
+                    Write standing Slack assistant guidance. These fields are optional and are written to AGENTS.md in Slack assistant workspaces.
+                  </Typography.Text>
+                  <Form.Item
+                    name="slackHarnessWhatExists"
+                    label="1. What exists?"
+                    extra="Slack assistant context: available AgentSwarm data, Slack DM behavior, MCP tools, and workspace expectations."
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="slackHarnessAllowedActions"
+                    label="2. What is allowed?"
+                    extra="Constraints and policies: what the Slack assistant may read or change, permission limits, and escalation rules."
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="slackHarnessHowToWork"
+                    label="3. How should you work?"
+                    extra="Process and decision-making: how to answer Slack users, when to use MCP, and when to ask clarifying questions."
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="slackHarnessDefinitionOfDone"
+                    label="4. How do you know you are done?"
+                    extra="Completion rules for Slack replies, task creation, follow-up handling, and validation."
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="slackHarnessEvidenceExpectations"
+                    label="5. How do you prove it?"
+                    extra="Expected proof in Slack replies: checked data, created tasks, links, caveats, and skipped checks."
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                  </Form.Item>
+                </Flex>
+              </Card>
+            </Space>
             {renderSaveBar({ dirty: generalDirty, label: "Save Slack Settings", loading: savingGeneral })}
           </Form>
         ) : null}

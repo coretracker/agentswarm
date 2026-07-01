@@ -747,5 +747,23 @@ Feedback:
       ALTER TABLE system_settings
       ALTER COLUMN slack_assistant_model SET NOT NULL;
     `
+  },
+  {
+    id: "20260701_07_global_slack_harness_fields",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS slack_harness_what_exists text NULL,
+      ADD COLUMN IF NOT EXISTS slack_harness_allowed_actions text NULL,
+      ADD COLUMN IF NOT EXISTS slack_harness_how_to_work text NULL,
+      ADD COLUMN IF NOT EXISTS slack_harness_definition_of_done text NULL,
+      ADD COLUMN IF NOT EXISTS slack_harness_evidence_expectations text NULL;
+    `
+  },
+  {
+    id: "20260701_08_personal_access_token_runtime_context",
+    sql: `
+      ALTER TABLE personal_access_tokens
+      ADD COLUMN IF NOT EXISTS runtime_context jsonb NULL;
+    `
   }
 ];

@@ -87,6 +87,11 @@ const defaultSettings: SystemSettings = {
   slackAgentMcpServers: [],
   slackAssistantProvider: DEFAULT_PROVIDER,
   slackAssistantModel: defaultModelForProvider(DEFAULT_PROVIDER, DEFAULT_CODEX_EFFORT) ?? "gpt-5.5",
+  slackHarnessWhatExists: null,
+  slackHarnessAllowedActions: null,
+  slackHarnessHowToWork: null,
+  slackHarnessDefinitionOfDone: null,
+  slackHarnessEvidenceExpectations: null,
   slackBotTokenConfigured: false,
   slackSigningSecretConfigured: false,
   slackLastEventAt: null,
@@ -129,6 +134,11 @@ const normalizeOptionalUrl = (value: string | null | undefined): string | null =
 };
 
 const normalizeSecret = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const normalizeHarnessValue = (value: string | null | undefined): string | null => {
   const normalized = (value ?? "").trim();
   return normalized.length > 0 ? normalized : null;
 };
@@ -438,6 +448,11 @@ export interface SlackIntegrationSettings {
   slackAgentMcpServers: McpServerConfig[];
   slackAssistantProvider: AgentProvider;
   slackAssistantModel: string;
+  slackHarnessWhatExists: string | null;
+  slackHarnessAllowedActions: string | null;
+  slackHarnessHowToWork: string | null;
+  slackHarnessDefinitionOfDone: string | null;
+  slackHarnessEvidenceExpectations: string | null;
   mcpRuntimeEnv?: Record<string, string>;
 }
 
@@ -497,6 +512,11 @@ export class RedisSettingsStore implements SettingsStore {
         slackAgentMcpServers: defaultSettings.slackAgentMcpServers,
         slackAssistantProvider: defaultSettings.slackAssistantProvider,
         slackAssistantModel: defaultSettings.slackAssistantModel,
+        slackHarnessWhatExists: defaultSettings.slackHarnessWhatExists,
+        slackHarnessAllowedActions: defaultSettings.slackHarnessAllowedActions,
+        slackHarnessHowToWork: defaultSettings.slackHarnessHowToWork,
+        slackHarnessDefinitionOfDone: defaultSettings.slackHarnessDefinitionOfDone,
+        slackHarnessEvidenceExpectations: defaultSettings.slackHarnessEvidenceExpectations,
         slackBotToken: null,
         slackSigningSecret: null,
         slackLastEventAt: defaultSettings.slackLastEventAt,
@@ -558,6 +578,11 @@ export class RedisSettingsStore implements SettingsStore {
       slackAgentMcpServers: normalizeSlackAgentMcpServersForRead(storedSlackAgentMcpServers),
       slackAssistantProvider: normalizedSlackAssistantProvider,
       slackAssistantModel: normalizedSlackAssistantModel,
+      slackHarnessWhatExists: normalizeHarnessValue(parsed.slackHarnessWhatExists),
+      slackHarnessAllowedActions: normalizeHarnessValue(parsed.slackHarnessAllowedActions),
+      slackHarnessHowToWork: normalizeHarnessValue(parsed.slackHarnessHowToWork),
+      slackHarnessDefinitionOfDone: normalizeHarnessValue(parsed.slackHarnessDefinitionOfDone),
+      slackHarnessEvidenceExpectations: normalizeHarnessValue(parsed.slackHarnessEvidenceExpectations),
       slackBotTokenConfigured: Boolean(slackBotToken),
       slackSigningSecretConfigured: Boolean(slackSigningSecret),
       slackLastEventAt: normalizeSlackEventValue(parsed.slackLastEventAt),
@@ -599,6 +624,11 @@ export class RedisSettingsStore implements SettingsStore {
         normalizedBase.codexDefaultModel,
         normalizedBase.claudeDefaultModel
       ) !== normalizedBase.slackAssistantModel ||
+      normalizeHarnessValue(parsed.slackHarnessWhatExists) !== normalizedBase.slackHarnessWhatExists ||
+      normalizeHarnessValue(parsed.slackHarnessAllowedActions) !== normalizedBase.slackHarnessAllowedActions ||
+      normalizeHarnessValue(parsed.slackHarnessHowToWork) !== normalizedBase.slackHarnessHowToWork ||
+      normalizeHarnessValue(parsed.slackHarnessDefinitionOfDone) !== normalizedBase.slackHarnessDefinitionOfDone ||
+      normalizeHarnessValue(parsed.slackHarnessEvidenceExpectations) !== normalizedBase.slackHarnessEvidenceExpectations ||
       normalizeSecret(parsed.slackBotToken) !== slackBotToken ||
       normalizeSecret(parsed.slackSigningSecret) !== slackSigningSecret ||
       normalizeSlackEventValue(parsed.slackLastEventAt) !== normalizedBase.slackLastEventAt ||
@@ -628,6 +658,11 @@ export class RedisSettingsStore implements SettingsStore {
           slackAgentMcpServers?: unknown;
           slackAssistantProvider?: AgentProvider | string;
           slackAssistantModel?: string | null;
+          slackHarnessWhatExists?: string | null;
+          slackHarnessAllowedActions?: string | null;
+          slackHarnessHowToWork?: string | null;
+          slackHarnessDefinitionOfDone?: string | null;
+          slackHarnessEvidenceExpectations?: string | null;
         })
       : {};
     const currentStoredSlackAgentMcpServers = normalizeSlackAgentMcpServersForStorage(
@@ -704,6 +739,20 @@ export class RedisSettingsStore implements SettingsStore {
       slackAgentMcpServers: nextSlackAgentMcpServers,
       slackAssistantProvider: nextSlackAssistantProvider,
       slackAssistantModel: nextSlackAssistantModel,
+      slackHarnessWhatExists:
+        input.slackHarnessWhatExists === undefined ? current.slackHarnessWhatExists : normalizeHarnessValue(input.slackHarnessWhatExists),
+      slackHarnessAllowedActions:
+        input.slackHarnessAllowedActions === undefined ? current.slackHarnessAllowedActions : normalizeHarnessValue(input.slackHarnessAllowedActions),
+      slackHarnessHowToWork:
+        input.slackHarnessHowToWork === undefined ? current.slackHarnessHowToWork : normalizeHarnessValue(input.slackHarnessHowToWork),
+      slackHarnessDefinitionOfDone:
+        input.slackHarnessDefinitionOfDone === undefined
+          ? current.slackHarnessDefinitionOfDone
+          : normalizeHarnessValue(input.slackHarnessDefinitionOfDone),
+      slackHarnessEvidenceExpectations:
+        input.slackHarnessEvidenceExpectations === undefined
+          ? current.slackHarnessEvidenceExpectations
+          : normalizeHarnessValue(input.slackHarnessEvidenceExpectations),
       slackBotTokenConfigured: Boolean(nextSlackBotToken),
       slackSigningSecretConfigured: Boolean(nextSlackSigningSecret),
       slackLastEventAt: current.slackLastEventAt,
@@ -766,6 +815,11 @@ export class RedisSettingsStore implements SettingsStore {
           slackAgentMcpServers?: unknown;
           slackAssistantProvider?: AgentProvider | string;
           slackAssistantModel?: string | null;
+          slackHarnessWhatExists?: string | null;
+          slackHarnessAllowedActions?: string | null;
+          slackHarnessHowToWork?: string | null;
+          slackHarnessDefinitionOfDone?: string | null;
+          slackHarnessEvidenceExpectations?: string | null;
         })
       : {};
     const botToken = normalizeSecret(parsed.slackBotToken);
@@ -792,6 +846,11 @@ export class RedisSettingsStore implements SettingsStore {
       slackAgentMcpServers: runtimeMcp.servers,
       slackAssistantProvider,
       slackAssistantModel,
+      slackHarnessWhatExists: normalizeHarnessValue(parsed.slackHarnessWhatExists),
+      slackHarnessAllowedActions: normalizeHarnessValue(parsed.slackHarnessAllowedActions),
+      slackHarnessHowToWork: normalizeHarnessValue(parsed.slackHarnessHowToWork),
+      slackHarnessDefinitionOfDone: normalizeHarnessValue(parsed.slackHarnessDefinitionOfDone),
+      slackHarnessEvidenceExpectations: normalizeHarnessValue(parsed.slackHarnessEvidenceExpectations),
       mcpRuntimeEnv: runtimeMcp.env
     };
   }
@@ -892,6 +951,11 @@ export class PostgresSettingsStore implements SettingsStore {
           slack_agent_mcp_servers,
           slack_assistant_provider,
           slack_assistant_model,
+          slack_harness_what_exists,
+          slack_harness_allowed_actions,
+          slack_harness_how_to_work,
+          slack_harness_definition_of_done,
+          slack_harness_evidence_expectations,
           slack_bot_token,
           slack_signing_secret,
           slack_last_event_at,
@@ -900,7 +964,7 @@ export class PostgresSettingsStore implements SettingsStore {
           slack_last_event_error,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19::jsonb, $20, $21::jsonb, $22, $23, $24, $25, $26, $27, $28, $29, $30::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19::jsonb, $20, $21::jsonb, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
@@ -927,6 +991,11 @@ export class PostgresSettingsStore implements SettingsStore {
         JSON.stringify(defaultSettings.slackAgentMcpServers),
         defaultSettings.slackAssistantProvider,
         defaultSettings.slackAssistantModel,
+        defaultSettings.slackHarnessWhatExists,
+        defaultSettings.slackHarnessAllowedActions,
+        defaultSettings.slackHarnessHowToWork,
+        defaultSettings.slackHarnessDefinitionOfDone,
+        defaultSettings.slackHarnessEvidenceExpectations,
         null,
         null,
         defaultSettings.slackLastEventAt,
@@ -981,6 +1050,11 @@ export class PostgresSettingsStore implements SettingsStore {
           slack_agent_mcp_servers,
           slack_assistant_provider,
           slack_assistant_model,
+          slack_harness_what_exists,
+          slack_harness_allowed_actions,
+          slack_harness_how_to_work,
+          slack_harness_definition_of_done,
+          slack_harness_evidence_expectations,
           slack_bot_token,
           slack_signing_secret,
           slack_last_event_at,
@@ -1053,6 +1127,17 @@ export class PostgresSettingsStore implements SettingsStore {
       ),
       slackAssistantProvider: normalizedSlackAssistantProvider,
       slackAssistantModel: normalizedSlackAssistantModel,
+      slackHarnessWhatExists: normalizeHarnessValue(typeof row?.slack_harness_what_exists === "string" ? row.slack_harness_what_exists : null),
+      slackHarnessAllowedActions: normalizeHarnessValue(
+        typeof row?.slack_harness_allowed_actions === "string" ? row.slack_harness_allowed_actions : null
+      ),
+      slackHarnessHowToWork: normalizeHarnessValue(typeof row?.slack_harness_how_to_work === "string" ? row.slack_harness_how_to_work : null),
+      slackHarnessDefinitionOfDone: normalizeHarnessValue(
+        typeof row?.slack_harness_definition_of_done === "string" ? row.slack_harness_definition_of_done : null
+      ),
+      slackHarnessEvidenceExpectations: normalizeHarnessValue(
+        typeof row?.slack_harness_evidence_expectations === "string" ? row.slack_harness_evidence_expectations : null
+      ),
       slackBotTokenConfigured: normalizeSecret(typeof row?.slack_bot_token === "string" ? row.slack_bot_token : null) !== null,
       slackSigningSecretConfigured: normalizeSecret(typeof row?.slack_signing_secret === "string" ? row.slack_signing_secret : null) !== null,
       slackLastEventAt: normalizeSlackEventValue(row?.slack_last_event_at),
@@ -1146,6 +1231,20 @@ export class PostgresSettingsStore implements SettingsStore {
       slackAgentMcpServers: nextSlackAgentMcpServers,
       slackAssistantProvider: nextSlackAssistantProvider,
       slackAssistantModel: nextSlackAssistantModel,
+      slackHarnessWhatExists:
+        input.slackHarnessWhatExists === undefined ? current.slackHarnessWhatExists : normalizeHarnessValue(input.slackHarnessWhatExists),
+      slackHarnessAllowedActions:
+        input.slackHarnessAllowedActions === undefined ? current.slackHarnessAllowedActions : normalizeHarnessValue(input.slackHarnessAllowedActions),
+      slackHarnessHowToWork:
+        input.slackHarnessHowToWork === undefined ? current.slackHarnessHowToWork : normalizeHarnessValue(input.slackHarnessHowToWork),
+      slackHarnessDefinitionOfDone:
+        input.slackHarnessDefinitionOfDone === undefined
+          ? current.slackHarnessDefinitionOfDone
+          : normalizeHarnessValue(input.slackHarnessDefinitionOfDone),
+      slackHarnessEvidenceExpectations:
+        input.slackHarnessEvidenceExpectations === undefined
+          ? current.slackHarnessEvidenceExpectations
+          : normalizeHarnessValue(input.slackHarnessEvidenceExpectations),
       slackBotTokenConfigured: Boolean(nextSlackBotToken),
       slackSigningSecretConfigured: Boolean(nextSlackSigningSecret),
       slackLastEventAt: current.slackLastEventAt,
@@ -1185,6 +1284,11 @@ export class PostgresSettingsStore implements SettingsStore {
           slack_agent_mcp_servers,
           slack_assistant_provider,
           slack_assistant_model,
+          slack_harness_what_exists,
+          slack_harness_allowed_actions,
+          slack_harness_how_to_work,
+          slack_harness_definition_of_done,
+          slack_harness_evidence_expectations,
           slack_bot_token,
           slack_signing_secret,
           slack_last_event_at,
@@ -1193,7 +1297,7 @@ export class PostgresSettingsStore implements SettingsStore {
           slack_last_event_error,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19::jsonb, $20, $21::jsonb, $22, $23, $24, $25, $26, $27, $28, $29, $30::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19::jsonb, $20, $21::jsonb, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
@@ -1219,6 +1323,11 @@ export class PostgresSettingsStore implements SettingsStore {
           slack_agent_mcp_servers = EXCLUDED.slack_agent_mcp_servers,
           slack_assistant_provider = EXCLUDED.slack_assistant_provider,
           slack_assistant_model = EXCLUDED.slack_assistant_model,
+          slack_harness_what_exists = EXCLUDED.slack_harness_what_exists,
+          slack_harness_allowed_actions = EXCLUDED.slack_harness_allowed_actions,
+          slack_harness_how_to_work = EXCLUDED.slack_harness_how_to_work,
+          slack_harness_definition_of_done = EXCLUDED.slack_harness_definition_of_done,
+          slack_harness_evidence_expectations = EXCLUDED.slack_harness_evidence_expectations,
           slack_bot_token = EXCLUDED.slack_bot_token,
           slack_signing_secret = EXCLUDED.slack_signing_secret,
           slack_last_event_at = EXCLUDED.slack_last_event_at,
@@ -1251,6 +1360,11 @@ export class PostgresSettingsStore implements SettingsStore {
         JSON.stringify(nextStoredSlackAgentMcpServers),
         nextBase.slackAssistantProvider,
         nextBase.slackAssistantModel,
+        nextBase.slackHarnessWhatExists,
+        nextBase.slackHarnessAllowedActions,
+        nextBase.slackHarnessHowToWork,
+        nextBase.slackHarnessDefinitionOfDone,
+        nextBase.slackHarnessEvidenceExpectations,
         nextSlackBotToken,
         nextSlackSigningSecret,
         nextBase.slackLastEventAt,
@@ -1302,7 +1416,12 @@ export class PostgresSettingsStore implements SettingsStore {
           slack_signing_secret,
           slack_agent_mcp_servers,
           slack_assistant_provider,
-          slack_assistant_model
+          slack_assistant_model,
+          slack_harness_what_exists,
+          slack_harness_allowed_actions,
+          slack_harness_how_to_work,
+          slack_harness_definition_of_done,
+          slack_harness_evidence_expectations
         FROM system_settings
         WHERE singleton_id = 1
       `
@@ -1338,6 +1457,17 @@ export class PostgresSettingsStore implements SettingsStore {
       slackAgentMcpServers: runtimeMcp.servers,
       slackAssistantProvider,
       slackAssistantModel,
+      slackHarnessWhatExists: normalizeHarnessValue(typeof row?.slack_harness_what_exists === "string" ? row.slack_harness_what_exists : null),
+      slackHarnessAllowedActions: normalizeHarnessValue(
+        typeof row?.slack_harness_allowed_actions === "string" ? row.slack_harness_allowed_actions : null
+      ),
+      slackHarnessHowToWork: normalizeHarnessValue(typeof row?.slack_harness_how_to_work === "string" ? row.slack_harness_how_to_work : null),
+      slackHarnessDefinitionOfDone: normalizeHarnessValue(
+        typeof row?.slack_harness_definition_of_done === "string" ? row.slack_harness_definition_of_done : null
+      ),
+      slackHarnessEvidenceExpectations: normalizeHarnessValue(
+        typeof row?.slack_harness_evidence_expectations === "string" ? row.slack_harness_evidence_expectations : null
+      ),
       mcpRuntimeEnv: runtimeMcp.env
     };
   }

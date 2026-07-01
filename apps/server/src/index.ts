@@ -26,6 +26,7 @@ import { registerSnippetRoutes } from "./routes/snippets.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 import { registerMcpRoutes } from "./mcp/server.js";
 import { DockerSlackAssistantRuntime } from "./services/slack-assistant-service.js";
+import { FetchSlackClient } from "./services/slack-client.js";
 
 const readHeaderValue = (value: string | string[] | undefined): string | null => {
   if (typeof value === "string") {
@@ -161,6 +162,7 @@ const bootstrap = async (): Promise<void> => {
   const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore, undefined, personalAccessTokenStore);
   const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
   const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
+  const slackClient = new FetchSlackClient();
   const slackAssistantRuntime = new DockerSlackAssistantRuntime({
     settingsStore,
     personalAccessTokenStore,
@@ -191,7 +193,7 @@ const bootstrap = async (): Promise<void> => {
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerGitHubPrWebhookRoutes(app, { repositoryStore, taskStore, taskQueueStore, scheduler, settingsStore, spawner });
-  registerSlackEventRoutes(app, { settingsStore, userStore, slackAssistantStore, runtime: slackAssistantRuntime });
+  registerSlackEventRoutes(app, { settingsStore, userStore, slackAssistantStore, runtime: slackAssistantRuntime, slackClient });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
   registerMcpRoutes(app, {
     auth,
@@ -200,7 +202,8 @@ const bootstrap = async (): Promise<void> => {
     taskStore,
     taskQueueStore,
     scheduler,
-    spawner
+    spawner,
+    slackClient
   });
 
   app.get("/health", async () => ({ ok: true }));

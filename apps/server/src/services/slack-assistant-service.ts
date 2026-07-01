@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { nanoid } from "nanoid";
@@ -134,6 +134,29 @@ const mergeSlackRuntimeMcpServers = (agentSwarmServer: McpServerConfig, slackAge
 const normalizePermissionScopes = (scopes: PermissionScope[] | undefined): PermissionScope[] =>
   Array.from(new Set((scopes ?? []).map((scope) => scope?.trim() as PermissionScope).filter(Boolean)));
 
+const normalizeHarnessSection = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const buildSlackHarnessMarkdown = (
+  integration: Awaited<ReturnType<SettingsStore["getSlackIntegration"]>>
+): string | null => {
+  const sections = [
+    { heading: "What exists?", content: normalizeHarnessSection(integration?.slackHarnessWhatExists) },
+    { heading: "What is allowed?", content: normalizeHarnessSection(integration?.slackHarnessAllowedActions) },
+    { heading: "How should you work?", content: normalizeHarnessSection(integration?.slackHarnessHowToWork) },
+    { heading: "How do you know you are done?", content: normalizeHarnessSection(integration?.slackHarnessDefinitionOfDone) },
+    { heading: "How do you prove it?", content: normalizeHarnessSection(integration?.slackHarnessEvidenceExpectations) }
+  ].filter((section): section is { heading: string; content: string } => Boolean(section.content));
+
+  if (sections.length === 0) {
+    return null;
+  }
+
+  return ["# Slack Agent Harness", ...sections.flatMap((section) => [``, `## ${section.heading}`, section.content])].join("\n");
+};
+
 const buildConversationPrompt = (input: SlackAssistantMessageInput): string => {
   const turns = input.conversation.turns.slice(-24);
   const transcript = turns
@@ -173,6 +196,7 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
 
   private async buildRuntimeMcpConfig(
     user: User,
+    conversation: SlackAssistantConversation,
     slackAgentMcpServers: McpServerConfig[],
     slackAgentMcpRuntimeEnv: Record<string, string>,
     executionId: string,
@@ -183,7 +207,12 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
       userId: user.id,
       name: `Slack DM runtime MCP ${executionId}`,
       scopes: tokenScopes.length > 0 ? tokenScopes : SLACK_ASSISTANT_MCP_SCOPES,
-      expiresAt: new Date(this.now().getTime() + SLACK_ASSISTANT_MCP_TOKEN_TTL_MS).toISOString()
+      expiresAt: new Date(this.now().getTime() + SLACK_ASSISTANT_MCP_TOKEN_TTL_MS).toISOString(),
+      runtimeContext: {
+        kind: "slack_assistant",
+        conversationId: conversation.id,
+        slackChannelId: conversation.slackChannelId
+      }
     });
     const endpoints = internalAgentSwarmMcpEndpoints();
     const agentSwarmMcpEnv = {
@@ -251,6 +280,7 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
     ]);
     const runtimeMcp = await this.buildRuntimeMcpConfig(
       input.user,
+      input.conversation,
       configuredSlackAgentMcpServers,
       slackIntegration?.mcpRuntimeEnv ?? {},
       executionId,
@@ -270,6 +300,7 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
     const providerHomePath = path.dirname(providerStatePath);
     const manifestPath = path.join(payloadDir, "manifest.json");
     const providerConfigPath = path.join(payloadDir, providerDefinition.configFileName);
+    const slackHarnessPath = path.join(workspacePath, "AGENTS.md");
     const resultMarkdownPath = path.join(payloadDir, "result.md");
     const resultJsonPath = path.join(payloadDir, "result.json");
     const rawEventsJsonlPath = path.join(payloadDir, "raw-events.jsonl");
@@ -290,8 +321,16 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
       mkdir(workspacePath, { recursive: true }),
       mkdir(providerStatePath, { recursive: true })
     ]);
+    const slackHarnessMarkdown = buildSlackHarnessMarkdown(slackIntegration);
     await Promise.all([
       writeFile(providerConfigPath, providerConfigContent, "utf8"),
+      slackHarnessMarkdown
+        ? writeFile(slackHarnessPath, slackHarnessMarkdown, "utf8")
+        : unlink(slackHarnessPath).catch((error: NodeJS.ErrnoException) => {
+            if (error.code !== "ENOENT") {
+              throw error;
+            }
+          }),
       writeFile(resultMarkdownPath, "", "utf8"),
       writeFile(resultJsonPath, "", "utf8"),
       writeFile(

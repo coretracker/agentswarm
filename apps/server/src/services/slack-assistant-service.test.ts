@@ -121,7 +121,12 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
         signingSecret: "signing-secret",
         slackAgentMcpServers: [],
         slackAssistantProvider: "codex",
-        slackAssistantModel: "gpt-5.4-mini"
+        slackAssistantModel: "gpt-5.4-mini",
+        slackHarnessWhatExists: "Slack DM assistant workspace.",
+        slackHarnessAllowedActions: "Answer the user in Slack.",
+        slackHarnessHowToWork: null,
+        slackHarnessDefinitionOfDone: null,
+        slackHarnessEvidenceExpectations: "Return a concise reply."
       }),
       getRuntimeCredentials: async () => ({
         openaiApiKey: "openai-key",
@@ -136,8 +141,13 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       })
     } as never,
     personalAccessTokenStore: {
-      createToken: async (input: { userId: string; scopes: string[] }) => {
+      createToken: async (input: { userId: string; scopes: string[]; runtimeContext?: unknown }) => {
         issuedScopes = input.scopes;
+        assert.deepEqual(input.runtimeContext, {
+          kind: "slack_assistant",
+          conversationId: conversation.id,
+          slackChannelId: conversation.slackChannelId
+        });
         return {
           id: "token-1",
           name: "Slack DM runtime MCP",
@@ -169,10 +179,15 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
         resolvedModel: string;
         content: string;
         resultJsonPath: string;
+        workspacePath: string;
       };
       const providerConfig = await readFile(providerConfigEnv!.slice("PROVIDER_CONFIG_FILE=".length), "utf8");
+      const slackHarness = await readFile(path.join(manifest.workspacePath, "AGENTS.md"), "utf8");
       assert.match(manifest.content, /detached Slack DM assistant/);
       assert.match(manifest.content, /Latest Slack message:\nhello/);
+      assert.match(slackHarness, /# Slack Agent Harness/);
+      assert.match(slackHarness, /Slack DM assistant workspace\./);
+      assert.match(slackHarness, /Return a concise reply\./);
       assert.equal(manifest.provider, "codex");
       assert.equal(manifest.resolvedModel, "gpt-5.4-mini");
       assert.match(providerStateEnv!, /\/codex\/gpt-5\.4-mini$/);

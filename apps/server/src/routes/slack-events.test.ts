@@ -109,7 +109,12 @@ const createApp = () => {
         signingSecret,
         slackAgentMcpServers: [],
         slackAssistantProvider: "claude",
-        slackAssistantModel: "claude-sonnet-4-6"
+        slackAssistantModel: "claude-sonnet-4-6",
+        slackHarnessWhatExists: null,
+        slackHarnessAllowedActions: null,
+        slackHarnessHowToWork: null,
+        slackHarnessDefinitionOfDone: null,
+        slackHarnessEvidenceExpectations: null
       }),
       recordSlackEventResult: async (input: { status: string; eventType?: string | null; errorMessage?: string | null }) => {
         slackEvents.push(input);
@@ -167,7 +172,12 @@ const createAppWithUsers = (users: User[]) => {
         signingSecret,
         slackAgentMcpServers: [],
         slackAssistantProvider: "codex",
-        slackAssistantModel: "gpt-5.5"
+        slackAssistantModel: "gpt-5.5",
+        slackHarnessWhatExists: null,
+        slackHarnessAllowedActions: null,
+        slackHarnessHowToWork: null,
+        slackHarnessDefinitionOfDone: null,
+        slackHarnessEvidenceExpectations: null
       }),
       recordSlackEventResult: async (input: { status: string; eventType?: string | null; errorMessage?: string | null }) => {
         slackEvents.push(input);
