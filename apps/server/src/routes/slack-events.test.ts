@@ -339,7 +339,7 @@ test("Slack event route matches a user by Slack user ID without profile lookup",
   await app.close();
 });
 
-test("Slack event route rejects invalid signatures", async () => {
+test("Slack event route returns signature_mismatch for bad signature", async () => {
   const { app, slackEvents } = createApp();
   const payload = JSON.stringify({ type: "url_verification", challenge: "challenge-token" });
   const response = await app.inject({
@@ -351,6 +351,55 @@ test("Slack event route rejects invalid signatures", async () => {
 
   assert.equal(response.statusCode, 401);
   assert.equal(slackEvents.at(-1)?.status, "failed");
-  assert.equal(slackEvents.at(-1)?.errorMessage, "invalid_signature");
+  assert.equal(slackEvents.at(-1)?.errorMessage, "signature_mismatch");
+  await app.close();
+});
+
+test("Slack event route returns missing_headers when signature headers are absent", async () => {
+  const { app, slackEvents } = createApp();
+  const payload = JSON.stringify({ type: "url_verification", challenge: "challenge-token" });
+  const response = await app.inject({
+    method: "POST",
+    url: "/repositories/repo-1/slack/events",
+    headers: { "content-type": "application/json" },
+    payload
+  });
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(slackEvents.at(-1)?.status, "failed");
+  assert.equal(slackEvents.at(-1)?.errorMessage, "missing_headers");
+  await app.close();
+});
+
+test("Slack event route returns timestamp_invalid when timestamp is not numeric", async () => {
+  const { app, slackEvents } = createApp();
+  const payload = JSON.stringify({ type: "url_verification", challenge: "challenge-token" });
+  const response = await app.inject({
+    method: "POST",
+    url: "/repositories/repo-1/slack/events",
+    headers: { "content-type": "application/json", ...sign(payload, "abc") },
+    payload
+  });
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(slackEvents.at(-1)?.status, "failed");
+  assert.equal(slackEvents.at(-1)?.errorMessage, "timestamp_invalid");
+  await app.close();
+});
+
+test("Slack event route returns timestamp_skew when timestamp is too old", async () => {
+  const { app, slackEvents } = createApp();
+  const payload = JSON.stringify({ type: "url_verification", challenge: "challenge-token" });
+  const oldTimestamp = String(Math.floor(Date.now() / 1000) - 700);
+  const response = await app.inject({
+    method: "POST",
+    url: "/repositories/repo-1/slack/events",
+    headers: { "content-type": "application/json", ...sign(payload, oldTimestamp) },
+    payload
+  });
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(slackEvents.at(-1)?.status, "failed");
+  assert.equal(slackEvents.at(-1)?.errorMessage, "timestamp_skew");
   await app.close();
 });

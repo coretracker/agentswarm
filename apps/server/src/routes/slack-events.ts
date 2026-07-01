@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { RepositorySlackEventStatus, User } from "@agentswarm/shared-types";
-import { verifySlackRequestSignature } from "../lib/slack-signature.js";
+import { verifySlackRequestSignatureDetailed } from "../lib/slack-signature.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SlackAssistantStore } from "../services/slack-assistant-store.js";
 import { SlackAssistantService, type SlackAssistantRuntime } from "../services/slack-assistant-service.js";
@@ -80,9 +80,10 @@ export const registerSlackEventRoutes = (
     const rawBody = (request as typeof request & RawBodyRequest).rawBody ?? JSON.stringify(request.body ?? {});
     const timestamp = readHeader(request.headers["x-slack-request-timestamp"]);
     const signature = readHeader(request.headers["x-slack-signature"]);
-    if (!verifySlackRequestSignature(rawBody, timestamp, signature, integration.signingSecret)) {
-      await recordSlackEvent("failed", "request", "invalid_signature");
-      return reply.status(401).send({ message: "Invalid Slack request signature." });
+    const signatureCheck = verifySlackRequestSignatureDetailed(rawBody, timestamp, signature, integration.signingSecret);
+    if (!signatureCheck.ok) {
+      await recordSlackEvent("failed", "request", signatureCheck.reason);
+      return reply.status(401).send({ message: `Invalid Slack request signature: ${signatureCheck.reason}` });
     }
 
     if (readHeader(request.headers["x-slack-retry-num"])) {
