@@ -26,8 +26,12 @@ describe("buildTerminalStartScript", () => {
     assert.match(script, /chmod 600 "\$HOME\/\.codex\/auth\.json"/);
     assert.match(script, /\$HOME\/\.claude\/mcp-config\.json/);
     assert.match(script, /\/tmp\/agentswarm-bin\/claude/);
-    assert.match(script, /exec bash -l/);
-    assert.match(script, /exec sh -l$/);
+    assert.match(script, /HOSTEXEC_BIN_PATH/);
+    assert.match(script, /export PATH="\$\{HOSTEXEC_BIN_PATH\}:\$PATH"/);
+    assert.match(script, /exec bash -lc/);
+    assert.match(script, /exec bash -i/);
+    assert.match(script, /exec sh -lc/);
+    assert.match(script, /exec sh -i'$/);
   });
 
   it("ships the unified runtime toolbox with shell and git tooling", () => {
