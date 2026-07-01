@@ -21,6 +21,7 @@ const repository: Repository = {
   envVars: [],
   envSecrets: [],
   mcpServers: [],
+  slackAgentMcpServers: [],
   hostCommands: [],
   webhookUrl: null,
   webhookEnabled: false,
@@ -161,6 +162,8 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       assert.match(manifest.content, /detached Slack DM assistant/);
       assert.match(manifest.content, /Latest Slack message:\nhello/);
       assert.match(providerConfig, /mcp_servers\.agentswarm/);
+      assert.match(providerConfig, /mcp_servers\.github/);
+      assert.doesNotMatch(providerConfig, /should-not-override/);
       await writeFile(
         manifest.resultJsonPath,
         JSON.stringify({ status: "success", summaryMarkdown: "Runtime reply" }),
@@ -169,7 +172,29 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
     }
   });
 
-  const response = await runtime.respond({ repository, user, conversation, text: "hello" });
+  const response = await runtime.respond({
+    repository: {
+      ...repository,
+      slackAgentMcpServers: [
+        {
+          name: "GitHub",
+          enabled: true,
+          transport: "stdio",
+          command: "npx",
+          args: ["-y", "github-mcp"]
+        },
+        {
+          name: "AgentSwarm",
+          enabled: true,
+          transport: "stdio",
+          command: "should-not-override"
+        }
+      ]
+    },
+    user,
+    conversation,
+    text: "hello"
+  });
 
   assert.equal(response, "Runtime reply");
   assert.equal(store.updates.at(-1)?.status, "idle");

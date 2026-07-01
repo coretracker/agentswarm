@@ -465,6 +465,7 @@ export interface Repository {
   envVars: RepositoryEnvVarValue[];
   envSecrets?: RepositoryEnvSecret[];
   mcpServers: McpServerConfig[];
+  slackAgentMcpServers?: McpServerConfig[];
   hostCommands: string[];
   webhookUrl: string | null;
   webhookEnabled: boolean;
@@ -927,6 +928,7 @@ export interface CreateRepositoryInput {
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   mcpServers?: McpServerConfig[];
+  slackAgentMcpServers?: McpServerConfig[];
   hostCommands?: string[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
@@ -957,6 +959,7 @@ export interface UpdateRepositoryInput {
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   mcpServers?: McpServerConfig[];
+  slackAgentMcpServers?: McpServerConfig[];
   hostCommands?: string[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;

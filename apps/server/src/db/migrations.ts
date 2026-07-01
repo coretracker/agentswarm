@@ -656,7 +656,8 @@ Feedback:
 
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS slack_bot_token text NULL,
-      ADD COLUMN IF NOT EXISTS slack_signing_secret text NULL;
+      ADD COLUMN IF NOT EXISTS slack_signing_secret text NULL,
+      ADD COLUMN IF NOT EXISTS slack_agent_mcp_servers jsonb NOT NULL DEFAULT '[]'::jsonb;
 
       CREATE TABLE IF NOT EXISTS slack_assistant_conversations (
         id text PRIMARY KEY,
@@ -675,6 +676,13 @@ Feedback:
 
       CREATE INDEX IF NOT EXISTS slack_assistant_conversations_user_idx
         ON slack_assistant_conversations(user_id, updated_at DESC);
+    `
+  },
+  {
+    id: "20260701_03_slack_agent_mcp_servers",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS slack_agent_mcp_servers jsonb NOT NULL DEFAULT '[]'::jsonb;
     `
   }
 ];

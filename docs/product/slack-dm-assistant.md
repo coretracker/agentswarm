@@ -6,17 +6,19 @@ The Slack DM assistant is a repository-configured Slack bot entry point for simp
 In the first implementation slice:
 - Users add a Slack username to their profile.
 - Repository owners configure a Slack bot token and signing secret in the repository Slack integration section.
+- Repository owners can configure extra Slack agent MCP servers in the repository Slack integration section.
 - Slack sends DM events to the repository Slack events URL.
 - AgentSwarm verifies Slack signatures, resolves the Slack sender to an active AgentSwarm user by username, persists a detached conversation record, and posts a reply back to the same DM.
 - AgentSwarm starts a detached Codex or Claude runtime using the system default provider and the matched user's runtime credentials.
-- The runtime receives Slack conversation context, a small assistant workspace, persistent provider state, and AgentSwarm MCP access scoped through the matched user.
+- The runtime receives Slack conversation context, a small assistant workspace, persistent provider state, automatic AgentSwarm MCP access scoped through the matched user, and any configured extra Slack agent MCP servers.
 - Slack DM conversations are stored separately from normal AgentSwarm tasks.
 
 ## Setup
 1. Add the Slack username in the AgentSwarm profile modal.
 2. Open the repository editor and save a Slack bot token plus Slack signing secret in Slack Integration.
-3. Copy the repository Slack events URL into the Slack app event subscription.
-4. Subscribe the Slack app to direct message events.
+3. Optionally add extra Slack agent MCP servers in Slack Integration. AgentSwarm MCP is always added automatically.
+4. Copy the repository Slack events URL into the Slack app event subscription.
+5. Subscribe the Slack app to direct message events.
 
 Slack credentials are never returned by repository read APIs. The UI only shows whether the bot token and signing secret are configured.
 

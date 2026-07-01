@@ -7,7 +7,7 @@ import { nanoid } from "nanoid";
 import type { Repository, User } from "@agentswarm/shared-types";
 import type { AgentProvider, McpServerConfig, PermissionScope, ProviderProfile } from "@agentswarm/shared-types";
 import { env } from "../config/env.js";
-import { collectMcpServerEnvEntries } from "../lib/mcp-config.js";
+import { collectMcpServerEnvEntries, normalizeMcpServers } from "../lib/mcp-config.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 import type { PersonalAccessTokenStore } from "./personal-access-token-store.js";
 import type { SettingsStore } from "./settings-store.js";
@@ -100,6 +100,28 @@ const providerProfileForSettings = (
   settings: Awaited<ReturnType<SettingsStore["getSettings"]>>
 ): ProviderProfile => (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
 
+const normalizeMcpServerName = (value: string | undefined): string =>
+  (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const mergeSlackRuntimeMcpServers = (agentSwarmServer: McpServerConfig, slackAgentMcpServers: McpServerConfig[]): McpServerConfig[] => {
+  const servers = [agentSwarmServer];
+  const seen = new Set([normalizeMcpServerName(agentSwarmServer.name)]);
+  for (const server of normalizeMcpServers(slackAgentMcpServers)) {
+    const name = normalizeMcpServerName(server.name);
+    if (!name || seen.has(name)) {
+      continue;
+    }
+    servers.push(server);
+    seen.add(name);
+  }
+  return servers;
+};
+
 const buildConversationPrompt = (input: SlackAssistantMessageInput): string => {
   const turns = input.conversation.turns.slice(-24);
   const transcript = turns
@@ -107,7 +129,7 @@ const buildConversationPrompt = (input: SlackAssistantMessageInput): string => {
     .join("\n");
   return [
     "You are AgentSwarm's detached Slack DM assistant.",
-    "Use AgentSwarm MCP as the source of truth for AgentSwarm data. Use GitHub-related information available through configured MCP tools or AgentSwarm repository/task context when relevant.",
+    "Use AgentSwarm MCP as the source of truth for AgentSwarm data. Use configured Slack agent MCP tools or AgentSwarm repository/task context when relevant.",
     "Do not create or mutate AgentSwarm tasks unless the user explicitly asks for that.",
     "Keep Slack replies concise and practical.",
     "",
@@ -139,6 +161,7 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
 
   private async buildRuntimeMcpConfig(
     user: User,
+    repository: Repository,
     executionId: string
   ): Promise<{ servers: McpServerConfig[]; env: Record<string, string> }> {
     const token = await this.deps.personalAccessTokenStore.createToken({
@@ -153,18 +176,17 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
       [SLACK_ASSISTANT_MCP_ENDPOINTS_ENV]: endpoints.join(","),
       [SLACK_ASSISTANT_MCP_TOKEN_ENV]: token.token
     };
+    const agentSwarmServer: McpServerConfig = {
+      name: SLACK_ASSISTANT_MCP_SERVER_NAME,
+      transport: "stdio",
+      command: "node",
+      args: ["/usr/local/bin/agentswarm-mcp-bridge.mjs"],
+      env: agentSwarmMcpEnv,
+      enabled: true
+    };
     return {
       env: agentSwarmMcpEnv,
-      servers: [
-        {
-          name: SLACK_ASSISTANT_MCP_SERVER_NAME,
-          transport: "stdio",
-          command: "node",
-          args: ["/usr/local/bin/agentswarm-mcp-bridge.mjs"],
-          env: agentSwarmMcpEnv,
-          enabled: true
-        }
-      ]
+      servers: mergeSlackRuntimeMcpServers(agentSwarmServer, repository.slackAgentMcpServers ?? [])
     };
   }
 
@@ -203,7 +225,7 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
     const providerProfile = providerProfileForSettings(provider, settings);
     const resolvedModel = providerDefinition.getResolvedModel(null, providerProfile);
     const resolvedProfileSettings = providerDefinition.getResolvedProfileSettings(providerProfile, resolvedModel);
-    const runtimeMcp = await this.buildRuntimeMcpConfig(input.user, executionId);
+    const runtimeMcp = await this.buildRuntimeMcpConfig(input.user, input.repository, executionId);
     const providerConfigContent = providerDefinition.getProviderConfig(runtimeMcp.servers);
     const payloadDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "slack-assistant", conversationSegment, executionSegment);
     const workspacePath = path.join(env.RUNTIME_PAYLOAD_ROOT, "slack-assistant-workspaces", conversationSegment);

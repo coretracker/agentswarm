@@ -87,6 +87,7 @@ describe("RedisRepositoryStore MCP servers", () => {
       ["github-tools", "memory"]
     );
     assert.deepEqual(await store.getRepositoryMcpServers(created.id), created.mcpServers);
+    assert.deepEqual(await store.getRepositorySlackAgentMcpServers(created.id), []);
 
     const updated = await store.updateRepository(created.id, {
       mcpServers: [
@@ -107,6 +108,79 @@ describe("RedisRepositoryStore MCP servers", () => {
         transport: "http",
         url: "https://example.com/mcp",
         bearerTokenEnvVar: null
+      }
+    ]);
+  });
+
+  it("persists and normalizes Slack agent MCP servers separately", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const created = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git",
+      mcpServers: [
+        {
+          name: "repo-tools",
+          enabled: true,
+          transport: "stdio",
+          command: "repo-mcp"
+        }
+      ],
+      slackAgentMcpServers: [
+        {
+          name: "GitHub",
+          enabled: true,
+          transport: "http",
+          url: "https://example.com/github-mcp",
+          bearerTokenEnvVar: "GITHUB_TOKEN"
+        },
+        {
+          name: "GitHub",
+          enabled: true,
+          transport: "stdio",
+          command: "ignored"
+        }
+      ]
+    });
+
+    assert.deepEqual(
+      created.mcpServers.map((server) => server.name),
+      ["repo-tools"]
+    );
+    assert.deepEqual(created.slackAgentMcpServers, [
+      {
+        name: "github",
+        enabled: true,
+        transport: "http",
+        url: "https://example.com/github-mcp",
+        bearerTokenEnvVar: "GITHUB_TOKEN"
+      }
+    ]);
+    assert.deepEqual(await store.getRepositorySlackAgentMcpServers(created.id), created.slackAgentMcpServers);
+
+    const updated = await store.updateRepository(created.id, {
+      slackAgentMcpServers: [
+        {
+          name: "memory",
+          enabled: false,
+          transport: "stdio",
+          command: "npx",
+          args: ["-y", "mcp-memory"]
+        }
+      ]
+    });
+
+    assert.deepEqual(updated?.mcpServers, created.mcpServers);
+    assert.deepEqual(updated?.slackAgentMcpServers, [
+      {
+        name: "memory",
+        enabled: false,
+        transport: "stdio",
+        command: "npx",
+        args: ["-y", "mcp-memory"]
       }
     ]);
   });

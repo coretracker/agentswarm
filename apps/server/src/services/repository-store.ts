@@ -583,6 +583,7 @@ export interface RepositoryStore {
   getRepository(repositoryId: string): Promise<Repository | null>;
   getRepositoryRuntimeEnvEntries(repositoryId: string): Promise<RepositoryRuntimeEnvEntry[]>;
   getRepositoryMcpServers(repositoryId: string): Promise<McpServerConfig[]>;
+  getRepositorySlackAgentMcpServers(repositoryId: string): Promise<McpServerConfig[]>;
   getRepositoryHostCommands(repositoryId: string): Promise<string[]>;
   updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null>;
   getRepositoryWebhookTarget(repositoryId: string): Promise<RepositoryWebhookTarget | null>;
@@ -730,6 +731,9 @@ export class RedisRepositoryStore implements RepositoryStore {
     const mcpServers = normalizeMcpServers(
       Array.isArray(repository.mcpServers) ? (repository.mcpServers as McpServerConfig[]) : undefined
     );
+    const slackAgentMcpServers = normalizeMcpServers(
+      Array.isArray(repository.slackAgentMcpServers) ? (repository.slackAgentMcpServers as McpServerConfig[]) : undefined
+    );
     const hostCommands = normalizeHostCommands(repository.hostCommands);
     return {
       ...repository,
@@ -739,6 +743,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       envVars,
       envSecrets,
       mcpServers,
+      slackAgentMcpServers,
       hostCommands,
       webhookUrl,
       webhookEnabled,
@@ -777,6 +782,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       envVars: toRepositoryEnvVars(normalized.envVars),
       envSecrets: toConfiguredRepositoryEnvSecrets(normalized.envSecrets),
       mcpServers: normalized.mcpServers,
+      slackAgentMcpServers: normalized.slackAgentMcpServers,
       hostCommands: normalized.hostCommands,
       webhookUrl: normalized.webhookUrl,
       webhookEnabled: normalized.webhookEnabled,
@@ -844,6 +850,7 @@ export class RedisRepositoryStore implements RepositoryStore {
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
     const mcpServers = normalizeMcpServers(input.mcpServers);
+    const slackAgentMcpServers = normalizeMcpServers(input.slackAgentMcpServers);
     const hostCommands = normalizeHostCommands(input.hostCommands);
     this.assertValidWebhookConfiguration({
       webhookEnabled,
@@ -859,6 +866,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       envVars: resolvedEnvVars.entries,
       envSecrets: resolvedEnvSecrets.entries,
       mcpServers,
+      slackAgentMcpServers,
       hostCommands,
       webhookUrl,
       webhookEnabled,
@@ -950,6 +958,11 @@ export class RedisRepositoryStore implements RepositoryStore {
   async getRepositoryMcpServers(repositoryId: string): Promise<McpServerConfig[]> {
     const stored = await this.getStoredRepository(repositoryId);
     return stored?.mcpServers ?? [];
+  }
+
+  async getRepositorySlackAgentMcpServers(repositoryId: string): Promise<McpServerConfig[]> {
+    const stored = await this.getStoredRepository(repositoryId);
+    return stored?.slackAgentMcpServers ?? [];
   }
 
   async getRepositoryHostCommands(repositoryId: string): Promise<string[]> {
@@ -1049,6 +1062,10 @@ export class RedisRepositoryStore implements RepositoryStore {
     );
     const nextMcpServers =
       input.mcpServers === undefined ? normalizeMcpServers(current.mcpServers) : normalizeMcpServers(input.mcpServers);
+    const nextSlackAgentMcpServers =
+      input.slackAgentMcpServers === undefined
+        ? normalizeMcpServers(current.slackAgentMcpServers)
+        : normalizeMcpServers(input.slackAgentMcpServers);
     const nextHostCommands =
       input.hostCommands === undefined ? normalizeHostCommands(current.hostCommands) : normalizeHostCommands(input.hostCommands);
 
@@ -1066,6 +1083,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       envVars: resolvedEnvVars.entries,
       envSecrets: resolvedEnvSecrets.entries,
       mcpServers: nextMcpServers,
+      slackAgentMcpServers: nextSlackAgentMcpServers,
       hostCommands: nextHostCommands,
       webhookUrl: nextWebhookUrl,
       webhookEnabled: nextWebhookEnabled,
@@ -1219,6 +1237,9 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const envSecrets = normalizeRepositoryEnvSecretValues(row.env_secrets);
     const envVars = normalizeRepositoryEnvVars(row.env_vars);
     const mcpServers = normalizeMcpServers(Array.isArray(row.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined);
+    const slackAgentMcpServers = normalizeMcpServers(
+      Array.isArray(row.slack_agent_mcp_servers) ? (row.slack_agent_mcp_servers as McpServerConfig[]) : undefined
+    );
     const hostCommands = normalizeHostCommands(row.host_commands);
     return {
       id: String(row.id),
@@ -1228,6 +1249,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       envVars: toRepositoryEnvVars(envVars),
       envSecrets: toConfiguredRepositoryEnvSecrets(envSecrets),
       mcpServers,
+      slackAgentMcpServers,
       hostCommands,
       webhookUrl: typeof row.webhook_url === "string" && row.webhook_url.trim().length > 0 ? row.webhook_url.trim() : null,
       webhookEnabled: row.webhook_enabled === true,
@@ -1328,6 +1350,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
     const mcpServers = normalizeMcpServers(input.mcpServers);
+    const slackAgentMcpServers = normalizeMcpServers(input.slackAgentMcpServers);
     const hostCommands = normalizeHostCommands(input.hostCommands);
     this.assertValidWebhookConfiguration({
       webhookEnabled,
@@ -1343,6 +1366,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
       envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
       mcpServers,
+      slackAgentMcpServers,
       hostCommands,
       webhookUrl,
       webhookEnabled,
@@ -1385,6 +1409,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             env_vars,
             env_secrets,
             mcp_servers,
+            slack_agent_mcp_servers,
             host_commands,
             webhook_url,
             webhook_enabled,
@@ -1412,7 +1437,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
+          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
         `,
         [
           repository.id,
@@ -1422,6 +1447,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           JSON.stringify(resolvedEnvVars.entries),
           JSON.stringify(resolvedEnvSecrets.entries),
           JSON.stringify(repository.mcpServers),
+          JSON.stringify(repository.slackAgentMcpServers ?? []),
           JSON.stringify(repository.hostCommands),
           repository.webhookUrl,
           repository.webhookEnabled,
@@ -1487,6 +1513,16 @@ export class PostgresRepositoryStore implements RepositoryStore {
       return [];
     }
     return normalizeMcpServers(Array.isArray(row.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined);
+  }
+
+  async getRepositorySlackAgentMcpServers(repositoryId: string): Promise<McpServerConfig[]> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    if (!row) {
+      return [];
+    }
+    return normalizeMcpServers(
+      Array.isArray(row.slack_agent_mcp_servers) ? (row.slack_agent_mcp_servers as McpServerConfig[]) : undefined
+    );
   }
 
   async getRepositoryHostCommands(repositoryId: string): Promise<string[]> {
@@ -1606,6 +1642,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
     );
     const nextMcpServers =
       input.mcpServers === undefined ? normalizeMcpServers(current.mcpServers) : normalizeMcpServers(input.mcpServers);
+    const nextSlackAgentMcpServers =
+      input.slackAgentMcpServers === undefined
+        ? normalizeMcpServers(current.slackAgentMcpServers)
+        : normalizeMcpServers(input.slackAgentMcpServers);
     const nextHostCommands =
       input.hostCommands === undefined ? normalizeHostCommands(current.hostCommands) : normalizeHostCommands(input.hostCommands);
 
@@ -1623,6 +1663,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
       envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
       mcpServers: nextMcpServers,
+      slackAgentMcpServers: nextSlackAgentMcpServers,
       hostCommands: nextHostCommands,
       webhookUrl: nextWebhookUrl,
       webhookEnabled: nextWebhookEnabled,
@@ -1661,32 +1702,33 @@ export class PostgresRepositoryStore implements RepositoryStore {
             env_vars = $5::jsonb,
             env_secrets = $6::jsonb,
             mcp_servers = $7::jsonb,
-            host_commands = $8::jsonb,
-            webhook_url = $9,
-            webhook_enabled = $10,
-            webhook_secret = $11,
-            github_pr_webhook_secret = $12,
-            slack_bot_token = $13,
-            slack_signing_secret = $14,
-            github_integration_bot_login = $15,
-            github_pr_allowed_users = $16::jsonb,
-            github_pr_require_bot_mention = $17,
-            github_pr_auto_archive_on_merge = $18,
-            github_pr_initial_instructions = $19,
-            github_pr_feedback_instructions = $20,
-            github_pr_review_instructions = $21,
-            github_pr_task_created_comment_template = $22,
-            github_pr_task_owner_user_id = $23,
-            harness_what_exists = $24,
-            harness_allowed_actions = $25,
-            harness_how_to_work = $26,
-            harness_definition_of_done = $27,
-            harness_evidence_expectations = $28,
-            webhook_last_attempt_at = $29,
-            webhook_last_status = $30,
-            webhook_last_error = $31,
-            created_at = $32,
-            updated_at = $33
+            slack_agent_mcp_servers = $8::jsonb,
+            host_commands = $9::jsonb,
+            webhook_url = $10,
+            webhook_enabled = $11,
+            webhook_secret = $12,
+            github_pr_webhook_secret = $13,
+            slack_bot_token = $14,
+            slack_signing_secret = $15,
+            github_integration_bot_login = $16,
+            github_pr_allowed_users = $17::jsonb,
+            github_pr_require_bot_mention = $18,
+            github_pr_auto_archive_on_merge = $19,
+            github_pr_initial_instructions = $20,
+            github_pr_feedback_instructions = $21,
+            github_pr_review_instructions = $22,
+            github_pr_task_created_comment_template = $23,
+            github_pr_task_owner_user_id = $24,
+            harness_what_exists = $25,
+            harness_allowed_actions = $26,
+            harness_how_to_work = $27,
+            harness_definition_of_done = $28,
+            harness_evidence_expectations = $29,
+            webhook_last_attempt_at = $30,
+            webhook_last_status = $31,
+            webhook_last_error = $32,
+            created_at = $33,
+            updated_at = $34
           WHERE id = $1
         `,
         [
@@ -1697,6 +1739,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           JSON.stringify(resolvedEnvVars.entries),
           JSON.stringify(resolvedEnvSecrets.entries),
           JSON.stringify(next.mcpServers),
+          JSON.stringify(next.slackAgentMcpServers ?? []),
           JSON.stringify(next.hostCommands),
           next.webhookUrl,
           next.webhookEnabled,

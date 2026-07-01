@@ -224,6 +224,7 @@ const createRepositorySchema = z.object({
   envVars: repositoryEnvVarsSchema.optional(),
   envSecrets: repositoryEnvSecretsSchema.optional(),
   mcpServers: mcpServersSchema.optional(),
+  slackAgentMcpServers: mcpServersSchema.optional(),
   hostCommands: hostCommandsSchema.optional(),
   webhookUrl: z.string().trim().url().nullable().optional(),
   webhookEnabled: z.boolean().optional(),
