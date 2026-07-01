@@ -11,6 +11,11 @@ export const defaultHostexecSettings: HostexecSettings = {
   bearerTokenEnvVar: null
 };
 
+export interface HostexecCapabilities {
+  allowAll: boolean;
+  commands: string[];
+}
+
 export function normalizeHostexecSettings(value: Partial<HostexecSettings> | null | undefined): HostexecSettings {
   const url = typeof value?.url === "string" && value.url.trim().length > 0 ? value.url.trim().replace(/\/+$/, "") : null;
   const bearerTokenEnvVar =
@@ -61,4 +66,12 @@ export function normalizeHostCommands(value: unknown): string[] {
     }
   }
   return commands;
+}
+
+export function normalizeHostexecCapabilities(value: unknown): HostexecCapabilities {
+  const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  return {
+    allowAll: record.allowAll === true,
+    commands: normalizeHostCommands(record.commands)
+  };
 }
