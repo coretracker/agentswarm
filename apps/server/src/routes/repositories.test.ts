@@ -119,6 +119,7 @@ const createTestApp = ({
       getRepositoryGitHubPrWebhookSecret: async () => null,
       getRepositorySlackIntegration: async () => null,
       recordWebhookDeliveryResult: async () => null,
+      recordSlackEventResult: async () => null,
       deleteRepository: async () => false
     },
     userStore: {

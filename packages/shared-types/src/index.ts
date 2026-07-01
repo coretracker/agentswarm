@@ -456,6 +456,7 @@ export interface RepositoryEnvSecretInputFile {
 }
 
 export type RepositoryEnvSecretInput = RepositoryEnvSecretInputText | RepositoryEnvSecretInputFile;
+export type RepositorySlackEventStatus = "received" | "ignored" | "failed";
 
 export interface Repository {
   id: string;
@@ -490,6 +491,10 @@ export interface Repository {
   webhookLastAttemptAt: string | null;
   webhookLastStatus: "success" | "failed" | null;
   webhookLastError: string | null;
+  slackLastEventAt?: string | null;
+  slackLastEventStatus?: RepositorySlackEventStatus | null;
+  slackLastEventType?: string | null;
+  slackLastEventError?: string | null;
   createdAt: string;
   updatedAt: string;
 }

@@ -270,4 +270,29 @@ describe("RedisRepositoryStore MCP servers", () => {
     assert.equal(cleared?.slackSigningSecretConfigured, false);
     assert.equal(await store.getRepositorySlackIntegration(created.id), null);
   });
+
+  it("records the latest Slack event status", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const created = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git"
+    });
+
+    const receivedAt = "2026-07-01T12:00:00.000Z";
+    const updated = await store.recordSlackEventResult(created.id, {
+      status: "ignored",
+      receivedAt,
+      eventType: "message.im",
+      errorMessage: "unmatched_user"
+    });
+
+    assert.equal(updated?.slackLastEventAt, receivedAt);
+    assert.equal(updated?.slackLastEventStatus, "ignored");
+    assert.equal(updated?.slackLastEventType, "message.im");
+    assert.equal(updated?.slackLastEventError, "unmatched_user");
+  });
 });

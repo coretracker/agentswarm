@@ -8,6 +8,7 @@ import type {
   RepositoryEnvVarInput,
   RepositoryEnvSecret,
   RepositoryEnvSecretInput,
+  RepositorySlackEventStatus,
   UpdateRepositoryInput
 } from "@agentswarm/shared-types";
 import {
@@ -75,6 +76,14 @@ const normalizeGitHubInstructions = (value: string | null | undefined, defaultVa
 const normalizeRepositoryHarnessValue = (value: string | null | undefined): string | null => {
   const normalized = (value ?? "").trim();
   return normalized.length > 0 ? normalized : null;
+};
+
+const normalizeSlackEventStatus = (value: unknown): RepositorySlackEventStatus | null =>
+  value === "received" || value === "ignored" || value === "failed" ? value : null;
+
+const normalizeSlackEventValue = (value: unknown): string | null => {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized.length > 0 ? normalized.slice(0, 500) : null;
 };
 
 const normalizeUserId = (value: string | null | undefined): string | null => {
@@ -593,6 +602,15 @@ export interface RepositoryStore {
     repositoryId: string,
     input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
   ): Promise<Repository | null>;
+  recordSlackEventResult(
+    repositoryId: string,
+    input: {
+      status: RepositorySlackEventStatus;
+      receivedAt: string;
+      eventType?: string | null;
+      errorMessage?: string | null;
+    }
+  ): Promise<Repository | null>;
   deleteRepository(repositoryId: string): Promise<boolean>;
 }
 
@@ -768,7 +786,11 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookLastStatus: repository.webhookLastStatus === "success" || repository.webhookLastStatus === "failed" ? repository.webhookLastStatus : null,
       webhookLastError: typeof repository.webhookLastError === "string" && repository.webhookLastError.trim().length > 0
         ? repository.webhookLastError.trim()
-        : null
+        : null,
+      slackLastEventAt: typeof repository.slackLastEventAt === "string" ? repository.slackLastEventAt : null,
+      slackLastEventStatus: normalizeSlackEventStatus(repository.slackLastEventStatus),
+      slackLastEventType: normalizeSlackEventValue(repository.slackLastEventType),
+      slackLastEventError: normalizeSlackEventValue(repository.slackLastEventError)
     };
   }
 
@@ -807,6 +829,10 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookLastAttemptAt: normalized.webhookLastAttemptAt ?? null,
       webhookLastStatus: normalized.webhookLastStatus ?? null,
       webhookLastError: normalized.webhookLastError ?? null,
+      slackLastEventAt: normalized.slackLastEventAt ?? null,
+      slackLastEventStatus: normalized.slackLastEventStatus ?? null,
+      slackLastEventType: normalized.slackLastEventType ?? null,
+      slackLastEventError: normalized.slackLastEventError ?? null,
       createdAt: normalized.createdAt,
       updatedAt: normalized.updatedAt
     };
@@ -891,6 +917,10 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookLastAttemptAt: null,
       webhookLastStatus: null,
       webhookLastError: null,
+      slackLastEventAt: null,
+      slackLastEventStatus: null,
+      slackLastEventType: null,
+      slackLastEventError: null,
       createdAt: timestamp,
       updatedAt: timestamp
     };
@@ -1181,6 +1211,35 @@ export class RedisRepositoryStore implements RepositoryStore {
     return next;
   }
 
+  async recordSlackEventResult(
+    repositoryId: string,
+    input: {
+      status: RepositorySlackEventStatus;
+      receivedAt: string;
+      eventType?: string | null;
+      errorMessage?: string | null;
+    }
+  ): Promise<Repository | null> {
+    const stored = await this.getStoredRepository(repositoryId);
+    if (!stored) {
+      return null;
+    }
+
+    const nextStored: StoredRepository = {
+      ...stored,
+      slackLastEventAt: input.receivedAt,
+      slackLastEventStatus: input.status,
+      slackLastEventType: normalizeSlackEventValue(input.eventType),
+      slackLastEventError: input.status === "failed" || input.status === "ignored" ? normalizeSlackEventValue(input.errorMessage) : null,
+      updatedAt: nowIso()
+    };
+    const next = this.normalizeRepository(nextStored);
+
+    await this.redis.set(this.repoKey(repositoryId), JSON.stringify(nextStored));
+    await this.eventBus.publish({ type: "repository:updated", payload: next });
+    return next;
+  }
+
   async deleteRepository(repositoryId: string): Promise<boolean> {
     const stored = await this.getStoredRepository(repositoryId);
     if (!stored) {
@@ -1311,6 +1370,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
         row.webhook_last_status === "success" || row.webhook_last_status === "failed" ? row.webhook_last_status : null,
       webhookLastError:
         typeof row.webhook_last_error === "string" && row.webhook_last_error.trim().length > 0 ? row.webhook_last_error.trim() : null,
+      slackLastEventAt: typeof row.slack_last_event_at === "string" ? row.slack_last_event_at : null,
+      slackLastEventStatus: normalizeSlackEventStatus(row.slack_last_event_status),
+      slackLastEventType: normalizeSlackEventValue(row.slack_last_event_type),
+      slackLastEventError: normalizeSlackEventValue(row.slack_last_event_error),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at)
     };
@@ -1391,6 +1454,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookLastAttemptAt: null,
       webhookLastStatus: null,
       webhookLastError: null,
+      slackLastEventAt: null,
+      slackLastEventStatus: null,
+      slackLastEventType: null,
+      slackLastEventError: null,
       createdAt: timestamp,
       updatedAt: timestamp
     } satisfies Repository;
@@ -1889,6 +1956,46 @@ export class PostgresRepositoryStore implements RepositoryStore {
         next.updatedAt
       ]
     );
+    await this.eventBus.publish({ type: "repository:updated", payload: next });
+    return next;
+  }
+
+  async recordSlackEventResult(
+    repositoryId: string,
+    input: {
+      status: RepositorySlackEventStatus;
+      receivedAt: string;
+      eventType?: string | null;
+      errorMessage?: string | null;
+    }
+  ): Promise<Repository | null> {
+    const result = await this.pool.query(
+      `
+        UPDATE repositories
+        SET
+          slack_last_event_at = $2,
+          slack_last_event_status = $3,
+          slack_last_event_type = $4,
+          slack_last_event_error = $5,
+          updated_at = $6
+        WHERE id = $1
+        RETURNING *
+      `,
+      [
+        repositoryId,
+        input.receivedAt,
+        input.status,
+        normalizeSlackEventValue(input.eventType),
+        input.status === "failed" || input.status === "ignored" ? normalizeSlackEventValue(input.errorMessage) : null,
+        nowIso()
+      ]
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return null;
+    }
+
+    const next = this.mapRepositoryRow(row);
     await this.eventBus.publish({ type: "repository:updated", payload: next });
     return next;
   }

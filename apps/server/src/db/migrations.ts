@@ -684,5 +684,15 @@ Feedback:
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS slack_agent_mcp_servers jsonb NOT NULL DEFAULT '[]'::jsonb;
     `
+  },
+  {
+    id: "20260701_04_repository_slack_event_status",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS slack_last_event_at text NULL,
+      ADD COLUMN IF NOT EXISTS slack_last_event_status text NULL,
+      ADD COLUMN IF NOT EXISTS slack_last_event_type text NULL,
+      ADD COLUMN IF NOT EXISTS slack_last_event_error text NULL;
+    `
   }
 ];

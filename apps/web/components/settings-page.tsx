@@ -13,6 +13,7 @@ import type {
   PermissionScope,
   ProviderModelOption,
   ProviderProfile,
+  Repository,
   ResponsePreferencePreset,
   Role,
   SystemSettings
@@ -101,7 +102,7 @@ interface ResponsePreferencePresetFormValues {
 }
 
 type ClearCredentialTarget = "github" | "openai" | "codexAuthJson" | "anthropic";
-type SettingsTabKey = "general" | "git" | "hostexec" | "codex" | "claude";
+type SettingsTabKey = "general" | "git" | "hostexec" | "codex" | "claude" | "integrations";
 type DirtyGeneralTabKey = SettingsTabKey;
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
@@ -111,6 +112,20 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
 
 const summarizeAllowlist = (label: string, values: string[]): string => `${label}: ${values.length === 0 ? "All" : values.join(", ")}`;
 const toSentenceValue = (value: string): string => value.replace(/_/g, " ");
+const formatNullableDate = (value: string | null | undefined): string =>
+  value ? new Date(value).toLocaleString() : "No events yet";
+const slackEventStatusColor = (status: Repository["slackLastEventStatus"]): string => {
+  if (status === "received") {
+    return "green";
+  }
+  if (status === "ignored") {
+    return "gold";
+  }
+  if (status === "failed") {
+    return "red";
+  }
+  return "default";
+};
 const normalizeProviderModelOptions = (models: ProviderModelOption[] | undefined, fallback: ProviderModelOption[]): ProviderModelOption[] => {
   const normalized: ProviderModelOption[] = [];
   const seen = new Set<string>();
@@ -170,6 +185,8 @@ export function SettingsPage() {
   const [responsePreferencePresetForm] = Form.useForm<ResponsePreferencePresetFormValues>();
   const [roles, setRoles] = useState<Role[]>([]);
   const [rolesLoading, setRolesLoading] = useState(true);
+  const [repositories, setRepositories] = useState<Repository[]>([]);
+  const [repositoriesLoading, setRepositoriesLoading] = useState(false);
   const [savingGeneral, setSavingGeneral] = useState(false);
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [checkingHostexec, setCheckingHostexec] = useState(false);
@@ -187,6 +204,7 @@ export function SettingsPage() {
   const [generalDirtyTabs, setGeneralDirtyTabs] = useState<DirtyGeneralTabKey[]>([]);
   const [credentialDirtyTabs, setCredentialDirtyTabs] = useState<SettingsTabKey[]>([]);
   const canEditSettings = can("settings:edit");
+  const canReadRepositories = can("repo:list");
   const { models: codexModels, loading: codexModelsLoading, source: codexModelsSource } = useProviderModels("codex");
   const { models: claudeModels, loading: claudeModelsLoading, source: claudeModelsSource } = useProviderModels("claude");
   const codexModelFormValues = Form.useWatch("codexModels", generalForm);
@@ -213,6 +231,21 @@ export function SettingsPage() {
       setRoles(await api.listRoles());
     } finally {
       setRolesLoading(false);
+    }
+  };
+
+  const loadRepositories = async () => {
+    if (!canReadRepositories) {
+      setRepositories([]);
+      return;
+    }
+    setRepositoriesLoading(true);
+    try {
+      setRepositories(await api.listRepositories());
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to load repositories");
+    } finally {
+      setRepositoriesLoading(false);
     }
   };
 
@@ -247,6 +280,10 @@ export function SettingsPage() {
   useEffect(() => {
     void loadRoles();
   }, []);
+
+  useEffect(() => {
+    void loadRepositories();
+  }, [canReadRepositories]);
 
   const handleAutoFillModels = async (provider: AgentProvider): Promise<void> => {
     setAutoFillingProvider(provider);
@@ -553,8 +590,20 @@ export function SettingsPage() {
     {
       key: "claude",
       label: <span>{generalDirtyTabs.includes("claude") || credentialDirtyTabs.includes("claude") ? "Claude Code *" : "Claude Code"}</span>
+    },
+    {
+      key: "integrations",
+      label: "Integrations"
     }
   ];
+
+  const slackRepositories = repositories.filter(
+    (repository) =>
+      repository.slackBotTokenConfigured ||
+      repository.slackSigningSecretConfigured ||
+      repository.slackLastEventAt ||
+      repository.slackLastEventStatus
+  );
 
   return (
     <>
@@ -891,6 +940,74 @@ export function SettingsPage() {
             </Card>
             {renderSaveBar({ dirty: generalDirty, label: "Save Hostexec Settings", loading: savingGeneral })}
           </Form>
+        ) : null}
+
+        {activeTab === "integrations" ? (
+          <Card
+            bordered={false}
+            loading={repositoriesLoading}
+            title="Slack Events"
+            extra={
+              <Button icon={<ReloadOutlined />} loading={repositoriesLoading} disabled={!canReadRepositories} onClick={() => void loadRepositories()}>
+                Refresh
+              </Button>
+            }
+          >
+            {!canReadRepositories ? (
+              <Alert
+                type="info"
+                showIcon
+                message="Repository access required"
+                description="This account needs repository list access to view Slack event status."
+              />
+            ) : (
+              <Table<Repository>
+                rowKey="id"
+                pagination={false}
+                dataSource={slackRepositories}
+                locale={{ emptyText: "No Slack integrations configured" }}
+                columns={[
+                  {
+                    title: "Repository",
+                    dataIndex: "name",
+                    render: (value: string, repository) => (
+                      <Space direction="vertical" size={2}>
+                        <Typography.Text strong>{value}</Typography.Text>
+                        <Space size={[4, 4]} wrap>
+                          <Tag color={repository.slackBotTokenConfigured ? "green" : "default"}>Bot token</Tag>
+                          <Tag color={repository.slackSigningSecretConfigured ? "green" : "default"}>Signing secret</Tag>
+                        </Space>
+                      </Space>
+                    )
+                  },
+                  {
+                    title: "Last Event",
+                    render: (_, repository) => (
+                      <Space direction="vertical" size={2}>
+                        <Typography.Text>{formatNullableDate(repository.slackLastEventAt)}</Typography.Text>
+                        {repository.slackLastEventType ? (
+                          <Typography.Text type="secondary">{repository.slackLastEventType}</Typography.Text>
+                        ) : null}
+                      </Space>
+                    )
+                  },
+                  {
+                    title: "Status",
+                    render: (_, repository) => (
+                      <Space direction="vertical" size={2}>
+                        <Tag color={slackEventStatusColor(repository.slackLastEventStatus)}>
+                          {repository.slackLastEventStatus ?? "waiting"}
+                        </Tag>
+                        {repository.slackLastEventError ? (
+                          <Typography.Text type="secondary">{repository.slackLastEventError}</Typography.Text>
+                        ) : null}
+                      </Space>
+                    )
+                  }
+                ]}
+              />
+            )}
+          </Card>
         ) : null}
 
         {activeTab === "codex" ? (

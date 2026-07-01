@@ -135,6 +135,7 @@ const createApp = () => {
   });
   const posts: Array<{ channel: string; text: string }> = [];
   const reactions: Array<{ channel: string; timestamp: string; name: string }> = [];
+  const slackEvents: Array<{ status: string; eventType?: string | null; errorMessage?: string | null }> = [];
   const store = new MemorySlackAssistantStore();
   registerSlackEventRoutes(app, {
     repositoryStore: {
@@ -150,6 +151,10 @@ const createApp = () => {
       getRepositoryGitHubPrWebhookSecret: async () => null,
       getRepositorySlackIntegration: async () => ({ repository, botToken: "xoxb-token", signingSecret }),
       recordWebhookDeliveryResult: async () => repository,
+      recordSlackEventResult: async (_repositoryId, input) => {
+        slackEvents.push(input);
+        return repository;
+      },
       deleteRepository: async () => false
     },
     userStore: {
@@ -169,7 +174,7 @@ const createApp = () => {
       respond: async (input) => `Reply to ${input.user.slackUsername}: ${input.text}`
     }
   });
-  return { app, posts, reactions, store };
+  return { app, posts, reactions, slackEvents, store };
 };
 
 const createAppWithUsers = (users: User[]) => {
@@ -181,6 +186,7 @@ const createAppWithUsers = (users: User[]) => {
   });
   const posts: Array<{ channel: string; text: string }> = [];
   const reactions: Array<{ channel: string; timestamp: string; name: string }> = [];
+  const slackEvents: Array<{ status: string; eventType?: string | null; errorMessage?: string | null }> = [];
   const store = new MemorySlackAssistantStore();
   registerSlackEventRoutes(app, {
     repositoryStore: {
@@ -196,6 +202,10 @@ const createAppWithUsers = (users: User[]) => {
       getRepositoryGitHubPrWebhookSecret: async () => null,
       getRepositorySlackIntegration: async () => ({ repository, botToken: "xoxb-token", signingSecret }),
       recordWebhookDeliveryResult: async () => repository,
+      recordSlackEventResult: async (_repositoryId, input) => {
+        slackEvents.push(input);
+        return repository;
+      },
       deleteRepository: async () => false
     },
     userStore: {
@@ -215,11 +225,11 @@ const createAppWithUsers = (users: User[]) => {
       respond: async () => "should not run"
     }
   });
-  return { app, posts, reactions, store };
+  return { app, posts, reactions, slackEvents, store };
 };
 
 test("Slack event route responds to URL verification", async () => {
-  const { app } = createApp();
+  const { app, slackEvents } = createApp();
   const payload = JSON.stringify({ type: "url_verification", challenge: "challenge-token" });
   const response = await app.inject({
     method: "POST",
@@ -230,11 +240,13 @@ test("Slack event route responds to URL verification", async () => {
 
   assert.equal(response.statusCode, 200);
   assert.deepEqual(JSON.parse(response.body), { challenge: "challenge-token" });
+  assert.equal(slackEvents.at(-1)?.status, "received");
+  assert.equal(slackEvents.at(-1)?.eventType, "url_verification");
   await app.close();
 });
 
 test("Slack event route maps a DM to a profile, reacts, and posts runtime response", async () => {
-  const { app, posts, reactions, store } = createApp();
+  const { app, posts, reactions, slackEvents, store } = createApp();
   const payload = JSON.stringify({
     type: "event_callback",
     team_id: "T1",
@@ -258,12 +270,14 @@ test("Slack event route maps a DM to a profile, reacts, and posts runtime respon
   await waitForBackgroundWork();
   assert.deepEqual(reactions, [{ channel: "D1", timestamp: "1710000000.000100", name: "eyes" }]);
   assert.deepEqual(posts, [{ channel: "D1", text: "Reply to alice: hello" }]);
+  assert.equal(slackEvents.at(-1)?.status, "received");
+  assert.equal(slackEvents.at(-1)?.eventType, "message.im");
   assert.equal(Array.from(store.conversations.values())[0]?.turns.length, 2);
   await app.close();
 });
 
 test("Slack event route replies with setup message when no active profile matches", async () => {
-  const { app, posts, store } = createAppWithUsers([{ ...user, active: false }]);
+  const { app, posts, slackEvents, store } = createAppWithUsers([{ ...user, active: false }]);
   const payload = JSON.stringify({
     type: "event_callback",
     team_id: "T1",
@@ -284,12 +298,14 @@ test("Slack event route replies with setup message when no active profile matche
 
   assert.equal(response.statusCode, 200);
   assert.deepEqual(posts, [{ channel: "D1", text: "I could not find an active AgentSwarm profile with this Slack username." }]);
+  assert.equal(slackEvents.at(-1)?.status, "ignored");
+  assert.equal(slackEvents.at(-1)?.errorMessage, "unmatched_user");
   assert.equal(store.conversations.size, 0);
   await app.close();
 });
 
 test("Slack event route rejects invalid signatures", async () => {
-  const { app } = createApp();
+  const { app, slackEvents } = createApp();
   const payload = JSON.stringify({ type: "url_verification", challenge: "challenge-token" });
   const response = await app.inject({
     method: "POST",
@@ -299,5 +315,7 @@ test("Slack event route rejects invalid signatures", async () => {
   });
 
   assert.equal(response.statusCode, 401);
+  assert.equal(slackEvents.at(-1)?.status, "failed");
+  assert.equal(slackEvents.at(-1)?.errorMessage, "invalid_signature");
   await app.close();
 });

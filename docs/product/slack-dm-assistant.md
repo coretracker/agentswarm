@@ -24,6 +24,8 @@ Slack credentials are never returned by repository read APIs. The UI only shows 
 
 The Slack bot needs `chat:write`, `users:read`, `im:history`, and `reactions:write` bot token scopes. Reinstall the Slack app after changing scopes.
 
+Settings -> Integrations shows each repository Slack integration and its latest signed Slack event result, including received, ignored, and failed events.
+
 ## Task Isolation
 Plain Slack chat messages do not create AgentSwarm tasks, task runs, task logs, checkpoints, or proposals.
 
