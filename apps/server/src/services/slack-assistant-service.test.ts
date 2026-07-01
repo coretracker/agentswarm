@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import type { User } from "@agentswarm/shared-types";
+import { env } from "../config/env.js";
 import { DockerSlackAssistantRuntime } from "./slack-assistant-service.js";
 import type {
   SlackAssistantActiveRuntime,
@@ -12,6 +15,20 @@ import type {
 } from "./slack-assistant-store.js";
 
 const now = "2026-07-01T00:00:00.000Z";
+const originalRuntimePayloadRoot = env.RUNTIME_PAYLOAD_ROOT;
+let runtimePayloadRoot: string | null = null;
+
+test.before(async () => {
+  runtimePayloadRoot = await mkdtemp(path.join(tmpdir(), "agentswarm-slack-runtime-test-"));
+  env.RUNTIME_PAYLOAD_ROOT = runtimePayloadRoot;
+});
+
+test.after(async () => {
+  env.RUNTIME_PAYLOAD_ROOT = originalRuntimePayloadRoot;
+  if (runtimePayloadRoot) {
+    await rm(runtimePayloadRoot, { recursive: true, force: true });
+  }
+});
 
 const user: User = {
   id: "user-1",
