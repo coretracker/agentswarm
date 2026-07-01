@@ -49,6 +49,10 @@ type RepositoryFormValues = {
   clearWebhookSecret: boolean;
   githubPrWebhookSecret: string;
   clearGithubPrWebhookSecret: boolean;
+  slackBotToken: string;
+  clearSlackBotToken: boolean;
+  slackSigningSecret: string;
+  clearSlackSigningSecret: boolean;
   githubIntegrationBotLogin: string;
   githubPrAllowedUsers: string;
   githubPrRequireBotMention: boolean;
@@ -79,6 +83,10 @@ const emptyValues = (): RepositoryFormValues => ({
   clearWebhookSecret: false,
   githubPrWebhookSecret: "",
   clearGithubPrWebhookSecret: false,
+  slackBotToken: "",
+  clearSlackBotToken: false,
+  slackSigningSecret: "",
+  clearSlackSigningSecret: false,
   githubIntegrationBotLogin: "",
   githubPrAllowedUsers: "",
   githubPrRequireBotMention: false,
@@ -131,6 +139,10 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   clearWebhookSecret: values?.clearWebhookSecret === true,
   githubPrWebhookSecret: typeof values?.githubPrWebhookSecret === "string" ? values.githubPrWebhookSecret : "",
   clearGithubPrWebhookSecret: values?.clearGithubPrWebhookSecret === true,
+  slackBotToken: typeof values?.slackBotToken === "string" ? values.slackBotToken : "",
+  clearSlackBotToken: values?.clearSlackBotToken === true,
+  slackSigningSecret: typeof values?.slackSigningSecret === "string" ? values.slackSigningSecret : "",
+  clearSlackSigningSecret: values?.clearSlackSigningSecret === true,
   githubIntegrationBotLogin: typeof values?.githubIntegrationBotLogin === "string" ? values.githubIntegrationBotLogin : "",
   githubPrAllowedUsers: typeof values?.githubPrAllowedUsers === "string" ? values.githubPrAllowedUsers : "",
   githubPrRequireBotMention: values?.githubPrRequireBotMention === true,
@@ -343,6 +355,10 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           clearWebhookSecret: false,
           githubPrWebhookSecret: "",
           clearGithubPrWebhookSecret: false,
+          slackBotToken: "",
+          clearSlackBotToken: false,
+          slackSigningSecret: "",
+          clearSlackSigningSecret: false,
           githubIntegrationBotLogin: repository.githubIntegrationBotLogin ?? "",
           githubPrAllowedUsers: (repository.githubPrAllowedUsers ?? []).join("\n"),
           githubPrRequireBotMention: repository.githubPrRequireBotMention === true,
@@ -570,6 +586,10 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               ...(editingRepository && normalized.clearWebhookSecret ? { clearWebhookSecret: true } : {}),
               ...(normalized.githubPrWebhookSecret.trim().length > 0 ? { githubPrWebhookSecret: normalized.githubPrWebhookSecret.trim() } : {}),
               ...(editingRepository && normalized.clearGithubPrWebhookSecret ? { clearGithubPrWebhookSecret: true } : {}),
+              ...(normalized.slackBotToken.trim().length > 0 ? { slackBotToken: normalized.slackBotToken.trim() } : {}),
+              ...(editingRepository && normalized.clearSlackBotToken ? { clearSlackBotToken: true } : {}),
+              ...(normalized.slackSigningSecret.trim().length > 0 ? { slackSigningSecret: normalized.slackSigningSecret.trim() } : {}),
+              ...(editingRepository && normalized.clearSlackSigningSecret ? { clearSlackSigningSecret: true } : {}),
               githubIntegrationBotLogin: normalized.githubIntegrationBotLogin.trim().replace(/^@+/, "") || null,
               githubPrAllowedUsers: parseAllowedGitHubUsers(normalized.githubPrAllowedUsers),
               githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
@@ -819,6 +839,65 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   description="After creation, AgentSwarm will show the repository-scoped Github webhook URL and webhook secret setup."
                 />
               )}
+            </Flex>
+          </Card>
+          <Card bordered={false} title="Slack Integration">
+            <Flex vertical gap={12}>
+              {mode === "edit" && editingRepository ? (
+                <Form.Item label="Events URL">
+                  <Input
+                    readOnly
+                    value={buildApiUrl(`/repositories/${editingRepository.id}/slack/events`)}
+                    addonAfter={
+                      <Button
+                        type="link"
+                        size="small"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(buildApiUrl(`/repositories/${editingRepository.id}/slack/events`));
+                          messageApi.success("Slack events URL copied");
+                        }}
+                      >
+                        Copy
+                      </Button>
+                    }
+                  />
+                </Form.Item>
+              ) : (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Save the repository first"
+                  description="After creation, AgentSwarm will show the repository-scoped Slack events URL."
+                />
+              )}
+              <Form.Item
+                name="slackBotToken"
+                label={
+                  editingRepository?.slackBotTokenConfigured ? "Slack Bot Token (leave blank to keep existing)" : "Slack Bot Token"
+                }
+              >
+                <Input.Password placeholder="xoxb-..." autoComplete="off" />
+              </Form.Item>
+              {editingRepository?.slackBotTokenConfigured ? (
+                <Form.Item name="clearSlackBotToken" valuePropName="checked">
+                  <Checkbox>Clear stored Slack bot token</Checkbox>
+                </Form.Item>
+              ) : null}
+              <Form.Item
+                name="slackSigningSecret"
+                label={
+                  editingRepository?.slackSigningSecretConfigured
+                    ? "Slack Signing Secret (leave blank to keep existing)"
+                    : "Slack Signing Secret"
+                }
+              >
+                <Input.Password autoComplete="off" />
+              </Form.Item>
+              {editingRepository?.slackSigningSecretConfigured ? (
+                <Form.Item name="clearSlackSigningSecret" valuePropName="checked">
+                  <Checkbox>Clear stored Slack signing secret</Checkbox>
+                </Form.Item>
+              ) : null}
             </Flex>
           </Card>
           <Card bordered={false} title="Environment">

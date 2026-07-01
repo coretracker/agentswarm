@@ -60,12 +60,11 @@
 - `apps/server/src/services/repository-store.ts`
 - `apps/server/src/routes/repositories.ts`
 - `apps/web/components/repository-editor-page.tsx`
-- New candidate: `apps/server/src/routes/slack.ts`
-- New candidate: `apps/server/src/services/slack-assistant-store.ts`
-- New candidate: `apps/server/src/services/slack-assistant-runtime.ts`
-- New candidate: `apps/server/src/lib/slack-signature.ts`
-- New candidate: `apps/server/src/lib/slack-message-format.ts`
-- New candidate: `apps/server/src/services/slack-client.ts`
+- New: `apps/server/src/routes/slack-events.ts`
+- New: `apps/server/src/services/slack-assistant-store.ts`
+- New: `apps/server/src/services/slack-assistant-service.ts`
+- New: `apps/server/src/lib/slack-signature.ts`
+- New: `apps/server/src/services/slack-client.ts`
 - `apps/server/src/index.ts`
 - `apps/server/src/config/env.ts`
 - `apps/server/src/providers/runtime-definitions.ts`
@@ -152,16 +151,16 @@
 - Requirements Updated: 2026-07-01 07:29 UTC - Read follow-up feedback that bot credentials should be configurable in the repository Slack integration section.
 - Repository Research Complete: 2026-07-01 06:55 UTC - Reviewed profile routes/UI/types, user persistence/migrations, provider runtime definitions, spawner runtime setup, MCP config, existing execution plans, and confirmed no current Slack source files.
 - Uncertainties Logged: 2026-07-01 06:55 UTC - Provider default for Slack DM, exact MCP identity model, transcript retention, and whether to use Slack user ID in addition to username need confirmation before implementation.
-- Human Review Completed: TODO - Awaiting owner review of this plan on issue #90.
-- User Approval To Start: TODO - Do not start implementation until the owner explicitly approves.
-- Baseline Checks Run: TODO - Deferred until implementation is approved.
+- Human Review Completed: 2026-07-01 07:39 UTC - Owner reviewed the plan thread and requested implementation start at https://github.com/coretracker/agentswarm/issues/90#issuecomment-4851549424.
+- User Approval To Start: 2026-07-01 07:39 UTC - Owner comment says `start implementation`.
+- Baseline Checks Run: 2026-07-01 07:40 UTC - `./scripts/harness/doctor.sh` passed; initial `./scripts/harness/check.sh` needed dependency setup; `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh` installed dependencies but compose startup hit an existing local 5432 binding; rerun `./scripts/harness/check.sh` passed; `TEST_SCOPE=unit ./scripts/harness/test.sh` passed.
 - Visible Task List Updated: 2026-07-01 06:55 UTC - Conversation task list updated while creating this plan.
-- Task-Level Tests/Lint/Build: TODO - No implementation yet.
-- Self Review Complete: TODO - Complete after implementation work, not for this plan-only checkpoint.
-- Code Review Complete: TODO - Complete after implementation work.
-- Final Verification Complete: TODO - Complete after implementation work.
-- Security/Privacy Review Complete: TODO - Required before implementation completion because Slack signatures, user identity matching, provider credentials, and MCP auth are in scope.
-- Docs/Changelog Updated: TODO - Product/development docs should be updated during implementation.
+- Task-Level Tests/Lint/Build: 2026-07-01 07:59 UTC - `./scripts/harness/check.sh`, `TEST_SCOPE=unit ./scripts/harness/test.sh`, and focused route/store tests passed.
+- Self Review Complete: 2026-07-01 07:59 UTC - Reviewed implementation against `docs/development/agent-review.md`; noted the detached Codex/Claude container runner and 5-minute idle stop remain follow-up work outside this first slice.
+- Code Review Complete: 2026-07-01 07:59 UTC - Reviewed Slack signature, credential storage, user matching, route behavior, repository UI, and docs changes.
+- Final Verification Complete: 2026-07-01 07:59 UTC - Final `./scripts/harness/check.sh`, `TEST_SCOPE=unit ./scripts/harness/test.sh`, focused route/store tests, and `git diff --check` passed. `./scripts/harness/pr-ready.sh` passed doctor, human-gated, boundary, lint/typecheck, unit, and integration phases, then failed during e2e app boot because Docker could not mount the existing `deploy/nginx.conf` file into the nginx proxy container in this workspace.
+- Security/Privacy Review Complete: 2026-07-01 07:59 UTC - Slack signing secrets and bot tokens remain write-only through repository APIs; Slack event route verifies timestamped signatures; unmatched users receive a generic setup reply.
+- Docs/Changelog Updated: 2026-07-01 07:59 UTC - Added `docs/product/slack-dm-assistant.md` and linked it from product docs.
 
 ## Validation Commands
 - `./scripts/harness/doctor.sh`
@@ -169,12 +168,10 @@
 - `./scripts/harness/check-human-gated-flow.sh`
 - `./scripts/harness/check.sh`
 - `TEST_SCOPE=unit ./scripts/harness/test.sh`
+- `node --import tsx --test apps/server/src/routes/slack-events.test.ts apps/server/src/routes/repositories.test.ts apps/server/src/services/repository-store.test.ts`
 - `./scripts/harness/test.sh`
 - Focused candidates after implementation:
-- `node --import tsx --test apps/server/src/routes/auth.test.ts`
-- `node --import tsx --test apps/server/src/routes/slack.test.ts`
-- `node --import tsx --test apps/server/src/services/slack-assistant-store.test.ts`
-- `node --import tsx --test apps/server/src/services/slack-assistant-runtime.test.ts`
+- `node --import tsx --test apps/server/src/routes/slack-events.test.ts`
 
 ## Risks
 - Matching by Slack username alone is simple but weaker than storing Slack user IDs; usernames can change and can collide across workspaces.
@@ -197,6 +194,9 @@
 ## Progress Log
 - 2026-07-01 06:55 UTC: Reacted with eyes emoji on the implementation-plan request, confirmed branch is current with `origin/develop`, researched relevant profile/runtime/MCP paths, and created this plan for review before implementation.
 - 2026-07-01 07:29 UTC: Added owner feedback that Slack bot credentials should be configured in the repository Slack integration section.
+- 2026-07-01 07:39 UTC: Reacted with eyes emoji on the implementation-start request and marked the plan approved for implementation.
+- 2026-07-01 07:59 UTC: Implemented the first slice: Slack username profile field, repository Slack credential configuration, signed Slack events route, Slack user matching, detached conversation persistence, Slack replies, product docs, and focused tests.
+- 2026-07-01 07:59 UTC: Ran final validation and self-review; cleaned up the task-specific compose project after `pr-ready.sh` hit the local nginx bind-mount boot failure.
 
 ## Decisions
 - 2026-07-01: Plan v1 as a detached Slack DM assistant, not as repository mapping or task workflow integration.
@@ -205,7 +205,7 @@
 - 2026-07-01: Reuse existing provider runtime definitions, credentials, and MCP serialization rather than creating Slack-specific provider integrations.
 
 ## Open Questions
-- Should v1 use Codex by default, Claude by default, or the system default provider?
+- Should the next runtime slice use Codex by default, Claude by default, or the system default provider?
 - Should each repository Slack integration use a unique Slack app/event URL, or should multiple repositories be allowed to share the same Slack bot credentials?
 - Should the profile field store only Slack username, or also Slack workspace/user ID after first successful DM for better identity stability?
 - What is the desired transcript retention policy for Slack DM conversations?
@@ -213,4 +213,4 @@
 - Should "start a task" from Slack be in the first implementation slice, or left as a follow-up after plain chat works?
 
 ## Completion Notes
-- TODO - This plan is waiting for human review and approval before implementation starts.
+- First implementation slice is complete. Remaining follow-up work is the real detached Codex/Claude container runner, AgentSwarm MCP identity injection for that runner, and 5-minute idle container stop/restart.

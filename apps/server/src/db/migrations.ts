@@ -643,5 +643,38 @@ Feedback:
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS host_commands jsonb NOT NULL DEFAULT '[]'::jsonb;
     `
+  },
+  {
+    id: "20260701_02_slack_dm_assistant_mvp",
+    sql: `
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS slack_username text NULL;
+
+      CREATE INDEX IF NOT EXISTS users_slack_username_idx
+        ON users (lower(slack_username))
+        WHERE slack_username IS NOT NULL AND btrim(slack_username) <> '';
+
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS slack_bot_token text NULL,
+      ADD COLUMN IF NOT EXISTS slack_signing_secret text NULL;
+
+      CREATE TABLE IF NOT EXISTS slack_assistant_conversations (
+        id text PRIMARY KEY,
+        repository_id text NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+        user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        slack_team_id text NOT NULL,
+        slack_channel_id text NOT NULL,
+        slack_user_id text NOT NULL,
+        provider text NOT NULL,
+        context jsonb NOT NULL,
+        active_runtime jsonb NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL,
+        UNIQUE(repository_id, slack_team_id, slack_channel_id, slack_user_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS slack_assistant_conversations_user_idx
+        ON slack_assistant_conversations(user_id, updated_at DESC);
+    `
   }
 ];

@@ -316,6 +316,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  slackUsername: string | null;
   active: boolean;
   agentResponsePreference: AgentResponsePreference;
   roles: UserRoleRef[];
@@ -340,6 +341,7 @@ export interface AuthSession {
 export interface AuthProfile {
   name: string;
   email: string;
+  slackUsername: string | null;
   agentResponsePreference: AgentResponsePreference;
 }
 
@@ -385,6 +387,7 @@ export interface CreateUserInput {
   name: string;
   email: string;
   password: string;
+  slackUsername?: string | null;
   active?: boolean;
   roleIds?: string[];
   repositoryIds?: string[];
@@ -395,6 +398,7 @@ export interface UpdateUserInput {
   name?: string;
   email?: string;
   password?: string;
+  slackUsername?: string | null;
   active?: boolean;
   roleIds?: string[];
   repositoryIds?: string[];
@@ -466,6 +470,8 @@ export interface Repository {
   webhookEnabled: boolean;
   webhookSecretConfigured: boolean;
   githubPrWebhookSecretConfigured?: boolean;
+  slackBotTokenConfigured?: boolean;
+  slackSigningSecretConfigured?: boolean;
   githubIntegrationBotLogin?: string | null;
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
@@ -926,6 +932,8 @@ export interface CreateRepositoryInput {
   webhookEnabled?: boolean;
   webhookSecret?: string;
   githubPrWebhookSecret?: string;
+  slackBotToken?: string;
+  slackSigningSecret?: string;
   githubIntegrationBotLogin?: string | null;
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
@@ -956,6 +964,10 @@ export interface UpdateRepositoryInput {
   clearWebhookSecret?: boolean;
   githubPrWebhookSecret?: string;
   clearGithubPrWebhookSecret?: boolean;
+  slackBotToken?: string;
+  clearSlackBotToken?: boolean;
+  slackSigningSecret?: string;
+  clearSlackSigningSecret?: boolean;
   githubIntegrationBotLogin?: string | null;
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
@@ -1389,6 +1401,7 @@ export interface UpdateCredentialSettingsInput {
 
 export interface UpdateAuthProfileInput {
   name?: string;
+  slackUsername?: string | null;
   agentResponsePreference?: Partial<AgentResponsePreference>;
 }
 

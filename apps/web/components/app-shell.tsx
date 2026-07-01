@@ -103,6 +103,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const workspaceNotesSaveRequestIdRef = useRef(0);
   const [profileForm] = Form.useForm<{
     name: string;
+    slackUsername?: string;
     audience?: AudienceType;
     explanationDepth?: AgentExplanationDepth;
     jargonLevel?: AgentJargonLevel;
@@ -309,6 +310,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       const [profile, tokens] = await Promise.all([api.getProfile(), api.listPersonalAccessTokens()]);
       profileForm.setFieldsValue({
         name: profile.name,
+        slackUsername: profile.slackUsername ?? "",
         audience: profile.agentResponsePreference.audience,
         explanationDepth: profile.agentResponsePreference.explanationDepth,
         jargonLevel: profile.agentResponsePreference.jargonLevel,
@@ -332,6 +334,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       setSavingProfile(true);
       const next = await api.updateProfile({
         name: values.name,
+        slackUsername: values.slackUsername?.trim() || null,
         agentResponsePreference: {
           audience: values.audience,
           explanationDepth: values.explanationDepth,
@@ -344,6 +347,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       });
       setSessionUser({
         name: next.name,
+        slackUsername: next.slackUsername,
         agentResponsePreference: next.agentResponsePreference
       });
       message.success("Profile updated");
@@ -685,6 +689,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             layout="vertical"
             initialValues={{
               name: session.user.name,
+              slackUsername: session.user.slackUsername ?? "",
               audience: session.user.agentResponsePreference.audience,
               explanationDepth: session.user.agentResponsePreference.explanationDepth,
               jargonLevel: session.user.agentResponsePreference.jargonLevel,
@@ -696,6 +701,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           >
             <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
               <Input />
+            </Form.Item>
+            <Form.Item
+              name="slackUsername"
+              label="Slack Username"
+              rules={[{ max: 80, message: "Slack username must be 80 characters or fewer." }]}
+            >
+              <Input addonBefore="@" autoComplete="off" />
             </Form.Item>
             <Divider orientation="left" plain>
               Response Format Preferences

@@ -21,6 +21,7 @@ import { registerUserRoutes } from "./routes/users.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerGitHubPrWebhookRoutes } from "./routes/github-pr-webhooks.js";
+import { registerSlackEventRoutes } from "./routes/slack-events.js";
 import { registerSnippetRoutes } from "./routes/snippets.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 import { registerMcpRoutes } from "./mcp/server.js";
@@ -140,6 +141,7 @@ const bootstrap = async (): Promise<void> => {
     roleStore,
     userStore,
     personalAccessTokenStore,
+    slackAssistantStore,
     sessionStore,
     settingsStore
   } = createPostgresStores(
@@ -183,6 +185,7 @@ const bootstrap = async (): Promise<void> => {
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerGitHubPrWebhookRoutes(app, { repositoryStore, taskStore, taskQueueStore, scheduler, settingsStore, spawner });
+  registerSlackEventRoutes(app, { repositoryStore, userStore, slackAssistantStore });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
   registerMcpRoutes(app, {
     auth,

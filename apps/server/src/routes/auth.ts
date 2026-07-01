@@ -24,6 +24,7 @@ const responsePreferenceSchema = z
 
 const updateProfileSchema = z.object({
   name: z.string().trim().min(1).optional(),
+  slackUsername: z.string().trim().max(80).nullable().optional(),
   agentResponsePreference: responsePreferenceSchema.optional()
 });
 
@@ -71,6 +72,7 @@ export const registerAuthRoutes = (
     return {
       name: authUser.name,
       email: authUser.email,
+      slackUsername: authUser.slackUsername,
       agentResponsePreference: authUser.agentResponsePreference
     };
   });
@@ -116,10 +118,12 @@ export const registerAuthRoutes = (
     const userId = request.auth!.user.id;
     if (
       parsed.data.name !== undefined ||
+      parsed.data.slackUsername !== undefined ||
       parsed.data.agentResponsePreference !== undefined
     ) {
       const updated = await deps.userStore.updateUser(userId, {
         ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+        ...(parsed.data.slackUsername !== undefined ? { slackUsername: parsed.data.slackUsername } : {}),
         ...(parsed.data.agentResponsePreference !== undefined ? { agentResponsePreference: parsed.data.agentResponsePreference } : {})
       });
       if (!updated) {
@@ -135,6 +139,7 @@ export const registerAuthRoutes = (
     return reply.send({
       name: refreshedUser.name,
       email: refreshedUser.email,
+      slackUsername: refreshedUser.slackUsername,
       agentResponsePreference: refreshedUser.agentResponsePreference
     });
   });

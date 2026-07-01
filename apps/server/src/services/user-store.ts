@@ -43,6 +43,7 @@ export interface StoredUserRecord {
   email: string;
   gitAuthorName: string | null;
   gitAuthorEmail: string | null;
+  slackUsername: string | null;
   active: boolean;
   agentResponsePreference: AgentResponsePreference;
   roleIds: string[];
@@ -62,6 +63,10 @@ const normalizeOptionalGitAuthorName = (value: string | null | undefined): strin
 };
 const normalizeOptionalGitAuthorEmail = (value: string | null | undefined): string | null => {
   const normalized = (value ?? "").trim().toLowerCase();
+  return normalized || null;
+};
+const normalizeSlackUsername = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().replace(/^@+/, "").toLowerCase();
   return normalized || null;
 };
 const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
@@ -186,6 +191,7 @@ export class RedisUserStore implements UserStore {
       email: normalizeUserEmail(user.email),
       gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
       gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
+      slackUsername: normalizeSlackUsername(user.slackUsername),
       active: user.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
@@ -269,6 +275,7 @@ export class RedisUserStore implements UserStore {
       id: user.id,
       name: user.name,
       email: user.email,
+      slackUsername: user.slackUsername,
       active: user.active,
       agentResponsePreference: user.agentResponsePreference,
       roles: this.buildRoleRefs(roles),
@@ -474,6 +481,7 @@ export class RedisUserStore implements UserStore {
       email,
       gitAuthorName: null,
       gitAuthorEmail: null,
+      slackUsername: normalizeSlackUsername(input.slackUsername),
       active: input.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
@@ -536,6 +544,7 @@ export class RedisUserStore implements UserStore {
       ...current,
       name: nextName,
       email: nextEmail,
+      slackUsername: input.slackUsername === undefined ? current.slackUsername : normalizeSlackUsername(input.slackUsername),
       active: nextActive,
       agentResponsePreference:
         input.agentResponsePreference === undefined
@@ -602,6 +611,7 @@ export class PostgresUserStore implements UserStore {
       email: String(row.email ?? ""),
       gitAuthorName: typeof row.git_author_name === "string" ? row.git_author_name : null,
       gitAuthorEmail: typeof row.git_author_email === "string" ? row.git_author_email : null,
+      slackUsername: typeof row.slack_username === "string" ? row.slack_username : null,
       active: row.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(
         row.agent_response_preference && typeof row.agent_response_preference === "object"
@@ -625,6 +635,7 @@ export class PostgresUserStore implements UserStore {
       email: normalizeUserEmail(user.email),
       gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
       gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
+      slackUsername: normalizeSlackUsername(user.slackUsername),
       active: user.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
@@ -744,6 +755,7 @@ export class PostgresUserStore implements UserStore {
       id: user.id,
       name: user.name,
       email: user.email,
+      slackUsername: user.slackUsername,
       active: user.active,
       agentResponsePreference: user.agentResponsePreference,
       roles: this.buildRoleRefs(roles),
@@ -799,6 +811,7 @@ export class PostgresUserStore implements UserStore {
           email,
           git_author_name,
           git_author_email,
+          slack_username,
           active,
           agent_response_preference,
           password_hash,
@@ -807,13 +820,14 @@ export class PostgresUserStore implements UserStore {
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, $11, $12)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13)
         ON CONFLICT (id) DO UPDATE
         SET
           name = EXCLUDED.name,
           email = EXCLUDED.email,
           git_author_name = EXCLUDED.git_author_name,
           git_author_email = EXCLUDED.git_author_email,
+          slack_username = EXCLUDED.slack_username,
           active = EXCLUDED.active,
           agent_response_preference = EXCLUDED.agent_response_preference,
           password_hash = EXCLUDED.password_hash,
@@ -828,6 +842,7 @@ export class PostgresUserStore implements UserStore {
         nextUser.email,
         nextUser.gitAuthorName,
         nextUser.gitAuthorEmail,
+        nextUser.slackUsername,
         nextUser.active,
         JSON.stringify(nextUser.agentResponsePreference),
         nextUser.passwordHash,
@@ -1043,6 +1058,7 @@ export class PostgresUserStore implements UserStore {
       email,
       gitAuthorName: null,
       gitAuthorEmail: null,
+      slackUsername: normalizeSlackUsername(input.slackUsername),
       active: input.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
@@ -1108,6 +1124,7 @@ export class PostgresUserStore implements UserStore {
       ...current,
       name: nextName,
       email: nextEmail,
+      slackUsername: input.slackUsername === undefined ? current.slackUsername : normalizeSlackUsername(input.slackUsername),
       active: nextActive,
       agentResponsePreference:
         input.agentResponsePreference === undefined

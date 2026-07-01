@@ -167,4 +167,33 @@ describe("RedisRepositoryStore MCP servers", () => {
     assert.equal(updated?.harnessDefinitionOfDone, "Run targeted tests and pr-ready.sh.");
     assert.equal(updated?.harnessEvidenceExpectations, "Include commands and outcomes.");
   });
+
+  it("stores Slack credentials internally and exposes only configured flags", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const created = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git",
+      slackBotToken: "  xoxb-token  ",
+      slackSigningSecret: "  signing-secret  "
+    });
+
+    assert.equal(created.slackBotTokenConfigured, true);
+    assert.equal(created.slackSigningSecretConfigured, true);
+    const integration = await store.getRepositorySlackIntegration(created.id);
+    assert.equal(integration?.botToken, "xoxb-token");
+    assert.equal(integration?.signingSecret, "signing-secret");
+
+    const cleared = await store.updateRepository(created.id, {
+      clearSlackBotToken: true,
+      clearSlackSigningSecret: true
+    });
+
+    assert.equal(cleared?.slackBotTokenConfigured, false);
+    assert.equal(cleared?.slackSigningSecretConfigured, false);
+    assert.equal(await store.getRepositorySlackIntegration(created.id), null);
+  });
 });

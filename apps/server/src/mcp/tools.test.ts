@@ -7,6 +7,7 @@ const user: AuthSessionUser = {
   id: "user-1",
   name: "User",
   email: "user@example.com",
+  slackUsername: null,
   active: true,
   agentResponsePreference: {},
   roles: [],

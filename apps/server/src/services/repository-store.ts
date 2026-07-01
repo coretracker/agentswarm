@@ -111,13 +111,20 @@ interface StoredRepositoryEnvFileValue {
 
 type StoredRepositoryEnvValue = StoredRepositoryEnvTextValue | StoredRepositoryEnvFileValue;
 
-type StoredRepository = Omit<Repository, "webhookSecretConfigured" | "githubPrWebhookSecretConfigured" | "envVars" | "envSecrets"> & {
+type StoredRepository = Omit<
+  Repository,
+  "webhookSecretConfigured" | "githubPrWebhookSecretConfigured" | "slackBotTokenConfigured" | "slackSigningSecretConfigured" | "envVars" | "envSecrets"
+> & {
   envVars: StoredRepositoryEnvValue[];
   envSecrets: StoredRepositoryEnvValue[];
   webhookSecret: string | null;
   githubPrWebhookSecret: string | null;
+  slackBotToken: string | null;
+  slackSigningSecret: string | null;
   webhookSecretConfigured?: boolean;
   githubPrWebhookSecretConfigured?: boolean;
+  slackBotTokenConfigured?: boolean;
+  slackSigningSecretConfigured?: boolean;
 } & Record<string, unknown>;
 
 const normalizeRepositoryEnvFileName = (value: unknown): string | null => {
@@ -564,6 +571,12 @@ export interface RepositoryWebhookTarget {
   webhookSecret: string;
 }
 
+export interface RepositorySlackIntegration {
+  repository: Repository;
+  botToken: string;
+  signingSecret: string;
+}
+
 export interface RepositoryStore {
   createRepository(input: CreateRepositoryInput): Promise<Repository>;
   listRepositories(): Promise<Repository[]>;
@@ -574,6 +587,7 @@ export interface RepositoryStore {
   updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null>;
   getRepositoryWebhookTarget(repositoryId: string): Promise<RepositoryWebhookTarget | null>;
   getRepositoryGitHubPrWebhookSecret(repositoryId: string): Promise<string | null>;
+  getRepositorySlackIntegration(repositoryId: string): Promise<RepositorySlackIntegration | null>;
   recordWebhookDeliveryResult(
     repositoryId: string,
     input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
@@ -683,6 +697,8 @@ export class RedisRepositoryStore implements RepositoryStore {
   private normalizeStoredRepository(repository: StoredRepository): StoredRepository {
     const webhookSecret = this.normalizeWebhookSecret(repository.webhookSecret);
     const githubPrWebhookSecret = this.normalizeWebhookSecret(repository.githubPrWebhookSecret);
+    const slackBotToken = this.normalizeWebhookSecret(repository.slackBotToken);
+    const slackSigningSecret = this.normalizeWebhookSecret(repository.slackSigningSecret);
     const githubIntegrationBotLogin = normalizeGitHubLogin(repository.githubIntegrationBotLogin);
     const githubPrAllowedUsers = normalizeGitHubAllowedUsers(repository.githubPrAllowedUsers);
     const githubPrInitialInstructions = normalizeGitHubInstructions(
@@ -728,6 +744,8 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookEnabled,
       webhookSecret,
       githubPrWebhookSecret,
+      slackBotToken,
+      slackSigningSecret,
       githubIntegrationBotLogin,
       githubPrAllowedUsers,
       githubPrInitialInstructions,
@@ -764,6 +782,8 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookEnabled: normalized.webhookEnabled,
       webhookSecretConfigured: Boolean(normalized.webhookSecret),
       githubPrWebhookSecretConfigured: Boolean(normalized.githubPrWebhookSecret),
+      slackBotTokenConfigured: Boolean(normalized.slackBotToken),
+      slackSigningSecretConfigured: Boolean(normalized.slackSigningSecret),
       githubIntegrationBotLogin: normalized.githubIntegrationBotLogin ?? null,
       githubPrAllowedUsers: normalized.githubPrAllowedUsers,
       githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
@@ -800,6 +820,8 @@ export class RedisRepositoryStore implements RepositoryStore {
     const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
     const githubPrWebhookSecret = this.normalizeWebhookSecret(input.githubPrWebhookSecret);
+    const slackBotToken = this.normalizeWebhookSecret(input.slackBotToken);
+    const slackSigningSecret = this.normalizeWebhookSecret(input.slackSigningSecret);
     const githubIntegrationBotLogin = normalizeGitHubLogin(input.githubIntegrationBotLogin);
     const githubPrAllowedUsers = normalizeGitHubAllowedUsers(input.githubPrAllowedUsers);
     const githubPrInitialInstructions = normalizeGitHubInstructions(
@@ -842,6 +864,8 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookEnabled,
       webhookSecret,
       githubPrWebhookSecret,
+      slackBotToken,
+      slackSigningSecret,
       githubIntegrationBotLogin,
       githubPrAllowedUsers,
       githubPrRequireBotMention: input.githubPrRequireBotMention === true,
@@ -951,6 +975,18 @@ export class RedisRepositoryStore implements RepositoryStore {
         : input.githubPrWebhookSecret !== undefined
           ? this.normalizeWebhookSecret(input.githubPrWebhookSecret)
           : current.githubPrWebhookSecret;
+    const nextSlackBotToken =
+      input.clearSlackBotToken === true
+        ? null
+        : input.slackBotToken !== undefined
+          ? this.normalizeWebhookSecret(input.slackBotToken)
+          : current.slackBotToken;
+    const nextSlackSigningSecret =
+      input.clearSlackSigningSecret === true
+        ? null
+        : input.slackSigningSecret !== undefined
+          ? this.normalizeWebhookSecret(input.slackSigningSecret)
+          : current.slackSigningSecret;
     const nextGithubIntegrationBotLogin =
       input.githubIntegrationBotLogin !== undefined
         ? normalizeGitHubLogin(input.githubIntegrationBotLogin)
@@ -1035,6 +1071,8 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookEnabled: nextWebhookEnabled,
       webhookSecret: nextWebhookSecret,
       githubPrWebhookSecret: nextGithubPrWebhookSecret,
+      slackBotToken: nextSlackBotToken,
+      slackSigningSecret: nextSlackSigningSecret,
       githubIntegrationBotLogin: nextGithubIntegrationBotLogin,
       githubPrAllowedUsers: nextGithubPrAllowedUsers,
       githubPrRequireBotMention: nextGithubPrRequireBotMention,
@@ -1087,6 +1125,19 @@ export class RedisRepositoryStore implements RepositoryStore {
   async getRepositoryGitHubPrWebhookSecret(repositoryId: string): Promise<string | null> {
     const stored = await this.getStoredRepository(repositoryId);
     return stored?.githubPrWebhookSecret ?? null;
+  }
+
+  async getRepositorySlackIntegration(repositoryId: string): Promise<RepositorySlackIntegration | null> {
+    const stored = await this.getStoredRepository(repositoryId);
+    if (!stored?.slackBotToken || !stored.slackSigningSecret) {
+      return null;
+    }
+
+    return {
+      repository: this.normalizeRepository(stored),
+      botToken: stored.slackBotToken,
+      signingSecret: stored.slackSigningSecret
+    };
   }
 
   async recordWebhookDeliveryResult(
@@ -1183,6 +1234,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookSecretConfigured: typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0,
       githubPrWebhookSecretConfigured:
         typeof row.github_pr_webhook_secret === "string" && row.github_pr_webhook_secret.trim().length > 0,
+      slackBotTokenConfigured: typeof row.slack_bot_token === "string" && row.slack_bot_token.trim().length > 0,
+      slackSigningSecretConfigured: typeof row.slack_signing_secret === "string" && row.slack_signing_secret.trim().length > 0,
       githubIntegrationBotLogin:
         typeof row.github_integration_bot_login === "string" && row.github_integration_bot_login.trim().length > 0
           ? row.github_integration_bot_login.trim()
@@ -1251,6 +1304,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
     const githubPrWebhookSecret = this.normalizeWebhookSecret(input.githubPrWebhookSecret);
+    const slackBotToken = this.normalizeWebhookSecret(input.slackBotToken);
+    const slackSigningSecret = this.normalizeWebhookSecret(input.slackSigningSecret);
     const githubIntegrationBotLogin = normalizeGitHubLogin(input.githubIntegrationBotLogin);
     const githubPrAllowedUsers = normalizeGitHubAllowedUsers(input.githubPrAllowedUsers);
     const githubPrInitialInstructions = normalizeGitHubInstructions(
@@ -1293,6 +1348,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookEnabled,
       webhookSecretConfigured: Boolean(webhookSecret),
       githubPrWebhookSecretConfigured: Boolean(githubPrWebhookSecret),
+      slackBotTokenConfigured: Boolean(slackBotToken),
+      slackSigningSecretConfigured: Boolean(slackSigningSecret),
       githubIntegrationBotLogin,
       githubPrAllowedUsers,
       githubPrRequireBotMention: input.githubPrRequireBotMention === true,
@@ -1333,6 +1390,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
             webhook_enabled,
             webhook_secret,
             github_pr_webhook_secret,
+            slack_bot_token,
+            slack_signing_secret,
             github_integration_bot_login,
             github_pr_allowed_users,
             github_pr_require_bot_mention,
@@ -1353,7 +1412,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14::jsonb, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31)
+          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33)
         `,
         [
           repository.id,
@@ -1368,6 +1427,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
           repository.webhookEnabled,
           webhookSecret,
           githubPrWebhookSecret,
+          slackBotToken,
+          slackSigningSecret,
           repository.githubIntegrationBotLogin,
           JSON.stringify(repository.githubPrAllowedUsers),
           repository.githubPrRequireBotMention,
@@ -1449,6 +1510,14 @@ export class PostgresRepositoryStore implements RepositoryStore {
       typeof currentRow.github_pr_webhook_secret === "string" && currentRow.github_pr_webhook_secret.trim().length > 0
         ? currentRow.github_pr_webhook_secret.trim()
         : null;
+    const currentSlackBotToken =
+      typeof currentRow.slack_bot_token === "string" && currentRow.slack_bot_token.trim().length > 0
+        ? currentRow.slack_bot_token.trim()
+        : null;
+    const currentSlackSigningSecret =
+      typeof currentRow.slack_signing_secret === "string" && currentRow.slack_signing_secret.trim().length > 0
+        ? currentRow.slack_signing_secret.trim()
+        : null;
     const currentEnvVars = normalizeRepositoryEnvVars(currentRow.env_vars);
     const currentEnvSecrets = normalizeRepositoryEnvSecretValues(currentRow.env_secrets);
     const nextWebhookSecret =
@@ -1463,6 +1532,18 @@ export class PostgresRepositoryStore implements RepositoryStore {
         : input.githubPrWebhookSecret !== undefined
           ? this.normalizeWebhookSecret(input.githubPrWebhookSecret)
           : currentGithubPrWebhookSecret;
+    const nextSlackBotToken =
+      input.clearSlackBotToken === true
+        ? null
+        : input.slackBotToken !== undefined
+          ? this.normalizeWebhookSecret(input.slackBotToken)
+          : currentSlackBotToken;
+    const nextSlackSigningSecret =
+      input.clearSlackSigningSecret === true
+        ? null
+        : input.slackSigningSecret !== undefined
+          ? this.normalizeWebhookSecret(input.slackSigningSecret)
+          : currentSlackSigningSecret;
     const nextGithubIntegrationBotLogin =
       input.githubIntegrationBotLogin !== undefined
         ? normalizeGitHubLogin(input.githubIntegrationBotLogin)
@@ -1547,6 +1628,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookEnabled: nextWebhookEnabled,
       webhookSecretConfigured: Boolean(nextWebhookSecret),
       githubPrWebhookSecretConfigured: Boolean(nextGithubPrWebhookSecret),
+      slackBotTokenConfigured: Boolean(nextSlackBotToken),
+      slackSigningSecretConfigured: Boolean(nextSlackSigningSecret),
       githubIntegrationBotLogin: nextGithubIntegrationBotLogin,
       githubPrAllowedUsers: nextGithubPrAllowedUsers,
       githubPrRequireBotMention: nextGithubPrRequireBotMention,
@@ -1583,25 +1666,27 @@ export class PostgresRepositoryStore implements RepositoryStore {
             webhook_enabled = $10,
             webhook_secret = $11,
             github_pr_webhook_secret = $12,
-            github_integration_bot_login = $13,
-            github_pr_allowed_users = $14::jsonb,
-            github_pr_require_bot_mention = $15,
-            github_pr_auto_archive_on_merge = $16,
-            github_pr_initial_instructions = $17,
-            github_pr_feedback_instructions = $18,
-            github_pr_review_instructions = $19,
-            github_pr_task_created_comment_template = $20,
-            github_pr_task_owner_user_id = $21,
-            harness_what_exists = $22,
-            harness_allowed_actions = $23,
-            harness_how_to_work = $24,
-            harness_definition_of_done = $25,
-            harness_evidence_expectations = $26,
-            webhook_last_attempt_at = $27,
-            webhook_last_status = $28,
-            webhook_last_error = $29,
-            created_at = $30,
-            updated_at = $31
+            slack_bot_token = $13,
+            slack_signing_secret = $14,
+            github_integration_bot_login = $15,
+            github_pr_allowed_users = $16::jsonb,
+            github_pr_require_bot_mention = $17,
+            github_pr_auto_archive_on_merge = $18,
+            github_pr_initial_instructions = $19,
+            github_pr_feedback_instructions = $20,
+            github_pr_review_instructions = $21,
+            github_pr_task_created_comment_template = $22,
+            github_pr_task_owner_user_id = $23,
+            harness_what_exists = $24,
+            harness_allowed_actions = $25,
+            harness_how_to_work = $26,
+            harness_definition_of_done = $27,
+            harness_evidence_expectations = $28,
+            webhook_last_attempt_at = $29,
+            webhook_last_status = $30,
+            webhook_last_error = $31,
+            created_at = $32,
+            updated_at = $33
           WHERE id = $1
         `,
         [
@@ -1617,6 +1702,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
           next.webhookEnabled,
           nextWebhookSecret,
           nextGithubPrWebhookSecret,
+          nextSlackBotToken,
+          nextSlackSigningSecret,
           next.githubIntegrationBotLogin,
           JSON.stringify(next.githubPrAllowedUsers),
           next.githubPrRequireBotMention,
@@ -1677,6 +1764,28 @@ export class PostgresRepositoryStore implements RepositoryStore {
     return typeof row.github_pr_webhook_secret === "string" && row.github_pr_webhook_secret.trim().length > 0
       ? row.github_pr_webhook_secret.trim()
       : null;
+  }
+
+  async getRepositorySlackIntegration(repositoryId: string): Promise<RepositorySlackIntegration | null> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    if (!row) {
+      return null;
+    }
+
+    const botToken = typeof row.slack_bot_token === "string" && row.slack_bot_token.trim().length > 0 ? row.slack_bot_token.trim() : null;
+    const signingSecret =
+      typeof row.slack_signing_secret === "string" && row.slack_signing_secret.trim().length > 0
+        ? row.slack_signing_secret.trim()
+        : null;
+    if (!botToken || !signingSecret) {
+      return null;
+    }
+
+    return {
+      repository: this.mapRepositoryRow(row),
+      botToken,
+      signingSecret
+    };
   }
 
   async recordWebhookDeliveryResult(
