@@ -73,6 +73,8 @@ interface GeneralSettingsForm {
   claudeDefaultModel: string;
   claudeModels: ProviderModelOption[];
   claudeDefaultEffort: ProviderProfile;
+  slackAssistantProvider: AgentProvider;
+  slackAssistantModel: string;
   slackAgentMcpServers: Array<{
     name: string;
     enabled: boolean;
@@ -202,6 +204,8 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   claudeDefaultModel: settings.claudeDefaultModel,
   claudeModels: settings.claudeModels,
   claudeDefaultEffort: settings.claudeDefaultEffort,
+  slackAssistantProvider: settings.slackAssistantProvider,
+  slackAssistantModel: settings.slackAssistantModel,
   slackAgentMcpServers: (settings.slackAgentMcpServers ?? []).map((server) => ({
     name: server.name,
     enabled: server.enabled,
@@ -251,8 +255,12 @@ export function SettingsPage() {
   const { models: claudeModels, loading: claudeModelsLoading, source: claudeModelsSource } = useProviderModels("claude");
   const codexModelFormValues = Form.useWatch("codexModels", generalForm);
   const claudeModelFormValues = Form.useWatch("claudeModels", generalForm);
+  const slackAssistantProviderFormValue =
+    Form.useWatch("slackAssistantProvider", generalForm) ?? settings?.slackAssistantProvider ?? "codex";
   const codexDefaultModelOptions = normalizeProviderModelOptions(codexModelFormValues, codexModels);
   const claudeDefaultModelOptions = normalizeProviderModelOptions(claudeModelFormValues, claudeModels);
+  const slackAssistantModelOptions =
+    slackAssistantProviderFormValue === "claude" ? claudeDefaultModelOptions : codexDefaultModelOptions;
   const allModelOptions = Array.from(
     new Map(
       [...codexModels, ...claudeModels, ...getModelsForProvider("codex"), ...getModelsForProvider("claude")].map((option) => [option.value, option])
@@ -611,6 +619,8 @@ export function SettingsPage() {
         claudeDefaultModel: values.claudeDefaultModel,
         claudeModels: values.claudeModels,
         claudeDefaultEffort: values.claudeDefaultEffort,
+        slackAssistantProvider: values.slackAssistantProvider,
+        slackAssistantModel: values.slackAssistantModel.trim(),
         slackAgentMcpServers: values.slackAgentMcpServers.map((server) =>
           server.transport === "http"
             ? {
@@ -1189,10 +1199,30 @@ export function SettingsPage() {
                   message="Slack agent MCP"
                   description="AgentSwarm MCP is added automatically. Add extra MCP servers here for Slack DM assistant runs."
                 />
+                <Form.Item name="slackAssistantProvider" label="Assistant Provider" rules={[{ required: true }]}>
+                  <Select
+                    options={providerOptions}
+                    onChange={(provider: AgentProvider) => {
+                      const fallbackModel =
+                        provider === "claude"
+                          ? generalForm.getFieldValue("claudeDefaultModel") || settings?.claudeDefaultModel || ""
+                          : generalForm.getFieldValue("codexDefaultModel") || settings?.codexDefaultModel || "";
+                      generalForm.setFieldValue("slackAssistantModel", fallbackModel);
+                    }}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="slackAssistantModel"
+                  label="Assistant Model"
+                  extra="Model used by Slack assistant DM sessions."
+                  rules={[{ required: true, whitespace: true, message: "Select or enter a model" }]}
+                >
+                  <ModelSelect options={slackAssistantModelOptions} loading={slackAssistantProviderFormValue === "claude" ? claudeModelsLoading : codexModelsLoading} />
+                </Form.Item>
                 {renderSlackMcpServerList()}
               </Flex>
             </Card>
-            {renderSaveBar({ dirty: generalDirty, label: "Save Integrations", loading: savingGeneral })}
+            {renderSaveBar({ dirty: generalDirty, label: "Save Slack Settings", loading: savingGeneral })}
           </Form>
         ) : null}
 

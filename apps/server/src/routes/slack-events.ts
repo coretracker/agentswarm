@@ -166,7 +166,7 @@ export const registerSlackEventRoutes = (
         slackTeamId,
         slackChannelId,
         slackUserId,
-        provider: "codex"
+        provider: integration.slackAssistantProvider
       });
       await recordSlackEvent("received", "message.im");
     } catch (error) {

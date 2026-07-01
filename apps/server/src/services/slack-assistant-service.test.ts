@@ -96,6 +96,8 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
     settingsStore: {
       getSettings: async () => ({
         defaultProvider: "codex",
+        slackAssistantProvider: "codex",
+        slackAssistantModel: "gpt-5.5",
         codexDefaultEffort: "low",
         claudeDefaultEffort: "low",
         slackAgentMcpServers: [
@@ -114,7 +116,13 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
           }
         ]
       }),
-      getSlackIntegration: async () => null,
+      getSlackIntegration: async () => ({
+        botToken: "xoxb-token",
+        signingSecret: "signing-secret",
+        slackAgentMcpServers: [],
+        slackAssistantProvider: "codex",
+        slackAssistantModel: "gpt-5.4-mini"
+      }),
       getRuntimeCredentials: async () => ({
         openaiApiKey: "openai-key",
         codexAuthJson: null,
@@ -155,12 +163,16 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       assert.ok(mcpTokenEnv);
 
       const manifest = JSON.parse(await readFile(manifestEnv!.slice("TASK_MANIFEST_FILE=".length), "utf8")) as {
+        provider: string;
+        resolvedModel: string;
         content: string;
         resultJsonPath: string;
       };
       const providerConfig = await readFile(providerConfigEnv!.slice("PROVIDER_CONFIG_FILE=".length), "utf8");
       assert.match(manifest.content, /detached Slack DM assistant/);
       assert.match(manifest.content, /Latest Slack message:\nhello/);
+      assert.equal(manifest.provider, "codex");
+      assert.equal(manifest.resolvedModel, "gpt-5.4-mini");
       assert.match(providerConfig, /mcp_servers\.agentswarm/);
       assert.match(providerConfig, /mcp_servers\.github/);
       assert.doesNotMatch(providerConfig, /should-not-override/);
@@ -218,6 +230,8 @@ test("DockerSlackAssistantRuntime marks prior runtime stopped after idle timeout
     settingsStore: {
       getSettings: async () => ({
         defaultProvider: "codex",
+        slackAssistantProvider: "codex",
+        slackAssistantModel: "gpt-5.5",
         codexDefaultEffort: "low",
         claudeDefaultEffort: "low",
         slackAgentMcpServers: []

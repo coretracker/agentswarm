@@ -161,6 +161,8 @@ const updateSettingsSchema = z.object({
   claudeModels: z.array(providerModelSchema).max(500).optional(),
   claudeDefaultEffort: providerProfileEnum.optional(),
   slackAgentMcpServers: mcpServersSchema.optional(),
+  slackAssistantProvider: z.enum(["codex", "claude"]).optional(),
+  slackAssistantModel: z.string().trim().min(1).max(120).optional(),
   slackBotToken: z.string().trim().min(1).optional(),
   clearSlackBotToken: z.boolean().optional(),
   slackSigningSecret: z.string().trim().min(1).optional(),

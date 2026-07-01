@@ -921,6 +921,8 @@ export interface SystemSettings {
   claudeModels: ProviderModelOption[];
   claudeDefaultEffort: ProviderProfile;
   slackAgentMcpServers: McpServerConfig[];
+  slackAssistantProvider: AgentProvider;
+  slackAssistantModel: string;
   slackBotTokenConfigured: boolean;
   slackSigningSecretConfigured: boolean;
   slackLastEventAt: string | null;
@@ -1404,6 +1406,8 @@ export interface UpdateSettingsInput {
   claudeModels?: ProviderModelOption[];
   claudeDefaultEffort?: ProviderProfile;
   slackAgentMcpServers?: McpServerConfig[];
+  slackAssistantProvider?: AgentProvider;
+  slackAssistantModel?: string;
   slackBotToken?: string;
   clearSlackBotToken?: boolean;
   slackSigningSecret?: string;

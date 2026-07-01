@@ -229,7 +229,9 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
   async respond(input: SlackAssistantMessageInput): Promise<string> {
     await this.markIdleExpired(input);
     const settings = await this.deps.settingsStore.getSettings();
-    const provider = settings.defaultProvider;
+    const slackIntegration = await this.deps.settingsStore.getSlackIntegration();
+    const provider = slackIntegration?.slackAssistantProvider ?? settings.slackAssistantProvider;
+    const slackAssistantModel = (slackIntegration?.slackAssistantModel ?? settings.slackAssistantModel).trim();
     const providerDefinition = getProviderRuntimeDefinition(provider);
     const credentials = await this.deps.settingsStore.getRuntimeCredentials(input.user.id, "auto");
     const missingCredentialMessage = providerDefinition.getMissingCredentialMessage(credentials);
@@ -241,9 +243,8 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
     const conversationSegment = sanitizePathSegment(input.conversation.id);
     const executionSegment = sanitizePathSegment(executionId);
     const providerProfile = providerProfileForSettings(provider, settings);
-    const resolvedModel = providerDefinition.getResolvedModel(null, providerProfile);
+    const resolvedModel = providerDefinition.getResolvedModel(slackAssistantModel || null, providerProfile);
     const resolvedProfileSettings = providerDefinition.getResolvedProfileSettings(providerProfile, resolvedModel);
-    const slackIntegration = await this.deps.settingsStore.getSlackIntegration();
     const configuredSlackAgentMcpServers = normalizeMcpServers([
       ...(slackIntegration?.slackAgentMcpServers ?? []),
       ...(settings.slackAgentMcpServers ?? [])

@@ -726,5 +726,26 @@ Feedback:
       CREATE UNIQUE INDEX IF NOT EXISTS slack_assistant_conversations_slack_context_idx
         ON slack_assistant_conversations(slack_team_id, slack_channel_id, slack_user_id);
     `
+  },
+  {
+    id: "20260701_06_global_slack_assistant_provider_model",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS slack_assistant_provider text NOT NULL DEFAULT 'codex',
+      ADD COLUMN IF NOT EXISTS slack_assistant_model text NULL;
+
+      UPDATE system_settings
+      SET
+        slack_assistant_provider = COALESCE(NULLIF(btrim(slack_assistant_provider), ''), default_provider, 'codex'),
+        slack_assistant_model = CASE
+          WHEN NULLIF(btrim(slack_assistant_model), '') IS NOT NULL THEN btrim(slack_assistant_model)
+          WHEN COALESCE(NULLIF(btrim(slack_assistant_provider), ''), default_provider, 'codex') = 'claude'
+            THEN COALESCE(NULLIF(btrim(claude_default_model), ''), 'claude-opus-4-8')
+          ELSE COALESCE(NULLIF(btrim(codex_default_model), ''), 'gpt-5.5')
+        END;
+
+      ALTER TABLE system_settings
+      ALTER COLUMN slack_assistant_model SET NOT NULL;
+    `
   }
 ];

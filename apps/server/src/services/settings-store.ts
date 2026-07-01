@@ -85,6 +85,8 @@ const defaultSettings: SystemSettings = {
   claudeModels: CLAUDE_MODELS,
   claudeDefaultEffort: DEFAULT_CLAUDE_EFFORT,
   slackAgentMcpServers: [],
+  slackAssistantProvider: DEFAULT_PROVIDER,
+  slackAssistantModel: defaultModelForProvider(DEFAULT_PROVIDER, DEFAULT_CODEX_EFFORT) ?? "gpt-5.5",
   slackBotTokenConfigured: false,
   slackSigningSecretConfigured: false,
   slackLastEventAt: null,
@@ -287,6 +289,32 @@ const normalizeSlackEventStatus = (value: unknown): RepositorySlackEventStatus |
 const normalizeDefaultProvider = (value: AgentProvider | string | undefined): AgentProvider =>
   normalizeProvider(value ?? defaultSettings.defaultProvider);
 
+const defaultSlackAssistantModel = (
+  provider: AgentProvider,
+  codexDefaultModel: string,
+  claudeDefaultModel: string
+): string => (provider === "claude" ? claudeDefaultModel : codexDefaultModel);
+
+const normalizeSlackAssistantProvider = (
+  value: AgentProvider | string | undefined,
+  fallbackProvider: AgentProvider
+): AgentProvider => normalizeProvider(value ?? fallbackProvider);
+
+const normalizeSlackAssistantModel = (
+  value: unknown,
+  provider: AgentProvider,
+  codexDefaultModel: string,
+  claudeDefaultModel: string
+): string => {
+  if (typeof value === "string") {
+    const normalized = value.trim();
+    if (normalized.length > 0) {
+      return normalized;
+    }
+  }
+  return defaultSlackAssistantModel(provider, codexDefaultModel, claudeDefaultModel);
+};
+
 const normalizeWorkspaceProvisioningMode = (value: WorkspaceProvisioningMode | string | undefined): WorkspaceProvisioningMode =>
   value === "hybrid" ? "hybrid" : "clone_only";
 
@@ -408,6 +436,8 @@ export interface SlackIntegrationSettings {
   botToken: string;
   signingSecret: string;
   slackAgentMcpServers: McpServerConfig[];
+  slackAssistantProvider: AgentProvider;
+  slackAssistantModel: string;
   mcpRuntimeEnv?: Record<string, string>;
 }
 
@@ -465,6 +495,8 @@ export class RedisSettingsStore implements SettingsStore {
         claudeModels: defaultSettings.claudeModels,
         claudeDefaultEffort: defaultSettings.claudeDefaultEffort,
         slackAgentMcpServers: defaultSettings.slackAgentMcpServers,
+        slackAssistantProvider: defaultSettings.slackAssistantProvider,
+        slackAssistantModel: defaultSettings.slackAssistantModel,
         slackBotToken: null,
         slackSigningSecret: null,
         slackLastEventAt: defaultSettings.slackLastEventAt,
@@ -481,6 +513,8 @@ export class RedisSettingsStore implements SettingsStore {
           slackBotToken?: string | null;
           slackSigningSecret?: string | null;
           slackAgentMcpServers?: unknown;
+          slackAssistantProvider?: AgentProvider | string;
+          slackAssistantModel?: string | null;
           agentRules?: string;
           autoModeEnabled?: boolean;
           mcpServers?: unknown;
@@ -492,8 +526,18 @@ export class RedisSettingsStore implements SettingsStore {
     );
     const slackBotToken = normalizeSecret(parsed.slackBotToken);
     const slackSigningSecret = normalizeSecret(parsed.slackSigningSecret);
+    const normalizedDefaultProvider = normalizeDefaultProvider(parsed.defaultProvider);
+    const normalizedCodexDefaultModel = parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel;
+    const normalizedClaudeDefaultModel = parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel;
+    const normalizedSlackAssistantProvider = normalizeSlackAssistantProvider(parsed.slackAssistantProvider, normalizedDefaultProvider);
+    const normalizedSlackAssistantModel = normalizeSlackAssistantModel(
+      parsed.slackAssistantModel,
+      normalizedSlackAssistantProvider,
+      normalizedCodexDefaultModel,
+      normalizedClaudeDefaultModel
+    );
     const normalizedBase = {
-      defaultProvider: normalizeDefaultProvider(parsed.defaultProvider),
+      defaultProvider: normalizedDefaultProvider,
       maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
       branchPrefix: normalizeBranchPrefix(parsed.branchPrefix),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(parsed.workspaceProvisioningMode),
@@ -505,13 +549,15 @@ export class RedisSettingsStore implements SettingsStore {
       anthropicBaseUrl: normalizeOptionalUrl(parsed.anthropicBaseUrl),
       taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
       taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
-      codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
+      codexDefaultModel: normalizedCodexDefaultModel,
       codexModels: normalizeProviderModels(parsed.codexModels, defaultSettings.codexModels),
       codexDefaultEffort: normalizeProviderProfile(parsed.codexDefaultEffort) ?? defaultSettings.codexDefaultEffort,
-      claudeDefaultModel: parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel,
+      claudeDefaultModel: normalizedClaudeDefaultModel,
       claudeModels: normalizeProviderModels(parsed.claudeModels, defaultSettings.claudeModels),
       claudeDefaultEffort: normalizeProviderProfile(parsed.claudeDefaultEffort) ?? defaultSettings.claudeDefaultEffort,
       slackAgentMcpServers: normalizeSlackAgentMcpServersForRead(storedSlackAgentMcpServers),
+      slackAssistantProvider: normalizedSlackAssistantProvider,
+      slackAssistantModel: normalizedSlackAssistantModel,
       slackBotTokenConfigured: Boolean(slackBotToken),
       slackSigningSecretConfigured: Boolean(slackSigningSecret),
       slackLastEventAt: normalizeSlackEventValue(parsed.slackLastEventAt),
@@ -546,6 +592,13 @@ export class RedisSettingsStore implements SettingsStore {
       JSON.stringify(parsed.codexModels ?? []) !== JSON.stringify(normalizedBase.codexModels) ||
       JSON.stringify(parsed.claudeModels ?? []) !== JSON.stringify(normalizedBase.claudeModels) ||
       JSON.stringify(parseStoredSlackAgentMcpServers(parsed.slackAgentMcpServers)) !== JSON.stringify(storedSlackAgentMcpServers) ||
+      normalizeSlackAssistantProvider(parsed.slackAssistantProvider, normalizedDefaultProvider) !== normalizedBase.slackAssistantProvider ||
+      normalizeSlackAssistantModel(
+        parsed.slackAssistantModel,
+        normalizedBase.slackAssistantProvider,
+        normalizedBase.codexDefaultModel,
+        normalizedBase.claudeDefaultModel
+      ) !== normalizedBase.slackAssistantModel ||
       normalizeSecret(parsed.slackBotToken) !== slackBotToken ||
       normalizeSecret(parsed.slackSigningSecret) !== slackSigningSecret ||
       normalizeSlackEventValue(parsed.slackLastEventAt) !== normalizedBase.slackLastEventAt ||
@@ -569,7 +622,13 @@ export class RedisSettingsStore implements SettingsStore {
     const current = await this.getSettings();
     const raw = await this.redis.get(SETTINGS_KEY);
     const parsed = raw
-      ? (JSON.parse(raw) as { slackBotToken?: string | null; slackSigningSecret?: string | null; slackAgentMcpServers?: unknown })
+      ? (JSON.parse(raw) as {
+          slackBotToken?: string | null;
+          slackSigningSecret?: string | null;
+          slackAgentMcpServers?: unknown;
+          slackAssistantProvider?: AgentProvider | string;
+          slackAssistantModel?: string | null;
+        })
       : {};
     const currentStoredSlackAgentMcpServers = normalizeSlackAgentMcpServersForStorage(
       undefined,
@@ -592,8 +651,24 @@ export class RedisSettingsStore implements SettingsStore {
       : input.slackSigningSecret !== undefined
         ? normalizeSecret(input.slackSigningSecret)
         : currentSlackSigningSecret;
+    const nextDefaultProvider = normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider);
+    const nextCodexDefaultModel = input.codexDefaultModel?.trim() || current.codexDefaultModel;
+    const nextClaudeDefaultModel = input.claudeDefaultModel?.trim() || current.claudeDefaultModel;
+    const nextSlackAssistantProvider = normalizeSlackAssistantProvider(
+      input.slackAssistantProvider ?? current.slackAssistantProvider,
+      nextDefaultProvider
+    );
+    const nextSlackAssistantModel = normalizeSlackAssistantModel(
+      input.slackAssistantModel ??
+        (input.slackAssistantProvider !== undefined && input.slackAssistantProvider !== current.slackAssistantProvider
+          ? null
+          : current.slackAssistantModel),
+      nextSlackAssistantProvider,
+      nextCodexDefaultModel,
+      nextClaudeDefaultModel
+    );
     const nextBase = {
-      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
+      defaultProvider: nextDefaultProvider,
       maxAgents: input.maxAgents ?? current.maxAgents,
       branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
@@ -620,13 +695,15 @@ export class RedisSettingsStore implements SettingsStore {
           : normalizeOptionalUrl(input.anthropicBaseUrl),
       taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
       taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
-      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      codexDefaultModel: nextCodexDefaultModel,
       codexModels: input.codexModels === undefined ? current.codexModels : normalizeProviderModels(input.codexModels, defaultSettings.codexModels),
       codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
-      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeDefaultModel: nextClaudeDefaultModel,
       claudeModels: input.claudeModels === undefined ? current.claudeModels : normalizeProviderModels(input.claudeModels, defaultSettings.claudeModels),
       claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
       slackAgentMcpServers: nextSlackAgentMcpServers,
+      slackAssistantProvider: nextSlackAssistantProvider,
+      slackAssistantModel: nextSlackAssistantModel,
       slackBotTokenConfigured: Boolean(nextSlackBotToken),
       slackSigningSecretConfigured: Boolean(nextSlackSigningSecret),
       slackLastEventAt: current.slackLastEventAt,
@@ -680,13 +757,32 @@ export class RedisSettingsStore implements SettingsStore {
   async getSlackIntegration(): Promise<SlackIntegrationSettings | null> {
     const raw = await this.redis.get(SETTINGS_KEY);
     const parsed = raw
-      ? (JSON.parse(raw) as { slackBotToken?: string | null; slackSigningSecret?: string | null; slackAgentMcpServers?: unknown })
+      ? (JSON.parse(raw) as {
+          defaultProvider?: AgentProvider | string;
+          codexDefaultModel?: string | null;
+          claudeDefaultModel?: string | null;
+          slackBotToken?: string | null;
+          slackSigningSecret?: string | null;
+          slackAgentMcpServers?: unknown;
+          slackAssistantProvider?: AgentProvider | string;
+          slackAssistantModel?: string | null;
+        })
       : {};
     const botToken = normalizeSecret(parsed.slackBotToken);
     const signingSecret = normalizeSecret(parsed.slackSigningSecret);
     if (!botToken || !signingSecret) {
       return null;
     }
+    const defaultProvider = normalizeDefaultProvider(parsed.defaultProvider);
+    const codexDefaultModel = parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel;
+    const claudeDefaultModel = parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel;
+    const slackAssistantProvider = normalizeSlackAssistantProvider(parsed.slackAssistantProvider, defaultProvider);
+    const slackAssistantModel = normalizeSlackAssistantModel(
+      parsed.slackAssistantModel,
+      slackAssistantProvider,
+      codexDefaultModel,
+      claudeDefaultModel
+    );
     const runtimeMcp = buildSlackIntegrationRuntimeMcp(
       normalizeSlackAgentMcpServersForStorage(undefined, parseStoredSlackAgentMcpServers(parsed.slackAgentMcpServers))
     );
@@ -694,6 +790,8 @@ export class RedisSettingsStore implements SettingsStore {
       botToken,
       signingSecret,
       slackAgentMcpServers: runtimeMcp.servers,
+      slackAssistantProvider,
+      slackAssistantModel,
       mcpRuntimeEnv: runtimeMcp.env
     };
   }
@@ -792,6 +890,8 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_models,
           claude_default_effort,
           slack_agent_mcp_servers,
+          slack_assistant_provider,
+          slack_assistant_model,
           slack_bot_token,
           slack_signing_secret,
           slack_last_event_at,
@@ -800,7 +900,7 @@ export class PostgresSettingsStore implements SettingsStore {
           slack_last_event_error,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19::jsonb, $20, $21::jsonb, $22, $23, $24, $25, $26, $27, $28::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19::jsonb, $20, $21::jsonb, $22, $23, $24, $25, $26, $27, $28, $29, $30::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
@@ -825,6 +925,8 @@ export class PostgresSettingsStore implements SettingsStore {
         JSON.stringify(defaultSettings.claudeModels),
         defaultSettings.claudeDefaultEffort,
         JSON.stringify(defaultSettings.slackAgentMcpServers),
+        defaultSettings.slackAssistantProvider,
+        defaultSettings.slackAssistantModel,
         null,
         null,
         defaultSettings.slackLastEventAt,
@@ -877,6 +979,8 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_models,
           claude_default_effort,
           slack_agent_mcp_servers,
+          slack_assistant_provider,
+          slack_assistant_model,
           slack_bot_token,
           slack_signing_secret,
           slack_last_event_at,
@@ -889,8 +993,24 @@ export class PostgresSettingsStore implements SettingsStore {
       `
     );
     const row = result.rows[0];
+    const normalizedDefaultProvider = normalizeDefaultProvider(row?.default_provider);
+    const normalizedCodexDefaultModel =
+      typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
+        ? row.codex_default_model.trim()
+        : defaultSettings.codexDefaultModel;
+    const normalizedClaudeDefaultModel =
+      typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
+        ? row.claude_default_model.trim()
+        : defaultSettings.claudeDefaultModel;
+    const normalizedSlackAssistantProvider = normalizeSlackAssistantProvider(row?.slack_assistant_provider, normalizedDefaultProvider);
+    const normalizedSlackAssistantModel = normalizeSlackAssistantModel(
+      row?.slack_assistant_model,
+      normalizedSlackAssistantProvider,
+      normalizedCodexDefaultModel,
+      normalizedClaudeDefaultModel
+    );
     const normalizedBase = {
-      defaultProvider: normalizeDefaultProvider(row?.default_provider),
+      defaultProvider: normalizedDefaultProvider,
       maxAgents: typeof row?.max_agents === "number" ? row.max_agents : defaultSettings.maxAgents,
       branchPrefix: normalizeBranchPrefix(typeof row?.branch_prefix === "string" ? row.branch_prefix : undefined),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(row?.workspace_provisioning_mode),
@@ -913,19 +1033,13 @@ export class PostgresSettingsStore implements SettingsStore {
         typeof row?.task_prompt_magic_template === "string" && row.task_prompt_magic_template.trim().length > 0
           ? row.task_prompt_magic_template.trim()
           : defaultSettings.taskPromptMagicTemplate,
-      codexDefaultModel:
-        typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
-          ? row.codex_default_model.trim()
-          : defaultSettings.codexDefaultModel,
+      codexDefaultModel: normalizedCodexDefaultModel,
       codexModels: normalizeProviderModels(
         Array.isArray(row?.codex_models) ? (row.codex_models as ProviderModelOption[]) : undefined,
         defaultSettings.codexModels
       ),
       codexDefaultEffort: normalizeProviderProfile(row?.codex_default_effort) ?? defaultSettings.codexDefaultEffort,
-      claudeDefaultModel:
-        typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
-          ? row.claude_default_model.trim()
-          : defaultSettings.claudeDefaultModel,
+      claudeDefaultModel: normalizedClaudeDefaultModel,
       claudeModels: normalizeProviderModels(
         Array.isArray(row?.claude_models) ? (row.claude_models as ProviderModelOption[]) : undefined,
         defaultSettings.claudeModels
@@ -937,6 +1051,8 @@ export class PostgresSettingsStore implements SettingsStore {
           parseStoredSlackAgentMcpServers(row?.slack_agent_mcp_servers)
         )
       ),
+      slackAssistantProvider: normalizedSlackAssistantProvider,
+      slackAssistantModel: normalizedSlackAssistantModel,
       slackBotTokenConfigured: normalizeSecret(typeof row?.slack_bot_token === "string" ? row.slack_bot_token : null) !== null,
       slackSigningSecretConfigured: normalizeSecret(typeof row?.slack_signing_secret === "string" ? row.slack_signing_secret : null) !== null,
       slackLastEventAt: normalizeSlackEventValue(row?.slack_last_event_at),
@@ -977,8 +1093,24 @@ export class PostgresSettingsStore implements SettingsStore {
       : input.slackSigningSecret !== undefined
         ? normalizeSecret(input.slackSigningSecret)
         : currentSlackSigningSecret;
+    const nextDefaultProvider = normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider);
+    const nextCodexDefaultModel = input.codexDefaultModel?.trim() || current.codexDefaultModel;
+    const nextClaudeDefaultModel = input.claudeDefaultModel?.trim() || current.claudeDefaultModel;
+    const nextSlackAssistantProvider = normalizeSlackAssistantProvider(
+      input.slackAssistantProvider ?? current.slackAssistantProvider,
+      nextDefaultProvider
+    );
+    const nextSlackAssistantModel = normalizeSlackAssistantModel(
+      input.slackAssistantModel ??
+        (input.slackAssistantProvider !== undefined && input.slackAssistantProvider !== current.slackAssistantProvider
+          ? null
+          : current.slackAssistantModel),
+      nextSlackAssistantProvider,
+      nextCodexDefaultModel,
+      nextClaudeDefaultModel
+    );
     const nextBase = {
-      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
+      defaultProvider: nextDefaultProvider,
       maxAgents: input.maxAgents ?? current.maxAgents,
       branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
@@ -1005,13 +1137,15 @@ export class PostgresSettingsStore implements SettingsStore {
           : normalizeOptionalUrl(input.anthropicBaseUrl),
       taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
       taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
-      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      codexDefaultModel: nextCodexDefaultModel,
       codexModels: input.codexModels === undefined ? current.codexModels : normalizeProviderModels(input.codexModels, defaultSettings.codexModels),
       codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
-      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeDefaultModel: nextClaudeDefaultModel,
       claudeModels: input.claudeModels === undefined ? current.claudeModels : normalizeProviderModels(input.claudeModels, defaultSettings.claudeModels),
       claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
       slackAgentMcpServers: nextSlackAgentMcpServers,
+      slackAssistantProvider: nextSlackAssistantProvider,
+      slackAssistantModel: nextSlackAssistantModel,
       slackBotTokenConfigured: Boolean(nextSlackBotToken),
       slackSigningSecretConfigured: Boolean(nextSlackSigningSecret),
       slackLastEventAt: current.slackLastEventAt,
@@ -1049,6 +1183,8 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_models,
           claude_default_effort,
           slack_agent_mcp_servers,
+          slack_assistant_provider,
+          slack_assistant_model,
           slack_bot_token,
           slack_signing_secret,
           slack_last_event_at,
@@ -1057,7 +1193,7 @@ export class PostgresSettingsStore implements SettingsStore {
           slack_last_event_error,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19::jsonb, $20, $21::jsonb, $22, $23, $24, $25, $26, $27, $28::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19::jsonb, $20, $21::jsonb, $22, $23, $24, $25, $26, $27, $28, $29, $30::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
@@ -1081,6 +1217,8 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_models = EXCLUDED.claude_models,
           claude_default_effort = EXCLUDED.claude_default_effort,
           slack_agent_mcp_servers = EXCLUDED.slack_agent_mcp_servers,
+          slack_assistant_provider = EXCLUDED.slack_assistant_provider,
+          slack_assistant_model = EXCLUDED.slack_assistant_model,
           slack_bot_token = EXCLUDED.slack_bot_token,
           slack_signing_secret = EXCLUDED.slack_signing_secret,
           slack_last_event_at = EXCLUDED.slack_last_event_at,
@@ -1111,6 +1249,8 @@ export class PostgresSettingsStore implements SettingsStore {
         JSON.stringify(nextBase.claudeModels),
         nextBase.claudeDefaultEffort,
         JSON.stringify(nextStoredSlackAgentMcpServers),
+        nextBase.slackAssistantProvider,
+        nextBase.slackAssistantModel,
         nextSlackBotToken,
         nextSlackSigningSecret,
         nextBase.slackLastEventAt,
@@ -1154,7 +1294,15 @@ export class PostgresSettingsStore implements SettingsStore {
     await this.ensureBaseSettingsRow();
     const result = await this.pool.query(
       `
-        SELECT slack_bot_token, slack_signing_secret, slack_agent_mcp_servers
+        SELECT
+          default_provider,
+          codex_default_model,
+          claude_default_model,
+          slack_bot_token,
+          slack_signing_secret,
+          slack_agent_mcp_servers,
+          slack_assistant_provider,
+          slack_assistant_model
         FROM system_settings
         WHERE singleton_id = 1
       `
@@ -1165,6 +1313,22 @@ export class PostgresSettingsStore implements SettingsStore {
     if (!botToken || !signingSecret) {
       return null;
     }
+    const defaultProvider = normalizeDefaultProvider(row?.default_provider);
+    const codexDefaultModel =
+      typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
+        ? row.codex_default_model.trim()
+        : defaultSettings.codexDefaultModel;
+    const claudeDefaultModel =
+      typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
+        ? row.claude_default_model.trim()
+        : defaultSettings.claudeDefaultModel;
+    const slackAssistantProvider = normalizeSlackAssistantProvider(row?.slack_assistant_provider, defaultProvider);
+    const slackAssistantModel = normalizeSlackAssistantModel(
+      row?.slack_assistant_model,
+      slackAssistantProvider,
+      codexDefaultModel,
+      claudeDefaultModel
+    );
     const runtimeMcp = buildSlackIntegrationRuntimeMcp(
       normalizeSlackAgentMcpServersForStorage(undefined, parseStoredSlackAgentMcpServers(row?.slack_agent_mcp_servers))
     );
@@ -1172,6 +1336,8 @@ export class PostgresSettingsStore implements SettingsStore {
       botToken,
       signingSecret,
       slackAgentMcpServers: runtimeMcp.servers,
+      slackAssistantProvider,
+      slackAssistantModel,
       mcpRuntimeEnv: runtimeMcp.env
     };
   }

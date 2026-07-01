@@ -104,7 +104,13 @@ const createApp = () => {
   const store = new MemorySlackAssistantStore();
   registerSlackEventRoutes(app, {
     settingsStore: {
-      getSlackIntegration: async () => ({ botToken: "xoxb-token", signingSecret, slackAgentMcpServers: [] }),
+      getSlackIntegration: async () => ({
+        botToken: "xoxb-token",
+        signingSecret,
+        slackAgentMcpServers: [],
+        slackAssistantProvider: "claude",
+        slackAssistantModel: "claude-sonnet-4-6"
+      }),
       recordSlackEventResult: async (input: { status: string; eventType?: string | null; errorMessage?: string | null }) => {
         slackEvents.push(input);
       }
@@ -156,7 +162,13 @@ const createAppWithUsers = (users: User[]) => {
   const store = new MemorySlackAssistantStore();
   registerSlackEventRoutes(app, {
     settingsStore: {
-      getSlackIntegration: async () => ({ botToken: "xoxb-token", signingSecret, slackAgentMcpServers: [] }),
+      getSlackIntegration: async () => ({
+        botToken: "xoxb-token",
+        signingSecret,
+        slackAgentMcpServers: [],
+        slackAssistantProvider: "codex",
+        slackAssistantModel: "gpt-5.5"
+      }),
       recordSlackEventResult: async (input: { status: string; eventType?: string | null; errorMessage?: string | null }) => {
         slackEvents.push(input);
       }
@@ -241,6 +253,7 @@ test("Slack event route maps a DM to a profile, reacts, and posts runtime respon
   assert.deepEqual(posts, [{ channel: "D1", text: "Reply to alice: hello" }]);
   assert.equal(slackEvents.at(-1)?.status, "received");
   assert.equal(slackEvents.at(-1)?.eventType, "message.im");
+  assert.equal(Array.from(store.conversations.values())[0]?.provider, "claude");
   assert.equal(Array.from(store.conversations.values())[0]?.turns.length, 2);
   await app.close();
 });
