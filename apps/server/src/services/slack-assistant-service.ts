@@ -259,7 +259,14 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
     const providerConfigContent = providerDefinition.getProviderConfig(runtimeMcp.servers);
     const payloadDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "slack-assistant", conversationSegment, executionSegment);
     const workspacePath = path.join(env.RUNTIME_PAYLOAD_ROOT, "slack-assistant-workspaces", conversationSegment);
-    const providerStatePath = path.join(env.RUNTIME_PAYLOAD_ROOT, "slack-assistant-state", conversationSegment, provider);
+    const providerModelSegment = sanitizePathSegment(slackAssistantModel || "default-model");
+    const providerStatePath = path.join(
+      env.RUNTIME_PAYLOAD_ROOT,
+      "slack-assistant-state",
+      conversationSegment,
+      provider,
+      providerModelSegment
+    );
     const providerHomePath = path.dirname(providerStatePath);
     const manifestPath = path.join(payloadDir, "manifest.json");
     const providerConfigPath = path.join(payloadDir, providerDefinition.configFileName);

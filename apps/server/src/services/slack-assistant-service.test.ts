@@ -157,9 +157,11 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       assert.equal(command, "docker");
       const manifestEnv = args.find((arg) => arg.startsWith("TASK_MANIFEST_FILE="));
       const providerConfigEnv = args.find((arg) => arg.startsWith("PROVIDER_CONFIG_FILE="));
+      const providerStateEnv = args.find((arg) => arg.startsWith("TASK_PROVIDER_STATE_PATH="));
       const mcpTokenEnv = args.find((arg) => arg === "AGENTSWARM_MCP_TOKEN=runtime-token");
       assert.ok(manifestEnv);
       assert.ok(providerConfigEnv);
+      assert.ok(providerStateEnv);
       assert.ok(mcpTokenEnv);
 
       const manifest = JSON.parse(await readFile(manifestEnv!.slice("TASK_MANIFEST_FILE=".length), "utf8")) as {
@@ -173,6 +175,7 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       assert.match(manifest.content, /Latest Slack message:\nhello/);
       assert.equal(manifest.provider, "codex");
       assert.equal(manifest.resolvedModel, "gpt-5.4-mini");
+      assert.match(providerStateEnv!, /\/codex\/gpt-5\.4-mini$/);
       assert.match(providerConfig, /mcp_servers\.agentswarm/);
       assert.match(providerConfig, /mcp_servers\.github/);
       assert.doesNotMatch(providerConfig, /should-not-override/);
