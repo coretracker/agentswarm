@@ -110,7 +110,17 @@ const createApp = () => {
       }
     } as never,
     userStore: {
-      listUsers: async () => [user]
+      listUsers: async () => [user],
+      getAuthSessionUser: async (userId: string) =>
+        userId === user.id
+          ? ({
+              ...user,
+              scopes: ["repo:list", "repo:read", "task:list", "task:read", "task:create", "task:build", "task:ask"],
+              allowedProviders: [],
+              allowedModels: [],
+              allowedEfforts: []
+            } as never)
+          : null
     } as never,
     slackAssistantStore: store,
     slackClient: {
@@ -152,7 +162,20 @@ const createAppWithUsers = (users: User[]) => {
       }
     } as never,
     userStore: {
-      listUsers: async () => users
+      listUsers: async () => users,
+      getAuthSessionUser: async (userId: string) => {
+        const matched = users.find((entry) => entry.id === userId && entry.active);
+        if (!matched) {
+          return null;
+        }
+        return {
+          ...matched,
+          scopes: ["repo:list", "repo:read", "task:list", "task:read", "task:create", "task:build", "task:ask"],
+          allowedProviders: [],
+          allowedModels: [],
+          allowedEfforts: []
+        } as never;
+      }
     } as never,
     slackAssistantStore: store,
     slackClient: {

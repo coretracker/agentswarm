@@ -148,6 +148,16 @@ export const registerSlackEventRoutes = (
       await recordSlackEvent("ignored", "message.im", "unmatched_user");
       return reply.send({ ok: true, ignored: "unmatched_user" });
     }
+    const authSessionUser = await deps.userStore.getAuthSessionUser(user.id);
+    if (!authSessionUser) {
+      await slackClient.postMessage(
+        integration.botToken,
+        slackChannelId,
+        "I could not find an active AgentSwarm profile with this Slack username."
+      );
+      await recordSlackEvent("ignored", "message.im", "unmatched_user");
+      return reply.send({ ok: true, ignored: "unmatched_user" });
+    }
 
     let conversation: Awaited<ReturnType<SlackAssistantStore["getOrCreateConversation"]>>;
     try {
@@ -168,7 +178,8 @@ export const registerSlackEventRoutes = (
         const responseText = await assistantService.handleMessage({
           user,
           conversation,
-          text
+          text,
+          mcpScopes: authSessionUser.scopes
         });
         await slackClient.postMessage(integration.botToken, slackChannelId, responseText);
       } catch (error) {

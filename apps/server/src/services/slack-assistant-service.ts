@@ -47,6 +47,7 @@ export interface SlackAssistantMessageInput {
   user: User;
   conversation: SlackAssistantConversation;
   text: string;
+  mcpScopes?: PermissionScope[];
 }
 
 export interface SlackAssistantRuntime {
@@ -130,6 +131,9 @@ const mergeSlackRuntimeMcpServers = (agentSwarmServer: McpServerConfig, slackAge
   return servers;
 };
 
+const normalizePermissionScopes = (scopes: PermissionScope[] | undefined): PermissionScope[] =>
+  Array.from(new Set((scopes ?? []).map((scope) => scope?.trim() as PermissionScope).filter(Boolean)));
+
 const buildConversationPrompt = (input: SlackAssistantMessageInput): string => {
   const turns = input.conversation.turns.slice(-24);
   const transcript = turns
@@ -170,12 +174,14 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
   private async buildRuntimeMcpConfig(
     user: User,
     slackAgentMcpServers: McpServerConfig[],
-    executionId: string
+    executionId: string,
+    mcpScopes: PermissionScope[] | undefined
   ): Promise<{ servers: McpServerConfig[]; env: Record<string, string> }> {
+    const tokenScopes = normalizePermissionScopes(mcpScopes);
     const token = await this.deps.personalAccessTokenStore.createToken({
       userId: user.id,
       name: `Slack DM runtime MCP ${executionId}`,
-      scopes: SLACK_ASSISTANT_MCP_SCOPES,
+      scopes: tokenScopes.length > 0 ? tokenScopes : SLACK_ASSISTANT_MCP_SCOPES,
       expiresAt: new Date(this.now().getTime() + SLACK_ASSISTANT_MCP_TOKEN_TTL_MS).toISOString()
     });
     const endpoints = internalAgentSwarmMcpEndpoints();
@@ -233,7 +239,12 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
     const providerProfile = providerProfileForSettings(provider, settings);
     const resolvedModel = providerDefinition.getResolvedModel(null, providerProfile);
     const resolvedProfileSettings = providerDefinition.getResolvedProfileSettings(providerProfile, resolvedModel);
-    const runtimeMcp = await this.buildRuntimeMcpConfig(input.user, settings.slackAgentMcpServers ?? [], executionId);
+    const runtimeMcp = await this.buildRuntimeMcpConfig(
+      input.user,
+      settings.slackAgentMcpServers ?? [],
+      executionId,
+      input.mcpScopes
+    );
     const providerConfigContent = providerDefinition.getProviderConfig(runtimeMcp.servers);
     const payloadDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "slack-assistant", conversationSegment, executionSegment);
     const workspacePath = path.join(env.RUNTIME_PAYLOAD_ROOT, "slack-assistant-workspaces", conversationSegment);

@@ -157,7 +157,8 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
   const response = await runtime.respond({
     user,
     conversation,
-    text: "hello"
+    text: "hello",
+    mcpScopes: ["repo:list", "repo:read", "task:list", "task:read", "task:create", "task:build"]
   });
 
   assert.equal(response, "Runtime reply");
@@ -168,9 +169,7 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
     "task:list",
     "task:read",
     "task:create",
-    "task:edit",
-    "task:build",
-    "task:ask"
+    "task:build"
   ]);
 });
 
