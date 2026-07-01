@@ -6,6 +6,7 @@
 ## Goal
 - Implement the first Slack integration slice as a simple 1:1 assistant conversation detached from normal task workflows.
 - Let a user add their Slack username to their profile, start a DM with the bot, and chat with a Codex or Claude runtime that can use GitHub plus AgentSwarm MCP as information sources.
+- Let repository owners configure Slack bot credentials in a repository Slack integration section.
 - Stop the runtime container after 5 minutes of user inactivity, then start a new runtime attached to the same Slack conversation context when the user writes again.
 - Reuse existing profile, provider runtime, credentials, MCP, and container lifecycle systems wherever practical.
 
@@ -27,12 +28,15 @@
 - Runtime containers already receive provider credentials, GitHub credentials, and MCP config through server-side setup paths.
 - AgentSwarm MCP exists at `POST /mcp` with personal access token authentication and task/repository tools.
 - Repository MCP configuration exists for task and interactive terminal runtimes, but this MVP should not require a repository mapping.
+- Repository settings already own repository-scoped integration-style configuration, so Slack bot credentials should be configured from a repository Slack integration section instead of global system settings or deployment-only env vars.
 - Normal task lifecycle, checkpointing, and queueing are task-centric and should remain separate from Slack DM assistant chats.
 
 ## Acceptance Criteria
 - Users can save a Slack username in their profile.
 - The Slack username is persisted, returned in profile/session data where needed, and validated with a simple Slack-handle-compatible format.
-- AgentSwarm can receive Slack DM events from the configured Slack bot endpoint.
+- Repository owners can configure Slack bot credentials in a repository Slack integration section.
+- Slack bot credentials are stored securely, masked on read, and can be cleared or rotated.
+- AgentSwarm can receive Slack DM events from the configured repository Slack bot endpoint.
 - Incoming Slack DM messages are matched to an AgentSwarm user by Slack username.
 - If no matching active user exists, the bot replies with a short setup message and does not start a provider runtime.
 - A matched user can chat with the bot in 1:1 Slack DMs without selecting a repository.
@@ -53,6 +57,9 @@
 - `apps/server/src/routes/auth.ts`
 - `apps/web/components/app-shell.tsx`
 - `apps/web/src/api/client.ts`
+- `apps/server/src/services/repository-store.ts`
+- `apps/server/src/routes/repositories.ts`
+- `apps/web/components/repository-editor-page.tsx`
 - New candidate: `apps/server/src/routes/slack.ts`
 - New candidate: `apps/server/src/services/slack-assistant-store.ts`
 - New candidate: `apps/server/src/services/slack-assistant-runtime.ts`
@@ -83,9 +90,11 @@
 - Add focused tests for validation and persistence.
 
 3. Add minimal Slack app configuration.
-- Add required env vars such as `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, and an enable flag if needed.
-- Add a Slack events route, for example `POST /slack/events`.
-- Implement Slack signature verification and Slack URL verification challenge handling.
+- Add a repository Slack integration section for bot credentials.
+- Store the Slack bot token and signing secret as repository-scoped secrets or encrypted repository integration credentials.
+- Return only configured/masked status to the UI; never return raw Slack credential values after save.
+- Add a repo-scoped Slack events route, for example `POST /repositories/:id/slack/events` or another stable URL generated from the repository integration.
+- Implement Slack signature verification using the repository's configured signing secret and Slack URL verification challenge handling.
 - Ignore unsupported event types, bot messages, non-DM messages, and retries that have already been handled.
 
 4. Resolve Slack users to AgentSwarm users.
@@ -127,7 +136,7 @@
 - Add regression tests that a normal chat message does not create a task.
 
 10. Add docs and operations notes.
-- Document Slack app setup, required env vars, event endpoint, profile username setup, and v1 behavior.
+- Document Slack app setup, repository Slack integration credential setup, event endpoint, profile username setup, and v1 behavior.
 - Document that v1 does not map repositories or channels.
 - Document that containers idle-stop after 5 minutes and conversations continue through persisted context.
 
@@ -140,6 +149,7 @@
 ## Human-Gated Flow Evidence
 - Requirements Read: 2026-07-01 06:55 UTC - Read issue #90 and feedback comment at https://github.com/coretracker/agentswarm/issues/90#issuecomment-4851167910.
 - Requirements Understood: 2026-07-01 06:55 UTC - Create an implementation plan for the simplified Slack DM assistant MVP and show it before starting implementation.
+- Requirements Updated: 2026-07-01 07:29 UTC - Read follow-up feedback that bot credentials should be configurable in the repository Slack integration section.
 - Repository Research Complete: 2026-07-01 06:55 UTC - Reviewed profile routes/UI/types, user persistence/migrations, provider runtime definitions, spawner runtime setup, MCP config, existing execution plans, and confirmed no current Slack source files.
 - Uncertainties Logged: 2026-07-01 06:55 UTC - Provider default for Slack DM, exact MCP identity model, transcript retention, and whether to use Slack user ID in addition to username need confirmation before implementation.
 - Human Review Completed: TODO - Awaiting owner review of this plan on issue #90.
@@ -168,6 +178,8 @@
 
 ## Risks
 - Matching by Slack username alone is simple but weaker than storing Slack user IDs; usernames can change and can collide across workspaces.
+- Repository-scoped bot credentials make event routing simpler when each repository has its own event URL, but multiple repositories could still point at the same Slack app if operators duplicate credentials.
+- Slack bot tokens and signing secrets must not leak through repository APIs, logs, task payloads, or MCP responses.
 - A detached runtime path can drift from task runtime credential/MCP behavior if too much launch code is duplicated.
 - Long-lived conversation context can accidentally retain sensitive data; transcript retention and visibility need a deliberate policy.
 - Slack retry semantics can duplicate messages unless request IDs/event IDs are deduplicated.
@@ -177,21 +189,24 @@
 
 ## Rollback Plan
 - Disable the Slack events route through configuration.
-- Remove Slack bot env vars from deployment.
+- Clear or disable the repository Slack integration credentials.
 - Keep `slackUsername` profile data harmless and unused if the runtime feature is disabled.
 - Stop all active Slack assistant containers by label/name prefix.
 - Leave normal task workflows untouched because the Slack assistant path is detached.
 
 ## Progress Log
 - 2026-07-01 06:55 UTC: Reacted with eyes emoji on the implementation-plan request, confirmed branch is current with `origin/develop`, researched relevant profile/runtime/MCP paths, and created this plan for review before implementation.
+- 2026-07-01 07:29 UTC: Added owner feedback that Slack bot credentials should be configured in the repository Slack integration section.
 
 ## Decisions
 - 2026-07-01: Plan v1 as a detached Slack DM assistant, not as repository mapping or task workflow integration.
+- 2026-07-01: Slack bot token/signing secret configuration belongs to a repository Slack integration section, while the DM assistant runtime remains detached from normal task workflows.
 - 2026-07-01: Persist conversation context separately from runtime container lifetime; stop containers after 5 minutes idle.
 - 2026-07-01: Reuse existing provider runtime definitions, credentials, and MCP serialization rather than creating Slack-specific provider integrations.
 
 ## Open Questions
 - Should v1 use Codex by default, Claude by default, or the system default provider?
+- Should each repository Slack integration use a unique Slack app/event URL, or should multiple repositories be allowed to share the same Slack bot credentials?
 - Should the profile field store only Slack username, or also Slack workspace/user ID after first successful DM for better identity stability?
 - What is the desired transcript retention policy for Slack DM conversations?
 - Should Slack DM assistant access be gated by an existing permission scope, or should adding a Slack username be enough for v1?
