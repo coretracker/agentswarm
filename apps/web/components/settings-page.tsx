@@ -754,7 +754,7 @@ export function SettingsPage() {
     },
     {
       key: "integrations",
-      label: <span>{generalDirtyTabs.includes("integrations") ? "Integrations *" : "Integrations"}</span>
+      label: <span>{generalDirtyTabs.includes("integrations") ? "Slack *" : "Slack"}</span>
     }
   ];
 
