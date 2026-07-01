@@ -97,6 +97,7 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
           }
         ]
       }),
+      getSlackIntegration: async () => null,
       getRuntimeCredentials: async () => ({
         openaiApiKey: "openai-key",
         codexAuthJson: null,
@@ -204,6 +205,7 @@ test("DockerSlackAssistantRuntime marks prior runtime stopped after idle timeout
         claudeDefaultEffort: "low",
         slackAgentMcpServers: []
       }),
+      getSlackIntegration: async () => null,
       getRuntimeCredentials: async () => ({
         openaiApiKey: "openai-key",
         codexAuthJson: null,

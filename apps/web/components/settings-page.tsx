@@ -81,6 +81,9 @@ interface GeneralSettingsForm {
     argsText: string;
     url: string;
     bearerTokenEnvVar: string;
+    bearerToken: string;
+    bearerTokenConfigured: boolean;
+    clearBearerToken: boolean;
   }>;
   slackBotToken: string;
   clearSlackBotToken: boolean;
@@ -206,7 +209,10 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
     command: server.command ?? "",
     argsText: (server.args ?? []).join("\n"),
     url: server.url ?? "",
-    bearerTokenEnvVar: server.bearerTokenEnvVar ?? ""
+    bearerTokenEnvVar: server.bearerTokenEnvVar ?? "",
+    bearerToken: "",
+    bearerTokenConfigured: server.bearerTokenConfigured === true,
+    clearBearerToken: false
   })),
   slackBotToken: "",
   clearSlackBotToken: false,
@@ -507,6 +513,8 @@ export function SettingsPage() {
                       | McpServerTransport
                       | undefined;
                     if (transport === "http") {
+                      const bearerTokenConfigured =
+                        generalForm.getFieldValue(["slackAgentMcpServers", field.name, "bearerTokenConfigured"]) === true;
                       return (
                         <Space direction="vertical" size={12} style={{ width: "100%" }}>
                           <Form.Item
@@ -518,12 +526,17 @@ export function SettingsPage() {
                             <Input placeholder="https://example.com/mcp" />
                           </Form.Item>
                           <Form.Item
-                            name={[field.name, "bearerTokenEnvVar"]}
-                            label="Bearer Token Env Var"
+                            name={[field.name, "bearerToken"]}
+                            label={bearerTokenConfigured ? "Bearer Token (leave blank to keep existing)" : "Bearer Token"}
                             style={{ marginBottom: 0 }}
                           >
-                            <Input placeholder="MCP_TOKEN" />
+                            <Input.Password autoComplete="off" placeholder="ghp_... / token..." />
                           </Form.Item>
+                          {bearerTokenConfigured ? (
+                            <Form.Item name={[field.name, "clearBearerToken"]} valuePropName="checked" style={{ marginBottom: 0 }}>
+                              <Checkbox>Clear stored bearer token</Checkbox>
+                            </Form.Item>
+                          ) : null}
                         </Space>
                       );
                     }
@@ -558,7 +571,10 @@ export function SettingsPage() {
                 command: "",
                 argsText: "",
                 url: "",
-                bearerTokenEnvVar: ""
+                bearerTokenEnvVar: "",
+                bearerToken: "",
+                bearerTokenConfigured: false,
+                clearBearerToken: false
               })
             }
           >
@@ -602,7 +618,9 @@ export function SettingsPage() {
                 enabled: server.enabled,
                 transport: "http" as const,
                 url: server.url.trim(),
-                bearerTokenEnvVar: server.bearerTokenEnvVar.trim() || null
+                bearerTokenEnvVar: server.bearerTokenEnvVar.trim() || null,
+                ...(server.bearerToken.trim().length > 0 ? { bearerToken: server.bearerToken.trim() } : {}),
+                ...(server.clearBearerToken ? { clearBearerToken: true } : {})
               }
             : {
                 name: server.name,

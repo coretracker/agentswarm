@@ -174,6 +174,7 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
   private async buildRuntimeMcpConfig(
     user: User,
     slackAgentMcpServers: McpServerConfig[],
+    slackAgentMcpRuntimeEnv: Record<string, string>,
     executionId: string,
     mcpScopes: PermissionScope[] | undefined
   ): Promise<{ servers: McpServerConfig[]; env: Record<string, string> }> {
@@ -199,7 +200,10 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
       enabled: true
     };
     return {
-      env: agentSwarmMcpEnv,
+      env: {
+        ...slackAgentMcpRuntimeEnv,
+        ...agentSwarmMcpEnv
+      },
       servers: mergeSlackRuntimeMcpServers(agentSwarmServer, slackAgentMcpServers)
     };
   }
@@ -239,9 +243,11 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
     const providerProfile = providerProfileForSettings(provider, settings);
     const resolvedModel = providerDefinition.getResolvedModel(null, providerProfile);
     const resolvedProfileSettings = providerDefinition.getResolvedProfileSettings(providerProfile, resolvedModel);
+    const slackIntegration = await this.deps.settingsStore.getSlackIntegration();
     const runtimeMcp = await this.buildRuntimeMcpConfig(
       input.user,
-      settings.slackAgentMcpServers ?? [],
+      slackIntegration?.slackAgentMcpServers ?? settings.slackAgentMcpServers ?? [],
+      slackIntegration?.mcpRuntimeEnv ?? {},
       executionId,
       input.mcpScopes
     );

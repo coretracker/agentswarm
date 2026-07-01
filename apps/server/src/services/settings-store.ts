@@ -131,6 +131,153 @@ const normalizeSecret = (value: string | null | undefined): string | null => {
   return normalized.length > 0 ? normalized : null;
 };
 
+const MCP_BEARER_TOKEN_ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const SLACK_MCP_BEARER_TOKEN_ENV_PREFIX = "AGENTSWARM_SLACK_MCP_BEARER_";
+
+type StoredSlackAgentMcpServer = McpServerConfig & { bearerToken?: string | null };
+
+const normalizeMcpServerName = (value: string | undefined): string =>
+  (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const normalizeBearerTokenEnvVarName = (value: string | null | undefined): string | null => {
+  const normalized = normalizeSecret(value);
+  if (!normalized || !MCP_BEARER_TOKEN_ENV_VAR_PATTERN.test(normalized)) {
+    return null;
+  }
+  return normalized;
+};
+
+const normalizeSlackMcpBearerEnvVarSegment = (value: string): string =>
+  value
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+const nextSlackMcpBearerTokenEnvVar = (serverName: string, used: Set<string>): string => {
+  const base = `${SLACK_MCP_BEARER_TOKEN_ENV_PREFIX}${normalizeSlackMcpBearerEnvVarSegment(serverName) || "SERVER"}`;
+  if (!used.has(base)) {
+    used.add(base);
+    return base;
+  }
+  let counter = 2;
+  while (used.has(`${base}_${counter}`)) {
+    counter += 1;
+  }
+  const generated = `${base}_${counter}`;
+  used.add(generated);
+  return generated;
+};
+
+const parseStoredSlackAgentMcpServers = (value: unknown): StoredSlackAgentMcpServer[] =>
+  Array.isArray(value) ? (value as StoredSlackAgentMcpServer[]) : [];
+
+const storedSlackAgentMcpBearerTokensByName = (servers: StoredSlackAgentMcpServer[]): Map<string, string> => {
+  const tokensByName = new Map<string, string>();
+  for (const server of servers) {
+    const name = normalizeMcpServerName(server.name);
+    if (!name || tokensByName.has(name)) {
+      continue;
+    }
+    const bearerToken = normalizeSecret(server.bearerToken);
+    if (bearerToken) {
+      tokensByName.set(name, bearerToken);
+    }
+  }
+  return tokensByName;
+};
+
+const normalizeSlackAgentMcpServersForRead = (servers: StoredSlackAgentMcpServer[]): McpServerConfig[] => {
+  const normalizedServers = normalizeMcpServers(servers);
+  const bearerTokensByName = storedSlackAgentMcpBearerTokensByName(servers);
+  return normalizedServers.map((server) => {
+    if (server.transport !== "http") {
+      return server;
+    }
+    if (!bearerTokensByName.has(server.name)) {
+      return server;
+    }
+    return {
+      ...server,
+      bearerTokenConfigured: true
+    };
+  });
+};
+
+const normalizeSlackAgentMcpServersForStorage = (
+  nextInput: McpServerConfig[] | undefined,
+  currentStoredServers: StoredSlackAgentMcpServer[]
+): StoredSlackAgentMcpServer[] => {
+  const normalizedServers = normalizeMcpServers(nextInput ?? currentStoredServers);
+  const currentBearerTokensByName = storedSlackAgentMcpBearerTokensByName(currentStoredServers);
+  const nextInputByName = new Map<string, McpServerConfig>();
+  for (const server of nextInput ?? []) {
+    const name = normalizeMcpServerName(server.name);
+    if (!name || nextInputByName.has(name)) {
+      continue;
+    }
+    nextInputByName.set(name, server);
+  }
+
+  return normalizedServers.map((server) => {
+    if (server.transport !== "http") {
+      return server;
+    }
+    const input = nextInputByName.get(server.name);
+    const nextBearerToken = input?.clearBearerToken
+      ? null
+      : normalizeSecret(input?.bearerToken) ?? currentBearerTokensByName.get(server.name) ?? null;
+    if (!nextBearerToken) {
+      return server;
+    }
+    return {
+      ...server,
+      bearerToken: nextBearerToken
+    };
+  });
+};
+
+const buildSlackIntegrationRuntimeMcp = (
+  servers: StoredSlackAgentMcpServer[]
+): { servers: McpServerConfig[]; env: Record<string, string> } => {
+  const mcpServers = normalizeSlackAgentMcpServersForRead(servers);
+  const bearerTokensByName = storedSlackAgentMcpBearerTokensByName(servers);
+  const usedEnvVarNames = new Set(
+    mcpServers
+      .map((server) => (server.transport === "http" ? normalizeBearerTokenEnvVarName(server.bearerTokenEnvVar) : null))
+      .filter((name): name is string => Boolean(name))
+  );
+  const env: Record<string, string> = {};
+
+  return {
+    servers: mcpServers.map((server) => {
+      if (server.transport !== "http") {
+        return server;
+      }
+      const bearerToken = bearerTokensByName.get(server.name);
+      if (!bearerToken) {
+        return server;
+      }
+      const envVarName =
+        normalizeBearerTokenEnvVarName(server.bearerTokenEnvVar) ?? nextSlackMcpBearerTokenEnvVar(server.name, usedEnvVarNames);
+      usedEnvVarNames.add(envVarName);
+      env[envVarName] = bearerToken;
+      return {
+        ...server,
+        bearerTokenEnvVar: envVarName,
+        bearerTokenConfigured: true
+      };
+    }),
+    env
+  };
+};
+
 const normalizeSlackEventValue = (value: unknown): string | null =>
   typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 
@@ -261,6 +408,7 @@ export interface SlackIntegrationSettings {
   botToken: string;
   signingSecret: string;
   slackAgentMcpServers: McpServerConfig[];
+  mcpRuntimeEnv?: Record<string, string>;
 }
 
 export interface RecordSlackEventResultInput {
@@ -332,11 +480,16 @@ export class RedisSettingsStore implements SettingsStore {
       ? (JSON.parse(raw) as Partial<SystemSettings> & {
           slackBotToken?: string | null;
           slackSigningSecret?: string | null;
+          slackAgentMcpServers?: unknown;
           agentRules?: string;
           autoModeEnabled?: boolean;
           mcpServers?: unknown;
         })
       : {};
+    const storedSlackAgentMcpServers = normalizeSlackAgentMcpServersForStorage(
+      undefined,
+      parseStoredSlackAgentMcpServers(parsed.slackAgentMcpServers)
+    );
     const slackBotToken = normalizeSecret(parsed.slackBotToken);
     const slackSigningSecret = normalizeSecret(parsed.slackSigningSecret);
     const normalizedBase = {
@@ -358,7 +511,7 @@ export class RedisSettingsStore implements SettingsStore {
       claudeDefaultModel: parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel,
       claudeModels: normalizeProviderModels(parsed.claudeModels, defaultSettings.claudeModels),
       claudeDefaultEffort: normalizeProviderProfile(parsed.claudeDefaultEffort) ?? defaultSettings.claudeDefaultEffort,
-      slackAgentMcpServers: normalizeMcpServers(parsed.slackAgentMcpServers),
+      slackAgentMcpServers: normalizeSlackAgentMcpServersForRead(storedSlackAgentMcpServers),
       slackBotTokenConfigured: Boolean(slackBotToken),
       slackSigningSecretConfigured: Boolean(slackSigningSecret),
       slackLastEventAt: normalizeSlackEventValue(parsed.slackLastEventAt),
@@ -369,6 +522,7 @@ export class RedisSettingsStore implements SettingsStore {
     };
     const normalizedStorage = {
       ...normalizedBase,
+      slackAgentMcpServers: storedSlackAgentMcpServers,
       slackBotToken,
       slackSigningSecret
     };
@@ -391,7 +545,7 @@ export class RedisSettingsStore implements SettingsStore {
       (parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate) !== normalizedBase.taskPromptMagicTemplate ||
       JSON.stringify(parsed.codexModels ?? []) !== JSON.stringify(normalizedBase.codexModels) ||
       JSON.stringify(parsed.claudeModels ?? []) !== JSON.stringify(normalizedBase.claudeModels) ||
-      JSON.stringify(parsed.slackAgentMcpServers ?? []) !== JSON.stringify(normalizedBase.slackAgentMcpServers) ||
+      JSON.stringify(parseStoredSlackAgentMcpServers(parsed.slackAgentMcpServers)) !== JSON.stringify(storedSlackAgentMcpServers) ||
       normalizeSecret(parsed.slackBotToken) !== slackBotToken ||
       normalizeSecret(parsed.slackSigningSecret) !== slackSigningSecret ||
       normalizeSlackEventValue(parsed.slackLastEventAt) !== normalizedBase.slackLastEventAt ||
@@ -415,8 +569,17 @@ export class RedisSettingsStore implements SettingsStore {
     const current = await this.getSettings();
     const raw = await this.redis.get(SETTINGS_KEY);
     const parsed = raw
-      ? (JSON.parse(raw) as { slackBotToken?: string | null; slackSigningSecret?: string | null })
+      ? (JSON.parse(raw) as { slackBotToken?: string | null; slackSigningSecret?: string | null; slackAgentMcpServers?: unknown })
       : {};
+    const currentStoredSlackAgentMcpServers = normalizeSlackAgentMcpServersForStorage(
+      undefined,
+      parseStoredSlackAgentMcpServers(parsed.slackAgentMcpServers)
+    );
+    const nextStoredSlackAgentMcpServers =
+      input.slackAgentMcpServers === undefined
+        ? currentStoredSlackAgentMcpServers
+        : normalizeSlackAgentMcpServersForStorage(input.slackAgentMcpServers, currentStoredSlackAgentMcpServers);
+    const nextSlackAgentMcpServers = normalizeSlackAgentMcpServersForRead(nextStoredSlackAgentMcpServers);
     const currentSlackBotToken = normalizeSecret(parsed.slackBotToken);
     const currentSlackSigningSecret = normalizeSecret(parsed.slackSigningSecret);
     const nextSlackBotToken = input.clearSlackBotToken
@@ -463,8 +626,7 @@ export class RedisSettingsStore implements SettingsStore {
       claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
       claudeModels: input.claudeModels === undefined ? current.claudeModels : normalizeProviderModels(input.claudeModels, defaultSettings.claudeModels),
       claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
-      slackAgentMcpServers:
-        input.slackAgentMcpServers === undefined ? current.slackAgentMcpServers : normalizeMcpServers(input.slackAgentMcpServers),
+      slackAgentMcpServers: nextSlackAgentMcpServers,
       slackBotTokenConfigured: Boolean(nextSlackBotToken),
       slackSigningSecretConfigured: Boolean(nextSlackSigningSecret),
       slackLastEventAt: current.slackLastEventAt,
@@ -480,6 +642,7 @@ export class RedisSettingsStore implements SettingsStore {
       SETTINGS_KEY,
       JSON.stringify({
         ...nextBase,
+        slackAgentMcpServers: nextStoredSlackAgentMcpServers,
         slackBotToken: nextSlackBotToken,
         slackSigningSecret: nextSlackSigningSecret
       })
@@ -517,17 +680,21 @@ export class RedisSettingsStore implements SettingsStore {
   async getSlackIntegration(): Promise<SlackIntegrationSettings | null> {
     const raw = await this.redis.get(SETTINGS_KEY);
     const parsed = raw
-      ? (JSON.parse(raw) as { slackBotToken?: string | null; slackSigningSecret?: string | null; slackAgentMcpServers?: McpServerConfig[] })
+      ? (JSON.parse(raw) as { slackBotToken?: string | null; slackSigningSecret?: string | null; slackAgentMcpServers?: unknown })
       : {};
     const botToken = normalizeSecret(parsed.slackBotToken);
     const signingSecret = normalizeSecret(parsed.slackSigningSecret);
     if (!botToken || !signingSecret) {
       return null;
     }
+    const runtimeMcp = buildSlackIntegrationRuntimeMcp(
+      normalizeSlackAgentMcpServersForStorage(undefined, parseStoredSlackAgentMcpServers(parsed.slackAgentMcpServers))
+    );
     return {
       botToken,
       signingSecret,
-      slackAgentMcpServers: normalizeMcpServers(parsed.slackAgentMcpServers)
+      slackAgentMcpServers: runtimeMcp.servers,
+      mcpRuntimeEnv: runtimeMcp.env
     };
   }
 
@@ -535,12 +702,16 @@ export class RedisSettingsStore implements SettingsStore {
     const current = await this.getSettings();
     const raw = await this.redis.get(SETTINGS_KEY);
     const parsed = raw
-      ? (JSON.parse(raw) as { slackBotToken?: string | null; slackSigningSecret?: string | null })
+      ? (JSON.parse(raw) as { slackBotToken?: string | null; slackSigningSecret?: string | null; slackAgentMcpServers?: unknown })
       : {};
     await this.redis.set(
       SETTINGS_KEY,
       JSON.stringify({
         ...current,
+        slackAgentMcpServers: normalizeSlackAgentMcpServersForStorage(
+          undefined,
+          parseStoredSlackAgentMcpServers(parsed.slackAgentMcpServers)
+        ),
         slackBotToken: normalizeSecret(parsed.slackBotToken),
         slackSigningSecret: normalizeSecret(parsed.slackSigningSecret),
         slackLastEventAt: input.receivedAt,
@@ -665,6 +836,21 @@ export class PostgresSettingsStore implements SettingsStore {
     );
   }
 
+  private async getStoredSlackAgentMcpServers(): Promise<StoredSlackAgentMcpServer[]> {
+    await this.ensureBaseSettingsRow();
+    const result = await this.pool.query<{ slack_agent_mcp_servers: unknown }>(
+      `
+        SELECT slack_agent_mcp_servers
+        FROM system_settings
+        WHERE singleton_id = 1
+      `
+    );
+    return normalizeSlackAgentMcpServersForStorage(
+      undefined,
+      parseStoredSlackAgentMcpServers(result.rows[0]?.slack_agent_mcp_servers)
+    );
+  }
+
   async getSettings(): Promise<SystemSettings> {
     await this.ensureBaseSettingsRow();
     const result = await this.pool.query(
@@ -745,8 +931,11 @@ export class PostgresSettingsStore implements SettingsStore {
         defaultSettings.claudeModels
       ),
       claudeDefaultEffort: normalizeProviderProfile(row?.claude_default_effort) ?? defaultSettings.claudeDefaultEffort,
-      slackAgentMcpServers: normalizeMcpServers(
-        Array.isArray(row?.slack_agent_mcp_servers) ? (row.slack_agent_mcp_servers as McpServerConfig[]) : undefined
+      slackAgentMcpServers: normalizeSlackAgentMcpServersForRead(
+        normalizeSlackAgentMcpServersForStorage(
+          undefined,
+          parseStoredSlackAgentMcpServers(row?.slack_agent_mcp_servers)
+        )
       ),
       slackBotTokenConfigured: normalizeSecret(typeof row?.slack_bot_token === "string" ? row.slack_bot_token : null) !== null,
       slackSigningSecretConfigured: normalizeSecret(typeof row?.slack_signing_secret === "string" ? row.slack_signing_secret : null) !== null,
@@ -769,6 +958,12 @@ export class PostgresSettingsStore implements SettingsStore {
 
   async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
     const current = await this.getSettings();
+    const currentStoredSlackAgentMcpServers = await this.getStoredSlackAgentMcpServers();
+    const nextStoredSlackAgentMcpServers =
+      input.slackAgentMcpServers === undefined
+        ? currentStoredSlackAgentMcpServers
+        : normalizeSlackAgentMcpServersForStorage(input.slackAgentMcpServers, currentStoredSlackAgentMcpServers);
+    const nextSlackAgentMcpServers = normalizeSlackAgentMcpServersForRead(nextStoredSlackAgentMcpServers);
     const currentSlackIntegration = await this.getSlackIntegration();
     const currentSlackBotToken = currentSlackIntegration?.botToken ?? null;
     const currentSlackSigningSecret = currentSlackIntegration?.signingSecret ?? null;
@@ -816,8 +1011,7 @@ export class PostgresSettingsStore implements SettingsStore {
       claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
       claudeModels: input.claudeModels === undefined ? current.claudeModels : normalizeProviderModels(input.claudeModels, defaultSettings.claudeModels),
       claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
-      slackAgentMcpServers:
-        input.slackAgentMcpServers === undefined ? current.slackAgentMcpServers : normalizeMcpServers(input.slackAgentMcpServers),
+      slackAgentMcpServers: nextSlackAgentMcpServers,
       slackBotTokenConfigured: Boolean(nextSlackBotToken),
       slackSigningSecretConfigured: Boolean(nextSlackSigningSecret),
       slackLastEventAt: current.slackLastEventAt,
@@ -916,7 +1110,7 @@ export class PostgresSettingsStore implements SettingsStore {
         nextBase.claudeDefaultModel,
         JSON.stringify(nextBase.claudeModels),
         nextBase.claudeDefaultEffort,
-        JSON.stringify(nextBase.slackAgentMcpServers),
+        JSON.stringify(nextStoredSlackAgentMcpServers),
         nextSlackBotToken,
         nextSlackSigningSecret,
         nextBase.slackLastEventAt,
@@ -971,12 +1165,14 @@ export class PostgresSettingsStore implements SettingsStore {
     if (!botToken || !signingSecret) {
       return null;
     }
+    const runtimeMcp = buildSlackIntegrationRuntimeMcp(
+      normalizeSlackAgentMcpServersForStorage(undefined, parseStoredSlackAgentMcpServers(row?.slack_agent_mcp_servers))
+    );
     return {
       botToken,
       signingSecret,
-      slackAgentMcpServers: normalizeMcpServers(
-        Array.isArray(row?.slack_agent_mcp_servers) ? (row.slack_agent_mcp_servers as McpServerConfig[]) : undefined
-      )
+      slackAgentMcpServers: runtimeMcp.servers,
+      mcpRuntimeEnv: runtimeMcp.env
     };
   }
 

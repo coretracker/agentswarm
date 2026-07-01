@@ -859,6 +859,9 @@ export interface McpServerConfig {
   env?: Record<string, string>;
   url?: string | null;
   bearerTokenEnvVar?: string | null;
+  bearerToken?: string | null;
+  bearerTokenConfigured?: boolean;
+  clearBearerToken?: boolean;
 }
 
 export interface HostexecSettings {

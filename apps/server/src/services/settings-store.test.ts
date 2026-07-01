@@ -187,6 +187,13 @@ describe("RedisSettingsStore runtime credentials", () => {
       slackSigningSecret: "  signing-secret  ",
       slackAgentMcpServers: [
         {
+          name: "GitHub API",
+          enabled: true,
+          transport: "http",
+          url: "https://example.com/mcp",
+          bearerToken: "  gh-token  "
+        },
+        {
           name: "GitHub",
           enabled: true,
           transport: "stdio",
@@ -201,9 +208,14 @@ describe("RedisSettingsStore runtime credentials", () => {
 
     assert.equal(settings.slackBotTokenConfigured, true);
     assert.equal(settings.slackSigningSecretConfigured, true);
-    assert.equal(settings.slackAgentMcpServers.length, 1);
+    assert.equal(settings.slackAgentMcpServers.length, 2);
+    assert.equal(settings.slackAgentMcpServers[0]?.bearerTokenConfigured, true);
+    assert.equal(settings.slackAgentMcpServers[0]?.bearerToken, undefined);
     assert.equal(integration?.botToken, "xoxb-test");
     assert.equal(integration?.signingSecret, "signing-secret");
+    assert.equal(integration?.slackAgentMcpServers[0]?.bearerTokenConfigured, true);
+    assert.equal(integration?.slackAgentMcpServers[0]?.bearerToken, undefined);
+    assert.equal(integration?.mcpRuntimeEnv?.AGENTSWARM_SLACK_MCP_BEARER_GITHUB_API, "gh-token");
 
     await settingsStore.recordSlackEventResult({
       status: "failed",
