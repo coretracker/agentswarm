@@ -12,4 +12,10 @@ Configuration is read from the repository `.env` file or the current process env
 - `HOSTEXEC_PORT` defaults to `38128`.
 - `HOSTEXEC_TOKEN` enables bearer-token checks when set.
 
+For Docker containers on Linux to reach the daemon, bind it to the Docker bridge or all interfaces:
+
+```sh
+npm run hostexec -- --host 0.0.0.0
+```
+
 AgentSwarm autodetects the daemon at the default host URLs. Repository **Host Commands** in the UI decide which shims are mounted for each repository. If `HOSTEXEC_TOKEN` is set, enter `HOSTEXEC_TOKEN` as the bearer token env var name in Settings.
