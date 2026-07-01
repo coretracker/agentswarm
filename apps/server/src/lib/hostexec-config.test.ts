@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { normalizeHostCommands, normalizeHostexecSettings } from "./hostexec-config.js";
+import { normalizeHostCommands, normalizeHostexecCapabilities, normalizeHostexecSettings } from "./hostexec-config.js";
 
 describe("hostexec config normalization", () => {
   it("normalizes hostexec settings without storing token values", () => {
@@ -31,5 +31,12 @@ describe("hostexec config normalization", () => {
       normalizeHostCommands(["xcodebuild", "XCODEBUILD", "./gradlew", "gradlew", "tool.name", "bad/name", "-bad"]),
       ["xcodebuild", "gradlew", "tool.name"]
     );
+  });
+
+  it("normalizes daemon capabilities with allow-all mode", () => {
+    assert.deepEqual(normalizeHostexecCapabilities({ allowAll: true, commands: ["xcodebuild", "./bad"] }), {
+      allowAll: true,
+      commands: ["xcodebuild"]
+    });
   });
 });

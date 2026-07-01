@@ -463,6 +463,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       entries: repositoryRuntimeEnvEntries,
       fileStore: repositoryEnvFileStore
     });
+    const runtimeMcpDockerArgs = deps.spawner.buildRuntimeMcpDockerArgs(runtimeMcp.injectedAgentSwarmMcp);
     const hostexecRuntime = await buildHostexecRuntimeConfig({
       settings: settings.hostexec,
       repositoryCommands: repositoryHostCommands,
@@ -470,7 +471,8 @@ async function initializeTaskInteractiveTerminalWebSocket(
       taskId,
       repoId: task.repoId,
       containerWorkspacePath: INTERACTIVE_WORKSPACE_PATH,
-      hostWorkspacePath: dockerBindSource
+      hostWorkspacePath: dockerBindSource,
+      sharedNetworkWithCurrentContainer: runtimeMcpDockerArgs.includes("--network")
     });
     const dockerEnv: string[] = [];
     for (const [name, value] of buildTerminalDockerEnvEntries({
@@ -488,7 +490,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       "--rm",
       "--name",
       sessionName,
-      ...deps.spawner.buildRuntimeMcpDockerArgs(runtimeMcp.injectedAgentSwarmMcp),
+      ...runtimeMcpDockerArgs,
       ...hostexecRuntime.dockerArgs,
       "-v",
       `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,

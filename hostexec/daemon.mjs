@@ -9,6 +9,31 @@ const COMMAND_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 38128;
 
+function parseCliOptions(argv) {
+  const options = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--host" && argv[index + 1]) {
+      options.host = argv[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--host=")) {
+      options.host = arg.slice("--host=".length);
+      continue;
+    }
+    if (arg === "--port" && argv[index + 1]) {
+      options.port = argv[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("--port=")) {
+      options.port = arg.slice("--port=".length);
+    }
+  }
+  return options;
+}
+
 function loadDotEnv(filePath) {
   if (!existsSync(filePath)) {
     return;
@@ -144,8 +169,9 @@ function runCommand(response, payload) {
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 loadDotEnv(path.join(repoRoot, ".env"));
 
-const host = process.env.HOSTEXEC_HOST?.trim() || DEFAULT_HOST;
-const port = Number.parseInt(process.env.HOSTEXEC_PORT ?? "", 10) || DEFAULT_PORT;
+const cliOptions = parseCliOptions(process.argv.slice(2));
+const host = cliOptions.host?.trim() || process.env.HOSTEXEC_HOST?.trim() || DEFAULT_HOST;
+const port = Number.parseInt(cliOptions.port ?? process.env.HOSTEXEC_PORT ?? "", 10) || DEFAULT_PORT;
 const token = process.env.HOSTEXEC_TOKEN?.trim() || "";
 const rawConfiguredCommands = process.env.HOSTEXEC_COMMANDS ?? "";
 const configuredCommands = normalizeCommands(rawConfiguredCommands);

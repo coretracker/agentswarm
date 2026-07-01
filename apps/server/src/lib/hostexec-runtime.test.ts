@@ -3,7 +3,7 @@ import { mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { env } from "../config/env.js";
-import { buildHostexecRuntimeConfig, HOSTEXEC_CONTAINER_BIN_PATH } from "./hostexec-runtime.js";
+import { buildHostexecRuntimeConfig, HOSTEXEC_CONTAINER_BIN_PATH, HOSTEXEC_SHELL_ENV_PATH } from "./hostexec-runtime.js";
 
 const originalFetch = globalThis.fetch;
 const originalRuntimePayloadRoot = env.RUNTIME_PAYLOAD_ROOT;
@@ -64,11 +64,15 @@ describe("buildHostexecRuntimeConfig", () => {
       assert.equal(resultEnv.HOSTEXEC_TOKEN, "secret-token");
       assert.equal(resultEnv.HOSTEXEC_WORKSPACE_ROOT, "/task-workspaces/task-1");
       assert.equal(resultEnv.HOSTEXEC_HOST_WORKSPACE_ROOT, "/host/task-workspaces/task-1");
+      assert.equal(resultEnv.BASH_ENV, HOSTEXEC_SHELL_ENV_PATH);
       assert.match(resultEnv.PATH, new RegExp(`^${HOSTEXEC_CONTAINER_BIN_PATH}:`));
 
       const shim = await readFile(path.join(payloadDir, "hostexec-bin", "xcodebuild"), "utf8");
       assert.match(shim, /hostexec-proxy\.mjs/);
       assert.match(shim, /xcodebuild/);
+      const shellEnv = await readFile(path.join(payloadDir, "hostexec-bin", ".hostexec-shell-env"), "utf8");
+      assert.match(shellEnv, new RegExp(HOSTEXEC_CONTAINER_BIN_PATH));
+      assert.match(shellEnv, /export PATH=/);
     });
   });
 
@@ -129,6 +133,37 @@ describe("buildHostexecRuntimeConfig", () => {
       assert.equal(result.enabled, true);
       assert.deepEqual(result.commands, ["xcodebuild"]);
       assert.equal(Object.fromEntries(result.envEntries).HOSTEXEC_URL, "http://host.docker.internal:38128");
+    });
+  });
+
+  it("avoids add-host and prefers the bridge host URL when sharing the server container network", async () => {
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      assert.equal(String(input), "http://172.17.0.1:38128/capabilities");
+      return new Response(JSON.stringify({ allowAll: true, commands: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    await withPayloadDir(async (payloadDir) => {
+      const result = await buildHostexecRuntimeConfig({
+        settings: {
+          enabled: false,
+          url: null,
+          bearerTokenEnvVar: null
+        },
+        repositoryCommands: ["xcodebuild"],
+        payloadDir,
+        taskId: "task-1",
+        repoId: "repo-1",
+        containerWorkspacePath: "/workspace",
+        hostWorkspacePath: "/host/workspace",
+        sharedNetworkWithCurrentContainer: true
+      });
+
+      assert.equal(result.enabled, true);
+      assert.deepEqual(result.dockerArgs, []);
+      assert.equal(Object.fromEntries(result.envEntries).HOSTEXEC_URL, "http://172.17.0.1:38128");
     });
   });
 

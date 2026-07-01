@@ -27,7 +27,7 @@ export function buildTerminalStartScript(): string {
       "  fi",
       "fi"
     ].join("\n"),
-    'if command -v bash >/dev/null 2>&1; then exec bash -l; fi',
-    "exec sh -l"
+    'if command -v bash >/dev/null 2>&1; then exec bash -lc \'if [ -n "${HOSTEXEC_BIN_PATH:-}" ]; then export PATH="${HOSTEXEC_BIN_PATH}:$PATH"; fi; exec bash -i\'; fi',
+    'exec sh -lc \'if [ -n "${HOSTEXEC_BIN_PATH:-}" ]; then export PATH="${HOSTEXEC_BIN_PATH}:$PATH"; fi; exec sh -i\''
   ].join(" && ");
 }

@@ -1,18 +1,21 @@
 import type { HostexecSettings } from "@agentswarm/shared-types";
-import { normalizeHostCommands, normalizeHostexecSettings } from "./hostexec-config.js";
+import {
+  normalizeHostexecCapabilities,
+  normalizeHostexecSettings,
+  type HostexecCapabilities
+} from "./hostexec-config.js";
 
 export const HOSTEXEC_DEFAULT_URLS = [
   "http://host.docker.internal:38128",
   "http://127.0.0.1:38128",
   "http://localhost:38128"
 ] as const;
+export const HOSTEXEC_SHARED_CONTAINER_NETWORK_DEFAULT_URLS = [
+  "http://172.17.0.1:38128",
+  ...HOSTEXEC_DEFAULT_URLS
+] as const;
 
 const DEFAULT_HOSTEXEC_DISCOVERY_TIMEOUT_MS = 1_500;
-
-export interface HostexecCapabilities {
-  allowAll: boolean;
-  commands: string[];
-}
 
 export interface HostexecEndpoint {
   url: string;
@@ -32,16 +35,11 @@ function parseHostexecCapabilities(raw: string): HostexecCapabilities {
   if (!raw.trim()) {
     return { allowAll: false, commands: [] };
   }
-  const parsed = JSON.parse(raw) as unknown;
-  const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-  return {
-    allowAll: record.allowAll === true,
-    commands: normalizeHostCommands(record.commands)
-  };
+  return normalizeHostexecCapabilities(JSON.parse(raw) as unknown);
 }
 
-function buildCandidateUrls(configuredUrl: string | null): string[] {
-  const urls = configuredUrl ? [configuredUrl, ...HOSTEXEC_DEFAULT_URLS] : [...HOSTEXEC_DEFAULT_URLS];
+function buildCandidateUrls(configuredUrl: string | null, defaultUrls: readonly string[]): string[] {
+  const urls = configuredUrl ? [configuredUrl, ...defaultUrls] : [...defaultUrls];
   const seen = new Set<string>();
   return urls.filter((url) => {
     const comparable = url.toLowerCase();
@@ -73,7 +71,7 @@ async function fetchHostexecCapabilities(url: string, token: string | null, time
 
 export async function discoverHostexecEndpoint(
   settings: HostexecSettings,
-  options: { timeoutMs?: number } = {}
+  options: { timeoutMs?: number; defaultUrls?: readonly string[] } = {}
 ): Promise<HostexecDiscoveryResult> {
   const normalized = normalizeHostexecSettings(settings);
   const token = normalized.bearerTokenEnvVar
@@ -90,7 +88,7 @@ export async function discoverHostexecEndpoint(
 
   const timeoutMs = options.timeoutMs ?? DEFAULT_HOSTEXEC_DISCOVERY_TIMEOUT_MS;
   let lastError: Error | null = null;
-  for (const url of buildCandidateUrls(normalized.url)) {
+  for (const url of buildCandidateUrls(normalized.url, options.defaultUrls ?? HOSTEXEC_DEFAULT_URLS)) {
     try {
       return {
         endpoint: {
