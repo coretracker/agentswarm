@@ -244,9 +244,13 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
     const resolvedModel = providerDefinition.getResolvedModel(null, providerProfile);
     const resolvedProfileSettings = providerDefinition.getResolvedProfileSettings(providerProfile, resolvedModel);
     const slackIntegration = await this.deps.settingsStore.getSlackIntegration();
+    const configuredSlackAgentMcpServers = normalizeMcpServers([
+      ...(slackIntegration?.slackAgentMcpServers ?? []),
+      ...(settings.slackAgentMcpServers ?? [])
+    ]);
     const runtimeMcp = await this.buildRuntimeMcpConfig(
       input.user,
-      slackIntegration?.slackAgentMcpServers ?? settings.slackAgentMcpServers ?? [],
+      configuredSlackAgentMcpServers,
       slackIntegration?.mcpRuntimeEnv ?? {},
       executionId,
       input.mcpScopes
