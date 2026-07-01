@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import type { AgentProvider, HostexecAvailability, HostexecSettings } from "@agentswarm/shared-types";
 import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
 import type { AuthService } from "../lib/auth.js";
-import { normalizeHostCommands, normalizeHostexecSettings } from "../lib/hostexec-config.js";
+import { discoverHostexecEndpoint } from "../lib/hostexec-discovery.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
 
@@ -125,84 +125,34 @@ const updateUserNotesSchema = z.object({
 });
 
 async function checkHostexecAvailability(settings: HostexecSettings): Promise<HostexecAvailability> {
-  const normalized = normalizeHostexecSettings(settings);
-  if (!normalized.enabled || !normalized.url) {
+  const discovery = await discoverHostexecEndpoint(settings);
+  const endpoint = discovery.endpoint;
+  if (!endpoint) {
     return {
       available: false,
-      enabled: normalized.enabled,
-      url: normalized.url,
+      enabled: discovery.enabled,
+      url: discovery.configuredUrl,
+      detected: false,
       allowAll: false,
       commands: [],
-      message: "Hostexec is disabled or missing a URL."
+      message: discovery.message
     };
   }
 
-  const token =
-    normalized.bearerTokenEnvVar && process.env[normalized.bearerTokenEnvVar]
-      ? process.env[normalized.bearerTokenEnvVar]
-      : null;
-  if (normalized.bearerTokenEnvVar && !token) {
-    return {
-      available: false,
-      enabled: normalized.enabled,
-      url: normalized.url,
-      allowAll: false,
-      commands: [],
-      message: `Hostexec token env var is not set: ${normalized.bearerTokenEnvVar}`
-    };
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5_000);
-  try {
-    const response = await fetch(`${normalized.url}/capabilities`, {
-      method: "GET",
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      signal: controller.signal
-    });
-    const raw = await response.text();
-    if (!response.ok) {
-      return {
-        available: false,
-        enabled: normalized.enabled,
-        url: normalized.url,
-        allowAll: false,
-        commands: [],
-        message: `Hostexec returned HTTP ${response.status}.`
-      };
-    }
-
-    let parsed: unknown = {};
-    if (raw.trim().length > 0) {
-      parsed = JSON.parse(raw) as unknown;
-    }
-    const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-    const allowAll = record.allowAll === true;
-    const commands = normalizeHostCommands(record.commands);
-    return {
-      available: true,
-      enabled: normalized.enabled,
-      url: normalized.url,
-      allowAll,
-      commands,
-      message: allowAll
-        ? "Hostexec is reachable and allows all daemon commands."
-        : commands.length > 0
-          ? `Hostexec is reachable with ${commands.length} command(s).`
-          : "Hostexec is reachable."
-    };
-  } catch (error) {
-    return {
-      available: false,
-      enabled: normalized.enabled,
-      url: normalized.url,
-      allowAll: false,
-      commands: [],
-      message: error instanceof Error ? error.message : "Hostexec availability check failed."
-    };
-  } finally {
-    clearTimeout(timeout);
-  }
+  const { allowAll, commands } = endpoint.capabilities;
+  return {
+    available: true,
+    enabled: discovery.enabled,
+    url: endpoint.url,
+    detected: endpoint.detected,
+    allowAll,
+    commands,
+    message: allowAll
+      ? "Hostexec daemon detected and allows repository Host Commands."
+      : commands.length > 0
+        ? `Hostexec daemon detected with ${commands.length} daemon command(s).`
+        : "Hostexec daemon detected."
+  };
 }
 
 export const registerSettingsRoutes = (

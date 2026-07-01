@@ -121,15 +121,14 @@ Repositories can define post-build automation in `.agentswarm/postflight.yml`. P
 
 ### Hostexec Bridge Commands
 
-Hostexec is optional and disabled by default. It lets a manually started host daemon expose selected host commands, such as macOS `xcodebuild`, to agent containers through bridge shims.
+Hostexec lets a manually started host daemon expose selected host commands, such as macOS `xcodebuild`, to agent containers through bridge shims.
 
 1. Start the daemon on the host with `npm run hostexec`.
-2. Open **Settings -> Hostexec**, enable it, set the daemon URL, and set a bearer token environment variable name such as `HOSTEXEC_TOKEN`.
-3. Open a repository and add simple command names to **Host Commands**, for example `xcodebuild`, `xcrun`, or `gradlew`.
+2. Open a repository and add simple command names to **Host Commands**, for example `xcodebuild`, `xcrun`, or `gradlew`.
 
-The daemon reads `HOSTEXEC_HOST`, `HOSTEXEC_PORT`, `HOSTEXEC_TOKEN`, and `HOSTEXEC_COMMANDS` from `.env`. Leave `HOSTEXEC_COMMANDS` empty to let the daemon accept all valid command names; repository **Host Commands** still restrict which command shims AgentSwarm mounts for each repository. Set `HOSTEXEC_COMMANDS=xcodebuild,xcrun,gradlew` to add a daemon-level allowlist.
+AgentSwarm autodetects the daemon at the default host URLs. Repository **Host Commands** decide which command shims AgentSwarm mounts for each repository. The daemon reads `HOSTEXEC_HOST`, `HOSTEXEC_PORT`, and `HOSTEXEC_TOKEN` from `.env`.
 
-For Docker Desktop, the default daemon URL in Settings is `http://host.docker.internal:38128`. See `hostexec/README.md` for the host daemon details.
+See `hostexec/README.md` for the host daemon details.
 
 At runtime AgentSwarm creates a read-only shim directory, mounts it at `/hostexec/bin`, and prepends that directory to `PATH`. Existing container bin directories are not overwritten; configured command names only shadow matching commands through `PATH` order.
 

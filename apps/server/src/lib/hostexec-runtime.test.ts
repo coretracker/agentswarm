@@ -102,14 +102,44 @@ describe("buildHostexecRuntimeConfig", () => {
     });
   });
 
-  it("skips hostexec when disabled or no repository commands are configured", async () => {
+  it("autodetects the default host daemon URL when no URL is configured", async () => {
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      assert.equal(String(input), "http://host.docker.internal:38128/capabilities");
+      return new Response(JSON.stringify({ allowAll: true, commands: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    await withPayloadDir(async (payloadDir) => {
+      const result = await buildHostexecRuntimeConfig({
+        settings: {
+          enabled: false,
+          url: null,
+          bearerTokenEnvVar: null
+        },
+        repositoryCommands: ["xcodebuild"],
+        payloadDir,
+        taskId: "task-1",
+        repoId: "repo-1",
+        containerWorkspacePath: "/workspace",
+        hostWorkspacePath: "/host/workspace"
+      });
+
+      assert.equal(result.enabled, true);
+      assert.deepEqual(result.commands, ["xcodebuild"]);
+      assert.equal(Object.fromEntries(result.envEntries).HOSTEXEC_URL, "http://host.docker.internal:38128");
+    });
+  });
+
+  it("skips hostexec when no repository commands are configured", async () => {
     const result = await buildHostexecRuntimeConfig({
       settings: {
         enabled: false,
         url: "http://hostexec.test",
         bearerTokenEnvVar: null
       },
-      repositoryCommands: ["xcodebuild"],
+      repositoryCommands: [],
       payloadDir: "/runtime-payloads/task-1/run-1",
       taskId: "task-1",
       repoId: "repo-1",

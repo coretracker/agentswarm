@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type {
   AgentProvider,
   AgentClarifyBehavior,
@@ -38,7 +38,6 @@ import {
   Popconfirm,
   Select,
   Space,
-  Switch,
   Table,
   Tag,
   Tabs,
@@ -205,6 +204,8 @@ export function SettingsPage() {
     ).values()
   );
   const responsePreferencePresets = settings?.responsePreferencePresets ?? [];
+  const hostexecDetected = hostexecAvailability?.available === true;
+  const hostexecStatus = hostexecDetected ? "Detected" : settings?.hostexec?.url ? "Manual" : "Not Detected";
 
   const loadRoles = async () => {
     setRolesLoading(true);
@@ -463,11 +464,17 @@ export function SettingsPage() {
     setCredentialDirtyTabs((current) => (current.includes(tab) ? current : [...current, tab]));
   };
 
-  const checkHostexec = async () => {
+  const checkHostexec = useCallback(async (options: { silent?: boolean } = {}) => {
     setCheckingHostexec(true);
     try {
       const result = await api.checkHostexec();
       setHostexecAvailability(result);
+      if (result.available && result.detected && result.url && !generalForm.getFieldValue("hostexecUrl")) {
+        generalForm.setFieldValue("hostexecUrl", result.url);
+      }
+      if (options.silent) {
+        return;
+      }
       if (result.available) {
         message.success(result.message);
       } else {
@@ -478,7 +485,14 @@ export function SettingsPage() {
     } finally {
       setCheckingHostexec(false);
     }
-  };
+  }, [generalForm, message]);
+
+  useEffect(() => {
+    if (!settings) {
+      return;
+    }
+    void checkHostexec({ silent: true });
+  }, [checkHostexec, settings]);
 
   const confirmLeave = (): boolean => {
     if (!hasUnsavedChanges || typeof window === "undefined") {
@@ -810,21 +824,22 @@ export function SettingsPage() {
               loading={loading}
               title="Hostexec"
               extra={
-                <Tag color={settings?.hostexec?.enabled ? "green" : "default"}>
-                  Hostexec {settings?.hostexec?.enabled ? "Enabled" : "Disabled"}
+                <Tag color={hostexecDetected ? "green" : settings?.hostexec?.url ? "blue" : "default"}>
+                  Hostexec {hostexecStatus}
                 </Tag>
               }
             >
               <Flex vertical gap={16} style={{ width: "100%" }}>
                 <Alert
-                  type="warning"
+                  type={hostexecDetected ? "success" : "info"}
                   showIcon
-                  message="Privileged host access"
-                  description="Hostexec runs configured bridge commands on the host machine. Enable it only for trusted repositories and daemon allowlists."
+                  message={hostexecDetected ? "Host daemon detected" : "Host daemon not detected"}
+                  description={
+                    hostexecDetected
+                      ? "Repository Host Commands decide which bridge shims are mounted for each repository."
+                      : "Start the host daemon with npm run hostexec. AgentSwarm checks the default daemon URLs automatically."
+                  }
                 />
-                <Form.Item name="hostexecEnabled" label="Enabled" valuePropName="checked">
-                  <Switch />
-                </Form.Item>
                 <Form.Item
                   name="hostexecUrl"
                   label="URL"
@@ -853,11 +868,14 @@ export function SettingsPage() {
                   <Input placeholder="HOSTEXEC_TOKEN" />
                 </Form.Item>
                 <Space wrap>
-                  <Button icon={<ReloadOutlined />} loading={checkingHostexec} disabled={!settings} onClick={checkHostexec}>
+                  <Button icon={<ReloadOutlined />} loading={checkingHostexec} disabled={!settings} onClick={() => void checkHostexec()}>
                     Check availability
                   </Button>
                   {hostexecAvailability ? (
                     <Tag color={hostexecAvailability.available ? "green" : "red"}>{hostexecAvailability.message}</Tag>
+                  ) : null}
+                  {hostexecAvailability?.detected && hostexecAvailability.url ? (
+                    <Tag color="blue">Detected URL: {hostexecAvailability.url}</Tag>
                   ) : null}
                 </Space>
                 {hostexecAvailability?.allowAll ? (

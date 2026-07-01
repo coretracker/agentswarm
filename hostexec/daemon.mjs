@@ -181,7 +181,7 @@ server.listen(port, host, () => {
     ? "all valid command names"
     : configuredCommands.length > 0
       ? configuredCommands.join(", ")
-      : "none; set valid HOSTEXEC_COMMANDS or leave it blank to allow all";
+      : "none";
   console.log(`hostexec daemon listening on http://${host}:${port}`);
   console.log(`hostexec commands: ${commandSummary}`);
   console.log(`hostexec token auth: ${token ? "enabled" : "disabled"}`);

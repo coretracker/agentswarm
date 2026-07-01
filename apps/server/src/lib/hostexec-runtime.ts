@@ -3,11 +3,11 @@ import path from "node:path";
 import type { HostexecSettings } from "@agentswarm/shared-types";
 import { env } from "../config/env.js";
 import { buildDockerWorkspaceMountArgs } from "./docker-workspace-mounts.js";
-import { normalizeHostCommands, normalizeHostexecSettings } from "./hostexec-config.js";
+import { normalizeHostCommands } from "./hostexec-config.js";
+import { discoverHostexecEndpoint } from "./hostexec-discovery.js";
 
 export const HOSTEXEC_CONTAINER_BIN_PATH = "/hostexec/bin";
 export const HOSTEXEC_PROXY_BIN = "/usr/local/bin/hostexec-proxy.mjs";
-const HOSTEXEC_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_RUNTIME_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 export interface HostexecRuntimeConfig {
@@ -17,49 +17,6 @@ export interface HostexecRuntimeConfig {
   mountArgs: string[];
   dockerArgs: string[];
   message: string | null;
-}
-
-interface HostexecCapabilities {
-  allowAll: boolean;
-  commands: string[];
-}
-
-function parseHostexecCapabilities(raw: string): HostexecCapabilities {
-  if (!raw.trim()) {
-    return { allowAll: false, commands: [] };
-  }
-  const parsed = JSON.parse(raw) as unknown;
-  const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
-  return {
-    allowAll: record.allowAll === true,
-    commands: normalizeHostCommands(record.commands)
-  };
-}
-
-async function fetchHostexecCapabilities(settings: HostexecSettings): Promise<HostexecCapabilities> {
-  const token =
-    settings.bearerTokenEnvVar && process.env[settings.bearerTokenEnvVar]
-      ? process.env[settings.bearerTokenEnvVar]
-      : null;
-  if (settings.bearerTokenEnvVar && !token) {
-    throw new Error(`Hostexec token env var is not set: ${settings.bearerTokenEnvVar}`);
-  }
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), HOSTEXEC_REQUEST_TIMEOUT_MS);
-  try {
-    const response = await fetch(`${settings.url}/capabilities`, {
-      method: "GET",
-      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-      signal: controller.signal
-    });
-    if (!response.ok) {
-      throw new Error(`Hostexec returned HTTP ${response.status}`);
-    }
-    return parseHostexecCapabilities(await response.text());
-  } finally {
-    clearTimeout(timeout);
-  }
 }
 
 function buildHostexecDockerArgs(): string[] {
@@ -79,9 +36,8 @@ export async function buildHostexecRuntimeConfig(options: {
   containerWorkspacePath: string;
   hostWorkspacePath: string;
 }): Promise<HostexecRuntimeConfig> {
-  const settings = normalizeHostexecSettings(options.settings);
   const repositoryCommands = normalizeHostCommands(options.repositoryCommands);
-  if (!settings.enabled || !settings.url || repositoryCommands.length === 0) {
+  if (repositoryCommands.length === 0) {
     return {
       enabled: false,
       commands: [],
@@ -92,7 +48,19 @@ export async function buildHostexecRuntimeConfig(options: {
     };
   }
 
-  const capabilities = await fetchHostexecCapabilities(settings);
+  const discovery = await discoverHostexecEndpoint(options.settings);
+  if (!discovery.endpoint) {
+    return {
+      enabled: false,
+      commands: [],
+      envEntries: [],
+      mountArgs: [],
+      dockerArgs: [],
+      message: discovery.message
+    };
+  }
+
+  const { capabilities } = discovery.endpoint;
   const daemonCommandsByName = new Map(capabilities.commands.map((command) => [command.toLowerCase(), command]));
   const commands = capabilities.allowAll
     ? repositoryCommands
@@ -119,10 +87,6 @@ export async function buildHostexecRuntimeConfig(options: {
   );
 
   const payloadRelativeShimDir = path.relative(env.RUNTIME_PAYLOAD_ROOT, shimDir);
-  const token =
-    settings.bearerTokenEnvVar && process.env[settings.bearerTokenEnvVar]
-      ? process.env[settings.bearerTokenEnvVar]
-      : "";
   return {
     enabled: true,
     commands,
@@ -134,8 +98,8 @@ export async function buildHostexecRuntimeConfig(options: {
     }),
     dockerArgs: buildHostexecDockerArgs(),
     envEntries: [
-      ["HOSTEXEC_URL", settings.url],
-      ...(token ? [["HOSTEXEC_TOKEN", token] as [string, string]] : []),
+      ["HOSTEXEC_URL", discovery.endpoint.url],
+      ...(discovery.endpoint.token ? [["HOSTEXEC_TOKEN", discovery.endpoint.token] as [string, string]] : []),
       ["HOSTEXEC_TASK_ID", options.taskId],
       ["HOSTEXEC_REPO_ID", options.repoId],
       ["HOSTEXEC_WORKSPACE_ROOT", options.containerWorkspacePath],
