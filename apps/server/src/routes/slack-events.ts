@@ -92,9 +92,16 @@ export const registerSlackEventRoutes = (
     const slackUserId = stringValue(event, "user");
     const slackChannelId = stringValue(event, "channel");
     const text = stringValue(event, "text");
+    const slackMessageTs = stringValue(event, "ts");
     const slackTeamId = stringValue(body, "team_id") ?? "unknown-team";
     if (!slackUserId || !slackChannelId || !text) {
       return reply.send({ ok: true, ignored: "missing_message_fields" });
+    }
+
+    if (slackMessageTs) {
+      slackClient
+        .addReaction(integration.botToken, slackChannelId, slackMessageTs, "eyes")
+        .catch((error) => request.log.warn({ err: error, repositoryId: integration.repository.id }, "slack.reaction.failed"));
     }
 
     const profile = await slackClient.getUserProfile(integration.botToken, slackUserId);

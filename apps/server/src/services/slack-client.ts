@@ -6,6 +6,7 @@ export interface SlackUserProfile {
 export interface SlackClient {
   getUserProfile(botToken: string, slackUserId: string): Promise<SlackUserProfile | null>;
   postMessage(botToken: string, channel: string, text: string): Promise<void>;
+  addReaction(botToken: string, channel: string, timestamp: string, name: string): Promise<void>;
 }
 
 const slackApiFetch = async (path: string, botToken: string, init: RequestInit = {}): Promise<Record<string, unknown>> => {
@@ -51,6 +52,13 @@ export class FetchSlackClient implements SlackClient {
     await slackApiFetch("chat.postMessage", botToken, {
       method: "POST",
       body: JSON.stringify({ channel, text })
+    });
+  }
+
+  async addReaction(botToken: string, channel: string, timestamp: string, name: string): Promise<void> {
+    await slackApiFetch("reactions.add", botToken, {
+      method: "POST",
+      body: JSON.stringify({ channel, timestamp, name })
     });
   }
 }

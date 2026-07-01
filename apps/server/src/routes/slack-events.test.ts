@@ -134,6 +134,7 @@ const createApp = () => {
     done(null, JSON.parse(rawBody));
   });
   const posts: Array<{ channel: string; text: string }> = [];
+  const reactions: Array<{ channel: string; timestamp: string; name: string }> = [];
   const store = new MemorySlackAssistantStore();
   registerSlackEventRoutes(app, {
     repositoryStore: {
@@ -159,13 +160,16 @@ const createApp = () => {
       getUserProfile: async () => ({ id: "U1", name: "Alice" }),
       postMessage: async (_botToken, channel, text) => {
         posts.push({ channel, text });
+      },
+      addReaction: async (_botToken, channel, timestamp, name) => {
+        reactions.push({ channel, timestamp, name });
       }
     },
     runtime: {
       respond: async (input) => `Reply to ${input.user.slackUsername}: ${input.text}`
     }
   });
-  return { app, posts, store };
+  return { app, posts, reactions, store };
 };
 
 const createAppWithUsers = (users: User[]) => {
@@ -176,6 +180,7 @@ const createAppWithUsers = (users: User[]) => {
     done(null, JSON.parse(rawBody));
   });
   const posts: Array<{ channel: string; text: string }> = [];
+  const reactions: Array<{ channel: string; timestamp: string; name: string }> = [];
   const store = new MemorySlackAssistantStore();
   registerSlackEventRoutes(app, {
     repositoryStore: {
@@ -201,13 +206,16 @@ const createAppWithUsers = (users: User[]) => {
       getUserProfile: async () => ({ id: "U1", name: "Alice" }),
       postMessage: async (_botToken, channel, text) => {
         posts.push({ channel, text });
+      },
+      addReaction: async (_botToken, channel, timestamp, name) => {
+        reactions.push({ channel, timestamp, name });
       }
     },
     runtime: {
       respond: async () => "should not run"
     }
   });
-  return { app, posts, store };
+  return { app, posts, reactions, store };
 };
 
 test("Slack event route responds to URL verification", async () => {
@@ -225,8 +233,8 @@ test("Slack event route responds to URL verification", async () => {
   await app.close();
 });
 
-test("Slack event route maps a DM to a profile and posts runtime response", async () => {
-  const { app, posts, store } = createApp();
+test("Slack event route maps a DM to a profile, reacts, and posts runtime response", async () => {
+  const { app, posts, reactions, store } = createApp();
   const payload = JSON.stringify({
     type: "event_callback",
     team_id: "T1",
@@ -235,6 +243,7 @@ test("Slack event route maps a DM to a profile and posts runtime response", asyn
       channel_type: "im",
       user: "U1",
       channel: "D1",
+      ts: "1710000000.000100",
       text: "hello"
     }
   });
@@ -247,6 +256,7 @@ test("Slack event route maps a DM to a profile and posts runtime response", asyn
 
   assert.equal(response.statusCode, 200);
   await waitForBackgroundWork();
+  assert.deepEqual(reactions, [{ channel: "D1", timestamp: "1710000000.000100", name: "eyes" }]);
   assert.deepEqual(posts, [{ channel: "D1", text: "Reply to alice: hello" }]);
   assert.equal(Array.from(store.conversations.values())[0]?.turns.length, 2);
   await app.close();
