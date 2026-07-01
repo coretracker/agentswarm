@@ -9,6 +9,16 @@ export interface SlackAssistantTurn {
   at: string;
 }
 
+export interface SlackAssistantActiveRuntime {
+  provider: "codex" | "claude";
+  status: "active" | "idle" | "stopped";
+  containerName: string | null;
+  startedAt: string;
+  lastUserMessageAt: string;
+  stoppedAt: string | null;
+  stopReason: "idle_timeout" | "completed" | "failed" | null;
+}
+
 export interface SlackAssistantConversation {
   id: string;
   repositoryId: string;
@@ -18,6 +28,7 @@ export interface SlackAssistantConversation {
   slackUserId: string;
   provider: "codex" | "claude";
   turns: SlackAssistantTurn[];
+  activeRuntime: SlackAssistantActiveRuntime | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -34,6 +45,10 @@ export interface SlackAssistantConversationInput {
 export interface SlackAssistantStore {
   getOrCreateConversation(input: SlackAssistantConversationInput): Promise<SlackAssistantConversation>;
   appendTurn(conversationId: string, turn: SlackAssistantTurn): Promise<SlackAssistantConversation | null>;
+  updateActiveRuntime(
+    conversationId: string,
+    activeRuntime: SlackAssistantActiveRuntime | null
+  ): Promise<SlackAssistantConversation | null>;
 }
 
 const normalizeProvider = (value: unknown): "codex" | "claude" => (value === "claude" ? "claude" : "codex");
@@ -55,6 +70,32 @@ const normalizeTurns = (value: unknown): SlackAssistantTurn[] => {
   });
 };
 
+const normalizeActiveRuntime = (value: unknown): SlackAssistantActiveRuntime | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  const provider = normalizeProvider(record.provider);
+  const status = record.status === "active" || record.status === "idle" || record.status === "stopped" ? record.status : "idle";
+  const startedAt = typeof record.startedAt === "string" ? record.startedAt : "";
+  const lastUserMessageAt = typeof record.lastUserMessageAt === "string" ? record.lastUserMessageAt : "";
+  if (!startedAt || !lastUserMessageAt) {
+    return null;
+  }
+  return {
+    provider,
+    status,
+    containerName: typeof record.containerName === "string" && record.containerName.trim().length > 0 ? record.containerName.trim() : null,
+    startedAt,
+    lastUserMessageAt,
+    stoppedAt: typeof record.stoppedAt === "string" ? record.stoppedAt : null,
+    stopReason:
+      record.stopReason === "idle_timeout" || record.stopReason === "completed" || record.stopReason === "failed"
+        ? record.stopReason
+        : null
+  };
+};
+
 export class PostgresSlackAssistantStore implements SlackAssistantStore {
   constructor(private readonly pool: Pool) {}
 
@@ -69,6 +110,7 @@ export class PostgresSlackAssistantStore implements SlackAssistantStore {
       slackUserId: String(row.slack_user_id),
       provider: normalizeProvider(row.provider),
       turns: normalizeTurns(context.turns),
+      activeRuntime: normalizeActiveRuntime(row.active_runtime),
       createdAt: String(row.created_at),
       updatedAt: String(row.updated_at)
     };
@@ -134,5 +176,24 @@ export class PostgresSlackAssistantStore implements SlackAssistantStore {
       [conversationId, JSON.stringify({ turns }), timestamp]
     );
     return this.mapRow(result.rows[0]);
+  }
+
+  async updateActiveRuntime(
+    conversationId: string,
+    activeRuntime: SlackAssistantActiveRuntime | null
+  ): Promise<SlackAssistantConversation | null> {
+    const timestamp = nowIso();
+    const result = await this.pool.query(
+      `
+        UPDATE slack_assistant_conversations
+        SET active_runtime = $2::jsonb,
+            updated_at = $3
+        WHERE id = $1
+        RETURNING *
+      `,
+      [conversationId, activeRuntime ? JSON.stringify(activeRuntime) : null, timestamp]
+    );
+    const row = result.rows[0];
+    return row ? this.mapRow(row) : null;
   }
 }

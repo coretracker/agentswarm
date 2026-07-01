@@ -5,6 +5,7 @@ import Fastify from "fastify";
 import type { Repository, User } from "@agentswarm/shared-types";
 import { registerSlackEventRoutes } from "./slack-events.js";
 import type {
+  SlackAssistantActiveRuntime,
   SlackAssistantConversation,
   SlackAssistantConversationInput,
   SlackAssistantStore,
@@ -82,6 +83,7 @@ class MemorySlackAssistantStore implements SlackAssistantStore {
       slackUserId: input.slackUserId,
       provider: input.provider ?? "codex",
       turns: [],
+      activeRuntime: null,
       createdAt: now,
       updatedAt: now
     };
@@ -98,12 +100,31 @@ class MemorySlackAssistantStore implements SlackAssistantStore {
     this.conversations.set(conversationId, next);
     return next;
   }
+
+  async updateActiveRuntime(
+    conversationId: string,
+    activeRuntime: SlackAssistantActiveRuntime | null
+  ): Promise<SlackAssistantConversation | null> {
+    const current = this.conversations.get(conversationId);
+    if (!current) {
+      return null;
+    }
+    const next = { ...current, activeRuntime, updatedAt: now };
+    this.conversations.set(conversationId, next);
+    return next;
+  }
 }
 
 const sign = (payload: string, timestamp = String(Math.floor(Date.now() / 1000))): Record<string, string> => ({
   "x-slack-request-timestamp": timestamp,
   "x-slack-signature": `v0=${createHmac("sha256", signingSecret).update(`v0:${timestamp}:${payload}`).digest("hex")}`
 });
+
+const waitForBackgroundWork = async (): Promise<void> => {
+  await new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+};
 
 const createApp = () => {
   const app = Fastify();
@@ -223,6 +244,7 @@ test("Slack event route maps a DM to a profile and posts runtime response", asyn
   });
 
   assert.equal(response.statusCode, 200);
+  await waitForBackgroundWork();
   assert.deepEqual(posts, [{ channel: "D1", text: "Reply to alice: hello" }]);
   assert.equal(Array.from(store.conversations.values())[0]?.turns.length, 2);
   await app.close();

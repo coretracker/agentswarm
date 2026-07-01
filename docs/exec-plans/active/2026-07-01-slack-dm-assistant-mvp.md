@@ -156,9 +156,12 @@
 - Baseline Checks Run: 2026-07-01 07:40 UTC - `./scripts/harness/doctor.sh` passed; initial `./scripts/harness/check.sh` needed dependency setup; `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh` installed dependencies but compose startup hit an existing local 5432 binding; rerun `./scripts/harness/check.sh` passed; `TEST_SCOPE=unit ./scripts/harness/test.sh` passed.
 - Visible Task List Updated: 2026-07-01 06:55 UTC - Conversation task list updated while creating this plan.
 - Task-Level Tests/Lint/Build: 2026-07-01 07:59 UTC - `./scripts/harness/check.sh`, `TEST_SCOPE=unit ./scripts/harness/test.sh`, and focused route/store tests passed.
+- Task-Level Tests/Lint/Build: 2026-07-01 09:18 UTC - `npm run lint -w @agentswarm/server` and focused Slack runtime/event tests passed after the next runtime slice.
 - Self Review Complete: 2026-07-01 07:59 UTC - Reviewed implementation against `docs/development/agent-review.md`; noted the detached Codex/Claude container runner and 5-minute idle stop remain follow-up work outside this first slice.
+- Self Review Complete: 2026-07-01 09:18 UTC - Reviewed the next runtime slice against `docs/development/agent-review.md`; the implementation now launches a detached provider invocation per Slack message, persists provider/conversation state, injects user-scoped AgentSwarm MCP access, and marks stale runtime state stopped after 5 minutes idle.
 - Code Review Complete: 2026-07-01 07:59 UTC - Reviewed Slack signature, credential storage, user matching, route behavior, repository UI, and docs changes.
 - Final Verification Complete: 2026-07-01 07:59 UTC - Final `./scripts/harness/check.sh`, `TEST_SCOPE=unit ./scripts/harness/test.sh`, focused route/store tests, and `git diff --check` passed. `./scripts/harness/pr-ready.sh` passed doctor, human-gated, boundary, lint/typecheck, unit, and integration phases, then failed during e2e app boot because Docker could not mount the existing `deploy/nginx.conf` file into the nginx proxy container in this workspace.
+- Final Verification Complete: 2026-07-01 09:20 UTC - `./scripts/harness/check-human-gated-flow.sh`, `./scripts/harness/check.sh`, `TEST_SCOPE=unit ./scripts/harness/test.sh`, focused Slack runtime/event tests, and `git diff --check` passed. `./scripts/harness/pr-ready.sh` passed doctor, human-gated, boundary, lint/typecheck, unit, and integration phases, then failed during e2e app boot because an existing local `agentswarm` Redis container already owned host port 6379.
 - Security/Privacy Review Complete: 2026-07-01 07:59 UTC - Slack signing secrets and bot tokens remain write-only through repository APIs; Slack event route verifies timestamped signatures; unmatched users receive a generic setup reply.
 - Docs/Changelog Updated: 2026-07-01 07:59 UTC - Added `docs/product/slack-dm-assistant.md` and linked it from product docs.
 
@@ -169,6 +172,10 @@
 - `./scripts/harness/check.sh`
 - `TEST_SCOPE=unit ./scripts/harness/test.sh`
 - `node --import tsx --test apps/server/src/routes/slack-events.test.ts apps/server/src/routes/repositories.test.ts apps/server/src/services/repository-store.test.ts`
+- `npm run lint -w @agentswarm/server`
+- `node --import tsx --test apps/server/src/routes/slack-events.test.ts apps/server/src/services/slack-assistant-service.test.ts apps/server/src/services/repository-store.test.ts`
+- `git diff --check`
+- `./scripts/harness/pr-ready.sh`
 - `./scripts/harness/test.sh`
 - Focused candidates after implementation:
 - `node --import tsx --test apps/server/src/routes/slack-events.test.ts`
@@ -197,12 +204,15 @@
 - 2026-07-01 07:39 UTC: Reacted with eyes emoji on the implementation-start request and marked the plan approved for implementation.
 - 2026-07-01 07:59 UTC: Implemented the first slice: Slack username profile field, repository Slack credential configuration, signed Slack events route, Slack user matching, detached conversation persistence, Slack replies, product docs, and focused tests.
 - 2026-07-01 07:59 UTC: Ran final validation and self-review; cleaned up the task-specific compose project after `pr-ready.sh` hit the local nginx bind-mount boot failure.
+- 2026-07-01 09:18 UTC: Implemented the next runtime slice: Slack DM messages now run through the configured Codex/Claude runtime image in the background, receive persisted Slack conversation context, inject AgentSwarm MCP with a user-scoped personal access token, retain provider state across messages, and mark stale runtime state stopped after 5 minutes idle.
+- 2026-07-01 09:20 UTC: Re-ran harness validation for the runtime slice. The required checks passed through unit/integration; only the local e2e app boot step in `pr-ready.sh` was blocked by an existing Redis process on host port 6379.
 
 ## Decisions
 - 2026-07-01: Plan v1 as a detached Slack DM assistant, not as repository mapping or task workflow integration.
 - 2026-07-01: Slack bot token/signing secret configuration belongs to a repository Slack integration section, while the DM assistant runtime remains detached from normal task workflows.
 - 2026-07-01: Persist conversation context separately from runtime container lifetime; stop containers after 5 minutes idle.
 - 2026-07-01: Reuse existing provider runtime definitions, credentials, and MCP serialization rather than creating Slack-specific provider integrations.
+- 2026-07-01: Keep the v1 runtime simple by starting one provider invocation per Slack DM message, persisting provider state between runs, and acknowledging Slack events before the provider completes.
 
 ## Open Questions
 - Should the next runtime slice use Codex by default, Claude by default, or the system default provider?
@@ -213,4 +223,6 @@
 - Should "start a task" from Slack be in the first implementation slice, or left as a follow-up after plain chat works?
 
 ## Completion Notes
-- First implementation slice is complete. Remaining follow-up work is the real detached Codex/Claude container runner, AgentSwarm MCP identity injection for that runner, and 5-minute idle container stop/restart.
+- First implementation slice is complete.
+- Next runtime slice is complete: Slack DM messages are handled by detached Codex/Claude provider invocations with persisted conversation/provider state and user-scoped AgentSwarm MCP access.
+- Remaining follow-up work includes stronger Slack user identity binding, transcript retention policy, Slack retry deduplication, and explicit Slack-to-task creation flows.

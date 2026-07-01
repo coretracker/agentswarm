@@ -117,13 +117,22 @@ export const registerSlackEventRoutes = (
       slackUserId,
       provider: "codex"
     });
-    const responseText = await assistantService.handleMessage({
-      repository: integration.repository,
-      user,
-      conversation,
-      text
-    });
-    await slackClient.postMessage(integration.botToken, slackChannelId, responseText);
+    void (async () => {
+      try {
+        const responseText = await assistantService.handleMessage({
+          repository: integration.repository,
+          user,
+          conversation,
+          text
+        });
+        await slackClient.postMessage(integration.botToken, slackChannelId, responseText);
+      } catch (error) {
+        request.log.error({ err: error, repositoryId: integration.repository.id }, "slack.assistant.failed");
+        await slackClient
+          .postMessage(integration.botToken, slackChannelId, "I could not complete that Slack assistant run.")
+          .catch((postError) => request.log.error({ err: postError }, "slack.assistant.failure_reply_failed"));
+      }
+    })();
 
     return reply.send({ ok: true });
   });
