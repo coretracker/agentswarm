@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import { test } from "node:test";
 import Fastify from "fastify";
-import type { Repository, User } from "@agentswarm/shared-types";
+import type { User } from "@agentswarm/shared-types";
 import { registerSlackEventRoutes } from "./slack-events.js";
 import type {
   SlackAssistantActiveRuntime,
@@ -14,42 +14,6 @@ import type {
 
 const now = "2026-07-01T00:00:00.000Z";
 const signingSecret = "slack-signing-secret";
-
-const repository: Repository = {
-  id: "repo-1",
-  name: "Repo",
-  url: "https://github.com/acme/repo.git",
-  defaultBranch: "develop",
-  envVars: [],
-  envSecrets: [],
-  mcpServers: [],
-  hostCommands: [],
-  webhookUrl: null,
-  webhookEnabled: false,
-  webhookSecretConfigured: false,
-  githubPrWebhookSecretConfigured: false,
-  slackBotTokenConfigured: true,
-  slackSigningSecretConfigured: true,
-  githubIntegrationBotLogin: null,
-  githubPrAllowedUsers: [],
-  githubPrRequireBotMention: false,
-  githubPrAutoArchiveOnMerge: false,
-  githubPrInitialInstructions: null,
-  githubPrFeedbackInstructions: null,
-  githubPrReviewInstructions: null,
-  githubPrTaskCreatedCommentTemplate: null,
-  githubPrTaskOwnerUserId: null,
-  harnessWhatExists: null,
-  harnessAllowedActions: null,
-  harnessHowToWork: null,
-  harnessDefinitionOfDone: null,
-  harnessEvidenceExpectations: null,
-  webhookLastAttemptAt: null,
-  webhookLastStatus: null,
-  webhookLastError: null,
-  createdAt: now,
-  updatedAt: now
-};
 
 const user: User = {
   id: "user-1",
@@ -69,14 +33,14 @@ class MemorySlackAssistantStore implements SlackAssistantStore {
   conversations = new Map<string, SlackAssistantConversation>();
 
   async getOrCreateConversation(input: SlackAssistantConversationInput): Promise<SlackAssistantConversation> {
-    const id = `${input.repositoryId}:${input.slackTeamId}:${input.slackChannelId}:${input.slackUserId}`;
+    const id = `${input.slackTeamId}:${input.slackChannelId}:${input.slackUserId}`;
     const current = this.conversations.get(id);
     if (current) {
       return current;
     }
     const conversation: SlackAssistantConversation = {
       id,
-      repositoryId: input.repositoryId,
+      repositoryId: null,
       userId: input.userId,
       slackTeamId: input.slackTeamId,
       slackChannelId: input.slackChannelId,
@@ -139,25 +103,12 @@ const createApp = () => {
   let profileLookups = 0;
   const store = new MemorySlackAssistantStore();
   registerSlackEventRoutes(app, {
-    repositoryStore: {
-      createRepository: async () => repository,
-      listRepositories: async () => [repository],
-      getRepository: async () => repository,
-      getRepositoryRuntimeEnvEntries: async () => [],
-      getRepositoryMcpServers: async () => [],
-      getRepositorySlackAgentMcpServers: async () => [],
-      getRepositoryHostCommands: async () => [],
-      updateRepository: async () => repository,
-      getRepositoryWebhookTarget: async () => null,
-      getRepositoryGitHubPrWebhookSecret: async () => null,
-      getRepositorySlackIntegration: async () => ({ repository, botToken: "xoxb-token", signingSecret }),
-      recordWebhookDeliveryResult: async () => repository,
-      recordSlackEventResult: async (_repositoryId, input) => {
+    settingsStore: {
+      getSlackIntegration: async () => ({ botToken: "xoxb-token", signingSecret, slackAgentMcpServers: [] }),
+      recordSlackEventResult: async (input: { status: string; eventType?: string | null; errorMessage?: string | null }) => {
         slackEvents.push(input);
-        return repository;
-      },
-      deleteRepository: async () => false
-    },
+      }
+    } as never,
     userStore: {
       listUsers: async () => [user]
     } as never,
@@ -194,25 +145,12 @@ const createAppWithUsers = (users: User[]) => {
   let profileLookups = 0;
   const store = new MemorySlackAssistantStore();
   registerSlackEventRoutes(app, {
-    repositoryStore: {
-      createRepository: async () => repository,
-      listRepositories: async () => [repository],
-      getRepository: async () => repository,
-      getRepositoryRuntimeEnvEntries: async () => [],
-      getRepositoryMcpServers: async () => [],
-      getRepositorySlackAgentMcpServers: async () => [],
-      getRepositoryHostCommands: async () => [],
-      updateRepository: async () => repository,
-      getRepositoryWebhookTarget: async () => null,
-      getRepositoryGitHubPrWebhookSecret: async () => null,
-      getRepositorySlackIntegration: async () => ({ repository, botToken: "xoxb-token", signingSecret }),
-      recordWebhookDeliveryResult: async () => repository,
-      recordSlackEventResult: async (_repositoryId, input) => {
+    settingsStore: {
+      getSlackIntegration: async () => ({ botToken: "xoxb-token", signingSecret, slackAgentMcpServers: [] }),
+      recordSlackEventResult: async (input: { status: string; eventType?: string | null; errorMessage?: string | null }) => {
         slackEvents.push(input);
-        return repository;
-      },
-      deleteRepository: async () => false
-    },
+      }
+    } as never,
     userStore: {
       listUsers: async () => users
     } as never,
@@ -241,7 +179,7 @@ test("Slack event route responds to URL verification", async () => {
   const payload = JSON.stringify({ type: "url_verification", challenge: "challenge-token" });
   const response = await app.inject({
     method: "POST",
-    url: "/repositories/repo-1/slack/events",
+    url: "/slack/events",
     headers: { "content-type": "application/json", ...sign(payload) },
     payload
   });
@@ -269,7 +207,7 @@ test("Slack event route maps a DM to a profile, reacts, and posts runtime respon
   });
   const response = await app.inject({
     method: "POST",
-    url: "/repositories/repo-1/slack/events",
+    url: "/slack/events",
     headers: { "content-type": "application/json", ...sign(payload) },
     payload
   });
@@ -299,7 +237,7 @@ test("Slack event route replies with setup message when no active profile matche
   });
   const response = await app.inject({
     method: "POST",
-    url: "/repositories/repo-1/slack/events",
+    url: "/slack/events",
     headers: { "content-type": "application/json", ...sign(payload) },
     payload
   });
@@ -327,7 +265,7 @@ test("Slack event route matches a user by Slack user ID without profile lookup",
   });
   const response = await app.inject({
     method: "POST",
-    url: "/repositories/repo-1/slack/events",
+    url: "/slack/events",
     headers: { "content-type": "application/json", ...sign(payload) },
     payload
   });
@@ -344,7 +282,7 @@ test("Slack event route returns signature_mismatch for bad signature", async () 
   const payload = JSON.stringify({ type: "url_verification", challenge: "challenge-token" });
   const response = await app.inject({
     method: "POST",
-    url: "/repositories/repo-1/slack/events",
+    url: "/slack/events",
     headers: { "content-type": "application/json", "x-slack-request-timestamp": String(Math.floor(Date.now() / 1000)), "x-slack-signature": "v0=bad" },
     payload
   });
@@ -360,7 +298,7 @@ test("Slack event route returns missing_headers when signature headers are absen
   const payload = JSON.stringify({ type: "url_verification", challenge: "challenge-token" });
   const response = await app.inject({
     method: "POST",
-    url: "/repositories/repo-1/slack/events",
+    url: "/slack/events",
     headers: { "content-type": "application/json" },
     payload
   });
@@ -376,7 +314,7 @@ test("Slack event route returns timestamp_invalid when timestamp is not numeric"
   const payload = JSON.stringify({ type: "url_verification", challenge: "challenge-token" });
   const response = await app.inject({
     method: "POST",
-    url: "/repositories/repo-1/slack/events",
+    url: "/slack/events",
     headers: { "content-type": "application/json", ...sign(payload, "abc") },
     payload
   });
@@ -393,7 +331,7 @@ test("Slack event route returns timestamp_skew when timestamp is too old", async
   const oldTimestamp = String(Math.floor(Date.now() / 1000) - 700);
   const response = await app.inject({
     method: "POST",
-    url: "/repositories/repo-1/slack/events",
+    url: "/slack/events",
     headers: { "content-type": "application/json", ...sign(payload, oldTimestamp) },
     payload
   });

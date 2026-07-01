@@ -1,10 +1,10 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { RepositorySlackEventStatus, User } from "@agentswarm/shared-types";
 import { verifySlackRequestSignatureDetailed } from "../lib/slack-signature.js";
-import type { RepositoryStore } from "../services/repository-store.js";
 import type { SlackAssistantStore } from "../services/slack-assistant-store.js";
 import { SlackAssistantService, type SlackAssistantRuntime } from "../services/slack-assistant-service.js";
 import { FetchSlackClient, type SlackClient } from "../services/slack-client.js";
+import type { SettingsStore } from "../services/settings-store.js";
 import type { UserStore } from "../services/user-store.js";
 
 type RawBodyRequest = { rawBody?: string };
@@ -46,7 +46,7 @@ const findUserBySlackIdentity = async (userStore: UserStore, identities: Array<s
 export const registerSlackEventRoutes = (
   app: FastifyInstance,
   deps: {
-    repositoryStore: RepositoryStore;
+    settingsStore: SettingsStore;
     userStore: UserStore;
     slackAssistantStore: SlackAssistantStore;
     slackClient?: SlackClient;
@@ -56,10 +56,10 @@ export const registerSlackEventRoutes = (
   const slackClient = deps.slackClient ?? new FetchSlackClient();
   const assistantService = new SlackAssistantService(deps.slackAssistantStore, deps.runtime);
 
-  app.post<{ Params: { repositoryId: string } }>("/repositories/:repositoryId/slack/events", async (request, reply) => {
-    const integration = await deps.repositoryStore.getRepositorySlackIntegration(request.params.repositoryId);
+  const handler = async (request: FastifyRequest, reply: FastifyReply) => {
+    const integration = await deps.settingsStore.getSlackIntegration();
     if (!integration) {
-      return reply.status(404).send({ message: "Repository Slack integration is not configured." });
+      return reply.status(404).send({ message: "Slack integration is not configured in Settings." });
     }
 
     const recordSlackEvent = async (
@@ -67,14 +67,14 @@ export const registerSlackEventRoutes = (
       eventType: string,
       errorMessage?: string | null
     ): Promise<void> => {
-      await deps.repositoryStore
-        .recordSlackEventResult(integration.repository.id, {
+      await deps.settingsStore
+        .recordSlackEventResult({
           status,
           receivedAt: new Date().toISOString(),
           eventType,
           errorMessage
         })
-        .catch((error) => request.log.warn({ err: error, repositoryId: integration.repository.id }, "slack.event_status.failed"));
+        .catch((error) => request.log.warn({ err: error }, "slack.event_status.failed"));
     };
 
     const rawBody = (request as typeof request & RawBodyRequest).rawBody ?? JSON.stringify(request.body ?? {});
@@ -125,7 +125,7 @@ export const registerSlackEventRoutes = (
     if (slackMessageTs) {
       slackClient
         .addReaction(integration.botToken, slackChannelId, slackMessageTs, "eyes")
-        .catch((error) => request.log.warn({ err: error, repositoryId: integration.repository.id }, "slack.reaction.failed"));
+        .catch((error) => request.log.warn({ err: error }, "slack.reaction.failed"));
     }
 
     let user = await findUserBySlackIdentity(deps.userStore, [slackUserId]);
@@ -152,7 +152,6 @@ export const registerSlackEventRoutes = (
     let conversation: Awaited<ReturnType<SlackAssistantStore["getOrCreateConversation"]>>;
     try {
       conversation = await deps.slackAssistantStore.getOrCreateConversation({
-        repositoryId: integration.repository.id,
         userId: user.id,
         slackTeamId,
         slackChannelId,
@@ -167,14 +166,13 @@ export const registerSlackEventRoutes = (
     void (async () => {
       try {
         const responseText = await assistantService.handleMessage({
-          repository: integration.repository,
           user,
           conversation,
           text
         });
         await slackClient.postMessage(integration.botToken, slackChannelId, responseText);
       } catch (error) {
-        request.log.error({ err: error, repositoryId: integration.repository.id }, "slack.assistant.failed");
+        request.log.error({ err: error }, "slack.assistant.failed");
         await recordSlackEvent("failed", "message.im", error instanceof Error ? error.message : "assistant_failed");
         await slackClient
           .postMessage(integration.botToken, slackChannelId, "I could not complete that Slack assistant run.")
@@ -183,5 +181,8 @@ export const registerSlackEventRoutes = (
     })();
 
     return reply.send({ ok: true });
-  });
+  };
+
+  app.post("/slack/events", handler);
+  app.post("/repositories/:repositoryId/slack/events", handler);
 };

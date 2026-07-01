@@ -12,6 +12,14 @@ interface ProviderModelEntry {
   value: string;
 }
 
+const normalizeMcpServerNameForComparison = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
 function providerModelsUrl(baseUrl: string | null, defaultBaseUrl: string): string {
   const base = (baseUrl?.replace(/\/$/, "") ?? defaultBaseUrl);
   return `${base.endsWith("/v1") ? base : `${base}/v1`}/models`;
@@ -55,6 +63,50 @@ const providerModelSchema = z.object({
   label: z.string().trim().min(1).max(160),
   value: z.string().trim().min(1).max(160)
 });
+const mcpServerSchema = z.discriminatedUnion("transport", [
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("stdio"),
+    command: z.string().trim().min(1).max(300),
+    args: z.array(z.string().trim().min(1).max(300)).max(40).optional()
+  }),
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("http"),
+    url: z.string().trim().url(),
+    bearerTokenEnvVar: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
+      .nullable()
+      .optional()
+  })
+]);
+const mcpServersSchema = z
+  .array(mcpServerSchema)
+  .max(25)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const normalized = normalizeMcpServerNameForComparison(entries[index]?.name ?? "");
+      if (!normalized) {
+        continue;
+      }
+      if (seen.has(normalized)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "name"],
+          message: `Duplicate MCP server name: ${entries[index]?.name}`
+        });
+      } else {
+        seen.add(normalized);
+      }
+    }
+  });
 const responsePreferenceSchema = z
   .object({
     audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
@@ -106,6 +158,11 @@ const updateSettingsSchema = z.object({
   claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
   claudeModels: z.array(providerModelSchema).max(500).optional(),
   claudeDefaultEffort: providerProfileEnum.optional(),
+  slackAgentMcpServers: mcpServersSchema.optional(),
+  slackBotToken: z.string().trim().min(1).optional(),
+  clearSlackBotToken: z.boolean().optional(),
+  slackSigningSecret: z.string().trim().min(1).optional(),
+  clearSlackSigningSecret: z.boolean().optional(),
   responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
 });
 

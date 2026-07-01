@@ -917,6 +917,13 @@ export interface SystemSettings {
   claudeDefaultModel: string;
   claudeModels: ProviderModelOption[];
   claudeDefaultEffort: ProviderProfile;
+  slackAgentMcpServers: McpServerConfig[];
+  slackBotTokenConfigured: boolean;
+  slackSigningSecretConfigured: boolean;
+  slackLastEventAt: string | null;
+  slackLastEventStatus: RepositorySlackEventStatus | null;
+  slackLastEventType: string | null;
+  slackLastEventError: string | null;
   responsePreferencePresets: ResponsePreferencePreset[];
   dataStores?: SystemDataStores;
 }
@@ -1393,6 +1400,11 @@ export interface UpdateSettingsInput {
   claudeDefaultModel?: string;
   claudeModels?: ProviderModelOption[];
   claudeDefaultEffort?: ProviderProfile;
+  slackAgentMcpServers?: McpServerConfig[];
+  slackBotToken?: string;
+  clearSlackBotToken?: boolean;
+  slackSigningSecret?: string;
+  clearSlackSigningSecret?: boolean;
   responsePreferencePresets?: ResponsePreferencePresetInput[];
 }
 

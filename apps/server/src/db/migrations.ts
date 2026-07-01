@@ -694,5 +694,37 @@ Feedback:
       ADD COLUMN IF NOT EXISTS slack_last_event_type text NULL,
       ADD COLUMN IF NOT EXISTS slack_last_event_error text NULL;
     `
+  },
+  {
+    id: "20260701_05_global_slack_integration",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS slack_bot_token text NULL,
+      ADD COLUMN IF NOT EXISTS slack_signing_secret text NULL,
+      ADD COLUMN IF NOT EXISTS slack_agent_mcp_servers jsonb NOT NULL DEFAULT '[]'::jsonb,
+      ADD COLUMN IF NOT EXISTS slack_last_event_at text NULL,
+      ADD COLUMN IF NOT EXISTS slack_last_event_status text NULL,
+      ADD COLUMN IF NOT EXISTS slack_last_event_type text NULL,
+      ADD COLUMN IF NOT EXISTS slack_last_event_error text NULL;
+
+      ALTER TABLE IF EXISTS slack_assistant_conversations
+      ALTER COLUMN repository_id DROP NOT NULL;
+
+      DELETE FROM slack_assistant_conversations target
+      USING (
+        SELECT
+          id,
+          row_number() OVER (
+            PARTITION BY slack_team_id, slack_channel_id, slack_user_id
+            ORDER BY updated_at DESC, created_at DESC, id DESC
+          ) AS row_num
+        FROM slack_assistant_conversations
+      ) ranked
+      WHERE target.id = ranked.id
+        AND ranked.row_num > 1;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS slack_assistant_conversations_slack_context_idx
+        ON slack_assistant_conversations(slack_team_id, slack_channel_id, slack_user_id);
+    `
   }
 ];

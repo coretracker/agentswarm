@@ -4,8 +4,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { nanoid } from "nanoid";
-import type { Repository, User } from "@agentswarm/shared-types";
 import type { AgentProvider, McpServerConfig, PermissionScope, ProviderProfile } from "@agentswarm/shared-types";
+import type { User } from "@agentswarm/shared-types";
 import { env } from "../config/env.js";
 import { collectMcpServerEnvEntries, normalizeMcpServers } from "../lib/mcp-config.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
@@ -35,7 +35,6 @@ type RuntimeResultPayload = {
 export type SlackAssistantCommandRunner = (command: string, args: string[]) => Promise<void>;
 
 export interface SlackAssistantMessageInput {
-  repository: Repository;
   user: User;
   conversation: SlackAssistantConversation;
   text: string;
@@ -132,9 +131,9 @@ const buildConversationPrompt = (input: SlackAssistantMessageInput): string => {
     "Use AgentSwarm MCP as the source of truth for AgentSwarm data. Use configured Slack agent MCP tools or AgentSwarm repository/task context when relevant.",
     "Do not create or mutate AgentSwarm tasks unless the user explicitly asks for that.",
     "Keep Slack replies concise and practical.",
+    "No single repository is pre-selected; use AgentSwarm data and user intent to choose targets.",
     "",
     `Matched AgentSwarm user: ${input.user.name} <${input.user.email}>`,
-    `Repository Slack integration context: ${input.repository.name}`,
     "",
     "Conversation so far:",
     transcript || "(new conversation)",
@@ -161,7 +160,7 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
 
   private async buildRuntimeMcpConfig(
     user: User,
-    repository: Repository,
+    slackAgentMcpServers: McpServerConfig[],
     executionId: string
   ): Promise<{ servers: McpServerConfig[]; env: Record<string, string> }> {
     const token = await this.deps.personalAccessTokenStore.createToken({
@@ -186,7 +185,7 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
     };
     return {
       env: agentSwarmMcpEnv,
-      servers: mergeSlackRuntimeMcpServers(agentSwarmServer, repository.slackAgentMcpServers ?? [])
+      servers: mergeSlackRuntimeMcpServers(agentSwarmServer, slackAgentMcpServers)
     };
   }
 
@@ -225,7 +224,7 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
     const providerProfile = providerProfileForSettings(provider, settings);
     const resolvedModel = providerDefinition.getResolvedModel(null, providerProfile);
     const resolvedProfileSettings = providerDefinition.getResolvedProfileSettings(providerProfile, resolvedModel);
-    const runtimeMcp = await this.buildRuntimeMcpConfig(input.user, input.repository, executionId);
+    const runtimeMcp = await this.buildRuntimeMcpConfig(input.user, settings.slackAgentMcpServers ?? [], executionId);
     const providerConfigContent = providerDefinition.getProviderConfig(runtimeMcp.servers);
     const payloadDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "slack-assistant", conversationSegment, executionSegment);
     const workspacePath = path.join(env.RUNTIME_PAYLOAD_ROOT, "slack-assistant-workspaces", conversationSegment);

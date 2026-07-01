@@ -1,13 +1,13 @@
 # Slack DM Assistant
 
 ## Scope
-The Slack DM assistant is a repository-configured Slack bot entry point for simple 1:1 assistant conversations.
+The Slack DM assistant is a globally configured Slack bot entry point for simple 1:1 assistant conversations.
 
 In the first implementation slice:
 - Users add a Slack username to their profile.
-- Repository owners configure a Slack bot token and signing secret in the repository Slack integration section.
-- Repository owners can configure extra Slack agent MCP servers in the repository Slack integration section.
-- Slack sends DM events to the repository Slack events URL.
+- Workspace admins configure a Slack bot token and signing secret in Settings -> Integrations.
+- Workspace admins can configure extra Slack agent MCP servers in Settings -> Integrations.
+- Slack sends DM events to the global Slack events URL.
 - AgentSwarm verifies Slack signatures, resolves the Slack sender to an active AgentSwarm user by username, persists a detached conversation record, and posts a reply back to the same DM.
 - AgentSwarm starts a detached Codex or Claude runtime using the system default provider and the matched user's runtime credentials.
 - The runtime receives Slack conversation context, a small assistant workspace, persistent provider state, automatic AgentSwarm MCP access scoped through the matched user, and any configured extra Slack agent MCP servers.
@@ -15,16 +15,16 @@ In the first implementation slice:
 
 ## Setup
 1. Add the Slack username in the AgentSwarm profile modal.
-2. Open the repository editor and save a Slack bot token plus Slack signing secret in Slack Integration.
-3. Optionally add extra Slack agent MCP servers in Slack Integration. AgentSwarm MCP is always added automatically.
-4. Copy the repository Slack events URL into the Slack app event subscription.
+2. Open Settings -> Integrations and save a Slack bot token plus Slack signing secret.
+3. Optionally add extra Slack agent MCP servers in Settings -> Integrations. AgentSwarm MCP is always added automatically.
+4. Copy the global Slack events URL into the Slack app event subscription.
 5. Subscribe the Slack app to direct message events.
 
-Slack credentials are never returned by repository read APIs. The UI only shows whether the bot token and signing secret are configured.
+Slack credentials are never returned by settings read APIs. The UI only shows whether the bot token and signing secret are configured.
 
 The Slack bot needs `chat:write`, `users:read`, `im:history`, and `reactions:write` bot token scopes. Reinstall the Slack app after changing scopes.
 
-Settings -> Integrations shows each repository Slack integration and its latest signed Slack event result, including received, ignored, and failed events.
+Settings -> Integrations shows the latest signed Slack event result, including received, ignored, and failed events.
 
 ## Task Isolation
 Plain Slack chat messages do not create AgentSwarm tasks, task runs, task logs, checkpoints, or proposals.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile, writeFile } from "node:fs/promises";
 import { test } from "node:test";
-import type { Repository, User } from "@agentswarm/shared-types";
+import type { User } from "@agentswarm/shared-types";
 import { DockerSlackAssistantRuntime } from "./slack-assistant-service.js";
 import type {
   SlackAssistantActiveRuntime,
@@ -12,43 +12,6 @@ import type {
 } from "./slack-assistant-store.js";
 
 const now = "2026-07-01T00:00:00.000Z";
-
-const repository: Repository = {
-  id: "repo-1",
-  name: "Repo",
-  url: "https://github.com/acme/repo.git",
-  defaultBranch: "develop",
-  envVars: [],
-  envSecrets: [],
-  mcpServers: [],
-  slackAgentMcpServers: [],
-  hostCommands: [],
-  webhookUrl: null,
-  webhookEnabled: false,
-  webhookSecretConfigured: false,
-  githubPrWebhookSecretConfigured: false,
-  slackBotTokenConfigured: true,
-  slackSigningSecretConfigured: true,
-  githubIntegrationBotLogin: null,
-  githubPrAllowedUsers: [],
-  githubPrRequireBotMention: false,
-  githubPrAutoArchiveOnMerge: false,
-  githubPrInitialInstructions: null,
-  githubPrFeedbackInstructions: null,
-  githubPrReviewInstructions: null,
-  githubPrTaskCreatedCommentTemplate: null,
-  githubPrTaskOwnerUserId: null,
-  harnessWhatExists: null,
-  harnessAllowedActions: null,
-  harnessHowToWork: null,
-  harnessDefinitionOfDone: null,
-  harnessEvidenceExpectations: null,
-  webhookLastAttemptAt: null,
-  webhookLastStatus: null,
-  webhookLastError: null,
-  createdAt: now,
-  updatedAt: now
-};
 
 const user: User = {
   id: "user-1",
@@ -91,7 +54,7 @@ class MemorySlackAssistantStore implements SlackAssistantStore {
 test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwarm MCP", async () => {
   const conversation: SlackAssistantConversation = {
     id: "conv-runtime-test",
-    repositoryId: repository.id,
+    repositoryId: null,
     userId: user.id,
     slackTeamId: "T1",
     slackChannelId: "D1",
@@ -116,7 +79,22 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       getSettings: async () => ({
         defaultProvider: "codex",
         codexDefaultEffort: "low",
-        claudeDefaultEffort: "low"
+        claudeDefaultEffort: "low",
+        slackAgentMcpServers: [
+          {
+            name: "GitHub",
+            enabled: true,
+            transport: "stdio",
+            command: "npx",
+            args: ["-y", "github-mcp"]
+          },
+          {
+            name: "AgentSwarm",
+            enabled: true,
+            transport: "stdio",
+            command: "should-not-override"
+          }
+        ]
       }),
       getRuntimeCredentials: async () => ({
         openaiApiKey: "openai-key",
@@ -173,24 +151,6 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
   });
 
   const response = await runtime.respond({
-    repository: {
-      ...repository,
-      slackAgentMcpServers: [
-        {
-          name: "GitHub",
-          enabled: true,
-          transport: "stdio",
-          command: "npx",
-          args: ["-y", "github-mcp"]
-        },
-        {
-          name: "AgentSwarm",
-          enabled: true,
-          transport: "stdio",
-          command: "should-not-override"
-        }
-      ]
-    },
     user,
     conversation,
     text: "hello"
@@ -203,7 +163,7 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
 test("DockerSlackAssistantRuntime marks prior runtime stopped after idle timeout before new run", async () => {
   const conversation: SlackAssistantConversation = {
     id: "conv-idle-test",
-    repositoryId: repository.id,
+    repositoryId: null,
     userId: user.id,
     slackTeamId: "T1",
     slackChannelId: "D1",
@@ -228,7 +188,8 @@ test("DockerSlackAssistantRuntime marks prior runtime stopped after idle timeout
       getSettings: async () => ({
         defaultProvider: "codex",
         codexDefaultEffort: "low",
-        claudeDefaultEffort: "low"
+        claudeDefaultEffort: "low",
+        slackAgentMcpServers: []
       }),
       getRuntimeCredentials: async () => ({
         openaiApiKey: "openai-key",
@@ -271,7 +232,7 @@ test("DockerSlackAssistantRuntime marks prior runtime stopped after idle timeout
     }
   });
 
-  await runtime.respond({ repository, user, conversation, text: "hello again" });
+  await runtime.respond({ user, conversation, text: "hello again" });
 
   assert.equal(store.updates[0]?.status, "stopped");
   assert.equal(store.updates[0]?.stopReason, "idle_timeout");

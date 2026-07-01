@@ -191,7 +191,7 @@ const bootstrap = async (): Promise<void> => {
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerGitHubPrWebhookRoutes(app, { repositoryStore, taskStore, taskQueueStore, scheduler, settingsStore, spawner });
-  registerSlackEventRoutes(app, { repositoryStore, userStore, slackAssistantStore, runtime: slackAssistantRuntime });
+  registerSlackEventRoutes(app, { settingsStore, userStore, slackAssistantStore, runtime: slackAssistantRuntime });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
   registerMcpRoutes(app, {
     auth,

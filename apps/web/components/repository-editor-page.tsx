@@ -42,15 +42,6 @@ type RepositoryFormValues = {
     url: string;
     bearerTokenEnvVar: string;
   }>;
-  slackAgentMcpServers: Array<{
-    name: string;
-    enabled: boolean;
-    transport: McpServerTransport;
-    command: string;
-    argsText: string;
-    url: string;
-    bearerTokenEnvVar: string;
-  }>;
   hostCommands: Array<{ name: string }>;
   webhookEnabled: boolean;
   webhookUrl: string;
@@ -58,10 +49,6 @@ type RepositoryFormValues = {
   clearWebhookSecret: boolean;
   githubPrWebhookSecret: string;
   clearGithubPrWebhookSecret: boolean;
-  slackBotToken: string;
-  clearSlackBotToken: boolean;
-  slackSigningSecret: string;
-  clearSlackSigningSecret: boolean;
   githubIntegrationBotLogin: string;
   githubPrAllowedUsers: string;
   githubPrRequireBotMention: boolean;
@@ -85,7 +72,6 @@ const emptyValues = (): RepositoryFormValues => ({
   envVars: [],
   envSecrets: [],
   mcpServers: [],
-  slackAgentMcpServers: [],
   hostCommands: [],
   webhookEnabled: false,
   webhookUrl: "",
@@ -93,10 +79,6 @@ const emptyValues = (): RepositoryFormValues => ({
   clearWebhookSecret: false,
   githubPrWebhookSecret: "",
   clearGithubPrWebhookSecret: false,
-  slackBotToken: "",
-  clearSlackBotToken: false,
-  slackSigningSecret: "",
-  clearSlackSigningSecret: false,
   githubIntegrationBotLogin: "",
   githubPrAllowedUsers: "",
   githubPrRequireBotMention: false,
@@ -140,15 +122,6 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
     url: typeof entry?.url === "string" ? entry.url : "",
     bearerTokenEnvVar: typeof entry?.bearerTokenEnvVar === "string" ? entry.bearerTokenEnvVar : ""
   })),
-  slackAgentMcpServers: (values?.slackAgentMcpServers ?? []).map((entry) => ({
-    name: typeof entry?.name === "string" ? entry.name : "",
-    enabled: entry?.enabled !== false,
-    transport: entry?.transport === "http" ? "http" : "stdio",
-    command: typeof entry?.command === "string" ? entry.command : "",
-    argsText: typeof entry?.argsText === "string" ? entry.argsText : "",
-    url: typeof entry?.url === "string" ? entry.url : "",
-    bearerTokenEnvVar: typeof entry?.bearerTokenEnvVar === "string" ? entry.bearerTokenEnvVar : ""
-  })),
   hostCommands: (values?.hostCommands ?? []).map((entry) => ({
     name: typeof entry?.name === "string" ? entry.name : ""
   })),
@@ -158,10 +131,6 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   clearWebhookSecret: values?.clearWebhookSecret === true,
   githubPrWebhookSecret: typeof values?.githubPrWebhookSecret === "string" ? values.githubPrWebhookSecret : "",
   clearGithubPrWebhookSecret: values?.clearGithubPrWebhookSecret === true,
-  slackBotToken: typeof values?.slackBotToken === "string" ? values.slackBotToken : "",
-  clearSlackBotToken: values?.clearSlackBotToken === true,
-  slackSigningSecret: typeof values?.slackSigningSecret === "string" ? values.slackSigningSecret : "",
-  clearSlackSigningSecret: values?.clearSlackSigningSecret === true,
   githubIntegrationBotLogin: typeof values?.githubIntegrationBotLogin === "string" ? values.githubIntegrationBotLogin : "",
   githubPrAllowedUsers: typeof values?.githubPrAllowedUsers === "string" ? values.githubPrAllowedUsers : "",
   githubPrRequireBotMention: values?.githubPrRequireBotMention === true,
@@ -367,15 +336,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             url: server.url ?? "",
             bearerTokenEnvVar: server.bearerTokenEnvVar ?? ""
           })),
-          slackAgentMcpServers: (repository.slackAgentMcpServers ?? []).map((server) => ({
-            name: server.name,
-            enabled: server.enabled,
-            transport: server.transport,
-            command: server.command ?? "",
-            argsText: (server.args ?? []).join("\n"),
-            url: server.url ?? "",
-            bearerTokenEnvVar: server.bearerTokenEnvVar ?? ""
-          })),
           hostCommands: (repository.hostCommands ?? []).map((name) => ({ name })),
           webhookEnabled: repository.webhookEnabled,
           webhookUrl: repository.webhookUrl ?? "",
@@ -383,10 +343,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           clearWebhookSecret: false,
           githubPrWebhookSecret: "",
           clearGithubPrWebhookSecret: false,
-          slackBotToken: "",
-          clearSlackBotToken: false,
-          slackSigningSecret: "",
-          clearSlackSigningSecret: false,
           githubIntegrationBotLogin: repository.githubIntegrationBotLogin ?? "",
           githubPrAllowedUsers: (repository.githubPrAllowedUsers ?? []).join("\n"),
           githubPrRequireBotMention: repository.githubPrRequireBotMention === true,
@@ -477,7 +433,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   };
 
   const renderMcpServerList = (
-    name: "mcpServers" | "slackAgentMcpServers",
+    name: "mcpServers",
     label: string,
     addLabel: string
   ) => (
@@ -734,26 +690,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                         .filter(Boolean)
                     }
               ),
-              slackAgentMcpServers: normalized.slackAgentMcpServers.map((server) =>
-                server.transport === "http"
-                  ? {
-                      name: server.name,
-                      enabled: server.enabled,
-                      transport: "http" as const,
-                      url: server.url.trim(),
-                      bearerTokenEnvVar: server.bearerTokenEnvVar.trim() || null
-                    }
-                  : {
-                      name: server.name,
-                      enabled: server.enabled,
-                      transport: "stdio" as const,
-                      command: server.command.trim(),
-                      args: server.argsText
-                        .split("\n")
-                        .map((item) => item.trim())
-                        .filter(Boolean)
-                    }
-              ),
               hostCommands: normalized.hostCommands.map((entry) => entry.name.trim()).filter(Boolean),
               webhookEnabled: normalized.webhookEnabled,
               webhookUrl: normalized.webhookUrl.trim().length > 0 ? normalized.webhookUrl.trim() : null,
@@ -761,10 +697,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               ...(editingRepository && normalized.clearWebhookSecret ? { clearWebhookSecret: true } : {}),
               ...(normalized.githubPrWebhookSecret.trim().length > 0 ? { githubPrWebhookSecret: normalized.githubPrWebhookSecret.trim() } : {}),
               ...(editingRepository && normalized.clearGithubPrWebhookSecret ? { clearGithubPrWebhookSecret: true } : {}),
-              ...(normalized.slackBotToken.trim().length > 0 ? { slackBotToken: normalized.slackBotToken.trim() } : {}),
-              ...(editingRepository && normalized.clearSlackBotToken ? { clearSlackBotToken: true } : {}),
-              ...(normalized.slackSigningSecret.trim().length > 0 ? { slackSigningSecret: normalized.slackSigningSecret.trim() } : {}),
-              ...(editingRepository && normalized.clearSlackSigningSecret ? { clearSlackSigningSecret: true } : {}),
               githubIntegrationBotLogin: normalized.githubIntegrationBotLogin.trim().replace(/^@+/, "") || null,
               githubPrAllowedUsers: parseAllowedGitHubUsers(normalized.githubPrAllowedUsers),
               githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
@@ -1014,72 +946,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   description="After creation, AgentSwarm will show the repository-scoped Github webhook URL and webhook secret setup."
                 />
               )}
-            </Flex>
-          </Card>
-          <Card bordered={false} title="Slack Integration">
-            <Flex vertical gap={12}>
-              {mode === "edit" && editingRepository ? (
-                <Form.Item label="Events URL">
-                  <Input
-                    readOnly
-                    value={buildApiUrl(`/repositories/${editingRepository.id}/slack/events`)}
-                    addonAfter={
-                      <Button
-                        type="link"
-                        size="small"
-                        onClick={() => {
-                          void navigator.clipboard.writeText(buildApiUrl(`/repositories/${editingRepository.id}/slack/events`));
-                          messageApi.success("Slack events URL copied");
-                        }}
-                      >
-                        Copy
-                      </Button>
-                    }
-                  />
-                </Form.Item>
-              ) : (
-                <Alert
-                  type="info"
-                  showIcon
-                  message="Save the repository first"
-                  description="After creation, AgentSwarm will show the repository-scoped Slack events URL."
-                />
-              )}
-              <Form.Item
-                name="slackBotToken"
-                label={
-                  editingRepository?.slackBotTokenConfigured ? "Slack Bot Token (leave blank to keep existing)" : "Slack Bot Token"
-                }
-              >
-                <Input.Password placeholder="xoxb-..." autoComplete="off" />
-              </Form.Item>
-              {editingRepository?.slackBotTokenConfigured ? (
-                <Form.Item name="clearSlackBotToken" valuePropName="checked">
-                  <Checkbox>Clear stored Slack bot token</Checkbox>
-                </Form.Item>
-              ) : null}
-              <Form.Item
-                name="slackSigningSecret"
-                label={
-                  editingRepository?.slackSigningSecretConfigured
-                    ? "Slack Signing Secret (leave blank to keep existing)"
-                    : "Slack Signing Secret"
-                }
-              >
-                <Input.Password autoComplete="off" />
-              </Form.Item>
-              {editingRepository?.slackSigningSecretConfigured ? (
-                <Form.Item name="clearSlackSigningSecret" valuePropName="checked">
-                  <Checkbox>Clear stored Slack signing secret</Checkbox>
-                </Form.Item>
-              ) : null}
-              <Alert
-                type="info"
-                showIcon
-                message="Slack agent MCP"
-                description="AgentSwarm MCP is added automatically. Add extra MCP servers here for Slack DM assistant runs."
-              />
-              {renderMcpServerList("slackAgentMcpServers", "Extra Slack Agent MCP Servers", "Add Slack MCP server")}
             </Flex>
           </Card>
           <Card bordered={false} title="Environment">

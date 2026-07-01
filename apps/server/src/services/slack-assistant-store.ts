@@ -21,7 +21,7 @@ export interface SlackAssistantActiveRuntime {
 
 export interface SlackAssistantConversation {
   id: string;
-  repositoryId: string;
+  repositoryId: string | null;
   userId: string;
   slackTeamId: string;
   slackChannelId: string;
@@ -34,7 +34,6 @@ export interface SlackAssistantConversation {
 }
 
 export interface SlackAssistantConversationInput {
-  repositoryId: string;
   userId: string;
   slackTeamId: string;
   slackChannelId: string;
@@ -103,7 +102,7 @@ export class PostgresSlackAssistantStore implements SlackAssistantStore {
     const context = row.context && typeof row.context === "object" ? (row.context as Record<string, unknown>) : {};
     return {
       id: String(row.id),
-      repositoryId: String(row.repository_id),
+      repositoryId: typeof row.repository_id === "string" ? row.repository_id : null,
       userId: String(row.user_id),
       slackTeamId: String(row.slack_team_id),
       slackChannelId: String(row.slack_channel_id),
@@ -135,13 +134,13 @@ export class PostgresSlackAssistantStore implements SlackAssistantStore {
           updated_at
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, NULL, $9, $10)
-        ON CONFLICT (repository_id, slack_team_id, slack_channel_id, slack_user_id) DO UPDATE
+        ON CONFLICT (slack_team_id, slack_channel_id, slack_user_id) DO UPDATE
         SET updated_at = EXCLUDED.updated_at
         RETURNING *
       `,
       [
         nanoid(),
-        input.repositoryId,
+        null,
         input.userId,
         input.slackTeamId,
         input.slackChannelId,

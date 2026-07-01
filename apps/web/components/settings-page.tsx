@@ -10,10 +10,11 @@ import type {
   HostexecAvailability,
   AgentJargonLevel,
   AudienceType,
+  McpServerTransport,
   PermissionScope,
   ProviderModelOption,
   ProviderProfile,
-  Repository,
+  RepositorySlackEventStatus,
   ResponsePreferencePreset,
   Role,
   SystemSettings
@@ -48,6 +49,7 @@ import {
 import { api } from "../src/api/client";
 import { useSettings } from "../src/hooks/useSettings";
 import { useProviderModels } from "../src/hooks/useProviderModels";
+import { buildApiUrl } from "../src/lib/public-url";
 import { useAuth } from "./auth-provider";
 import { ModelSelect } from "./model-select";
 
@@ -71,6 +73,19 @@ interface GeneralSettingsForm {
   claudeDefaultModel: string;
   claudeModels: ProviderModelOption[];
   claudeDefaultEffort: ProviderProfile;
+  slackAgentMcpServers: Array<{
+    name: string;
+    enabled: boolean;
+    transport: McpServerTransport;
+    command: string;
+    argsText: string;
+    url: string;
+    bearerTokenEnvVar: string;
+  }>;
+  slackBotToken: string;
+  clearSlackBotToken: boolean;
+  slackSigningSecret: string;
+  clearSlackSigningSecret: boolean;
 }
 
 interface CredentialForm {
@@ -114,7 +129,7 @@ const summarizeAllowlist = (label: string, values: string[]): string => `${label
 const toSentenceValue = (value: string): string => value.replace(/_/g, " ");
 const formatNullableDate = (value: string | null | undefined): string =>
   value ? new Date(value).toLocaleString() : "No events yet";
-const slackEventStatusColor = (status: Repository["slackLastEventStatus"]): string => {
+const slackEventStatusColor = (status: RepositorySlackEventStatus | null | undefined): string => {
   if (status === "received") {
     return "green";
   }
@@ -126,6 +141,17 @@ const slackEventStatusColor = (status: Repository["slackLastEventStatus"]): stri
   }
   return "default";
 };
+const mcpTransportOptions: Array<{ label: string; value: McpServerTransport }> = [
+  { label: "stdio", value: "stdio" },
+  { label: "http", value: "http" }
+];
+const normalizeMcpServerName = (value: string | undefined): string =>
+  (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
 const normalizeProviderModelOptions = (models: ProviderModelOption[] | undefined, fallback: ProviderModelOption[]): ProviderModelOption[] => {
   const normalized: ProviderModelOption[] = [];
   const seen = new Set<string>();
@@ -172,7 +198,20 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   codexDefaultEffort: settings.codexDefaultEffort,
   claudeDefaultModel: settings.claudeDefaultModel,
   claudeModels: settings.claudeModels,
-  claudeDefaultEffort: settings.claudeDefaultEffort
+  claudeDefaultEffort: settings.claudeDefaultEffort,
+  slackAgentMcpServers: (settings.slackAgentMcpServers ?? []).map((server) => ({
+    name: server.name,
+    enabled: server.enabled,
+    transport: server.transport,
+    command: server.command ?? "",
+    argsText: (server.args ?? []).join("\n"),
+    url: server.url ?? "",
+    bearerTokenEnvVar: server.bearerTokenEnvVar ?? ""
+  })),
+  slackBotToken: "",
+  clearSlackBotToken: false,
+  slackSigningSecret: "",
+  clearSlackSigningSecret: false
 });
 
 export function SettingsPage() {
@@ -185,8 +224,6 @@ export function SettingsPage() {
   const [responsePreferencePresetForm] = Form.useForm<ResponsePreferencePresetFormValues>();
   const [roles, setRoles] = useState<Role[]>([]);
   const [rolesLoading, setRolesLoading] = useState(true);
-  const [repositories, setRepositories] = useState<Repository[]>([]);
-  const [repositoriesLoading, setRepositoriesLoading] = useState(false);
   const [savingGeneral, setSavingGeneral] = useState(false);
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [checkingHostexec, setCheckingHostexec] = useState(false);
@@ -204,7 +241,6 @@ export function SettingsPage() {
   const [generalDirtyTabs, setGeneralDirtyTabs] = useState<DirtyGeneralTabKey[]>([]);
   const [credentialDirtyTabs, setCredentialDirtyTabs] = useState<SettingsTabKey[]>([]);
   const canEditSettings = can("settings:edit");
-  const canReadRepositories = can("repo:list");
   const { models: codexModels, loading: codexModelsLoading, source: codexModelsSource } = useProviderModels("codex");
   const { models: claudeModels, loading: claudeModelsLoading, source: claudeModelsSource } = useProviderModels("claude");
   const codexModelFormValues = Form.useWatch("codexModels", generalForm);
@@ -231,21 +267,6 @@ export function SettingsPage() {
       setRoles(await api.listRoles());
     } finally {
       setRolesLoading(false);
-    }
-  };
-
-  const loadRepositories = async () => {
-    if (!canReadRepositories) {
-      setRepositories([]);
-      return;
-    }
-    setRepositoriesLoading(true);
-    try {
-      setRepositories(await api.listRepositories());
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to load repositories");
-    } finally {
-      setRepositoriesLoading(false);
     }
   };
 
@@ -280,10 +301,6 @@ export function SettingsPage() {
   useEffect(() => {
     void loadRoles();
   }, []);
-
-  useEffect(() => {
-    void loadRepositories();
-  }, [canReadRepositories]);
 
   const handleAutoFillModels = async (provider: AgentProvider): Promise<void> => {
     setAutoFillingProvider(provider);
@@ -433,6 +450,126 @@ export function SettingsPage() {
     </Form.List>
   );
 
+  const renderSlackMcpServerList = () => (
+    <Form.List
+      name="slackAgentMcpServers"
+      rules={[
+        {
+          validator: async (_, value: GeneralSettingsForm["slackAgentMcpServers"]) => {
+            const seen = new Set<string>();
+            for (const entry of value ?? []) {
+              const serverName = normalizeMcpServerName(entry?.name);
+              if (!serverName) {
+                continue;
+              }
+              if (seen.has(serverName)) {
+                throw new Error(`Duplicate MCP server name: ${entry.name}`);
+              }
+              seen.add(serverName);
+            }
+          }
+        }
+      ]}
+    >
+      {(fields, { add, remove }, { errors }) => (
+        <Flex vertical gap={8}>
+          {fields.map((field) => (
+            <Card key={field.key} size="small">
+              <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                <Flex align="center" justify="space-between" gap={8} wrap="wrap">
+                  <Typography.Text strong>{`Server ${field.name + 1}`}</Typography.Text>
+                  <Button danger type="text" icon={<DeleteOutlined />} onClick={() => remove(field.name)}>
+                    Remove
+                  </Button>
+                </Flex>
+                <Form.Item
+                  name={[field.name, "name"]}
+                  label="Name"
+                  rules={[{ required: true, whitespace: true, message: "Name is required" }]}
+                  style={{ marginBottom: 0 }}
+                >
+                  <Input placeholder="github" />
+                </Form.Item>
+                <Form.Item name={[field.name, "enabled"]} valuePropName="checked" style={{ marginBottom: 0 }}>
+                  <Checkbox>Enabled</Checkbox>
+                </Form.Item>
+                <Form.Item
+                  name={[field.name, "transport"]}
+                  label="Transport"
+                  rules={[{ required: true, message: "Transport is required" }]}
+                  style={{ marginBottom: 0 }}
+                >
+                  <Select options={mcpTransportOptions} />
+                </Form.Item>
+                <Form.Item noStyle shouldUpdate>
+                  {() => {
+                    const transport = generalForm.getFieldValue(["slackAgentMcpServers", field.name, "transport"]) as
+                      | McpServerTransport
+                      | undefined;
+                    if (transport === "http") {
+                      return (
+                        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                          <Form.Item
+                            name={[field.name, "url"]}
+                            label="URL"
+                            rules={[{ required: true, type: "url", message: "Valid URL is required" }]}
+                            style={{ marginBottom: 0 }}
+                          >
+                            <Input placeholder="https://example.com/mcp" />
+                          </Form.Item>
+                          <Form.Item
+                            name={[field.name, "bearerTokenEnvVar"]}
+                            label="Bearer Token Env Var"
+                            style={{ marginBottom: 0 }}
+                          >
+                            <Input placeholder="MCP_TOKEN" />
+                          </Form.Item>
+                        </Space>
+                      );
+                    }
+                    return (
+                      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                        <Form.Item
+                          name={[field.name, "command"]}
+                          label="Command"
+                          rules={[{ required: true, whitespace: true, message: "Command is required" }]}
+                          style={{ marginBottom: 0 }}
+                        >
+                          <Input placeholder="npx" />
+                        </Form.Item>
+                        <Form.Item name={[field.name, "argsText"]} label="Args (one per line)" style={{ marginBottom: 0 }}>
+                          <Input.TextArea autoSize={{ minRows: 2, maxRows: 6 }} placeholder={"-y\n@modelcontextprotocol/server-github"} />
+                        </Form.Item>
+                      </Space>
+                    );
+                  }}
+                </Form.Item>
+              </Space>
+            </Card>
+          ))}
+          <Button
+            type="dashed"
+            icon={<PlusOutlined />}
+            onClick={() =>
+              add({
+                name: "",
+                enabled: true,
+                transport: "stdio",
+                command: "",
+                argsText: "",
+                url: "",
+                bearerTokenEnvVar: ""
+              })
+            }
+          >
+            Add Slack MCP Server
+          </Button>
+          <Form.ErrorList errors={errors} />
+        </Flex>
+      )}
+    </Form.List>
+  );
+
   const saveGeneralSettings = async (values: GeneralSettingsForm): Promise<void> => {
     setSavingGeneral(true);
     try {
@@ -457,7 +594,31 @@ export function SettingsPage() {
         codexDefaultEffort: values.codexDefaultEffort,
         claudeDefaultModel: values.claudeDefaultModel,
         claudeModels: values.claudeModels,
-        claudeDefaultEffort: values.claudeDefaultEffort
+        claudeDefaultEffort: values.claudeDefaultEffort,
+        slackAgentMcpServers: values.slackAgentMcpServers.map((server) =>
+          server.transport === "http"
+            ? {
+                name: server.name,
+                enabled: server.enabled,
+                transport: "http" as const,
+                url: server.url.trim(),
+                bearerTokenEnvVar: server.bearerTokenEnvVar.trim() || null
+              }
+            : {
+                name: server.name,
+                enabled: server.enabled,
+                transport: "stdio" as const,
+                command: server.command.trim(),
+                args: server.argsText
+                  .split("\n")
+                  .map((item) => item.trim())
+                  .filter(Boolean)
+              }
+        ),
+        ...(values.slackBotToken.trim().length > 0 ? { slackBotToken: values.slackBotToken.trim() } : {}),
+        ...(values.clearSlackBotToken ? { clearSlackBotToken: true } : {}),
+        ...(values.slackSigningSecret.trim().length > 0 ? { slackSigningSecret: values.slackSigningSecret.trim() } : {}),
+        ...(values.clearSlackSigningSecret ? { clearSlackSigningSecret: true } : {})
       });
       setSettings(nextSettings);
       setGeneralDirty(false);
@@ -593,17 +754,9 @@ export function SettingsPage() {
     },
     {
       key: "integrations",
-      label: "Integrations"
+      label: <span>{generalDirtyTabs.includes("integrations") ? "Integrations *" : "Integrations"}</span>
     }
   ];
-
-  const slackRepositories = repositories.filter(
-    (repository) =>
-      repository.slackBotTokenConfigured ||
-      repository.slackSigningSecretConfigured ||
-      repository.slackLastEventAt ||
-      repository.slackLastEventStatus
-  );
 
   return (
     <>
@@ -943,71 +1096,86 @@ export function SettingsPage() {
         ) : null}
 
         {activeTab === "integrations" ? (
-          <Card
-            bordered={false}
-            loading={repositoriesLoading}
-            title="Slack Events"
-            extra={
-              <Button icon={<ReloadOutlined />} loading={repositoriesLoading} disabled={!canReadRepositories} onClick={() => void loadRepositories()}>
-                Refresh
-              </Button>
-            }
+          <Form
+            form={generalForm}
+            layout="vertical"
+            disabled={!canEditSettings}
+            onValuesChange={() => markGeneralTabDirty("integrations")}
+            onFinish={saveGeneralSettings}
           >
-            {!canReadRepositories ? (
-              <Alert
-                type="info"
-                showIcon
-                message="Repository access required"
-                description="This account needs repository list access to view Slack event status."
-              />
-            ) : (
-              <Table<Repository>
-                rowKey="id"
-                pagination={false}
-                dataSource={slackRepositories}
-                locale={{ emptyText: "No Slack integrations configured" }}
-                columns={[
-                  {
-                    title: "Repository",
-                    dataIndex: "name",
-                    render: (value: string, repository) => (
-                      <Space direction="vertical" size={2}>
-                        <Typography.Text strong>{value}</Typography.Text>
-                        <Space size={[4, 4]} wrap>
-                          <Tag color={repository.slackBotTokenConfigured ? "green" : "default"}>Bot token</Tag>
-                          <Tag color={repository.slackSigningSecretConfigured ? "green" : "default"}>Signing secret</Tag>
-                        </Space>
-                      </Space>
-                    )
-                  },
-                  {
-                    title: "Last Event",
-                    render: (_, repository) => (
-                      <Space direction="vertical" size={2}>
-                        <Typography.Text>{formatNullableDate(repository.slackLastEventAt)}</Typography.Text>
-                        {repository.slackLastEventType ? (
-                          <Typography.Text type="secondary">{repository.slackLastEventType}</Typography.Text>
-                        ) : null}
-                      </Space>
-                    )
-                  },
-                  {
-                    title: "Status",
-                    render: (_, repository) => (
-                      <Space direction="vertical" size={2}>
-                        <Tag color={slackEventStatusColor(repository.slackLastEventStatus)}>
-                          {repository.slackLastEventStatus ?? "waiting"}
-                        </Tag>
-                        {repository.slackLastEventError ? (
-                          <Typography.Text type="secondary">{repository.slackLastEventError}</Typography.Text>
-                        ) : null}
-                      </Space>
-                    )
+            <Card bordered={false} loading={loading} title="Slack Integration">
+              <Flex vertical gap={16} style={{ width: "100%" }}>
+                <Form.Item label="Events URL">
+                  <Input
+                    readOnly
+                    value={buildApiUrl("/slack/events")}
+                    addonAfter={
+                      <Button
+                        type="link"
+                        size="small"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(buildApiUrl("/slack/events"));
+                          message.success("Slack events URL copied");
+                        }}
+                      >
+                        Copy
+                      </Button>
+                    }
+                  />
+                </Form.Item>
+                <Space size={[8, 8]} wrap>
+                  <Tag color={settings?.slackBotTokenConfigured ? "green" : "default"}>Bot token</Tag>
+                  <Tag color={settings?.slackSigningSecretConfigured ? "green" : "default"}>Signing secret</Tag>
+                  <Tag color={slackEventStatusColor(settings?.slackLastEventStatus)}>{settings?.slackLastEventStatus ?? "waiting"}</Tag>
+                </Space>
+                <Space direction="vertical" size={2}>
+                  <Typography.Text>{formatNullableDate(settings?.slackLastEventAt)}</Typography.Text>
+                  {settings?.slackLastEventType ? (
+                    <Typography.Text type="secondary">{settings.slackLastEventType}</Typography.Text>
+                  ) : null}
+                  {settings?.slackLastEventError ? (
+                    <Typography.Text type="secondary">{settings.slackLastEventError}</Typography.Text>
+                  ) : null}
+                </Space>
+                <Form.Item
+                  name="slackBotToken"
+                  label={
+                    settings?.slackBotTokenConfigured ? "Slack Bot Token (leave blank to keep existing)" : "Slack Bot Token"
                   }
-                ]}
-              />
-            )}
-          </Card>
+                >
+                  <Input.Password placeholder="xoxb-..." autoComplete="off" />
+                </Form.Item>
+                {settings?.slackBotTokenConfigured ? (
+                  <Form.Item name="clearSlackBotToken" valuePropName="checked">
+                    <Checkbox>Clear stored Slack bot token</Checkbox>
+                  </Form.Item>
+                ) : null}
+                <Form.Item
+                  name="slackSigningSecret"
+                  label={
+                    settings?.slackSigningSecretConfigured
+                      ? "Slack Signing Secret (leave blank to keep existing)"
+                      : "Slack Signing Secret"
+                  }
+                >
+                  <Input.Password autoComplete="off" />
+                </Form.Item>
+                {settings?.slackSigningSecretConfigured ? (
+                  <Form.Item name="clearSlackSigningSecret" valuePropName="checked">
+                    <Checkbox>Clear stored Slack signing secret</Checkbox>
+                  </Form.Item>
+                ) : null}
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Slack agent MCP"
+                  description="AgentSwarm MCP is added automatically. Add extra MCP servers here for Slack DM assistant runs."
+                />
+                {renderSlackMcpServerList()}
+              </Flex>
+            </Card>
+            {renderSaveBar({ dirty: generalDirty, label: "Save Integrations", loading: savingGeneral })}
+          </Form>
         ) : null}
 
         {activeTab === "codex" ? (

@@ -169,4 +169,51 @@ describe("RedisSettingsStore runtime credentials", () => {
 
     assert.equal(Object.prototype.hasOwnProperty.call(settings, "mcpServers"), false);
   });
+
+  it("stores Slack integration credentials as write-only settings and tracks event status", async () => {
+    const settingsStore = new RedisSettingsStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never,
+      createCredentialStore({
+        githubToken: null,
+        openaiApiKey: null,
+        anthropicApiKey: null,
+        codexAuthJson: null
+      })
+    );
+
+    await settingsStore.updateSettings({
+      slackBotToken: "  xoxb-test  ",
+      slackSigningSecret: "  signing-secret  ",
+      slackAgentMcpServers: [
+        {
+          name: "GitHub",
+          enabled: true,
+          transport: "stdio",
+          command: "npx",
+          args: ["-y", "github-mcp"]
+        }
+      ]
+    });
+
+    const settings = await settingsStore.getSettings();
+    const integration = await settingsStore.getSlackIntegration();
+
+    assert.equal(settings.slackBotTokenConfigured, true);
+    assert.equal(settings.slackSigningSecretConfigured, true);
+    assert.equal(settings.slackAgentMcpServers.length, 1);
+    assert.equal(integration?.botToken, "xoxb-test");
+    assert.equal(integration?.signingSecret, "signing-secret");
+
+    await settingsStore.recordSlackEventResult({
+      status: "failed",
+      receivedAt: "2026-07-01T12:34:56.000Z",
+      eventType: "request",
+      errorMessage: "signature_mismatch"
+    });
+
+    const afterEvent = await settingsStore.getSettings();
+    assert.equal(afterEvent.slackLastEventStatus, "failed");
+    assert.equal(afterEvent.slackLastEventError, "signature_mismatch");
+  });
 });

@@ -212,6 +212,7 @@
 - 2026-07-01 09:20 UTC: Re-ran harness validation for the runtime slice. The required checks passed through unit/integration; only the local e2e app boot step in `pr-ready.sh` was blocked by an existing Redis process on host port 6379.
 - 2026-07-01 10:17 UTC: Added configurable extra Slack agent MCP servers in the repository Slack integration section. Slack runtimes now always include automatic AgentSwarm MCP first and append configured extra Slack MCP servers without letting them override the reserved AgentSwarm server.
 - 2026-07-01 10:19 UTC: Ran final validation for the Slack-agent MCP slice and removed the partial task-specific compose containers left by the local e2e port conflict.
+- 2026-07-01 12:48 UTC: Migrated Slack integration to global Settings -> Integrations, switched Slack events handling to `/slack/events`, removed repository Slack configuration UI, and moved Slack runtime MCP extras/event status storage to system settings.
 
 ## Decisions
 - 2026-07-01: Plan v1 as a detached Slack DM assistant, not as repository mapping or task workflow integration.
@@ -220,6 +221,7 @@
 - 2026-07-01: Reuse existing provider runtime definitions, credentials, and MCP serialization rather than creating Slack-specific provider integrations.
 - 2026-07-01: Keep the v1 runtime simple by starting one provider invocation per Slack DM message, persisting provider state between runs, and acknowledging Slack events before the provider completes.
 - 2026-07-01: Keep AgentSwarm MCP automatic and non-editable for Slack runs; expose only additional Slack agent MCP servers in repository Slack Integration.
+- 2026-07-01: Move Slack credentials and extra Slack MCP server configuration from repository scope to global system settings so Slack DM assistant runs are detached from repository restrictions.
 
 ## Open Questions
 - Should the next runtime slice use Codex by default, Claude by default, or the system default provider?
@@ -233,4 +235,5 @@
 - First implementation slice is complete.
 - Next runtime slice is complete: Slack DM messages are handled by detached Codex/Claude provider invocations with persisted conversation/provider state and user-scoped AgentSwarm MCP access.
 - Slack-agent MCP configuration slice is complete: extra MCP servers can be configured per repository Slack integration and are appended to automatic AgentSwarm MCP for Slack DM assistant runs.
+- Global migration slice is complete: Slack credentials, event status, and extra Slack MCP server settings are now managed in Settings -> Integrations; Slack events use a global endpoint with a legacy repository URL alias for compatibility.
 - Remaining follow-up work includes stronger Slack user identity binding, transcript retention policy, Slack retry deduplication, and explicit Slack-to-task creation flows.
