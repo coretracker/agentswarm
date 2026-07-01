@@ -25,7 +25,16 @@ const SLACK_ASSISTANT_MCP_ENDPOINT_ENV = "AGENTSWARM_MCP_ENDPOINT";
 const SLACK_ASSISTANT_MCP_ENDPOINTS_ENV = "AGENTSWARM_MCP_ENDPOINTS";
 const SLACK_ASSISTANT_MCP_TOKEN_ENV = "AGENTSWARM_MCP_TOKEN";
 const SLACK_ASSISTANT_MCP_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
-const SLACK_ASSISTANT_MCP_SCOPES: PermissionScope[] = ["repo:list", "repo:read", "task:list", "task:read", "task:create"];
+const SLACK_ASSISTANT_MCP_SCOPES: PermissionScope[] = [
+  "repo:list",
+  "repo:read",
+  "task:list",
+  "task:read",
+  "task:create",
+  "task:edit",
+  "task:build",
+  "task:ask"
+];
 
 type RuntimeResultPayload = {
   status?: string;

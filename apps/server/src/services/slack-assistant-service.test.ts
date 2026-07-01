@@ -74,6 +74,7 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
     updatedAt: now
   };
   const store = new MemorySlackAssistantStore(conversation);
+  let issuedScopes: string[] = [];
   const runtime = new DockerSlackAssistantRuntime({
     settingsStore: {
       getSettings: async () => ({
@@ -109,17 +110,20 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       })
     } as never,
     personalAccessTokenStore: {
-      createToken: async (input: { userId: string; scopes: string[] }) => ({
-        id: "token-1",
-        name: "Slack DM runtime MCP",
-        scopes: input.scopes,
-        tokenPrefix: "asw_pat_test",
-        expiresAt: null,
-        lastUsedAt: null,
-        revokedAt: null,
-        createdAt: now,
-        token: "runtime-token"
-      })
+      createToken: async (input: { userId: string; scopes: string[] }) => {
+        issuedScopes = input.scopes;
+        return {
+          id: "token-1",
+          name: "Slack DM runtime MCP",
+          scopes: input.scopes,
+          tokenPrefix: "asw_pat_test",
+          expiresAt: null,
+          lastUsedAt: null,
+          revokedAt: null,
+          createdAt: now,
+          token: "runtime-token"
+        };
+      }
     } as never,
     conversationStore: store,
     now: () => new Date("2026-07-01T00:04:00.000Z"),
@@ -158,6 +162,16 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
 
   assert.equal(response, "Runtime reply");
   assert.equal(store.updates.at(-1)?.status, "idle");
+  assert.deepEqual(issuedScopes, [
+    "repo:list",
+    "repo:read",
+    "task:list",
+    "task:read",
+    "task:create",
+    "task:edit",
+    "task:build",
+    "task:ask"
+  ]);
 });
 
 test("DockerSlackAssistantRuntime marks prior runtime stopped after idle timeout before new run", async () => {
