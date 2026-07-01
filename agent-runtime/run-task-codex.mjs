@@ -41,6 +41,20 @@ const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 
 const isSessionId = (value) => typeof value === "string" && SESSION_ID_PATTERN.test(value.trim());
 
+const preserveHostexecPath = () => {
+  const hostexecBinPath = process.env.HOSTEXEC_BIN_PATH?.trim();
+  if (!hostexecBinPath) {
+    return;
+  }
+
+  const pathEntries = (process.env.PATH ?? "").split(":").filter(Boolean);
+  if (pathEntries.includes(hostexecBinPath)) {
+    return;
+  }
+
+  process.env.PATH = [hostexecBinPath, ...pathEntries].join(":");
+};
+
 const readPersistedSessionId = async () => {
   const raw = await readFile(sessionIdFile, "utf8").catch(() => "");
   const candidate = raw.trim();
@@ -184,6 +198,7 @@ if (openAiApiKey) {
 }
 process.env.GIT_OPTIONAL_LOCKS = "0";
 process.env.HOME = homeDir;
+preserveHostexecPath();
 await ensureGitAskPass(homeDir);
 
 const buildResponsePreferencePreamble = () => {

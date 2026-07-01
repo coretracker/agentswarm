@@ -11,6 +11,7 @@ import {
 
 export const HOSTEXEC_CONTAINER_BIN_PATH = "/hostexec/bin";
 export const HOSTEXEC_PROXY_BIN = "/usr/local/bin/hostexec-proxy.mjs";
+export const HOSTEXEC_SHELL_ENV_PATH = `${HOSTEXEC_CONTAINER_BIN_PATH}/.hostexec-shell-env`;
 const DEFAULT_RUNTIME_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 export interface HostexecRuntimeConfig {
@@ -28,6 +29,16 @@ function buildHostexecDockerArgs(sharedNetworkWithCurrentContainer: boolean): st
 
 function buildHostexecShim(command: string): string {
   return `#!/usr/bin/env sh\nexec node ${HOSTEXEC_PROXY_BIN} ${JSON.stringify(command)} "$@"\n`;
+}
+
+function buildHostexecShellEnv(): string {
+  return [
+    `case ":$PATH:" in`,
+    `  *":${HOSTEXEC_CONTAINER_BIN_PATH}:"*) ;;`,
+    `  *) export PATH="${HOSTEXEC_CONTAINER_BIN_PATH}:$PATH" ;;`,
+    "esac",
+    ""
+  ].join("\n");
 }
 
 export async function buildHostexecRuntimeConfig(options: {
@@ -85,13 +96,14 @@ export async function buildHostexecRuntimeConfig(options: {
 
   const shimDir = path.join(options.payloadDir, "hostexec-bin");
   await mkdir(shimDir, { recursive: true });
-  await Promise.all(
-    commands.map(async (command) => {
+  await Promise.all([
+    writeFile(path.join(shimDir, ".hostexec-shell-env"), buildHostexecShellEnv(), "utf8"),
+    ...commands.map(async (command) => {
       const shimPath = path.join(shimDir, command);
       await writeFile(shimPath, buildHostexecShim(command), "utf8");
       await chmod(shimPath, 0o755);
     })
-  );
+  ]);
 
   const payloadRelativeShimDir = path.relative(env.RUNTIME_PAYLOAD_ROOT, shimDir);
   return {
@@ -112,6 +124,7 @@ export async function buildHostexecRuntimeConfig(options: {
       ["HOSTEXEC_WORKSPACE_ROOT", options.containerWorkspacePath],
       ["HOSTEXEC_HOST_WORKSPACE_ROOT", options.hostWorkspacePath],
       ["HOSTEXEC_BIN_PATH", HOSTEXEC_CONTAINER_BIN_PATH],
+      ["BASH_ENV", HOSTEXEC_SHELL_ENV_PATH],
       ["PATH", `${HOSTEXEC_CONTAINER_BIN_PATH}:${DEFAULT_RUNTIME_PATH}`]
     ],
     message: `Hostexec mounted ${commands.length} command${commands.length === 1 ? "" : "s"}.`

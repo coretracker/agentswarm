@@ -34,6 +34,20 @@ const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-
 
 const isSessionId = (value) => typeof value === "string" && SESSION_ID_PATTERN.test(value.trim());
 
+const preserveHostexecPath = () => {
+  const hostexecBinPath = process.env.HOSTEXEC_BIN_PATH?.trim();
+  if (!hostexecBinPath) {
+    return;
+  }
+
+  const pathEntries = (process.env.PATH ?? "").split(":").filter(Boolean);
+  if (pathEntries.includes(hostexecBinPath)) {
+    return;
+  }
+
+  process.env.PATH = [hostexecBinPath, ...pathEntries].join(":");
+};
+
 const readPersistedSessionId = async (sessionIdPath) => {
   const raw = await readFile(sessionIdPath, "utf8").catch(() => "");
   const candidate = raw.trim();
@@ -252,6 +266,7 @@ const providerStatePath = configuredStatePath && configuredStatePath.length > 0
   : path.join(runtimeHome, ".claude");
 await mkdir(runtimeHome, { recursive: true });
 await mkdir(providerStatePath, { recursive: true });
+preserveHostexecPath();
 await ensureGitAskPass(runtimeHome);
 const sessionIdFilePath = path.join(providerStatePath, "agentswarm-session-id.txt");
 const persistedSessionId = await readPersistedSessionId(sessionIdFilePath);
