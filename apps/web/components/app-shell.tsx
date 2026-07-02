@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useEffect, useRef, useState, type ReactNode } from "react";
-import { Alert, App, Button, Card, Divider, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Skeleton, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
+import { App, Button, Drawer, Flex, Grid, Layout, Menu, Result, Select, Skeleton, Spin, Typography, message, theme as antTheme } from "antd";
 import {
   AppstoreOutlined,
   CopyOutlined,
@@ -18,7 +18,6 @@ import { usePathname, useRouter } from "next/navigation";
 import { AppLogo } from "./app-logo";
 import { AppSidebar } from "./app-sidebar";
 import { AppFooterNote } from "./app-footer-note";
-import { ResponsePolicyFields } from "./response-policy-fields";
 import { useAuth } from "./auth-provider";
 import { TaskBrowserNotifications } from "./task-browser-notifications";
 import { useThemeMode } from "./theme-provider";
@@ -29,18 +28,8 @@ import { AppRightPanelProvider, type AppRightPanelConfig } from "./app-right-pan
 import { NotesMarkdownEditor } from "./notes-markdown-editor";
 import { ModelSelect } from "./model-select";
 import type {
-  AgentProvider,
-  AgentClarifyBehavior,
-  AgentCodePreference,
-  AgentExplanationDepth,
-  AgentFormattingStyle,
-  AgentJargonLevel,
-  AudienceType,
-  PersonalAccessToken,
-  ProviderProfile,
   UserNotes
 } from "@agentswarm/shared-types";
-import { getAgentProviderLabel, getEffortOptionsForProvider, getModelsForProvider } from "@agentswarm/shared-types";
 import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
@@ -64,22 +53,6 @@ const DEFAULT_NOTES_PANEL_WIDTH = 420;
 const NOTES_PANEL_MIN_WIDTH = 320;
 const NOTES_PANEL_MAX_WIDTH = 720;
 const NOTES_PANEL_COLLAPSED_RAIL_WIDTH = 56;
-const MCP_PROFILE_TOKEN_NAME = "AgentSwarm MCP";
-const profileDefaultProviderOptions: Array<{ label: string; value: AgentProvider }> = [
-  { label: getAgentProviderLabel("codex"), value: "codex" },
-  { label: getAgentProviderLabel("claude"), value: "claude" }
-];
-
-const formatDateTime = (value: string | null): string => {
-  if (!value) {
-    return "Never";
-  }
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short"
-  }).format(new Date(value));
-};
-
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -95,12 +68,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { token } = antTheme.useToken();
   const screens = Grid.useBreakpoint();
   const [loggingOut, setLoggingOut] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [savingProfile, setSavingProfile] = useState(false);
-  const [profileLoading, setProfileLoading] = useState(false);
-  const [personalAccessTokens, setPersonalAccessTokens] = useState<PersonalAccessToken[]>([]);
-  const [personalAccessTokenLoading, setPersonalAccessTokenLoading] = useState(false);
-  const [generatedPersonalAccessToken, setGeneratedPersonalAccessToken] = useState<string | null>(null);
   const [rightPanel, setRightPanel] = useState<AppRightPanelConfig | null>(null);
   const [workspaceNotes, setWorkspaceNotes] = useState<UserNotes | null>(null);
   const [workspaceNotesDraft, setWorkspaceNotesDraft] = useState("");
@@ -109,21 +76,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [workspaceNotesStatus, setWorkspaceNotesStatus] = useState<"saved" | "saving" | "error">("saved");
   const workspaceNotesAutosaveTimeoutRef = useRef<number | null>(null);
   const workspaceNotesSaveRequestIdRef = useRef(0);
-  const [profileForm] = Form.useForm<{
-    name: string;
-    githubUsername?: string;
-    slackUsername?: string;
-    defaultProvider?: AgentProvider;
-    defaultModel?: string;
-    defaultProviderProfile?: ProviderProfile;
-    audience?: AudienceType;
-    explanationDepth?: AgentExplanationDepth;
-    jargonLevel?: AgentJargonLevel;
-    codePreference?: AgentCodePreference;
-    clarifyBehavior?: AgentClarifyBehavior;
-    formattingStyle?: AgentFormattingStyle;
-    extraInstructions?: string;
-  }>();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const publicPath = isPublicPathname(pathname);
   const desktopSidebar = screens.lg ?? false;
@@ -138,15 +90,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     }));
   const hasRouteAccess = session ? canAll(getRequiredScopesForPathname(pathname)) : false;
   const rightPanelContextValue = useMemo(() => ({ setRightPanel }), []);
-  const selectedProfileDefaultProvider = (Form.useWatch("defaultProvider", profileForm) as AgentProvider | undefined) ?? "codex";
-  const profileDefaultModelOptions = useMemo(
-    () => getModelsForProvider(selectedProfileDefaultProvider),
-    [selectedProfileDefaultProvider]
-  );
-  const profileDefaultEffortOptions = useMemo(
-    () => getEffortOptionsForProvider(selectedProfileDefaultProvider),
-    [selectedProfileDefaultProvider]
-  );
   const notesPanelId = "workspace-notes-panel";
   const notesPanelStorageKey = useMemo(
     () => `${NOTES_PANEL_STATE_STORAGE_KEY_PREFIX}:${session?.user.id ?? "anonymous"}`,
@@ -322,109 +265,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     return <Spin fullscreen tip="Loading session" />;
   }
 
-  const openProfile = async (): Promise<void> => {
-    setProfileOpen(true);
-    setProfileLoading(true);
-    setPersonalAccessTokenLoading(true);
-    setGeneratedPersonalAccessToken(null);
-    try {
-      const [profile, tokens] = await Promise.all([api.getProfile(), api.listPersonalAccessTokens()]);
-      profileForm.setFieldsValue({
-        name: profile.name,
-        githubUsername: profile.githubUsername ?? "",
-        slackUsername: profile.slackUsername ?? "",
-        defaultProvider: profile.defaultProvider ?? undefined,
-        defaultModel: profile.defaultModel ?? undefined,
-        defaultProviderProfile: profile.defaultProviderProfile ?? undefined,
-        audience: profile.agentResponsePreference.audience,
-        explanationDepth: profile.agentResponsePreference.explanationDepth,
-        jargonLevel: profile.agentResponsePreference.jargonLevel,
-        codePreference: profile.agentResponsePreference.codePreference,
-        clarifyBehavior: profile.agentResponsePreference.clarifyBehavior,
-        formattingStyle: profile.agentResponsePreference.formattingStyle,
-        extraInstructions: profile.agentResponsePreference.extraInstructions ?? ""
-      });
-      setPersonalAccessTokens(tokens);
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to load profile");
-    } finally {
-      setProfileLoading(false);
-      setPersonalAccessTokenLoading(false);
-    }
-  };
-
-  const saveProfile = async (): Promise<void> => {
-    try {
-      const values = await profileForm.validateFields();
-      setSavingProfile(true);
-      const next = await api.updateProfile({
-        name: values.name,
-        githubUsername: values.githubUsername?.trim() || null,
-        slackUsername: values.slackUsername?.trim() || null,
-        defaultProvider: values.defaultProvider ?? null,
-        defaultModel: values.defaultModel?.trim() || null,
-        defaultProviderProfile: values.defaultProviderProfile ?? null,
-        agentResponsePreference: {
-          audience: values.audience,
-          explanationDepth: values.explanationDepth,
-          jargonLevel: values.jargonLevel,
-          codePreference: values.codePreference,
-          clarifyBehavior: values.clarifyBehavior,
-          formattingStyle: values.formattingStyle,
-          extraInstructions: values.extraInstructions?.trim() || undefined
-        }
-      });
-      setSessionUser({
-        name: next.name,
-        githubUsername: next.githubUsername,
-        slackUsername: next.slackUsername,
-        defaultProvider: next.defaultProvider,
-        defaultModel: next.defaultModel,
-        defaultProviderProfile: next.defaultProviderProfile,
-        agentResponsePreference: next.agentResponsePreference
-      });
-      message.success("Profile updated");
-    } catch (error) {
-      if (error && typeof error === "object" && "errorFields" in error) {
-        return;
-      }
-      message.error(error instanceof Error ? error.message : "Failed to update profile");
-    } finally {
-      setSavingProfile(false);
-    }
-  };
-
-  const activeMcpTokens = personalAccessTokens.filter((token) => token.name === MCP_PROFILE_TOKEN_NAME && !token.revokedAt);
-  const currentMcpToken = activeMcpTokens[0] ?? null;
-
-  const regenerateMcpPersonalAccessToken = async (): Promise<void> => {
-    setPersonalAccessTokenLoading(true);
-    setGeneratedPersonalAccessToken(null);
-    try {
-      await Promise.all(activeMcpTokens.map((token) => api.revokePersonalAccessToken(token.id)));
-      const token = await api.createPersonalAccessToken({ name: MCP_PROFILE_TOKEN_NAME });
-      setGeneratedPersonalAccessToken(token.token);
-      setPersonalAccessTokens(await api.listPersonalAccessTokens());
-      message.success(currentMcpToken ? "Personal access token regenerated" : "Personal access token generated");
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to generate personal access token");
-    } finally {
-      setPersonalAccessTokenLoading(false);
-    }
-  };
-
-  const copyGeneratedPersonalAccessToken = async (): Promise<void> => {
-    if (!generatedPersonalAccessToken) {
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(generatedPersonalAccessToken);
-      message.success("Token copied");
-    } catch {
-      message.error("Failed to copy token");
-    }
-  };
-
   if (isTaskTerminalFullscreenPath(pathname)) {
     return (
       <App>
@@ -495,7 +335,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Flex align="center" gap={12}>
               <TaskBrowserNotifications />
               <Flex vertical gap={0} style={{ minWidth: 0 }}>
-                <Button type="text" style={{ paddingInline: 6 }} onClick={() => { void openProfile(); }}>
+                <Button type="text" style={{ paddingInline: 6 }} onClick={() => router.push("/profile")}>
                   <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>
                 </Button>
               </Flex>
@@ -702,141 +542,6 @@ export function AppShell({ children }: { children: ReactNode }) {
           }}
         />
       </Drawer>
-      <Modal
-        title="Profile"
-        open={profileOpen}
-        onCancel={() => {
-          setGeneratedPersonalAccessToken(null);
-          setProfileOpen(false);
-        }}
-        onOk={() => {
-          void saveProfile();
-        }}
-        okText="Save"
-        confirmLoading={savingProfile}
-        destroyOnClose
-      >
-        <Spin spinning={profileLoading}>
-          <Form
-            form={profileForm}
-            layout="vertical"
-            initialValues={{
-              name: session.user.name,
-              githubUsername: session.user.githubUsername ?? "",
-              slackUsername: session.user.slackUsername ?? "",
-              defaultProvider: session.user.defaultProvider ?? undefined,
-              defaultModel: session.user.defaultModel ?? undefined,
-              defaultProviderProfile: session.user.defaultProviderProfile ?? undefined,
-              audience: session.user.agentResponsePreference.audience,
-              explanationDepth: session.user.agentResponsePreference.explanationDepth,
-              jargonLevel: session.user.agentResponsePreference.jargonLevel,
-              codePreference: session.user.agentResponsePreference.codePreference,
-              clarifyBehavior: session.user.agentResponsePreference.clarifyBehavior,
-              formattingStyle: session.user.agentResponsePreference.formattingStyle,
-              extraInstructions: session.user.agentResponsePreference.extraInstructions ?? ""
-            }}
-          >
-            <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
-              <Input />
-            </Form.Item>
-            <Form.Item
-              name="githubUsername"
-              label="GitHub Username"
-              rules={[{ max: 80, message: "GitHub username must be 80 characters or fewer." }]}
-            >
-              <Input autoComplete="off" placeholder="octocat" />
-            </Form.Item>
-            <Form.Item
-              name="slackUsername"
-              label="Slack User ID or Name"
-              extra="Use the Slack user ID, for example U06HSV9LHCH, or the name shown in Slack."
-              rules={[{ max: 80, message: "Slack username must be 80 characters or fewer." }]}
-            >
-              <Input autoComplete="off" placeholder="U06HSV9LHCH or @Andreas Ehrlich-Gruber" />
-            </Form.Item>
-            <Divider orientation="left" plain>
-              Default Agent
-            </Divider>
-            <Card size="small">
-              <Form.Item name="defaultProvider" label="Provider">
-                <Select
-                  allowClear
-                  placeholder="Repository or system default"
-                  options={profileDefaultProviderOptions}
-                  onChange={(value: AgentProvider | undefined) => {
-                    const nextProvider = value ?? "codex";
-                    const nextEfforts = getEffortOptionsForProvider(nextProvider);
-                    if (!nextEfforts.some((option) => option.value === profileForm.getFieldValue("defaultProviderProfile"))) {
-                      profileForm.setFieldValue("defaultProviderProfile", undefined);
-                    }
-                  }}
-                />
-              </Form.Item>
-              <Form.Item name="defaultModel" label="Model">
-                <ModelSelect options={profileDefaultModelOptions} placeholder="Repository or system default" />
-              </Form.Item>
-              <Form.Item name="defaultProviderProfile" label="Effort">
-                <Select allowClear options={profileDefaultEffortOptions} placeholder="Repository or system default" />
-              </Form.Item>
-            </Card>
-            <Divider orientation="left" plain>
-              Response Format Preferences
-            </Divider>
-            <Card size="small">
-              <ResponsePolicyFields />
-            </Card>
-            <Divider orientation="left" plain>
-              Personal Access Token
-            </Divider>
-            <Card size="small" loading={personalAccessTokenLoading}>
-              <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                <Typography.Text>
-                  Use this token for MCP clients. The token value is shown only once after generation.
-                </Typography.Text>
-                {currentMcpToken ? (
-                  <Space direction="vertical" size={4}>
-                    <Space wrap>
-                      <Tag color="green">Active</Tag>
-                      <Typography.Text code>{currentMcpToken.tokenPrefix}...</Typography.Text>
-                    </Space>
-                    <Typography.Text type="secondary">
-                      Created {formatDateTime(currentMcpToken.createdAt)} · Last used {formatDateTime(currentMcpToken.lastUsedAt)}
-                    </Typography.Text>
-                  </Space>
-                ) : (
-                  <Typography.Text type="secondary">No active MCP personal access token.</Typography.Text>
-                )}
-                {generatedPersonalAccessToken ? (
-                  <Alert
-                    type="warning"
-                    showIcon
-                    message="Copy your new token now"
-                    description={
-                      <Space direction="vertical" size={8} style={{ width: "100%" }}>
-                        <Typography.Text>
-                          This token will not be shown again. Store it in your MCP client now.
-                        </Typography.Text>
-                        <Input.TextArea value={generatedPersonalAccessToken} readOnly autoSize={{ minRows: 2, maxRows: 4 }} />
-                        <Button icon={<CopyOutlined />} onClick={() => { void copyGeneratedPersonalAccessToken(); }}>
-                          Copy token
-                        </Button>
-                      </Space>
-                    }
-                  />
-                ) : null}
-                <Button
-                  type={currentMcpToken ? "default" : "primary"}
-                  danger={Boolean(currentMcpToken)}
-                  loading={personalAccessTokenLoading}
-                  onClick={() => { void regenerateMcpPersonalAccessToken(); }}
-                >
-                  {currentMcpToken ? "Regenerate Token" : "Generate Token"}
-                </Button>
-              </Space>
-            </Card>
-          </Form>
-        </Spin>
-      </Modal>
     </>
   );
 
