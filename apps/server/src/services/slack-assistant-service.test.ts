@@ -196,12 +196,18 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
         content: string;
         resultJsonPath: string;
         workspacePath: string;
+        harnessFilePath: string;
+        taskType: string;
+        action: string;
       };
       const workspaceGitSafeDirectoryKeyIndex = args.findIndex((arg) => arg === "GIT_CONFIG_KEY_0=safe.directory");
       const providerConfig = await readFile(providerConfigEnv!.slice("PROVIDER_CONFIG_FILE=".length), "utf8");
       const slackHarness = await readFile(path.join(manifest.workspacePath, "AGENTS.md"), "utf8");
       assert.match(manifest.content, /detached Slack DM assistant/);
       assert.match(manifest.content, /Latest Slack message:\nhello/);
+      assert.equal(manifest.taskType, "build");
+      assert.equal(manifest.action, "build");
+      assert.equal(manifest.harnessFilePath, path.join(manifest.workspacePath, "AGENTS.md"));
       assert.match(slackHarness, /# Slack Agent Harness/);
       assert.match(slackHarness, /Slack DM assistant workspace\./);
       assert.match(slackHarness, /Return a concise reply\./);

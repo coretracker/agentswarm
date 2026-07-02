@@ -356,8 +356,8 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
         JSON.stringify(
           {
             id: input.conversation.id,
-            taskType: "ask",
-            action: "ask",
+            taskType: "build",
+            action: "build",
             provider,
             providerProfile,
             resolvedModel,
@@ -368,6 +368,7 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
             resultJsonPath,
             rawEventsJsonlPath,
             agentResponsePreference: input.user.agentResponsePreference,
+            harnessFilePath: slackHarnessMarkdown ? slackHarnessPath : undefined,
             content: buildConversationPrompt(input)
           },
           null,
