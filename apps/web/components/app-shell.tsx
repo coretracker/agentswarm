@@ -26,7 +26,6 @@ import { api } from "../src/api/client";
 import { trackEvent } from "../src/utils/analytics";
 import { AppRightPanelProvider, type AppRightPanelConfig } from "./app-right-panel-context";
 import { NotesMarkdownEditor } from "./notes-markdown-editor";
-import { ModelSelect } from "./model-select";
 import type {
   UserNotes
 } from "@agentswarm/shared-types";
@@ -56,7 +55,7 @@ const NOTES_PANEL_COLLAPSED_RAIL_WIDTH = 56;
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { canAll, loading, logout, session, setSessionUser } = useAuth();
+  const { canAll, loading, logout, session } = useAuth();
   const { mode, setMode } = useThemeMode();
   const contentMaxWidth = 1760;
   const headerHeight = 64;
