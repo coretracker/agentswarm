@@ -45,9 +45,13 @@ export function LoginPage() {
                 ? "radial-gradient(circle at top, rgba(31, 111, 235, 0.14) 0%, rgba(31, 111, 235, 0) 28%), linear-gradient(180deg, #0b0f14 0%, #0d1117 56%, #161b22 100%)"
                 : mode === "github-light"
                   ? "radial-gradient(circle at top, rgba(9, 105, 218, 0.1) 0%, rgba(9, 105, 218, 0) 30%), linear-gradient(180deg, #ffffff 0%, #f6f8fa 56%, #eef2f6 100%)"
-                  : isDarkAppTheme(mode)
-                    ? "linear-gradient(180deg, #0f1613 0%, #19231e 100%)"
-                    : "linear-gradient(180deg, #f6f7fb 0%, #e8edf5 100%)"
+                  : mode === "verft-light"
+                    ? "radial-gradient(circle at top, rgba(26, 122, 155, 0.10) 0%, rgba(26, 122, 155, 0) 30%), linear-gradient(180deg, #F5F2E8 0%, #EEF6F8 56%, #E2EFF8 100%)"
+                    : mode === "verft-dark"
+                      ? "radial-gradient(circle at top, rgba(212, 168, 75, 0.12) 0%, rgba(212, 168, 75, 0) 28%), linear-gradient(180deg, #080F18 0%, #0C1822 56%, #101E30 100%)"
+                      : isDarkAppTheme(mode)
+                        ? "linear-gradient(180deg, #0f1613 0%, #19231e 100%)"
+                        : "linear-gradient(180deg, #f6f7fb 0%, #e8edf5 100%)"
       }}
     >
       <Flex
@@ -72,9 +76,13 @@ export function LoginPage() {
                     ? "0 24px 60px rgba(1, 4, 9, 0.48)"
                     : mode === "github-light"
                       ? "0 24px 60px rgba(140, 149, 159, 0.2)"
-                      : isDarkAppTheme(mode)
-                        ? "0 24px 60px rgba(0, 0, 0, 0.38)"
-                        : "0 24px 60px rgba(15, 23, 42, 0.12)"
+                      : mode === "verft-light"
+                        ? "0 24px 60px rgba(26, 122, 155, 0.14)"
+                        : mode === "verft-dark"
+                          ? "0 24px 60px rgba(0, 0, 0, 0.45)"
+                          : isDarkAppTheme(mode)
+                            ? "0 24px 60px rgba(0, 0, 0, 0.38)"
+                            : "0 24px 60px rgba(15, 23, 42, 0.12)"
           }}
         >
           <Flex vertical gap={8} style={{ marginBottom: 24 }}>

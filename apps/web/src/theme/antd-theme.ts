@@ -6,7 +6,9 @@ export type AppThemeMode =
   | "forge"
   | "forge-light"
   | "github"
-  | "github-light";
+  | "github-light"
+  | "verft-light"
+  | "verft-dark";
 
 const sharedComponents: ThemeConfig["components"] = {
   Button: {
@@ -735,19 +737,268 @@ export const githubLightAntdTheme: ThemeConfig = {
   }
 };
 
+export const verftLightAntdTheme: ThemeConfig = {
+  algorithm: antTheme.defaultAlgorithm,
+  token: {
+    colorPrimary: "#1A7A9B",
+    colorSuccess: "#2E8B57",
+    colorWarning: "#C8922A",
+    colorError: "#C0392B",
+    colorInfo: "#4A7FB5",
+    colorTextBase: "#1C2E40",
+    colorBgBase: "#F5F2E8",
+    colorPrimaryBg: "#E8F4F8",
+    colorPrimaryBgHover: "#CCE8F2",
+    colorPrimaryBorder: "#9CCEDD",
+    colorPrimaryBorderHover: "#1A7A9B",
+    colorPrimaryHover: "#156884",
+    colorPrimaryActive: "#105E77",
+    colorPrimaryText: "#1A7A9B",
+    colorPrimaryTextHover: "#156884",
+    colorPrimaryTextActive: "#105E77",
+    colorSuccessBg: "#E8F5EE",
+    colorSuccessBgHover: "#CCEAD9",
+    colorSuccessBorder: "#9ECFB4",
+    colorSuccessBorderHover: "#2E8B57",
+    colorSuccessHover: "#267849",
+    colorSuccessActive: "#1D5F3A",
+    colorSuccessText: "#2E8B57",
+    colorSuccessTextHover: "#267849",
+    colorSuccessTextActive: "#1D5F3A",
+    colorWarningBg: "#FAF3E0",
+    colorWarningBgHover: "#F2E3B8",
+    colorWarningBorder: "#E0C570",
+    colorWarningBorderHover: "#C8922A",
+    colorWarningHover: "#B47F22",
+    colorWarningActive: "#9E6E1A",
+    colorWarningText: "#C8922A",
+    colorWarningTextHover: "#B47F22",
+    colorWarningTextActive: "#9E6E1A",
+    colorErrorBg: "#FAE8E6",
+    colorErrorBgHover: "#F2CFCC",
+    colorErrorBorder: "#E0A8A5",
+    colorErrorBorderHover: "#C0392B",
+    colorErrorHover: "#A63222",
+    colorErrorActive: "#8C2A1D",
+    colorErrorText: "#C0392B",
+    colorErrorTextHover: "#A63222",
+    colorErrorTextActive: "#8C2A1D",
+    colorInfoBg: "#E8EFF8",
+    colorInfoBgHover: "#CCDEEF",
+    colorInfoBorder: "#99BDE0",
+    colorInfoBorderHover: "#4A7FB5",
+    colorInfoHover: "#3E6D9C",
+    colorInfoActive: "#315980",
+    colorInfoText: "#4A7FB5",
+    colorInfoTextHover: "#3E6D9C",
+    colorInfoTextActive: "#315980",
+    colorText: "#2C4258",
+    colorTextSecondary: "#5A7A96",
+    colorTextTertiary: "#8AA5BE",
+    colorTextQuaternary: "#C0D5E5",
+    colorTextDisabled: "#C0D5E5",
+    colorTextPlaceholder: "#7A9AB5",
+    colorBgContainer: "#FFFFFF",
+    colorBgElevated: "#FDFAF4",
+    colorBgLayout: "#EEF6F8",
+    colorBgSpotlight: "rgba(28, 46, 64, 0.85)",
+    colorBgMask: "rgba(28, 46, 64, 0.45)",
+    colorBorder: "#C8DBE5",
+    colorBorderSecondary: "#E0ECF2",
+    borderRadius: 8,
+    borderRadiusXS: 2,
+    borderRadiusSM: 5,
+    borderRadiusLG: 12,
+    padding: 16,
+    paddingSM: 12,
+    paddingLG: 20,
+    margin: 16,
+    marginSM: 12,
+    marginLG: 20,
+    boxShadow: "none",
+    boxShadowSecondary: "0 2px 8px 0 rgba(26, 122, 155, 0.10)"
+  },
+  components: {
+    ...sharedComponents,
+    Button: {
+      ...sharedComponents?.Button,
+      defaultBg: "#FFFFFF",
+      defaultColor: "#2C4258",
+      defaultBorderColor: "#C8DBE5",
+      defaultHoverBg: "#F5FAFB",
+      defaultHoverColor: "#156884",
+      defaultHoverBorderColor: "#1A7A9B",
+      defaultActiveBg: "#FFFFFF",
+      defaultActiveColor: "#105E77",
+      defaultActiveBorderColor: "#105E77"
+    },
+    Card: {
+      ...sharedComponents?.Card,
+      headerBg: "#FFFFFF",
+      extraColor: "#5A7A96"
+    },
+    Input: {
+      hoverBorderColor: "#1A7A9B",
+      activeBorderColor: "#1A7A9B",
+      activeShadow: "0 0 0 1px rgba(26, 122, 155, 0.20)",
+      hoverBg: "#FFFFFF",
+      activeBg: "#FFFFFF"
+    },
+    Tag: {
+      defaultBg: "#E8F4F8",
+      defaultColor: "#1A7A9B"
+    },
+    Timeline: {
+      ...sharedComponents?.Timeline,
+      dotBg: "#1A7A9B",
+      tailColor: "#C8DBE5"
+    },
+    Progress: {
+      defaultColor: "#1A7A9B",
+      remainingColor: "#E0ECF2"
+    }
+  }
+};
+
+export const verftDarkAntdTheme: ThemeConfig = {
+  algorithm: antTheme.darkAlgorithm,
+  token: {
+    colorPrimary: "#D4A84B",
+    colorSuccess: "#4DAA6A",
+    colorWarning: "#E8C56B",
+    colorError: "#D46060",
+    colorInfo: "#6BAED6",
+    colorTextBase: "#E8F4F8",
+    colorBgBase: "#0C1822",
+    colorPrimaryBg: "#2A1E08",
+    colorPrimaryBgHover: "#3A2A0E",
+    colorPrimaryBorder: "#5A4018",
+    colorPrimaryBorderHover: "#D4A84B",
+    colorPrimaryHover: "#E0B85C",
+    colorPrimaryActive: "#B88E38",
+    colorPrimaryText: "#E8C56B",
+    colorPrimaryTextHover: "#F0D47E",
+    colorPrimaryTextActive: "#D4A84B",
+    colorSuccessBg: "#0E2418",
+    colorSuccessBgHover: "#132E20",
+    colorSuccessBorder: "#1F4D30",
+    colorSuccessBorderHover: "#4DAA6A",
+    colorSuccessHover: "#5FBF7C",
+    colorSuccessActive: "#3D8F56",
+    colorSuccessText: "#72CC90",
+    colorSuccessTextHover: "#8AD9A6",
+    colorSuccessTextActive: "#4DAA6A",
+    colorWarningBg: "#251C06",
+    colorWarningBgHover: "#342608",
+    colorWarningBorder: "#4E3A0E",
+    colorWarningBorderHover: "#E8C56B",
+    colorWarningHover: "#F0D07A",
+    colorWarningActive: "#C8A846",
+    colorWarningText: "#F4D890",
+    colorWarningTextHover: "#F8E3A4",
+    colorWarningTextActive: "#E8C56B",
+    colorErrorBg: "#281214",
+    colorErrorBgHover: "#351818",
+    colorErrorBorder: "#522020",
+    colorErrorBorderHover: "#D46060",
+    colorErrorHover: "#E07878",
+    colorErrorActive: "#BC4E4E",
+    colorErrorText: "#E89090",
+    colorErrorTextHover: "#F0A4A4",
+    colorErrorTextActive: "#D46060",
+    colorInfoBg: "#0E1E2E",
+    colorInfoBgHover: "#14273C",
+    colorInfoBorder: "#1E3D58",
+    colorInfoBorderHover: "#6BAED6",
+    colorInfoHover: "#7DC0E6",
+    colorInfoActive: "#569BC0",
+    colorInfoText: "#95CCE8",
+    colorInfoTextHover: "#A8D9F0",
+    colorInfoTextActive: "#6BAED6",
+    colorText: "#D8EEF4",
+    colorTextSecondary: "#88AABF",
+    colorTextTertiary: "#6A8EA6",
+    colorTextQuaternary: "#4E6E85",
+    colorTextDisabled: "#4E6E85",
+    colorTextPlaceholder: "#7A9EB8",
+    colorBgContainer: "#121E2A",
+    colorBgElevated: "#172430",
+    colorBgLayout: "#0A1520",
+    colorBgSpotlight: "rgba(8, 18, 28, 0.92)",
+    colorBgMask: "rgba(0, 0, 0, 0.60)",
+    colorBorder: "#1E3448",
+    colorBorderSecondary: "#162A3C",
+    borderRadius: 8,
+    borderRadiusXS: 2,
+    borderRadiusSM: 5,
+    borderRadiusLG: 12,
+    padding: 16,
+    paddingSM: 12,
+    paddingLG: 20,
+    margin: 16,
+    marginSM: 12,
+    marginLG: 20,
+    boxShadow: "none",
+    boxShadowSecondary: "0 8px 24px rgba(0, 0, 0, 0.40)"
+  },
+  components: {
+    ...sharedComponents,
+    Button: {
+      ...sharedComponents?.Button,
+      defaultBg: "#121E2A",
+      defaultColor: "#D8EEF4",
+      defaultBorderColor: "#1E3448",
+      defaultHoverBg: "#18273A",
+      defaultHoverColor: "#E8C56B",
+      defaultHoverBorderColor: "#D4A84B",
+      defaultActiveBg: "#0F1A24",
+      defaultActiveColor: "#D4A84B",
+      defaultActiveBorderColor: "#B88E38"
+    },
+    Card: {
+      ...sharedComponents?.Card,
+      headerBg: "#121E2A",
+      extraColor: "#88AABF"
+    },
+    Input: {
+      hoverBorderColor: "#D4A84B",
+      activeBorderColor: "#D4A84B",
+      activeShadow: "0 0 0 1px rgba(212, 168, 75, 0.24)",
+      hoverBg: "#0C1822",
+      activeBg: "#0C1822"
+    },
+    Tag: {
+      defaultBg: "#2A1E08",
+      defaultColor: "#E8C56B"
+    },
+    Timeline: {
+      ...sharedComponents?.Timeline,
+      dotBg: "#D4A84B",
+      tailColor: "#1E3448"
+    },
+    Progress: {
+      defaultColor: "#D4A84B",
+      remainingColor: "#1E3448"
+    }
+  }
+};
+
 export const appThemeOptions: Array<{ label: string; value: AppThemeMode }> = [
   { label: "Agentswarm Light", value: "light" },
   { label: "Agentswarm Dark", value: "dark" },
   { label: "Forge Light", value: "forge-light" },
   { label: "Forge Dark", value: "forge" },
   { label: "Github Light", value: "github-light" },
-  { label: "Github Dark", value: "github" }
+  { label: "Github Dark", value: "github" },
+  { label: "Verft Light", value: "verft-light" },
+  { label: "Verft Dark", value: "verft-dark" }
 ];
 
 export const isDarkAppTheme = (mode: AppThemeMode): boolean =>
   mode === "dark" ||
   mode === "forge" ||
-  mode === "github";
+  mode === "github" ||
+  mode === "verft-dark";
 
 export const getAppAntdTheme = (mode: AppThemeMode): ThemeConfig => {
   switch (mode) {
@@ -761,6 +1012,10 @@ export const getAppAntdTheme = (mode: AppThemeMode): ThemeConfig => {
       return githubAntdTheme;
     case "github-light":
       return githubLightAntdTheme;
+    case "verft-light":
+      return verftLightAntdTheme;
+    case "verft-dark":
+      return verftDarkAntdTheme;
     default:
       return lightAntdTheme;
   }

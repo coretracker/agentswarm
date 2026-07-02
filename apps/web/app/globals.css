@@ -162,6 +162,60 @@ html[data-theme="github-light"] {
   --diff-omit-gutter-line-color: #cf222e;
 }
 
+html[data-theme="verft-light"] {
+  color-scheme: light;
+  --app-body-bg: #EEF6F8;
+  --app-body-text: #2C4258;
+  --diff-background-color: #FFFFFF;
+  --diff-text-color: #1C2E40;
+  --diff-selection-background-color: rgba(26, 122, 155, 0.12);
+  --diff-selection-text-color: #1C2E40;
+  --diff-gutter-insert-background-color: #D4EED8;
+  --diff-gutter-insert-text-color: #1D5F3A;
+  --diff-gutter-delete-background-color: #F4D8D5;
+  --diff-gutter-delete-text-color: #8C2A1D;
+  --diff-gutter-selected-background-color: #F2EAC8;
+  --diff-gutter-selected-text-color: #6A5020;
+  --diff-code-insert-background-color: #E8F8EC;
+  --diff-code-insert-text-color: #1A4F2C;
+  --diff-code-delete-background-color: #FBF0EE;
+  --diff-code-delete-text-color: #7A2418;
+  --diff-code-insert-edit-background-color: #B8E0C4;
+  --diff-code-insert-edit-text-color: #123C21;
+  --diff-code-delete-edit-background-color: #F0C0BA;
+  --diff-code-delete-edit-text-color: #671E14;
+  --diff-code-selected-background-color: #F5EBCA;
+  --diff-code-selected-text-color: #5A4218;
+  --diff-omit-gutter-line-color: #C0392B;
+}
+
+html[data-theme="verft-dark"] {
+  color-scheme: dark;
+  --app-body-bg: #0A1520;
+  --app-body-text: #D8EEF4;
+  --diff-background-color: #121E2A;
+  --diff-text-color: #C8E4F0;
+  --diff-selection-background-color: rgba(212, 168, 75, 0.16);
+  --diff-selection-text-color: #E8F4F8;
+  --diff-gutter-insert-background-color: #0E2A1A;
+  --diff-gutter-insert-text-color: #72CC90;
+  --diff-gutter-delete-background-color: #2C1412;
+  --diff-gutter-delete-text-color: #E89090;
+  --diff-gutter-selected-background-color: #2A2010;
+  --diff-gutter-selected-text-color: #F4D890;
+  --diff-code-insert-background-color: #0A1E12;
+  --diff-code-insert-text-color: #A8E0BC;
+  --diff-code-delete-background-color: #240E10;
+  --diff-code-delete-text-color: #F4C0C0;
+  --diff-code-insert-edit-background-color: #194D2A;
+  --diff-code-insert-edit-text-color: #D0F0DC;
+  --diff-code-delete-edit-background-color: #5A1E20;
+  --diff-code-delete-edit-text-color: #FFE8E8;
+  --diff-code-selected-background-color: #2E2410;
+  --diff-code-selected-text-color: #F8E4A0;
+  --diff-omit-gutter-line-color: #D46060;
+}
+
 html,
 body {
   margin: 0;
@@ -233,13 +287,17 @@ html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
 html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
 html[data-theme="github"] .diff-hunk + .diff-hunk .diff-line:first-child td,
 html[data-theme="github"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="github"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+html[data-theme="github"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
+html[data-theme="verft-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="verft-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="verft-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
   border-top-color: rgba(255, 255, 255, 0.06);
 }
 
 html[data-theme="dark"] .diff-gutter,
 html[data-theme="forge"] .diff-gutter,
-html[data-theme="github"] .diff-gutter {
+html[data-theme="github"] .diff-gutter,
+html[data-theme="verft-dark"] .diff-gutter {
   color: #8ea394;
   background: rgba(255, 255, 255, 0.02);
   border-right-color: rgba(255, 255, 255, 0.06);
@@ -247,7 +305,8 @@ html[data-theme="github"] .diff-gutter {
 
 html[data-theme="dark"] .diff-code-normal,
 html[data-theme="forge"] .diff-code-normal,
-html[data-theme="github"] .diff-code-normal {
+html[data-theme="github"] .diff-code-normal,
+html[data-theme="verft-dark"] .diff-code-normal {
   background: rgba(255, 255, 255, 0.01);
 }
 
@@ -256,7 +315,9 @@ html[data-theme="dark"] .diff-widget-content,
 html[data-theme="forge"] .diff-decoration-content,
 html[data-theme="forge"] .diff-widget-content,
 html[data-theme="github"] .diff-decoration-content,
-html[data-theme="github"] .diff-widget-content {
+html[data-theme="github"] .diff-widget-content,
+html[data-theme="verft-dark"] .diff-decoration-content,
+html[data-theme="verft-dark"] .diff-widget-content {
   background: rgba(255, 255, 255, 0.03);
   color: #9fb3a5;
 }
@@ -281,6 +342,17 @@ html[data-theme="github"] .diff-gutter {
 html[data-theme="github"] .diff-decoration-content,
 html[data-theme="github"] .diff-widget-content {
   color: #8b949e;
+}
+
+html[data-theme="verft-dark"] .diff-gutter {
+  color: #6A8EA6;
+  background: rgba(255, 255, 255, 0.02);
+  border-right-color: rgba(30, 52, 72, 0.8);
+}
+
+html[data-theme="verft-dark"] .diff-decoration-content,
+html[data-theme="verft-dark"] .diff-widget-content {
+  color: #88AABF;
 }
 
 html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
@@ -325,6 +397,28 @@ html[data-theme="forge-light"] .diff-decoration-content,
 html[data-theme="forge-light"] .diff-widget-content {
   background: rgba(255, 252, 249, 0.94);
   color: #6d584b;
+}
+
+html[data-theme="verft-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
+html[data-theme="verft-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
+html[data-theme="verft-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
+  border-top-color: rgba(200, 219, 229, 0.8);
+}
+
+html[data-theme="verft-light"] .diff-gutter {
+  color: #5A7A96;
+  background: rgba(238, 246, 248, 0.9);
+  border-right-color: rgba(200, 219, 229, 0.95);
+}
+
+html[data-theme="verft-light"] .diff-code-normal {
+  background: rgba(245, 250, 251, 0.75);
+}
+
+html[data-theme="verft-light"] .diff-decoration-content,
+html[data-theme="verft-light"] .diff-widget-content {
+  background: rgba(245, 250, 251, 0.88);
+  color: #5A7A96;
 }
 
 .task-notes-mdx-editor {
