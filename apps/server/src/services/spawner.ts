@@ -5610,6 +5610,19 @@ export class SpawnerService {
       });
       const providerStateContainerPath = this.resolveProviderStateContainerPath(task.provider);
       const providerStatePaths = await ensureTaskProviderStatePaths(task.id, task.provider);
+      const providerHomeContainerPath = path.dirname(providerStateContainerPath);
+      const providerStateMountArgs =
+        task.provider === "claude"
+          ? this.buildTaskWorkspaceMountArgs(
+              path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, resolveTaskStateRootPaths(task.id).hostPath),
+              providerHomeContainerPath,
+              "rw"
+            )
+          : this.buildTaskWorkspaceMountArgs(
+              path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, providerStatePaths.hostPath),
+              providerStateContainerPath,
+              "rw"
+            );
       const dockerSocketPolicy = resolveDockerSocketAccessPolicy(task.provider);
       const dockerSocketMountArgs = resolveDockerSocketMountArgs(dockerSocketPolicy);
       const dockerSocketEnvEntries = resolveDockerSocketEnvEntries(dockerSocketPolicy);
@@ -5661,11 +5674,7 @@ export class SpawnerService {
         ...linkedWorkspaceMountPlan.mountArgs,
         ...gitRuntimeMounts,
         ...hostexecRuntime.mountArgs,
-        ...this.buildTaskWorkspaceMountArgs(
-          path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, providerStatePaths.hostPath),
-          providerStateContainerPath,
-          "rw"
-        ),
+        ...providerStateMountArgs,
         ...dockerSocketMountArgs,
         "-e",
         `TASK_MANIFEST_FILE=${payloadPaths.manifestPath}`,
@@ -5678,7 +5687,7 @@ export class SpawnerService {
         "-e",
         `TASK_PROVIDER_STATE_PATH=${providerStateContainerPath}`,
         "-e",
-        `TASK_PROVIDER_HOME=${path.dirname(providerStateContainerPath)}`
+        `TASK_PROVIDER_HOME=${providerHomeContainerPath}`
       ];
 
       const addRuntimeEnv = (name: string, value: string): void => {
