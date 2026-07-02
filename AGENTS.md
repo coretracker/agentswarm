@@ -4,23 +4,16 @@ This file is a short operating guide for coding agents in this repository.
 
 ## Start Here
 - If `REMOTE_BUILD=1`, export `REMOTE_BUILD_IMAGE` first.
-- Run `./scripts/harness/doctor.sh`
 - Run `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh` on clean checkout
-- Run `./scripts/harness/check-human-gated-flow.sh`
-- Run `./scripts/harness/check.sh`
-- Run `./scripts/harness/test.sh` (canonical test command)
+- Run `npm run ci`
 - Run `./scripts/harness/start.sh` (foreground dev mode)
 
 ## Expected PR Workflow
-1. Run `./scripts/harness/pr-ready.sh`.
+1. Run `npm run ci`.
 2. Fix any failing checks.
 3. Complete the agent self-review checklist: `docs/development/agent-review.md`.
 4. Open a PR using `.github/pull_request_template.md`.
 5. Confirm docs are updated when behavior changes.
-
-Note:
-- `pr-ready.sh` includes architecture boundary checks.
-- `test.sh` supports `TEST_SCOPE=unit|integration|e2e|all`.
 
 ## Documentation Table of Contents
 - [Architecture Summary](ARCHITECTURE.md)
@@ -72,7 +65,7 @@ flowchart TB
 ```
 
 ## Operating Rules
-- Prefer harness scripts in `scripts/harness/`.
+- Prefer `npm run ci` for the required lint/test gate.
 - Treat non-zero exit codes as failures.
 - Do not assume behavior that is not documented in this repository.
 - Mark missing evidence as `TODO` instead of guessing.
@@ -88,11 +81,10 @@ For `workdir`, prefer `TASK_WORKSPACE_PATH`.
 Runner mount support:
 - `dockerSocketContainerPath`: `/var/run/docker.sock` (available for mounting Docker into the runner container)
 
-Harness remote mode:
-- Set `REMOTE_BUILD=1` to force harness scripts to run in Remote Build Runner.
+Remote harness mode:
+- Set `REMOTE_BUILD=1` to force remaining harness scripts to run in Remote Build Runner.
 - Set `REMOTE_BUILD_IMAGE` to the container image used by the runner request.
 - Optional: set `REMOTE_BUILD_RUNNER_URL` (defaults to `http://host.docker.internal:38127`).
 - Harness scripts auto-route to `POST /run` before local execution when remote mode is enabled.
 - Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
 - Use a remote image that has: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
-- `test.sh` auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`) for browser E2E when the remote runner cannot launch Playwright locally.

@@ -7,6 +7,7 @@ const user: AuthSessionUser = {
   id: "user-1",
   name: "User",
   email: "user@example.com",
+  slackUsername: null,
   active: true,
   agentResponsePreference: {},
   roles: [],
@@ -32,10 +33,11 @@ class FakePool {
         token_hash: values[3],
         token_prefix: values[4],
         scopes: JSON.parse(String(values[5])),
-        expires_at: values[6],
+        runtime_context: JSON.parse(String(values[6])),
+        expires_at: values[7],
         last_used_at: null,
         revoked_at: null,
-        created_at: values[7]
+        created_at: values[8]
       });
       return { rows: [] };
     }
@@ -85,7 +87,8 @@ describe("PostgresPersonalAccessTokenStore", () => {
     assert.equal(listed[0]?.tokenPrefix, created.tokenPrefix);
 
     const authenticated = await store.authenticateToken(created.token);
-    assert.deepEqual(authenticated?.scopes, ["task:list", "repo:list"]);
+    assert.deepEqual(authenticated?.user.scopes, ["task:list", "repo:list"]);
+    assert.equal(authenticated?.runtimeContext, null);
 
     await store.revokeToken(user.id, created.id);
     assert.equal(await store.authenticateToken(created.token), null);
@@ -113,6 +116,34 @@ describe("PostgresPersonalAccessTokenStore", () => {
     assert.deepEqual(listed[0]?.scopes, ["task:terminal"]);
 
     const authenticated = await store.authenticateToken(created.token);
-    assert.deepEqual(authenticated?.scopes, ["task:terminal"]);
+    assert.deepEqual(authenticated?.user.scopes, ["task:terminal"]);
+  });
+
+  it("stores Slack assistant runtime context for token authentication only", async () => {
+    const pool = new FakePool();
+    const store = new PostgresPersonalAccessTokenStore(pool as never, {
+      getAuthSessionUser: async () => ({ ...user, scopes: ["task:ask"] })
+    } as never);
+
+    const created = await store.createToken({
+      userId: user.id,
+      name: "Slack runtime",
+      scopes: ["task:ask"],
+      runtimeContext: {
+        kind: "slack_assistant",
+        conversationId: "conversation-1",
+        slackChannelId: "D123"
+      }
+    });
+
+    const listed = await store.listTokens(user.id);
+    assert.equal("runtimeContext" in listed[0]!, false);
+
+    const authenticated = await store.authenticateToken(created.token);
+    assert.deepEqual(authenticated?.runtimeContext, {
+      kind: "slack_assistant",
+      conversationId: "conversation-1",
+      slackChannelId: "D123"
+    });
   });
 });

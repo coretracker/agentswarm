@@ -432,6 +432,133 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
     }
   };
 
+  const renderMcpServerList = (
+    name: "mcpServers",
+    label: string,
+    addLabel: string
+  ) => (
+    <Form.List
+      name={name}
+      rules={[
+        {
+          validator: async (_, value: RepositoryFormValues["mcpServers"]) => {
+            const seen = new Set<string>();
+            for (const entry of value ?? []) {
+              const serverName = normalizeMcpServerName(entry?.name);
+              if (!serverName) {
+                continue;
+              }
+              if (seen.has(serverName)) {
+                throw new Error(`Duplicate MCP server name: ${entry.name}`);
+              }
+              seen.add(serverName);
+            }
+          }
+        }
+      ]}
+    >
+      {(fields, { add, remove }, { errors }) => (
+        <Flex vertical gap={8} style={{ marginBottom: 16 }}>
+          <Typography.Text strong>{label}</Typography.Text>
+          {fields.map((field) => (
+            <div
+              key={field.key}
+              style={{
+                border: "1px solid #d9d9d9",
+                borderRadius: 8,
+                padding: 12,
+                width: "100%"
+              }}
+            >
+              <Space direction="vertical" size={12} style={{ width: "100%" }}>
+                <Flex align="center" justify="space-between" gap={8} wrap="wrap">
+                  <Typography.Text strong>{`Server ${field.name + 1}`}</Typography.Text>
+                  <Button danger type="text" icon={<DeleteOutlined />} onClick={() => remove(field.name)}>
+                    Remove
+                  </Button>
+                </Flex>
+                <Form.Item name={[field.name, "name"]} label="Name" rules={[{ required: true, whitespace: true }]}>
+                  <Input placeholder="github" />
+                </Form.Item>
+                <Form.Item name={[field.name, "enabled"]} label="Enabled" valuePropName="checked">
+                  <Switch />
+                </Form.Item>
+                <Form.Item name={[field.name, "transport"]} label="Transport" rules={[{ required: true }]}>
+                  <Select options={mcpTransportOptions} />
+                </Form.Item>
+                <Form.Item noStyle shouldUpdate>
+                  {() => {
+                    const transport = form.getFieldValue([name, field.name, "transport"]) ?? "stdio";
+                    return transport === "http" ? (
+                      <>
+                        <Form.Item
+                          name={[field.name, "url"]}
+                          label="URL"
+                          rules={[
+                            { required: true, whitespace: true },
+                            { type: "url", message: "Enter a valid absolute URL." }
+                          ]}
+                        >
+                          <Input placeholder="https://example.com/mcp" />
+                        </Form.Item>
+                        <Form.Item
+                          name={[field.name, "bearerTokenEnvVar"]}
+                          label="Bearer Token Env Var"
+                          rules={[
+                            {
+                              validator: (_rule, value?: string) => {
+                                if (!value || value.trim().length === 0) {
+                                  return Promise.resolve();
+                                }
+
+                                return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.trim())
+                                  ? Promise.resolve()
+                                  : Promise.reject(new Error("Use a valid environment variable name with letters, numbers, and underscores."));
+                              }
+                            }
+                          ]}
+                        >
+                          <Input placeholder="MY_MCP_TOKEN" />
+                        </Form.Item>
+                      </>
+                    ) : (
+                      <>
+                        <Form.Item name={[field.name, "command"]} label="Command" rules={[{ required: true, whitespace: true }]}>
+                          <Input placeholder="docker" />
+                        </Form.Item>
+                        <Form.Item name={[field.name, "argsText"]} label="Arguments">
+                          <Input.TextArea rows={6} placeholder={"run\n-i\n--rm\nmcp/memory"} />
+                        </Form.Item>
+                      </>
+                    );
+                  }}
+                </Form.Item>
+              </Space>
+            </div>
+          ))}
+          <Button
+            type="dashed"
+            icon={<PlusOutlined />}
+            onClick={() =>
+              add({
+                name: "",
+                enabled: true,
+                transport: "stdio",
+                command: "",
+                argsText: "",
+                url: "",
+                bearerTokenEnvVar: ""
+              })
+            }
+          >
+            {addLabel}
+          </Button>
+          <Form.ErrorList errors={errors} />
+        </Flex>
+      )}
+    </Form.List>
+  );
+
   if (loading) {
     return (
       <Flex align="center" justify="center" style={{ minHeight: 320 }}>
@@ -1137,126 +1264,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             </Form.List>
           </Card>
           <Card bordered={false} title="MCP">
-            <Form.List
-              name="mcpServers"
-              rules={[
-                {
-                  validator: async (_, value: RepositoryFormValues["mcpServers"]) => {
-                    const seen = new Set<string>();
-                    for (const entry of value ?? []) {
-                      const name = normalizeMcpServerName(entry?.name);
-                      if (!name) {
-                        continue;
-                      }
-                      if (seen.has(name)) {
-                        throw new Error(`Duplicate MCP server name: ${entry.name}`);
-                      }
-                      seen.add(name);
-                    }
-                  }
-                }
-              ]}
-            >
-              {(fields, { add, remove }, { errors }) => (
-                <Flex vertical gap={8} style={{ marginBottom: 16 }}>
-                  <Typography.Text strong>MCP Servers</Typography.Text>
-                  {fields.map((field) => (
-                    <div
-                      key={field.key}
-                      style={{
-                        border: "1px solid #d9d9d9",
-                        borderRadius: 8,
-                        padding: 12,
-                        width: "100%"
-                      }}
-                    >
-                      <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                        <Flex align="center" justify="space-between" gap={8} wrap="wrap">
-                          <Typography.Text strong>{`Server ${field.name + 1}`}</Typography.Text>
-                          <Button danger type="text" icon={<DeleteOutlined />} onClick={() => remove(field.name)}>
-                            Remove
-                          </Button>
-                        </Flex>
-                        <Form.Item name={[field.name, "name"]} label="Name" rules={[{ required: true, whitespace: true }]}>
-                          <Input placeholder="github" />
-                        </Form.Item>
-                        <Form.Item name={[field.name, "enabled"]} label="Enabled" valuePropName="checked">
-                          <Switch />
-                        </Form.Item>
-                        <Form.Item name={[field.name, "transport"]} label="Transport" rules={[{ required: true }]}>
-                          <Select options={mcpTransportOptions} />
-                        </Form.Item>
-                        <Form.Item noStyle shouldUpdate>
-                          {() => {
-                            const transport = form.getFieldValue(["mcpServers", field.name, "transport"]) ?? "stdio";
-                            return transport === "http" ? (
-                              <>
-                                <Form.Item
-                                  name={[field.name, "url"]}
-                                  label="URL"
-                                  rules={[
-                                    { required: true, whitespace: true },
-                                    { type: "url", message: "Enter a valid absolute URL." }
-                                  ]}
-                                >
-                                  <Input placeholder="https://example.com/mcp" />
-                                </Form.Item>
-                                <Form.Item
-                                  name={[field.name, "bearerTokenEnvVar"]}
-                                  label="Bearer Token Env Var"
-                                  rules={[
-                                    {
-                                      validator: (_rule, value?: string) => {
-                                        if (!value || value.trim().length === 0) {
-                                          return Promise.resolve();
-                                        }
-
-                                        return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value.trim())
-                                          ? Promise.resolve()
-                                          : Promise.reject(new Error("Use a valid environment variable name with letters, numbers, and underscores."));
-                                      }
-                                    }
-                                  ]}
-                                >
-                                  <Input placeholder="MY_MCP_TOKEN" />
-                                </Form.Item>
-                              </>
-                            ) : (
-                              <>
-                                <Form.Item name={[field.name, "command"]} label="Command" rules={[{ required: true, whitespace: true }]}>
-                                  <Input placeholder="docker" />
-                                </Form.Item>
-                                <Form.Item name={[field.name, "argsText"]} label="Arguments">
-                                  <Input.TextArea rows={6} placeholder={"run\n-i\n--rm\nmcp/memory"} />
-                                </Form.Item>
-                              </>
-                            );
-                          }}
-                        </Form.Item>
-                      </Space>
-                    </div>
-                  ))}
-                  <Button
-                    type="dashed"
-                    icon={<PlusOutlined />}
-                    onClick={() =>
-                      add({
-                        name: "",
-                        enabled: true,
-                        transport: "stdio",
-                        command: "",
-                        argsText: "",
-                        url: "",
-                        bearerTokenEnvVar: ""
-                      })
-                    }
-                  >
-                    Add MCP server
-                  </Button>
-                  <Form.ErrorList errors={errors} />
-                </Flex>
-              )}
-            </Form.List>
+            {renderMcpServerList("mcpServers", "MCP Servers", "Add MCP server")}
           </Card>
           <Card bordered={false} title="Webhooks">
             <Form.Item name="webhookEnabled" label="Enable Webhooks" valuePropName="checked">

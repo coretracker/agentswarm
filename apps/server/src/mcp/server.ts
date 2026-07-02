@@ -3,6 +3,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AuthService } from "../lib/auth.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SettingsStore } from "../services/settings-store.js";
+import type { SlackClient } from "../services/slack-client.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
@@ -69,6 +70,7 @@ export const registerMcpRoutes = (
     taskQueueStore: TaskQueueStore;
     scheduler: SchedulerService;
     spawner: SpawnerService;
+    slackClient?: SlackClient;
   }
 ): void => {
   const tools = createMcpTools();
@@ -79,7 +81,8 @@ export const registerMcpRoutes = (
     taskStore: deps.taskStore,
     taskQueueStore: deps.taskQueueStore,
     scheduler: deps.scheduler,
-    spawner: deps.spawner
+    spawner: deps.spawner,
+    slackClient: deps.slackClient
   };
 
   app.post("/mcp", async (request, reply) => {
@@ -114,13 +117,20 @@ export const registerMcpRoutes = (
     }
 
     if (parsed.data.method === "tools/list") {
+      const context = {
+        user: auth.user,
+        deps: toolDeps,
+        runtimeContext: auth.personalAccessTokenRuntimeContext ?? null
+      };
       return reply.send(
         ok(id, {
-          tools: tools.map((tool) => ({
-            name: tool.name,
-            description: tool.description,
-            inputSchema: tool.inputSchema
-          }))
+          tools: tools
+            .filter((tool) => tool.available?.(context) ?? true)
+            .map((tool) => ({
+              name: tool.name,
+              description: tool.description,
+              inputSchema: tool.inputSchema
+            }))
         })
       );
     }
@@ -135,6 +145,15 @@ export const registerMcpRoutes = (
         return reply.status(404).send(error(id, -32601, `Unknown tool: ${params.data.name}`));
       }
 
+      const context = {
+        user: auth.user,
+        deps: toolDeps,
+        runtimeContext: auth.personalAccessTokenRuntimeContext ?? null
+      };
+      if (!(tool.available?.(context) ?? true)) {
+        return reply.status(404).send(error(id, -32601, `Unknown tool: ${params.data.name}`));
+      }
+
       const granted = new Set(auth.user.scopes);
       const missingScopes = tool.scopes.filter((scope) => !granted.has(scope));
       if (missingScopes.length > 0) {
@@ -142,10 +161,7 @@ export const registerMcpRoutes = (
       }
 
       try {
-        const result = await tool.handler(params.data.arguments ?? {}, {
-          user: auth.user,
-          deps: toolDeps
-        });
+        const result = await tool.handler(params.data.arguments ?? {}, context);
         return reply.send(ok(id, toToolContent(result)));
       } catch (err) {
         if (err instanceof McpToolError) {

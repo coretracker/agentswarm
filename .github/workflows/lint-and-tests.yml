@@ -1,0 +1,18 @@
+name: Lint And Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  lint-and-tests:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Dockerized CI
+        run: ./scripts/ci.sh

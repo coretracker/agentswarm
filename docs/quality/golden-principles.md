@@ -7,7 +7,7 @@ These rules are based on recurring patterns already used in this repository.
 - Rationale: Cross-layer imports create fragile coupling and break deploy/runtime assumptions.
 - Good behavior: In `apps/web`, call server APIs or use `@agentswarm/shared-types` instead of importing from `apps/server`.
 - Bad behavior: Importing `apps/server/*` directly into `apps/web/*`.
-- Mechanically enforced: Yes (`scripts/harness/boundary-check.mjs`, run by `scripts/harness/check.sh` and CI).
+- Mechanically enforced: Manual check available (`node scripts/harness/boundary-check.mjs`); not part of the current default lint/test gate.
 
 ## 2) Prefer existing shared contracts and utilities
 - Rule: Reuse `@agentswarm/shared-types` and existing helper modules before creating new ad-hoc copies.
@@ -30,12 +30,12 @@ These rules are based on recurring patterns already used in this repository.
 - Bad behavior: Relying on one unvalidated response shape and crashing when fields differ.
 - Mechanically enforced: No.
 
-## 5) Use canonical harness commands
-- Rule: Use `scripts/harness/*` as the default workflow for setup, checks, tests, startup, and logs.
-- Rationale: Harness commands standardize behavior across local runs and agents.
-- Good behavior: Run `./scripts/harness/doctor.sh`, `check.sh`, `test.sh`, and `pr-ready.sh` before PR.
-- Bad behavior: Running ad-hoc subsets only and skipping required checks.
-- Mechanically enforced: Partly (`pr-ready.sh` and CI enforce subsets; full usage is policy-driven).
+## 5) Use canonical Dockerized CI
+- Rule: Use `npm run ci` as the default workflow for linting and tests.
+- Rationale: `npm run ci` matches the current CI gate and avoids host toolchain drift.
+- Good behavior: Run `npm run ci` before PR.
+- Bad behavior: Relying on unrelated local-only checks as the merge signal.
+- Mechanically enforced: Yes (CI runs lint and tests).
 
 ## 6) Add tests for bug fixes and behavior changes
 - Rule: Every bug fix or meaningful behavior change should include or update tests.

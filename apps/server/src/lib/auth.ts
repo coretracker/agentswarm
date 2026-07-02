@@ -2,7 +2,7 @@ import type { IncomingHttpHeaders } from "node:http";
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { AuthSession, PermissionScope, RealtimeEvent } from "@agentswarm/shared-types";
 import type { Server as SocketIOServer, Socket } from "socket.io";
-import type { PersonalAccessTokenStore } from "../services/personal-access-token-store.js";
+import type { PersonalAccessTokenRuntimeContext, PersonalAccessTokenStore } from "../services/personal-access-token-store.js";
 import type { SessionStore } from "../services/session-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { UserStore } from "../services/user-store.js";
@@ -55,6 +55,7 @@ export interface RequestAuthContext {
   sessionToken: string;
   expiresAt: string;
   session: AuthSession;
+  personalAccessTokenRuntimeContext?: PersonalAccessTokenRuntimeContext | null;
 }
 
 export interface AuthService {
@@ -127,10 +128,11 @@ export const createAuthService = ({
       return null;
     }
 
-    const user = await personalAccessTokenStore.authenticateToken(token);
-    if (!user) {
+    const authenticatedToken = await personalAccessTokenStore.authenticateToken(token);
+    if (!authenticatedToken) {
       return null;
     }
+    const { user, runtimeContext } = authenticatedToken;
     const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
 
     return {
@@ -138,6 +140,7 @@ export const createAuthService = ({
       scopes: new Set(user.scopes),
       sessionToken: "",
       expiresAt,
+      personalAccessTokenRuntimeContext: runtimeContext,
       session: {
         user,
         expiresAt

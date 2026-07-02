@@ -18,18 +18,32 @@ const TOKEN_PREFIX_CHARS = 18;
 const nowIso = (): string => new Date().toISOString();
 const validScopes = new Set<PermissionScope>(ALL_PERMISSION_SCOPES);
 
+export interface SlackAssistantPersonalAccessTokenContext {
+  kind: "slack_assistant";
+  conversationId: string;
+  slackChannelId: string;
+}
+
+export type PersonalAccessTokenRuntimeContext = SlackAssistantPersonalAccessTokenContext;
+
 export interface CreatePersonalAccessTokenInput {
   userId: string;
   name: string;
   scopes?: PermissionScope[];
   expiresAt?: string | null;
+  runtimeContext?: PersonalAccessTokenRuntimeContext | null;
+}
+
+export interface AuthenticatedPersonalAccessToken {
+  user: AuthSessionUser;
+  runtimeContext: PersonalAccessTokenRuntimeContext | null;
 }
 
 export interface PersonalAccessTokenStore {
   createToken(input: CreatePersonalAccessTokenInput): Promise<CreatedPersonalAccessToken>;
   listTokens(userId: string): Promise<PersonalAccessToken[]>;
   revokeToken(userId: string, tokenId: string): Promise<PersonalAccessToken | null>;
-  authenticateToken(token: string): Promise<AuthSessionUser | null>;
+  authenticateToken(token: string): Promise<AuthenticatedPersonalAccessToken | null>;
 }
 
 const hashToken = (token: string): string => createHash("sha256").update(token, "utf8").digest("hex");
@@ -57,6 +71,26 @@ const normalizeExpiresAt = (expiresAt: string | null | undefined): string | null
     throw new Error("Token expiration must be a valid date.");
   }
   return new Date(timestamp).toISOString();
+};
+
+const normalizeRuntimeContext = (value: unknown): PersonalAccessTokenRuntimeContext | null => {
+  if (!value || typeof value !== "object") {
+    return null;
+  }
+  const record = value as Record<string, unknown>;
+  if (record.kind !== "slack_assistant") {
+    return null;
+  }
+  const conversationId = typeof record.conversationId === "string" ? record.conversationId.trim() : "";
+  const slackChannelId = typeof record.slackChannelId === "string" ? record.slackChannelId.trim() : "";
+  if (!conversationId || !slackChannelId) {
+    return null;
+  }
+  return {
+    kind: "slack_assistant",
+    conversationId,
+    slackChannelId
+  };
 };
 
 export class PostgresPersonalAccessTokenStore implements PersonalAccessTokenStore {
@@ -111,14 +145,25 @@ export class PostgresPersonalAccessTokenStore implements PersonalAccessTokenStor
           token_hash,
           token_prefix,
           scopes,
+          runtime_context,
           expires_at,
           last_used_at,
           revoked_at,
           created_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, NULL, NULL, $8)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, NULL, NULL, $9)
       `,
-      [id, input.userId, name, tokenHash, tokenPrefix, JSON.stringify(scopes), expiresAt, createdAt]
+      [
+        id,
+        input.userId,
+        name,
+        tokenHash,
+        tokenPrefix,
+        JSON.stringify(scopes),
+        JSON.stringify(normalizeRuntimeContext(input.runtimeContext)),
+        expiresAt,
+        createdAt
+      ]
     );
 
     return {
@@ -162,7 +207,7 @@ export class PostgresPersonalAccessTokenStore implements PersonalAccessTokenStor
     return row ? this.mapTokenRow(row) : null;
   }
 
-  async authenticateToken(token: string): Promise<AuthSessionUser | null> {
+  async authenticateToken(token: string): Promise<AuthenticatedPersonalAccessToken | null> {
     const normalized = token.trim();
     if (!normalized.startsWith(`${TOKEN_PREFIX}_`)) {
       return null;
@@ -170,7 +215,7 @@ export class PostgresPersonalAccessTokenStore implements PersonalAccessTokenStor
 
     const result = await this.pool.query(
       `
-        SELECT id, user_id, scopes, expires_at
+        SELECT id, user_id, scopes, runtime_context, expires_at
         FROM personal_access_tokens
         WHERE token_hash = $1
           AND revoked_at IS NULL
@@ -204,8 +249,11 @@ export class PostgresPersonalAccessTokenStore implements PersonalAccessTokenStor
 
     await this.pool.query("UPDATE personal_access_tokens SET last_used_at = $2 WHERE id = $1", [String(row.id), nowIso()]);
     return {
-      ...user,
-      scopes
+      user: {
+        ...user,
+        scopes
+      },
+      runtimeContext: normalizeRuntimeContext(row.runtime_context)
     };
   }
 }

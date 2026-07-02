@@ -10,6 +10,7 @@ const createUser = (overrides: Partial<User> = {}): User => ({
   id: "user-1",
   name: "User One",
   email: "user-1@example.com",
+  slackUsername: null,
   active: true,
   agentResponsePreference: {},
   roles: [],
@@ -37,11 +38,14 @@ const createRepository = (input: CreateRepositoryInput, overrides: Partial<Repos
   envVars: [],
   envSecrets: [],
   mcpServers: input.mcpServers ?? [],
+  slackAgentMcpServers: input.slackAgentMcpServers ?? [],
   hostCommands: input.hostCommands ?? [],
   webhookUrl: null,
   webhookEnabled: false,
   webhookSecretConfigured: false,
   githubPrWebhookSecretConfigured: false,
+  slackBotTokenConfigured: Boolean(input.slackBotToken),
+  slackSigningSecretConfigured: Boolean(input.slackSigningSecret),
   githubIntegrationBotLogin: input.githubIntegrationBotLogin ?? null,
   githubPrAllowedUsers: input.githubPrAllowedUsers ?? [],
   githubPrRequireBotMention: input.githubPrRequireBotMention === true,
@@ -108,11 +112,14 @@ const createTestApp = ({
       listRepositories: async () => Array.from(repositories.values()),
       getRepositoryRuntimeEnvEntries: async () => [],
       getRepositoryMcpServers: async () => [],
+      getRepositorySlackAgentMcpServers: async () => [],
       getRepositoryHostCommands: async () => [],
       updateRepository: async () => null,
       getRepositoryWebhookTarget: async () => null,
       getRepositoryGitHubPrWebhookSecret: async () => null,
+      getRepositorySlackIntegration: async () => null,
       recordWebhookDeliveryResult: async () => null,
+      recordSlackEventResult: async () => null,
       deleteRepository: async () => false
     },
     userStore: {
@@ -198,6 +205,42 @@ test("repository create accepts repository MCP servers", async () => {
 
   assert.equal(response.statusCode, 201);
   assert.deepEqual(JSON.parse(response.body).mcpServers, [
+    {
+      name: "github",
+      enabled: true,
+      transport: "http",
+      url: "https://api.githubcopilot.com/mcp",
+      bearerTokenEnvVar: "GITHUB_MCP_TOKEN"
+    }
+  ]);
+
+  await app.close();
+});
+
+test("repository create accepts Slack agent MCP servers", async () => {
+  const authUser = createAuthUser({ id: "user-1" });
+  const { app } = createTestApp({ authUser, users: [createUser({ id: "user-1" })] });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/repositories",
+    payload: {
+      name: "repo",
+      url: "https://github.com/acme/repo.git",
+      slackAgentMcpServers: [
+        {
+          name: "github",
+          enabled: true,
+          transport: "http",
+          url: "https://api.githubcopilot.com/mcp",
+          bearerTokenEnvVar: "GITHUB_MCP_TOKEN"
+        }
+      ]
+    }
+  });
+
+  assert.equal(response.statusCode, 201);
+  assert.deepEqual(JSON.parse(response.body).slackAgentMcpServers, [
     {
       name: "github",
       enabled: true,

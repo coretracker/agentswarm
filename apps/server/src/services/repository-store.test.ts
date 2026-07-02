@@ -87,6 +87,7 @@ describe("RedisRepositoryStore MCP servers", () => {
       ["github-tools", "memory"]
     );
     assert.deepEqual(await store.getRepositoryMcpServers(created.id), created.mcpServers);
+    assert.deepEqual(await store.getRepositorySlackAgentMcpServers(created.id), []);
 
     const updated = await store.updateRepository(created.id, {
       mcpServers: [
@@ -107,6 +108,79 @@ describe("RedisRepositoryStore MCP servers", () => {
         transport: "http",
         url: "https://example.com/mcp",
         bearerTokenEnvVar: null
+      }
+    ]);
+  });
+
+  it("persists and normalizes Slack agent MCP servers separately", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const created = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git",
+      mcpServers: [
+        {
+          name: "repo-tools",
+          enabled: true,
+          transport: "stdio",
+          command: "repo-mcp"
+        }
+      ],
+      slackAgentMcpServers: [
+        {
+          name: "GitHub",
+          enabled: true,
+          transport: "http",
+          url: "https://example.com/github-mcp",
+          bearerTokenEnvVar: "GITHUB_TOKEN"
+        },
+        {
+          name: "GitHub",
+          enabled: true,
+          transport: "stdio",
+          command: "ignored"
+        }
+      ]
+    });
+
+    assert.deepEqual(
+      created.mcpServers.map((server) => server.name),
+      ["repo-tools"]
+    );
+    assert.deepEqual(created.slackAgentMcpServers, [
+      {
+        name: "github",
+        enabled: true,
+        transport: "http",
+        url: "https://example.com/github-mcp",
+        bearerTokenEnvVar: "GITHUB_TOKEN"
+      }
+    ]);
+    assert.deepEqual(await store.getRepositorySlackAgentMcpServers(created.id), created.slackAgentMcpServers);
+
+    const updated = await store.updateRepository(created.id, {
+      slackAgentMcpServers: [
+        {
+          name: "memory",
+          enabled: false,
+          transport: "stdio",
+          command: "npx",
+          args: ["-y", "mcp-memory"]
+        }
+      ]
+    });
+
+    assert.deepEqual(updated?.mcpServers, created.mcpServers);
+    assert.deepEqual(updated?.slackAgentMcpServers, [
+      {
+        name: "memory",
+        enabled: false,
+        transport: "stdio",
+        command: "npx",
+        args: ["-y", "mcp-memory"]
       }
     ]);
   });
@@ -166,5 +240,59 @@ describe("RedisRepositoryStore MCP servers", () => {
     assert.equal(updated?.harnessHowToWork, null);
     assert.equal(updated?.harnessDefinitionOfDone, "Run targeted tests and pr-ready.sh.");
     assert.equal(updated?.harnessEvidenceExpectations, "Include commands and outcomes.");
+  });
+
+  it("stores Slack credentials internally and exposes only configured flags", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const created = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git",
+      slackBotToken: "  xoxb-token  ",
+      slackSigningSecret: "  signing-secret  "
+    });
+
+    assert.equal(created.slackBotTokenConfigured, true);
+    assert.equal(created.slackSigningSecretConfigured, true);
+    const integration = await store.getRepositorySlackIntegration(created.id);
+    assert.equal(integration?.botToken, "xoxb-token");
+    assert.equal(integration?.signingSecret, "signing-secret");
+
+    const cleared = await store.updateRepository(created.id, {
+      clearSlackBotToken: true,
+      clearSlackSigningSecret: true
+    });
+
+    assert.equal(cleared?.slackBotTokenConfigured, false);
+    assert.equal(cleared?.slackSigningSecretConfigured, false);
+    assert.equal(await store.getRepositorySlackIntegration(created.id), null);
+  });
+
+  it("records the latest Slack event status", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const created = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git"
+    });
+
+    const receivedAt = "2026-07-01T12:00:00.000Z";
+    const updated = await store.recordSlackEventResult(created.id, {
+      status: "ignored",
+      receivedAt,
+      eventType: "message.im",
+      errorMessage: "unmatched_user"
+    });
+
+    assert.equal(updated?.slackLastEventAt, receivedAt);
+    assert.equal(updated?.slackLastEventStatus, "ignored");
+    assert.equal(updated?.slackLastEventType, "message.im");
+    assert.equal(updated?.slackLastEventError, "unmatched_user");
   });
 });

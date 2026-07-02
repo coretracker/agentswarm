@@ -1,7 +1,7 @@
 # Known Issues
 
 ## Confirmed from Repository
-- CI currently runs `./scripts/harness/check.sh` but not the full local `pr-ready.sh` sequence.
+- CI currently gates on Dockerized lint and workspace tests only.
 
 ## Operational Risk Notes
 - Incorrect workspace host path configuration can break task workspace behavior.

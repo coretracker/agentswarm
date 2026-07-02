@@ -169,4 +169,110 @@ describe("RedisSettingsStore runtime credentials", () => {
 
     assert.equal(Object.prototype.hasOwnProperty.call(settings, "mcpServers"), false);
   });
+
+  it("stores Slack integration credentials as write-only settings and tracks event status", async () => {
+    const settingsStore = new RedisSettingsStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never,
+      createCredentialStore({
+        githubToken: null,
+        openaiApiKey: null,
+        anthropicApiKey: null,
+        codexAuthJson: null
+      })
+    );
+
+    await settingsStore.updateSettings({
+      slackAssistantProvider: "claude",
+      slackAssistantModel: "claude-sonnet-4-6",
+      slackHarnessWhatExists: "  Slack DMs and AgentSwarm MCP.  ",
+      slackHarnessAllowedActions: "Answer questions.",
+      slackHarnessHowToWork: "",
+      slackHarnessDefinitionOfDone: null,
+      slackHarnessEvidenceExpectations: "Mention what was checked.",
+      slackBotToken: "  xoxb-test  ",
+      slackSigningSecret: "  signing-secret  ",
+      slackAgentMcpServers: [
+        {
+          name: "GitHub API",
+          enabled: true,
+          transport: "http",
+          url: "https://example.com/mcp",
+          bearerToken: "  gh-token  "
+        },
+        {
+          name: "GitHub",
+          enabled: true,
+          transport: "stdio",
+          command: "npx",
+          args: ["-y", "github-mcp"]
+        }
+      ]
+    });
+
+    const settings = await settingsStore.getSettings();
+    const integration = await settingsStore.getSlackIntegration();
+
+    assert.equal(settings.slackBotTokenConfigured, true);
+    assert.equal(settings.slackSigningSecretConfigured, true);
+    assert.equal(settings.slackAssistantProvider, "claude");
+    assert.equal(settings.slackAssistantModel, "claude-sonnet-4-6");
+    assert.equal(settings.slackHarnessWhatExists, "Slack DMs and AgentSwarm MCP.");
+    assert.equal(settings.slackHarnessAllowedActions, "Answer questions.");
+    assert.equal(settings.slackHarnessHowToWork, null);
+    assert.equal(settings.slackHarnessDefinitionOfDone, null);
+    assert.equal(settings.slackHarnessEvidenceExpectations, "Mention what was checked.");
+    assert.equal(settings.slackAgentMcpServers.length, 2);
+    assert.equal(settings.slackAgentMcpServers[0]?.bearerTokenConfigured, true);
+    assert.equal(settings.slackAgentMcpServers[0]?.bearerToken, undefined);
+    assert.equal(integration?.botToken, "xoxb-test");
+    assert.equal(integration?.signingSecret, "signing-secret");
+    assert.equal(integration?.slackAssistantProvider, "claude");
+    assert.equal(integration?.slackAssistantModel, "claude-sonnet-4-6");
+    assert.equal(integration?.slackHarnessWhatExists, "Slack DMs and AgentSwarm MCP.");
+    assert.equal(integration?.slackHarnessEvidenceExpectations, "Mention what was checked.");
+    assert.equal(integration?.slackAgentMcpServers[0]?.bearerTokenConfigured, true);
+    assert.equal(integration?.slackAgentMcpServers[0]?.bearerToken, undefined);
+    assert.equal(integration?.mcpRuntimeEnv?.AGENTSWARM_SLACK_MCP_BEARER_GITHUB_API, "gh-token");
+
+    await settingsStore.recordSlackEventResult({
+      status: "failed",
+      receivedAt: "2026-07-01T12:34:56.000Z",
+      eventType: "request",
+      errorMessage: "signature_mismatch"
+    });
+
+    const afterEvent = await settingsStore.getSettings();
+    assert.equal(afterEvent.slackLastEventStatus, "failed");
+    assert.equal(afterEvent.slackLastEventError, "signature_mismatch");
+  });
+
+  it("defaults Slack assistant provider and model for legacy settings payloads", async () => {
+    const redis = new FakeRedis();
+    redis.seed("agentswarm:settings", {
+      defaultProvider: "claude",
+      codexDefaultModel: "gpt-5.5",
+      claudeDefaultModel: "claude-opus-4-8",
+      slackBotToken: "xoxb-test",
+      slackSigningSecret: "signing-secret"
+    });
+    const settingsStore = new RedisSettingsStore(
+      redis as never,
+      { publish: async () => undefined } as never,
+      createCredentialStore({
+        githubToken: null,
+        openaiApiKey: null,
+        anthropicApiKey: null,
+        codexAuthJson: null
+      })
+    );
+
+    const settings = await settingsStore.getSettings();
+    const integration = await settingsStore.getSlackIntegration();
+
+    assert.equal(settings.slackAssistantProvider, "claude");
+    assert.equal(settings.slackAssistantModel, "claude-opus-4-8");
+    assert.equal(integration?.slackAssistantProvider, "claude");
+    assert.equal(integration?.slackAssistantModel, "claude-opus-4-8");
+  });
 });

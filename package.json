@@ -11,7 +11,8 @@
     "dev:server": "npm run dev -w @agentswarm/server",
     "dev:web": "npm run dev -w @agentswarm/web",
     "hostexec": "node hostexec/daemon.mjs",
-    "test": "./scripts/harness/test.sh",
+    "ci": "./scripts/ci.sh",
+    "test": "npm run test -w @agentswarm/server && npm run test -w @agentswarm/web",
     "typecheck": "npm run lint",
     "build": "npm run build -w @agentswarm/shared-types && npm run build -w @agentswarm/server && npm run build -w @agentswarm/web",
     "lint": "npm run lint -w @agentswarm/server && npm run lint -w @agentswarm/web"

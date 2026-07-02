@@ -643,5 +643,127 @@ Feedback:
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS host_commands jsonb NOT NULL DEFAULT '[]'::jsonb;
     `
+  },
+  {
+    id: "20260701_02_slack_dm_assistant_mvp",
+    sql: `
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS slack_username text NULL;
+
+      CREATE INDEX IF NOT EXISTS users_slack_username_idx
+        ON users (lower(slack_username))
+        WHERE slack_username IS NOT NULL AND btrim(slack_username) <> '';
+
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS slack_bot_token text NULL,
+      ADD COLUMN IF NOT EXISTS slack_signing_secret text NULL,
+      ADD COLUMN IF NOT EXISTS slack_agent_mcp_servers jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+      CREATE TABLE IF NOT EXISTS slack_assistant_conversations (
+        id text PRIMARY KEY,
+        repository_id text NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+        user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        slack_team_id text NOT NULL,
+        slack_channel_id text NOT NULL,
+        slack_user_id text NOT NULL,
+        provider text NOT NULL,
+        context jsonb NOT NULL,
+        active_runtime jsonb NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL,
+        UNIQUE(repository_id, slack_team_id, slack_channel_id, slack_user_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS slack_assistant_conversations_user_idx
+        ON slack_assistant_conversations(user_id, updated_at DESC);
+    `
+  },
+  {
+    id: "20260701_03_slack_agent_mcp_servers",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS slack_agent_mcp_servers jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260701_04_repository_slack_event_status",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS slack_last_event_at text NULL,
+      ADD COLUMN IF NOT EXISTS slack_last_event_status text NULL,
+      ADD COLUMN IF NOT EXISTS slack_last_event_type text NULL,
+      ADD COLUMN IF NOT EXISTS slack_last_event_error text NULL;
+    `
+  },
+  {
+    id: "20260701_05_global_slack_integration",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS slack_bot_token text NULL,
+      ADD COLUMN IF NOT EXISTS slack_signing_secret text NULL,
+      ADD COLUMN IF NOT EXISTS slack_agent_mcp_servers jsonb NOT NULL DEFAULT '[]'::jsonb,
+      ADD COLUMN IF NOT EXISTS slack_last_event_at text NULL,
+      ADD COLUMN IF NOT EXISTS slack_last_event_status text NULL,
+      ADD COLUMN IF NOT EXISTS slack_last_event_type text NULL,
+      ADD COLUMN IF NOT EXISTS slack_last_event_error text NULL;
+
+      ALTER TABLE IF EXISTS slack_assistant_conversations
+      ALTER COLUMN repository_id DROP NOT NULL;
+
+      DELETE FROM slack_assistant_conversations target
+      USING (
+        SELECT
+          id,
+          row_number() OVER (
+            PARTITION BY slack_team_id, slack_channel_id, slack_user_id
+            ORDER BY updated_at DESC, created_at DESC, id DESC
+          ) AS row_num
+        FROM slack_assistant_conversations
+      ) ranked
+      WHERE target.id = ranked.id
+        AND ranked.row_num > 1;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS slack_assistant_conversations_slack_context_idx
+        ON slack_assistant_conversations(slack_team_id, slack_channel_id, slack_user_id);
+    `
+  },
+  {
+    id: "20260701_06_global_slack_assistant_provider_model",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS slack_assistant_provider text NOT NULL DEFAULT 'codex',
+      ADD COLUMN IF NOT EXISTS slack_assistant_model text NULL;
+
+      UPDATE system_settings
+      SET
+        slack_assistant_provider = COALESCE(NULLIF(btrim(slack_assistant_provider), ''), default_provider, 'codex'),
+        slack_assistant_model = CASE
+          WHEN NULLIF(btrim(slack_assistant_model), '') IS NOT NULL THEN btrim(slack_assistant_model)
+          WHEN COALESCE(NULLIF(btrim(slack_assistant_provider), ''), default_provider, 'codex') = 'claude'
+            THEN COALESCE(NULLIF(btrim(claude_default_model), ''), 'claude-opus-4-8')
+          ELSE COALESCE(NULLIF(btrim(codex_default_model), ''), 'gpt-5.5')
+        END;
+
+      ALTER TABLE system_settings
+      ALTER COLUMN slack_assistant_model SET NOT NULL;
+    `
+  },
+  {
+    id: "20260701_07_global_slack_harness_fields",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS slack_harness_what_exists text NULL,
+      ADD COLUMN IF NOT EXISTS slack_harness_allowed_actions text NULL,
+      ADD COLUMN IF NOT EXISTS slack_harness_how_to_work text NULL,
+      ADD COLUMN IF NOT EXISTS slack_harness_definition_of_done text NULL,
+      ADD COLUMN IF NOT EXISTS slack_harness_evidence_expectations text NULL;
+    `
+  },
+  {
+    id: "20260701_08_personal_access_token_runtime_context",
+    sql: `
+      ALTER TABLE personal_access_tokens
+      ADD COLUMN IF NOT EXISTS runtime_context jsonb NULL;
+    `
   }
 ];

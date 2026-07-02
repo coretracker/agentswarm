@@ -2,7 +2,6 @@
 
 This repository uses lightweight, mechanical boundary checks through:
 - `scripts/harness/boundary-check.mjs`
-- `scripts/harness/check.sh`
 
 ## Why boundaries matter
 - The web app and server run in different environments.
@@ -47,7 +46,6 @@ Every boundary violation error prints:
 
 ## Commands
 - Run only boundary checks: `node ./scripts/harness/boundary-check.mjs`
-- Run full local checks (includes boundaries): `./scripts/harness/check.sh`
 
 ## CI
-- Boundary checks run in CI via `.github/workflows/harness-check.yml`.
+- Boundary checks are not part of the current lint/test-only CI gate.
