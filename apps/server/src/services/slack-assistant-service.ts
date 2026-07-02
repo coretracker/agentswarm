@@ -311,8 +311,11 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
       provider,
       providerModelSegment
     );
-    const providerStatePath = provider === "codex" ? path.join(providerStateRootPath, ".codex") : providerStateRootPath;
-    const providerHomePath = provider === "codex" ? providerStateRootPath : path.dirname(providerStatePath);
+    const providerStatePath =
+      provider === "codex"
+        ? path.join(providerStateRootPath, ".codex")
+        : path.join(providerStateRootPath, ".claude");
+    const providerHomePath = providerStateRootPath;
     const manifestPath = path.join(payloadDir, "manifest.json");
     const providerConfigPath = path.join(payloadDir, providerDefinition.configFileName);
     const slackHarnessPath = path.join(workspacePath, "AGENTS.md");

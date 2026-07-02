@@ -237,6 +237,97 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
   ]);
 });
 
+test("DockerSlackAssistantRuntime stores Slack Claude sessions under model-scoped Claude home", async () => {
+  const conversation: SlackAssistantConversation = {
+    id: "conv-claude-runtime-test",
+    repositoryId: null,
+    userId: user.id,
+    slackTeamId: "T1",
+    slackChannelId: "D1",
+    slackUserId: "U1",
+    provider: "claude",
+    turns: [],
+    activeRuntime: null,
+    createdAt: now,
+    updatedAt: now
+  };
+  const store = new MemorySlackAssistantStore(conversation);
+  const runtime = new DockerSlackAssistantRuntime({
+    settingsStore: {
+      getSettings: async () => ({
+        defaultProvider: "claude",
+        slackAssistantProvider: "claude",
+        slackAssistantModel: "claude-sonnet-4-5",
+        codexDefaultEffort: "low",
+        claudeDefaultEffort: "low",
+        slackAgentMcpServers: []
+      }),
+      getSlackIntegration: async () => null,
+      getRuntimeCredentials: async () => ({
+        openaiApiKey: null,
+        codexAuthJson: null,
+        anthropicApiKey: "anthropic-key",
+        githubToken: null,
+        gitUsername: "x-access-token",
+        gitAuthorName: null,
+        gitAuthorEmail: null,
+        openaiBaseUrl: null,
+        anthropicBaseUrl: null
+      })
+    } as never,
+    personalAccessTokenStore: {
+      createToken: async () => ({
+        id: "token-1",
+        name: "Slack DM runtime MCP",
+        scopes: [],
+        tokenPrefix: "asw_pat_test",
+        expiresAt: null,
+        lastUsedAt: null,
+        revokedAt: null,
+        createdAt: now,
+        token: "runtime-token"
+      })
+    } as never,
+    conversationStore: store,
+    now: () => new Date("2026-07-01T00:05:00.000Z"),
+    commandRunner: async (_command, args) => {
+      const manifestEnv = args.find((arg) => arg.startsWith("TASK_MANIFEST_FILE="));
+      const providerConfigEnv = args.find((arg) => arg.startsWith("PROVIDER_CONFIG_FILE="));
+      const providerStateEnv = args.find((arg) => arg.startsWith("TASK_PROVIDER_STATE_PATH="));
+      const providerHomeEnv = args.find((arg) => arg.startsWith("TASK_PROVIDER_HOME="));
+      assert.ok(manifestEnv);
+      assert.ok(providerConfigEnv);
+      assert.ok(providerStateEnv);
+      assert.ok(providerHomeEnv);
+
+      const manifest = JSON.parse(await readFile(manifestEnv!.slice("TASK_MANIFEST_FILE=".length), "utf8")) as {
+        provider: string;
+        resolvedModel: string;
+        resultJsonPath: string;
+      };
+      const providerConfig = JSON.parse(await readFile(providerConfigEnv!.slice("PROVIDER_CONFIG_FILE=".length), "utf8")) as {
+        mcpServers?: Record<string, unknown>;
+      };
+      assert.equal(manifest.provider, "claude");
+      assert.equal(manifest.resolvedModel, "claude-sonnet-4-5");
+      assert.match(providerStateEnv!, /\/claude\/claude-sonnet-4-5\/\.claude$/);
+      assert.match(providerHomeEnv!, /\/claude\/claude-sonnet-4-5$/);
+      assert.ok(providerConfig.mcpServers?.agentswarm);
+
+      await writeFile(
+        manifest.resultJsonPath,
+        JSON.stringify({ status: "success", summaryMarkdown: "Claude reply" }),
+        "utf8"
+      );
+    }
+  });
+
+  const response = await runtime.respond({ user, conversation, text: "continue" });
+
+  assert.equal(response, "Claude reply");
+  assert.equal(store.updates.at(-1)?.status, "idle");
+});
+
 test("DockerSlackAssistantRuntime marks prior runtime stopped after idle timeout before new run", async () => {
   const conversation: SlackAssistantConversation = {
     id: "conv-idle-test",
