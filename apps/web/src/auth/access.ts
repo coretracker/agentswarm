@@ -53,6 +53,10 @@ export const getRequiredScopesForPathname = (pathname: string): PermissionScope[
     return ["user:list"];
   }
 
+  if (pathname === "/profile") {
+    return [];
+  }
+
   return [];
 };
 
