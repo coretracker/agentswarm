@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { access, chmod, constants, mkdir, readFile, readdir, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, constants, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
@@ -54,49 +54,12 @@ const readPersistedSessionId = async (sessionIdPath) => {
   return isSessionId(candidate) ? candidate : null;
 };
 
-const clearPersistedSessionId = async (sessionIdPath) => {
-  await unlink(sessionIdPath).catch((error) => {
-    if (error?.code !== "ENOENT") {
-      throw error;
-    }
-  });
-};
-
 const writePersistedSessionId = async (sessionIdPath, sessionId) => {
   if (!isSessionId(sessionId)) {
     return;
   }
 
   await writeFile(sessionIdPath, `${sessionId.trim()}\n`, "utf8");
-};
-
-const providerStateHasSession = async (providerStatePath, sessionId) => {
-  if (!isSessionId(sessionId)) {
-    return false;
-  }
-
-  const pending = [providerStatePath];
-  while (pending.length > 0) {
-    const currentDir = pending.pop();
-    if (!currentDir) {
-      continue;
-    }
-
-    const entries = await readdir(currentDir, { withFileTypes: true }).catch(() => []);
-    for (const entry of entries) {
-      const fullPath = path.join(currentDir, entry.name);
-      if (entry.isDirectory()) {
-        pending.push(fullPath);
-        continue;
-      }
-
-      if (entry.isFile() && entry.name.includes(sessionId)) {
-        return true;
-      }
-    }
-  }
-
-  return false;
 };
 
 const runCommand = (command, args, options = {}) =>
@@ -306,12 +269,7 @@ await mkdir(providerStatePath, { recursive: true });
 preserveHostexecPath();
 await ensureGitAskPass(runtimeHome);
 const sessionIdFilePath = path.join(providerStatePath, "agentswarm-session-id.txt");
-let persistedSessionId = await readPersistedSessionId(sessionIdFilePath);
-if (persistedSessionId && !(await providerStateHasSession(providerStatePath, persistedSessionId))) {
-  console.log(`[runtime] claude stale session_id=${persistedSessionId}; starting a new session`);
-  await clearPersistedSessionId(sessionIdFilePath);
-  persistedSessionId = null;
-}
+const persistedSessionId = await readPersistedSessionId(sessionIdFilePath);
 if (persistedSessionId) {
   args.push("--resume", persistedSessionId);
 }
