@@ -49,6 +49,35 @@ class FakeRedis {
 }
 
 describe("RedisRepositoryStore MCP servers", () => {
+  it("persists nullable repository default agent settings", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const created = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git",
+      defaultProvider: "claude",
+      defaultModel: "  claude-sonnet-4-6  ",
+      defaultProviderProfile: "max"
+    });
+
+    assert.equal(created.defaultProvider, "claude");
+    assert.equal(created.defaultModel, "claude-sonnet-4-6");
+    assert.equal(created.defaultProviderProfile, "max");
+
+    const updated = await store.updateRepository(created.id, {
+      defaultProvider: null,
+      defaultModel: "   ",
+      defaultProviderProfile: null
+    });
+
+    assert.equal(updated?.defaultProvider, null);
+    assert.equal(updated?.defaultModel, null);
+    assert.equal(updated?.defaultProviderProfile, null);
+  });
+
   it("persists and normalizes repository MCP servers", async () => {
     const store = new RedisRepositoryStore(
       new FakeRedis() as never,

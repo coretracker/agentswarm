@@ -42,6 +42,7 @@ import { canUserAccessRepository, canUserAccessTask, isAdminUser } from "../lib/
 import { writeSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
 import { env } from "../config/env.js";
 import { normalizeProvider } from "../lib/provider-config.js";
+import { resolveCreateTaskProviderConfig } from "../lib/task-create-defaults.js";
 import { resolveTaskProviderStatePaths } from "../lib/task-provider-state.js";
 import { isSafeLinkedWorkspaceAlias } from "../lib/linked-workspaces.js";
 
@@ -250,34 +251,6 @@ const clearTaskProviderSessionId = async (taskId: string): Promise<void> => {
     const providerStatePath = resolveTaskProviderStatePaths(taskId, provider).serverPath;
     await rm(path.join(providerStatePath, PROVIDER_SESSION_ID_FILE), { force: true }).catch(() => undefined);
   }
-};
-
-const applyCreateDefaultsFromSettings = <
-  T extends {
-    provider?: "codex" | "claude";
-    providerProfile?: "low" | "medium" | "high" | "max";
-    modelOverride?: string;
-    model?: string;
-  }
->(
-  payload: T,
-  settings: Awaited<ReturnType<SettingsStore["getSettings"]>>
-): T => {
-  const provider = normalizeProvider(payload.provider ?? settings.defaultProvider);
-  const providerProfile =
-    payload.providerProfile ??
-    (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
-  const hasLegacyModel = Boolean(payload.model?.trim());
-  const modelOverride =
-    payload.modelOverride ??
-    (hasLegacyModel ? undefined : provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel);
-
-  return {
-    ...payload,
-    provider,
-    providerProfile,
-    modelOverride
-  };
 };
 
 export const withBranchSyncCounts = async (spawner: SpawnerService, task: Task): Promise<Task> => {
@@ -1261,7 +1234,10 @@ export const registerTaskRoutes = (
       ...rawCreatePayload
     } = parsed.data;
     const settings = await deps.settingsStore.getSettings();
-    const createPayload = applyCreateDefaultsFromSettings(rawCreatePayload, settings);
+    const createPayload = {
+      ...rawCreatePayload,
+      ...resolveCreateTaskProviderConfig(rawCreatePayload, settings, repository)
+    };
     if (
       !requireTaskCapabilityAccess(request, reply, {
         taskType: createPayload.taskType ?? "build"

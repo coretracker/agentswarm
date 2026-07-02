@@ -2,8 +2,10 @@ import { nanoid } from "nanoid";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
 import type {
+  AgentProvider,
   CreateRepositoryInput,
   McpServerConfig,
+  ProviderProfile,
   Repository,
   RepositoryEnvVarInput,
   RepositoryEnvSecret,
@@ -84,6 +86,17 @@ const normalizeSlackEventStatus = (value: unknown): RepositorySlackEventStatus |
 const normalizeSlackEventValue = (value: unknown): string | null => {
   const normalized = typeof value === "string" ? value.trim() : "";
   return normalized.length > 0 ? normalized.slice(0, 500) : null;
+};
+
+const normalizeRepositoryDefaultProvider = (value: unknown): AgentProvider | null =>
+  value === "codex" || value === "claude" ? value : null;
+
+const normalizeRepositoryDefaultProviderProfile = (value: unknown): ProviderProfile | null =>
+  value === "low" || value === "medium" || value === "high" || value === "max" ? value : null;
+
+const normalizeRepositoryDefaultModel = (value: unknown): string | null => {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized.length > 0 ? normalized : null;
 };
 
 const normalizeUserId = (value: string | null | undefined): string | null => {
@@ -742,6 +755,9 @@ export class RedisRepositoryStore implements RepositoryStore {
     const harnessHowToWork = normalizeRepositoryHarnessValue(repository.harnessHowToWork);
     const harnessDefinitionOfDone = normalizeRepositoryHarnessValue(repository.harnessDefinitionOfDone);
     const harnessEvidenceExpectations = normalizeRepositoryHarnessValue(repository.harnessEvidenceExpectations);
+    const defaultProvider = normalizeRepositoryDefaultProvider(repository.defaultProvider);
+    const defaultModel = normalizeRepositoryDefaultModel(repository.defaultModel);
+    const defaultProviderProfile = normalizeRepositoryDefaultProviderProfile(repository.defaultProviderProfile);
     const webhookUrl = this.normalizeWebhookUrl(repository.webhookUrl as string | null | undefined);
     const webhookEnabled = repository.webhookEnabled === true;
     const envVars = normalizeRepositoryEnvVars(repository.envVars);
@@ -758,6 +774,9 @@ export class RedisRepositoryStore implements RepositoryStore {
       name: String(repository.name ?? "").trim(),
       url: String(repository.url ?? "").trim(),
       defaultBranch: String(repository.defaultBranch ?? "").trim() || "develop",
+      defaultProvider,
+      defaultModel,
+      defaultProviderProfile,
       envVars,
       envSecrets,
       mcpServers,
@@ -801,6 +820,9 @@ export class RedisRepositoryStore implements RepositoryStore {
       name: normalized.name,
       url: normalized.url,
       defaultBranch: normalized.defaultBranch,
+      defaultProvider: normalized.defaultProvider ?? null,
+      defaultModel: normalized.defaultModel ?? null,
+      defaultProviderProfile: normalized.defaultProviderProfile ?? null,
       envVars: toRepositoryEnvVars(normalized.envVars),
       envSecrets: toConfiguredRepositoryEnvSecrets(normalized.envSecrets),
       mcpServers: normalized.mcpServers,
@@ -872,6 +894,9 @@ export class RedisRepositoryStore implements RepositoryStore {
     const harnessHowToWork = normalizeRepositoryHarnessValue(input.harnessHowToWork);
     const harnessDefinitionOfDone = normalizeRepositoryHarnessValue(input.harnessDefinitionOfDone);
     const harnessEvidenceExpectations = normalizeRepositoryHarnessValue(input.harnessEvidenceExpectations);
+    const defaultProvider = normalizeRepositoryDefaultProvider(input.defaultProvider);
+    const defaultModel = normalizeRepositoryDefaultModel(input.defaultModel);
+    const defaultProviderProfile = normalizeRepositoryDefaultProviderProfile(input.defaultProviderProfile);
     const webhookEnabled = input.webhookEnabled === true;
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
@@ -889,6 +914,9 @@ export class RedisRepositoryStore implements RepositoryStore {
       name: input.name.trim(),
       url: input.url.trim(),
       defaultBranch: input.defaultBranch?.trim() || "develop",
+      defaultProvider,
+      defaultModel,
+      defaultProviderProfile,
       envVars: resolvedEnvVars.entries,
       envSecrets: resolvedEnvSecrets.entries,
       mcpServers,
@@ -1058,6 +1086,14 @@ export class RedisRepositoryStore implements RepositoryStore {
       input.githubPrTaskOwnerUserId !== undefined
         ? normalizeUserId(input.githubPrTaskOwnerUserId)
         : current.githubPrTaskOwnerUserId ?? null;
+    const nextDefaultProvider =
+      input.defaultProvider !== undefined ? normalizeRepositoryDefaultProvider(input.defaultProvider) : current.defaultProvider ?? null;
+    const nextDefaultModel =
+      input.defaultModel !== undefined ? normalizeRepositoryDefaultModel(input.defaultModel) : current.defaultModel ?? null;
+    const nextDefaultProviderProfile =
+      input.defaultProviderProfile !== undefined
+        ? normalizeRepositoryDefaultProviderProfile(input.defaultProviderProfile)
+        : current.defaultProviderProfile ?? null;
     const nextHarnessWhatExists =
       input.harnessWhatExists !== undefined ? normalizeRepositoryHarnessValue(input.harnessWhatExists) : current.harnessWhatExists ?? null;
     const nextHarnessAllowedActions =
@@ -1110,6 +1146,9 @@ export class RedisRepositoryStore implements RepositoryStore {
       name: input.name?.trim() || current.name,
       url: input.url?.trim() || current.url,
       defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
+      defaultProvider: nextDefaultProvider,
+      defaultModel: nextDefaultModel,
+      defaultProviderProfile: nextDefaultProviderProfile,
       envVars: resolvedEnvVars.entries,
       envSecrets: resolvedEnvSecrets.entries,
       mcpServers: nextMcpServers,
@@ -1305,6 +1344,9 @@ export class PostgresRepositoryStore implements RepositoryStore {
       name: String(row.name ?? "").trim(),
       url: String(row.url ?? "").trim(),
       defaultBranch: String(row.default_branch ?? "").trim() || "develop",
+      defaultProvider: normalizeRepositoryDefaultProvider(row.default_provider),
+      defaultModel: normalizeRepositoryDefaultModel(row.default_model),
+      defaultProviderProfile: normalizeRepositoryDefaultProviderProfile(row.default_provider_profile),
       envVars: toRepositoryEnvVars(envVars),
       envSecrets: toConfiguredRepositoryEnvSecrets(envSecrets),
       mcpServers,
@@ -1409,6 +1451,9 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const harnessHowToWork = normalizeRepositoryHarnessValue(input.harnessHowToWork);
     const harnessDefinitionOfDone = normalizeRepositoryHarnessValue(input.harnessDefinitionOfDone);
     const harnessEvidenceExpectations = normalizeRepositoryHarnessValue(input.harnessEvidenceExpectations);
+    const defaultProvider = normalizeRepositoryDefaultProvider(input.defaultProvider);
+    const defaultModel = normalizeRepositoryDefaultModel(input.defaultModel);
+    const defaultProviderProfile = normalizeRepositoryDefaultProviderProfile(input.defaultProviderProfile);
     const webhookEnabled = input.webhookEnabled === true;
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
@@ -1426,6 +1471,9 @@ export class PostgresRepositoryStore implements RepositoryStore {
       name: input.name.trim(),
       url: input.url.trim(),
       defaultBranch: input.defaultBranch?.trim() || "develop",
+      defaultProvider,
+      defaultModel,
+      defaultProviderProfile,
       envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
       envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
       mcpServers,
@@ -1473,6 +1521,9 @@ export class PostgresRepositoryStore implements RepositoryStore {
             name,
             url,
             default_branch,
+            default_provider,
+            default_model,
+            default_provider_profile,
             env_vars,
             env_secrets,
             mcp_servers,
@@ -1504,13 +1555,16 @@ export class PostgresRepositoryStore implements RepositoryStore {
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::jsonb, $8::jsonb, $9::jsonb, $10, $11, $12, $13, $14, $15, $16, $17::jsonb, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12::jsonb, $13, $14, $15, $16, $17, $18, $19, $20::jsonb, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
         `,
         [
           repository.id,
           repository.name,
           repository.url,
           repository.defaultBranch,
+          repository.defaultProvider,
+          repository.defaultModel,
+          repository.defaultProviderProfile,
           JSON.stringify(resolvedEnvVars.entries),
           JSON.stringify(resolvedEnvSecrets.entries),
           JSON.stringify(repository.mcpServers),
@@ -1675,6 +1729,14 @@ export class PostgresRepositoryStore implements RepositoryStore {
       input.githubPrTaskOwnerUserId !== undefined
         ? normalizeUserId(input.githubPrTaskOwnerUserId)
         : current.githubPrTaskOwnerUserId ?? null;
+    const nextDefaultProvider =
+      input.defaultProvider !== undefined ? normalizeRepositoryDefaultProvider(input.defaultProvider) : current.defaultProvider ?? null;
+    const nextDefaultModel =
+      input.defaultModel !== undefined ? normalizeRepositoryDefaultModel(input.defaultModel) : current.defaultModel ?? null;
+    const nextDefaultProviderProfile =
+      input.defaultProviderProfile !== undefined
+        ? normalizeRepositoryDefaultProviderProfile(input.defaultProviderProfile)
+        : current.defaultProviderProfile ?? null;
     const nextHarnessWhatExists =
       input.harnessWhatExists !== undefined ? normalizeRepositoryHarnessValue(input.harnessWhatExists) : current.harnessWhatExists ?? null;
     const nextHarnessAllowedActions =
@@ -1727,6 +1789,9 @@ export class PostgresRepositoryStore implements RepositoryStore {
       name: input.name?.trim() || current.name,
       url: input.url?.trim() || current.url,
       defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
+      defaultProvider: nextDefaultProvider,
+      defaultModel: nextDefaultModel,
+      defaultProviderProfile: nextDefaultProviderProfile,
       envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
       envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
       mcpServers: nextMcpServers,
@@ -1766,36 +1831,39 @@ export class PostgresRepositoryStore implements RepositoryStore {
             name = $2,
             url = $3,
             default_branch = $4,
-            env_vars = $5::jsonb,
-            env_secrets = $6::jsonb,
-            mcp_servers = $7::jsonb,
-            slack_agent_mcp_servers = $8::jsonb,
-            host_commands = $9::jsonb,
-            webhook_url = $10,
-            webhook_enabled = $11,
-            webhook_secret = $12,
-            github_pr_webhook_secret = $13,
-            slack_bot_token = $14,
-            slack_signing_secret = $15,
-            github_integration_bot_login = $16,
-            github_pr_allowed_users = $17::jsonb,
-            github_pr_require_bot_mention = $18,
-            github_pr_auto_archive_on_merge = $19,
-            github_pr_initial_instructions = $20,
-            github_pr_feedback_instructions = $21,
-            github_pr_review_instructions = $22,
-            github_pr_task_created_comment_template = $23,
-            github_pr_task_owner_user_id = $24,
-            harness_what_exists = $25,
-            harness_allowed_actions = $26,
-            harness_how_to_work = $27,
-            harness_definition_of_done = $28,
-            harness_evidence_expectations = $29,
-            webhook_last_attempt_at = $30,
-            webhook_last_status = $31,
-            webhook_last_error = $32,
-            created_at = $33,
-            updated_at = $34
+            default_provider = $5,
+            default_model = $6,
+            default_provider_profile = $7,
+            env_vars = $8::jsonb,
+            env_secrets = $9::jsonb,
+            mcp_servers = $10::jsonb,
+            slack_agent_mcp_servers = $11::jsonb,
+            host_commands = $12::jsonb,
+            webhook_url = $13,
+            webhook_enabled = $14,
+            webhook_secret = $15,
+            github_pr_webhook_secret = $16,
+            slack_bot_token = $17,
+            slack_signing_secret = $18,
+            github_integration_bot_login = $19,
+            github_pr_allowed_users = $20::jsonb,
+            github_pr_require_bot_mention = $21,
+            github_pr_auto_archive_on_merge = $22,
+            github_pr_initial_instructions = $23,
+            github_pr_feedback_instructions = $24,
+            github_pr_review_instructions = $25,
+            github_pr_task_created_comment_template = $26,
+            github_pr_task_owner_user_id = $27,
+            harness_what_exists = $28,
+            harness_allowed_actions = $29,
+            harness_how_to_work = $30,
+            harness_definition_of_done = $31,
+            harness_evidence_expectations = $32,
+            webhook_last_attempt_at = $33,
+            webhook_last_status = $34,
+            webhook_last_error = $35,
+            created_at = $36,
+            updated_at = $37
           WHERE id = $1
         `,
         [
@@ -1803,6 +1871,9 @@ export class PostgresRepositoryStore implements RepositoryStore {
           next.name,
           next.url,
           next.defaultBranch,
+          next.defaultProvider,
+          next.defaultModel,
+          next.defaultProviderProfile,
           JSON.stringify(resolvedEnvVars.entries),
           JSON.stringify(resolvedEnvSecrets.entries),
           JSON.stringify(next.mcpServers),
