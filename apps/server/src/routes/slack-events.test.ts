@@ -4,6 +4,7 @@ import { test } from "node:test";
 import Fastify from "fastify";
 import type { User } from "@agentswarm/shared-types";
 import { registerSlackEventRoutes } from "./slack-events.js";
+import type { SlackAssistantRuntime } from "../services/slack-assistant-service.js";
 import type {
   SlackAssistantActiveRuntime,
   SlackAssistantConversation,
@@ -90,7 +91,9 @@ const waitForBackgroundWork = async (): Promise<void> => {
   });
 };
 
-const createApp = () => {
+const createApp = (runtime: SlackAssistantRuntime = {
+  respond: async (input) => `Reply to ${input.user.slackUsername}: ${input.text}`
+}) => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
     const rawBody = typeof body === "string" ? body : body.toString("utf8");
@@ -146,9 +149,7 @@ const createApp = () => {
         reactions.push({ channel, timestamp, name });
       }
     },
-    runtime: {
-      respond: async (input) => `Reply to ${input.user.slackUsername}: ${input.text}`
-    }
+    runtime
   });
   return { app, posts, reactions, slackEvents, store, getProfileLookups: () => profileLookups };
 };
@@ -265,6 +266,164 @@ test("Slack event route maps a DM to a profile, reacts, and posts runtime respon
   assert.equal(slackEvents.at(-1)?.eventType, "message.im");
   assert.equal(Array.from(store.conversations.values())[0]?.provider, "claude");
   assert.equal(Array.from(store.conversations.values())[0]?.turns.length, 2);
+  await app.close();
+});
+
+test("Slack event route replies with busy message when a conversation is already active", async () => {
+  const { app, posts, slackEvents, store } = createApp();
+  const conversation = await store.getOrCreateConversation({
+    userId: user.id,
+    slackTeamId: "T1",
+    slackChannelId: "D1",
+    slackUserId: "U1",
+    provider: "claude"
+  });
+  await store.updateActiveRuntime(conversation.id, {
+    provider: "claude",
+    status: "active",
+    containerName: "agentswarm-slack-active",
+    startedAt: new Date().toISOString(),
+    lastUserMessageAt: new Date().toISOString(),
+    stoppedAt: null,
+    stopReason: null
+  });
+  const payload = JSON.stringify({
+    type: "event_callback",
+    team_id: "T1",
+    event: {
+      type: "message",
+      channel_type: "im",
+      user: "U1",
+      channel: "D1",
+      text: "second question"
+    }
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/slack/events",
+    headers: { "content-type": "application/json", ...sign(payload) },
+    payload
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), { ok: true, ignored: "assistant_busy" });
+  assert.deepEqual(posts, [
+    {
+      channel: "D1",
+      text: "I'm still working on your previous message. Please wait until I'm done, then send your next question."
+    }
+  ]);
+  assert.equal(slackEvents.at(-1)?.status, "ignored");
+  assert.equal(slackEvents.at(-1)?.errorMessage, "assistant_busy");
+  assert.equal((await store.getOrCreateConversation({
+    userId: user.id,
+    slackTeamId: "T1",
+    slackChannelId: "D1",
+    slackUserId: "U1",
+    provider: "claude"
+  })).turns.length, 0);
+  await app.close();
+});
+
+test("Slack event route stops an active run on exact /stop command", async () => {
+  let stopCalls = 0;
+  const { app, posts, slackEvents, store } = createApp({
+    respond: async () => {
+      throw new Error("unexpected respond");
+    },
+    stop: async (conversation) => {
+      stopCalls += 1;
+      await store.updateActiveRuntime(conversation.id, {
+        ...conversation.activeRuntime!,
+        status: "stopped",
+        containerName: null,
+        stoppedAt: new Date().toISOString(),
+        stopReason: "cancelled"
+      });
+      return true;
+    }
+  });
+  const conversation = await store.getOrCreateConversation({
+    userId: user.id,
+    slackTeamId: "T1",
+    slackChannelId: "D1",
+    slackUserId: "U1",
+    provider: "claude"
+  });
+  await store.updateActiveRuntime(conversation.id, {
+    provider: "claude",
+    status: "active",
+    containerName: "agentswarm-slack-active",
+    startedAt: new Date().toISOString(),
+    lastUserMessageAt: new Date().toISOString(),
+    stoppedAt: null,
+    stopReason: null
+  });
+  const payload = JSON.stringify({
+    type: "event_callback",
+    team_id: "T1",
+    event: {
+      type: "message",
+      channel_type: "im",
+      user: "U1",
+      channel: "D1",
+      text: "  /stop  "
+    }
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/slack/events",
+    headers: { "content-type": "application/json", ...sign(payload) },
+    payload
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), { ok: true, ignored: "assistant_stopped" });
+  assert.equal(stopCalls, 1);
+  assert.deepEqual(posts, [{ channel: "D1", text: "Stopped the current Slack assistant run. You can send a new question now." }]);
+  assert.equal(slackEvents.at(-1)?.status, "ignored");
+  assert.equal(slackEvents.at(-1)?.errorMessage, "assistant_stopped");
+  assert.equal((await store.getOrCreateConversation({
+    userId: user.id,
+    slackTeamId: "T1",
+    slackChannelId: "D1",
+    slackUserId: "U1",
+    provider: "claude"
+  })).activeRuntime?.stopReason, "cancelled");
+  await app.close();
+});
+
+test("Slack event route treats non-exact stop text as a normal message", async () => {
+  let stopCalls = 0;
+  const { app, posts } = createApp({
+    respond: async (input) => `Reply to ${input.text}`,
+    stop: async () => {
+      stopCalls += 1;
+      return true;
+    }
+  });
+  const payload = JSON.stringify({
+    type: "event_callback",
+    team_id: "T1",
+    event: {
+      type: "message",
+      channel_type: "im",
+      user: "U1",
+      channel: "D1",
+      text: "/stop now"
+    }
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/slack/events",
+    headers: { "content-type": "application/json", ...sign(payload) },
+    payload
+  });
+
+  assert.equal(response.statusCode, 200);
+  await waitForBackgroundWork();
+  assert.equal(stopCalls, 0);
+  assert.deepEqual(posts, [{ channel: "D1", text: "Reply to /stop now" }]);
   await app.close();
 });
 

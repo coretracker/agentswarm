@@ -43,6 +43,12 @@ type RuntimeResultPayload = {
 
 export type SlackAssistantCommandRunner = (command: string, args: string[]) => Promise<void>;
 
+export class SlackAssistantRunStoppedError extends Error {
+  constructor() {
+    super("Slack assistant run was stopped by the user.");
+  }
+}
+
 export interface SlackAssistantMessageInput {
   user: User;
   conversation: SlackAssistantConversation;
@@ -52,11 +58,16 @@ export interface SlackAssistantMessageInput {
 
 export interface SlackAssistantRuntime {
   respond(input: SlackAssistantMessageInput): Promise<string>;
+  stop?(conversation: SlackAssistantConversation): Promise<boolean>;
 }
 
 class UnavailableSlackAssistantRuntime implements SlackAssistantRuntime {
   async respond(): Promise<string> {
     return "Slack assistant runtime is not configured yet.";
+  }
+
+  async stop(): Promise<boolean> {
+    return false;
   }
 }
 
@@ -180,6 +191,8 @@ const buildConversationPrompt = (input: SlackAssistantMessageInput): string => {
 };
 
 export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
+  private readonly stoppedContainers = new Set<string>();
+
   constructor(
     private readonly deps: {
       settingsStore: SettingsStore;
@@ -411,6 +424,16 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
       });
       return summaryMarkdown;
     } catch (error) {
+      if (this.stoppedContainers.delete(containerName)) {
+        await this.deps.conversationStore.updateActiveRuntime(input.conversation.id, {
+          ...activeRuntime,
+          status: "stopped",
+          containerName: null,
+          stoppedAt: this.now().toISOString(),
+          stopReason: "cancelled"
+        });
+        throw new SlackAssistantRunStoppedError();
+      }
       await this.deps.conversationStore.updateActiveRuntime(input.conversation.id, {
         ...activeRuntime,
         status: "stopped",
@@ -420,6 +443,28 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
       });
       throw error;
     }
+  }
+
+  async stop(conversation: SlackAssistantConversation): Promise<boolean> {
+    const runtime = conversation.activeRuntime;
+    if (!runtime || runtime.status !== "active") {
+      return false;
+    }
+
+    if (runtime.containerName) {
+      const run = this.deps.commandRunner ?? defaultCommandRunner;
+      this.stoppedContainers.add(runtime.containerName);
+      await run("docker", ["stop", runtime.containerName]);
+    }
+
+    await this.deps.conversationStore.updateActiveRuntime(conversation.id, {
+      ...runtime,
+      status: "stopped",
+      containerName: null,
+      stoppedAt: this.now().toISOString(),
+      stopReason: "cancelled"
+    });
+    return true;
   }
 }
 

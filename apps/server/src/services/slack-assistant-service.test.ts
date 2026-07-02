@@ -301,3 +301,47 @@ test("DockerSlackAssistantRuntime marks prior runtime stopped after idle timeout
   assert.equal(store.updates[0]?.status, "stopped");
   assert.equal(store.updates[0]?.stopReason, "idle_timeout");
 });
+
+test("DockerSlackAssistantRuntime stops active Slack assistant container", async () => {
+  const conversation: SlackAssistantConversation = {
+    id: "conv-stop-test",
+    repositoryId: null,
+    userId: user.id,
+    slackTeamId: "T1",
+    slackChannelId: "D1",
+    slackUserId: "U1",
+    provider: "codex",
+    turns: [],
+    activeRuntime: {
+      provider: "codex",
+      status: "active",
+      containerName: "agentswarm-slack-active",
+      startedAt: "2026-07-01T00:00:00.000Z",
+      lastUserMessageAt: "2026-07-01T00:00:00.000Z",
+      stoppedAt: null,
+      stopReason: null
+    },
+    createdAt: now,
+    updatedAt: now
+  };
+  const store = new MemorySlackAssistantStore(conversation);
+  const commands: Array<{ command: string; args: string[] }> = [];
+  const runtime = new DockerSlackAssistantRuntime({
+    settingsStore: {} as never,
+    personalAccessTokenStore: {} as never,
+    conversationStore: store,
+    now: () => new Date("2026-07-01T00:07:00.000Z"),
+    commandRunner: async (command, args) => {
+      commands.push({ command, args });
+    }
+  });
+
+  const stopped = await runtime.stop(conversation);
+
+  assert.equal(stopped, true);
+  assert.deepEqual(commands, [{ command: "docker", args: ["stop", "agentswarm-slack-active"] }]);
+  assert.equal(store.updates.at(-1)?.status, "stopped");
+  assert.equal(store.updates.at(-1)?.containerName, null);
+  assert.equal(store.updates.at(-1)?.stoppedAt, "2026-07-01T00:07:00.000Z");
+  assert.equal(store.updates.at(-1)?.stopReason, "cancelled");
+});

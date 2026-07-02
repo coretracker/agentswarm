@@ -2,12 +2,22 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { RepositorySlackEventStatus, User } from "@agentswarm/shared-types";
 import { verifySlackRequestSignatureDetailed } from "../lib/slack-signature.js";
 import type { SlackAssistantStore } from "../services/slack-assistant-store.js";
-import { SlackAssistantService, type SlackAssistantRuntime } from "../services/slack-assistant-service.js";
+import {
+  SlackAssistantRunStoppedError,
+  SlackAssistantService,
+  type SlackAssistantRuntime
+} from "../services/slack-assistant-service.js";
 import { FetchSlackClient, type SlackClient } from "../services/slack-client.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { UserStore } from "../services/user-store.js";
 
 type RawBodyRequest = { rawBody?: string };
+
+const SLACK_ASSISTANT_BUSY_MESSAGE =
+  "I'm still working on your previous message. Please wait until I'm done, then send your next question.";
+const SLACK_ASSISTANT_STOPPED_MESSAGE = "Stopped the current Slack assistant run. You can send a new question now.";
+const SLACK_ASSISTANT_NOT_RUNNING_MESSAGE = "There is no active Slack assistant run to stop.";
+const SLACK_ASSISTANT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 const readHeader = (value: string | string[] | undefined): string | null => {
   if (typeof value === "string") {
@@ -42,6 +52,18 @@ const findUserBySlackIdentity = async (userStore: UserStore, identities: Array<s
   const users = await userStore.listUsers();
   return users.find((user) => user.active && normalizedIdentities.has(normalizeSlackIdentity(user.slackUsername) ?? "")) ?? null;
 };
+
+const isSlackAssistantBusy = (
+  activeRuntime: Awaited<ReturnType<SlackAssistantStore["getOrCreateConversation"]>>["activeRuntime"]
+): boolean => {
+  if (!activeRuntime || activeRuntime.status !== "active") {
+    return false;
+  }
+  const lastUserMessageAt = Date.parse(activeRuntime.lastUserMessageAt);
+  return Number.isFinite(lastUserMessageAt) && Date.now() - lastUserMessageAt < SLACK_ASSISTANT_IDLE_TIMEOUT_MS;
+};
+
+const isSlackAssistantStopCommand = (text: string): boolean => text.trim() === "/stop";
 
 export const registerSlackEventRoutes = (
   app: FastifyInstance,
@@ -168,11 +190,35 @@ export const registerSlackEventRoutes = (
         slackUserId,
         provider: integration.slackAssistantProvider
       });
-      await recordSlackEvent("received", "message.im");
     } catch (error) {
       await recordSlackEvent("failed", "message.im", error instanceof Error ? error.message : "conversation_setup_failed");
       throw error;
     }
+
+    if (isSlackAssistantStopCommand(text)) {
+      let stopped = false;
+      try {
+        stopped = await (deps.runtime?.stop?.(conversation) ?? Promise.resolve(false));
+      } catch (error) {
+        await recordSlackEvent("failed", "message.im", error instanceof Error ? error.message : "assistant_stop_failed");
+        throw error;
+      }
+      await slackClient.postMessage(
+        integration.botToken,
+        slackChannelId,
+        stopped ? SLACK_ASSISTANT_STOPPED_MESSAGE : SLACK_ASSISTANT_NOT_RUNNING_MESSAGE
+      );
+      await recordSlackEvent("ignored", "message.im", stopped ? "assistant_stopped" : "assistant_not_running");
+      return reply.send({ ok: true, ignored: stopped ? "assistant_stopped" : "assistant_not_running" });
+    }
+
+    if (isSlackAssistantBusy(conversation.activeRuntime)) {
+      await slackClient.postMessage(integration.botToken, slackChannelId, SLACK_ASSISTANT_BUSY_MESSAGE);
+      await recordSlackEvent("ignored", "message.im", "assistant_busy");
+      return reply.send({ ok: true, ignored: "assistant_busy" });
+    }
+
+    await recordSlackEvent("received", "message.im");
     void (async () => {
       try {
         const responseText = await assistantService.handleMessage({
@@ -183,6 +229,10 @@ export const registerSlackEventRoutes = (
         });
         await slackClient.postMessage(integration.botToken, slackChannelId, responseText);
       } catch (error) {
+        if (error instanceof SlackAssistantRunStoppedError) {
+          await recordSlackEvent("ignored", "message.im", "assistant_stopped");
+          return;
+        }
         request.log.error({ err: error }, "slack.assistant.failed");
         await recordSlackEvent("failed", "message.im", error instanceof Error ? error.message : "assistant_failed");
         await slackClient

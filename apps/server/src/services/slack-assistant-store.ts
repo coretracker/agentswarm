@@ -16,7 +16,7 @@ export interface SlackAssistantActiveRuntime {
   startedAt: string;
   lastUserMessageAt: string;
   stoppedAt: string | null;
-  stopReason: "idle_timeout" | "completed" | "failed" | null;
+  stopReason: "idle_timeout" | "completed" | "failed" | "cancelled" | null;
 }
 
 export interface SlackAssistantConversation {
@@ -89,7 +89,10 @@ const normalizeActiveRuntime = (value: unknown): SlackAssistantActiveRuntime | n
     lastUserMessageAt,
     stoppedAt: typeof record.stoppedAt === "string" ? record.stoppedAt : null,
     stopReason:
-      record.stopReason === "idle_timeout" || record.stopReason === "completed" || record.stopReason === "failed"
+      record.stopReason === "idle_timeout" ||
+      record.stopReason === "completed" ||
+      record.stopReason === "failed" ||
+      record.stopReason === "cancelled"
         ? record.stopReason
         : null
   };
