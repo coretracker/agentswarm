@@ -26,7 +26,9 @@ function resolveInitialThemeMode(): AppThemeMode {
     storedMode === "forge" ||
     storedMode === "forge-light" ||
     storedMode === "github" ||
-    storedMode === "github-light"
+    storedMode === "github-light" ||
+    storedMode === "verft-light" ||
+    storedMode === "verft-dark"
   ) {
     return storedMode;
   }
