@@ -168,6 +168,7 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       const manifestEnv = args.find((arg) => arg.startsWith("TASK_MANIFEST_FILE="));
       const providerConfigEnv = args.find((arg) => arg.startsWith("PROVIDER_CONFIG_FILE="));
       const providerStateEnv = args.find((arg) => arg.startsWith("TASK_PROVIDER_STATE_PATH="));
+      const providerHomeEnv = args.find((arg) => arg.startsWith("TASK_PROVIDER_HOME="));
       const mcpTokenEnv = args.find((arg) => arg === "AGENTSWARM_MCP_TOKEN=runtime-token");
       const githubCliTokenEnv = args.find((arg) => arg === "GH_TOKEN=github-token");
       const gitTokenEnv = args.find((arg) => arg === "GIT_TOKEN=github-token");
@@ -177,6 +178,7 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       assert.ok(manifestEnv);
       assert.ok(providerConfigEnv);
       assert.ok(providerStateEnv);
+      assert.ok(providerHomeEnv);
       assert.ok(mcpTokenEnv);
       assert.ok(githubCliTokenEnv);
       assert.ok(gitTokenEnv);
@@ -201,7 +203,8 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       assert.match(slackHarness, /Return a concise reply\./);
       assert.equal(manifest.provider, "codex");
       assert.equal(manifest.resolvedModel, "gpt-5.4-mini");
-      assert.match(providerStateEnv!, /\/codex\/gpt-5\.4-mini$/);
+      assert.match(providerStateEnv!, /\/codex\/gpt-5\.4-mini\/\.codex$/);
+      assert.match(providerHomeEnv!, /\/codex\/gpt-5\.4-mini$/);
       assert.ok(workspaceGitSafeDirectoryKeyIndex >= 0);
       assert.equal(args[workspaceGitSafeDirectoryKeyIndex + 2], `GIT_CONFIG_VALUE_0=${manifest.workspacePath}`);
       assert.match(providerConfig, /mcp_servers\.agentswarm/);
