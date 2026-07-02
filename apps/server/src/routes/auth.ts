@@ -22,9 +22,16 @@ const responsePreferenceSchema = z
     extraInstructions: z.string().trim().max(2000).optional()
   });
 
+const nullableDefaultProviderSchema = z.enum(["codex", "claude"]).nullable().optional();
+const nullableDefaultProviderProfileSchema = z.enum(["low", "medium", "high", "max"]).nullable().optional();
+
 const updateProfileSchema = z.object({
   name: z.string().trim().min(1).optional(),
+  githubUsername: z.string().trim().max(80).nullable().optional(),
   slackUsername: z.string().trim().max(80).nullable().optional(),
+  defaultProvider: nullableDefaultProviderSchema,
+  defaultModel: z.string().trim().max(200).nullable().optional(),
+  defaultProviderProfile: nullableDefaultProviderProfileSchema,
   agentResponsePreference: responsePreferenceSchema.optional()
 });
 
@@ -72,7 +79,11 @@ export const registerAuthRoutes = (
     return {
       name: authUser.name,
       email: authUser.email,
+      githubUsername: authUser.githubUsername,
       slackUsername: authUser.slackUsername,
+      defaultProvider: authUser.defaultProvider,
+      defaultModel: authUser.defaultModel,
+      defaultProviderProfile: authUser.defaultProviderProfile,
       agentResponsePreference: authUser.agentResponsePreference
     };
   });
@@ -118,12 +129,20 @@ export const registerAuthRoutes = (
     const userId = request.auth!.user.id;
     if (
       parsed.data.name !== undefined ||
+      parsed.data.githubUsername !== undefined ||
       parsed.data.slackUsername !== undefined ||
+      parsed.data.defaultProvider !== undefined ||
+      parsed.data.defaultModel !== undefined ||
+      parsed.data.defaultProviderProfile !== undefined ||
       parsed.data.agentResponsePreference !== undefined
     ) {
       const updated = await deps.userStore.updateUser(userId, {
         ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
+        ...(parsed.data.githubUsername !== undefined ? { githubUsername: parsed.data.githubUsername } : {}),
         ...(parsed.data.slackUsername !== undefined ? { slackUsername: parsed.data.slackUsername } : {}),
+        ...(parsed.data.defaultProvider !== undefined ? { defaultProvider: parsed.data.defaultProvider } : {}),
+        ...(parsed.data.defaultModel !== undefined ? { defaultModel: parsed.data.defaultModel } : {}),
+        ...(parsed.data.defaultProviderProfile !== undefined ? { defaultProviderProfile: parsed.data.defaultProviderProfile } : {}),
         ...(parsed.data.agentResponsePreference !== undefined ? { agentResponsePreference: parsed.data.agentResponsePreference } : {})
       });
       if (!updated) {
@@ -139,7 +158,11 @@ export const registerAuthRoutes = (
     return reply.send({
       name: refreshedUser.name,
       email: refreshedUser.email,
+      githubUsername: refreshedUser.githubUsername,
       slackUsername: refreshedUser.slackUsername,
+      defaultProvider: refreshedUser.defaultProvider,
+      defaultModel: refreshedUser.defaultModel,
+      defaultProviderProfile: refreshedUser.defaultProviderProfile,
       agentResponsePreference: refreshedUser.agentResponsePreference
     });
   });

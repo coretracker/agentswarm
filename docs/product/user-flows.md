@@ -29,6 +29,7 @@ Notes:
 - Repository MCP servers are scoped to the repository being edited. They are not inherited from Settings and are not shared with other repositories.
 - MCP bearer token environment variable names resolve from the AgentSwarm server process environment. Missing values are reported in task runtime logs.
 - Repository host commands are simple command names only. AgentSwarm mounts generated shims read-only under `/hostexec/bin` and prepends that directory to `PATH`; existing container bin directories are not overwritten.
+- Repository default agent provider/model/effort values are fallback values. Task payload values win first, then matching user profile defaults, then repository defaults, then system settings.
 - Installations that previously used global MCP server settings must recreate the intended MCP servers on each repository that should expose them.
 - GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
 - GitHub Integration can optionally archive linked tasks when a GitHub pull request webhook reports the PR as merged.
@@ -45,7 +46,7 @@ Notes:
 4. Start the host daemon with `npm run hostexec`, then use `Hostexec` to check availability and optionally set the bearer token env var reference. AgentSwarm autodetects the default daemon URLs; repository Host Commands restrict mounted shims.
 5. Use `Codex` to set the OpenAI API key or Codex `auth.json`, default effort/model, model list, prompt magic settings, and base URL override.
 6. Use `Claude Code` to set the Anthropic API key, default effort/model, model list, and base URL override.
-7. Open your profile to manage personal access tokens.
+7. Open your profile to manage GitHub username linking, personal default agent settings, and personal access tokens.
 
 Notes:
 - The GitHub token is used for both server-side Git actions and in-agent `git pull` / `git push` inside Codex and Claude runtimes.

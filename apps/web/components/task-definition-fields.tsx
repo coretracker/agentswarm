@@ -13,7 +13,8 @@ import type {
   SystemSettings,
   TaskBranchStrategy,
   TaskDefinitionInput,
-  TaskType
+  TaskType,
+  User
 } from "@agentswarm/shared-types";
 import {
   getAgentProviderLabel,
@@ -85,18 +86,22 @@ const getProviderConfiguredModels = (provider: AgentProvider, settings?: SystemS
   return models && models.length > 0 ? models : getModelsForProvider(provider);
 };
 
-const getResolvedProviderForRepository = (repository?: Repository | null, settings?: SystemSettings | null): AgentProvider =>
-  repository?.defaultProvider ?? settings?.defaultProvider ?? "codex";
+const getResolvedProviderForDefaults = (
+  repository?: Repository | null,
+  settings?: SystemSettings | null,
+  user?: Pick<User, "defaultProvider"> | null
+): AgentProvider => user?.defaultProvider ?? repository?.defaultProvider ?? settings?.defaultProvider ?? "codex";
 
 const getTaskDefinitionResolvedDefaults = (
   settings?: SystemSettings | null,
-  repository?: Repository | null
+  repository?: Repository | null,
+  user?: Pick<User, "defaultProvider" | "defaultModel" | "defaultProviderProfile"> | null
 ): { provider: AgentProvider; model: string; providerProfile: ProviderProfile } => {
-  const provider = getResolvedProviderForRepository(repository, settings);
+  const provider = getResolvedProviderForDefaults(repository, settings, user);
   return {
     provider,
-    model: repository?.defaultModel ?? getProviderDefaultModel(provider, settings),
-    providerProfile: repository?.defaultProviderProfile ?? getProviderDefaultProfile(provider, settings)
+    model: user?.defaultModel ?? repository?.defaultModel ?? getProviderDefaultModel(provider, settings),
+    providerProfile: user?.defaultProviderProfile ?? repository?.defaultProviderProfile ?? getProviderDefaultProfile(provider, settings)
   };
 };
 
@@ -128,9 +133,10 @@ export const getTaskDefinitionDeadlineIso = (value: TaskDefinitionFormValues["de
 
 export const getTaskDefinitionInitialValues = (
   settings?: SystemSettings | null,
-  repository?: Repository | null
+  repository?: Repository | null,
+  user?: Pick<User, "defaultProvider" | "defaultModel" | "defaultProviderProfile"> | null
 ): Partial<TaskDefinitionFormValues> => {
-  const resolvedDefaults = getTaskDefinitionResolvedDefaults(settings, repository);
+  const resolvedDefaults = getTaskDefinitionResolvedDefaults(settings, repository, user);
   return {
     taskType: "build",
     provider: resolvedDefaults.provider,
@@ -230,7 +236,7 @@ export function TaskDefinitionFields({
     }
 
     const currentProvider = form.getFieldValue("provider") as AgentProvider | undefined;
-    const resolvedDefaults = getTaskDefinitionResolvedDefaults(settings, selectedRepository);
+    const resolvedDefaults = getTaskDefinitionResolvedDefaults(settings, selectedRepository, session?.user);
     const effectiveProvider =
       form.isFieldTouched("provider") && currentProvider ? currentProvider : resolvedDefaults.provider;
     if (!form.isFieldTouched("provider")) {
@@ -245,7 +251,7 @@ export function TaskDefinitionFields({
         selectedRepository?.defaultProviderProfile ?? getProviderDefaultProfile(effectiveProvider, settings)
       );
     }
-  }, [form, selectedRepository, settings, syncSettingsDefaults]);
+  }, [form, selectedRepository, session?.user, settings, syncSettingsDefaults]);
 
   useEffect(() => {
     const selected = providerSelectOptions.find((option) => option.value === selectedProvider && !option.disabled);

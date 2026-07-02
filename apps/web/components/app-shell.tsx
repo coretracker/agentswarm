@@ -27,7 +27,9 @@ import { api } from "../src/api/client";
 import { trackEvent } from "../src/utils/analytics";
 import { AppRightPanelProvider, type AppRightPanelConfig } from "./app-right-panel-context";
 import { NotesMarkdownEditor } from "./notes-markdown-editor";
+import { ModelSelect } from "./model-select";
 import type {
+  AgentProvider,
   AgentClarifyBehavior,
   AgentCodePreference,
   AgentExplanationDepth,
@@ -35,8 +37,10 @@ import type {
   AgentJargonLevel,
   AudienceType,
   PersonalAccessToken,
+  ProviderProfile,
   UserNotes
 } from "@agentswarm/shared-types";
+import { getAgentProviderLabel, getEffortOptionsForProvider, getModelsForProvider } from "@agentswarm/shared-types";
 import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
@@ -61,6 +65,10 @@ const NOTES_PANEL_MIN_WIDTH = 320;
 const NOTES_PANEL_MAX_WIDTH = 720;
 const NOTES_PANEL_COLLAPSED_RAIL_WIDTH = 56;
 const MCP_PROFILE_TOKEN_NAME = "AgentSwarm MCP";
+const profileDefaultProviderOptions: Array<{ label: string; value: AgentProvider }> = [
+  { label: getAgentProviderLabel("codex"), value: "codex" },
+  { label: getAgentProviderLabel("claude"), value: "claude" }
+];
 
 const formatDateTime = (value: string | null): string => {
   if (!value) {
@@ -103,7 +111,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const workspaceNotesSaveRequestIdRef = useRef(0);
   const [profileForm] = Form.useForm<{
     name: string;
+    githubUsername?: string;
     slackUsername?: string;
+    defaultProvider?: AgentProvider;
+    defaultModel?: string;
+    defaultProviderProfile?: ProviderProfile;
     audience?: AudienceType;
     explanationDepth?: AgentExplanationDepth;
     jargonLevel?: AgentJargonLevel;
@@ -126,6 +138,15 @@ export function AppShell({ children }: { children: ReactNode }) {
     }));
   const hasRouteAccess = session ? canAll(getRequiredScopesForPathname(pathname)) : false;
   const rightPanelContextValue = useMemo(() => ({ setRightPanel }), []);
+  const selectedProfileDefaultProvider = (Form.useWatch("defaultProvider", profileForm) as AgentProvider | undefined) ?? "codex";
+  const profileDefaultModelOptions = useMemo(
+    () => getModelsForProvider(selectedProfileDefaultProvider),
+    [selectedProfileDefaultProvider]
+  );
+  const profileDefaultEffortOptions = useMemo(
+    () => getEffortOptionsForProvider(selectedProfileDefaultProvider),
+    [selectedProfileDefaultProvider]
+  );
   const notesPanelId = "workspace-notes-panel";
   const notesPanelStorageKey = useMemo(
     () => `${NOTES_PANEL_STATE_STORAGE_KEY_PREFIX}:${session?.user.id ?? "anonymous"}`,
@@ -310,7 +331,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       const [profile, tokens] = await Promise.all([api.getProfile(), api.listPersonalAccessTokens()]);
       profileForm.setFieldsValue({
         name: profile.name,
+        githubUsername: profile.githubUsername ?? "",
         slackUsername: profile.slackUsername ?? "",
+        defaultProvider: profile.defaultProvider ?? undefined,
+        defaultModel: profile.defaultModel ?? undefined,
+        defaultProviderProfile: profile.defaultProviderProfile ?? undefined,
         audience: profile.agentResponsePreference.audience,
         explanationDepth: profile.agentResponsePreference.explanationDepth,
         jargonLevel: profile.agentResponsePreference.jargonLevel,
@@ -334,7 +359,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       setSavingProfile(true);
       const next = await api.updateProfile({
         name: values.name,
+        githubUsername: values.githubUsername?.trim() || null,
         slackUsername: values.slackUsername?.trim() || null,
+        defaultProvider: values.defaultProvider ?? null,
+        defaultModel: values.defaultModel?.trim() || null,
+        defaultProviderProfile: values.defaultProviderProfile ?? null,
         agentResponsePreference: {
           audience: values.audience,
           explanationDepth: values.explanationDepth,
@@ -347,7 +376,11 @@ export function AppShell({ children }: { children: ReactNode }) {
       });
       setSessionUser({
         name: next.name,
+        githubUsername: next.githubUsername,
         slackUsername: next.slackUsername,
+        defaultProvider: next.defaultProvider,
+        defaultModel: next.defaultModel,
+        defaultProviderProfile: next.defaultProviderProfile,
         agentResponsePreference: next.agentResponsePreference
       });
       message.success("Profile updated");
@@ -689,7 +722,11 @@ export function AppShell({ children }: { children: ReactNode }) {
             layout="vertical"
             initialValues={{
               name: session.user.name,
+              githubUsername: session.user.githubUsername ?? "",
               slackUsername: session.user.slackUsername ?? "",
+              defaultProvider: session.user.defaultProvider ?? undefined,
+              defaultModel: session.user.defaultModel ?? undefined,
+              defaultProviderProfile: session.user.defaultProviderProfile ?? undefined,
               audience: session.user.agentResponsePreference.audience,
               explanationDepth: session.user.agentResponsePreference.explanationDepth,
               jargonLevel: session.user.agentResponsePreference.jargonLevel,
@@ -703,6 +740,13 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Input />
             </Form.Item>
             <Form.Item
+              name="githubUsername"
+              label="GitHub Username"
+              rules={[{ max: 80, message: "GitHub username must be 80 characters or fewer." }]}
+            >
+              <Input autoComplete="off" placeholder="octocat" />
+            </Form.Item>
+            <Form.Item
               name="slackUsername"
               label="Slack User ID or Name"
               extra="Use the Slack user ID, for example U06HSV9LHCH, or the name shown in Slack."
@@ -710,6 +754,31 @@ export function AppShell({ children }: { children: ReactNode }) {
             >
               <Input autoComplete="off" placeholder="U06HSV9LHCH or @Andreas Ehrlich-Gruber" />
             </Form.Item>
+            <Divider orientation="left" plain>
+              Default Agent
+            </Divider>
+            <Card size="small">
+              <Form.Item name="defaultProvider" label="Provider">
+                <Select
+                  allowClear
+                  placeholder="Repository or system default"
+                  options={profileDefaultProviderOptions}
+                  onChange={(value: AgentProvider | undefined) => {
+                    const nextProvider = value ?? "codex";
+                    const nextEfforts = getEffortOptionsForProvider(nextProvider);
+                    if (!nextEfforts.some((option) => option.value === profileForm.getFieldValue("defaultProviderProfile"))) {
+                      profileForm.setFieldValue("defaultProviderProfile", undefined);
+                    }
+                  }}
+                />
+              </Form.Item>
+              <Form.Item name="defaultModel" label="Model">
+                <ModelSelect options={profileDefaultModelOptions} placeholder="Repository or system default" />
+              </Form.Item>
+              <Form.Item name="defaultProviderProfile" label="Effort">
+                <Select allowClear options={profileDefaultEffortOptions} placeholder="Repository or system default" />
+              </Form.Item>
+            </Card>
             <Divider orientation="left" plain>
               Response Format Preferences
             </Divider>

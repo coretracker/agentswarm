@@ -64,6 +64,24 @@ const repository: Repository = {
   updatedAt: "2026-01-01T00:00:00.000Z"
 };
 
+test("getTaskDefinitionInitialValues uses user defaults before repository and system defaults", () => {
+  assert.deepEqual(
+    getTaskDefinitionInitialValues(settings, repository, {
+      defaultProvider: "codex",
+      defaultModel: "gpt-5.4",
+      defaultProviderProfile: "high"
+    }),
+    {
+      taskType: "build",
+      provider: "codex",
+      model: "gpt-5.4",
+      providerProfile: "high",
+      codexCredentialSource: "auto",
+      branchStrategy: "feature_branch"
+    }
+  );
+});
+
 test("getTaskDefinitionInitialValues uses repository defaults before system defaults", () => {
   assert.deepEqual(getTaskDefinitionInitialValues(settings, repository), {
     taskType: "build",

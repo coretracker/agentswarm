@@ -1236,7 +1236,7 @@ export const registerTaskRoutes = (
     const settings = await deps.settingsStore.getSettings();
     const createPayload = {
       ...rawCreatePayload,
-      ...resolveCreateTaskProviderConfig(rawCreatePayload, settings, repository)
+      ...resolveCreateTaskProviderConfig(rawCreatePayload, settings, repository, request.auth!.user)
     };
     if (
       !requireTaskCapabilityAccess(request, reply, {

@@ -344,7 +344,7 @@ export const createMcpTools = (): McpToolDefinition[] => [
         throw new McpToolError(404, "Repository not found", "not_found");
       }
       const settings = await context.deps.settingsStore.getSettings();
-      const providerConfig = resolveCreateTaskProviderConfig(input, settings, repository);
+      const providerConfig = resolveCreateTaskProviderConfig(input, settings, repository, context.user);
       const task = await context.deps.taskStore.createTask(
         {
           ...input,

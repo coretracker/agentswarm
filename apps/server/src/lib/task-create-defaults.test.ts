@@ -50,7 +50,20 @@ const repository: Pick<Repository, "defaultProvider" | "defaultModel" | "default
 };
 
 describe("resolveCreateTaskProviderConfig", () => {
-  it("falls through task -> repository -> system defaults", () => {
+  it("falls through task -> user -> repository -> system defaults", () => {
+    assert.deepEqual(
+      resolveCreateTaskProviderConfig({}, settings, repository, {
+        defaultProvider: "codex",
+        defaultModel: "gpt-5.4",
+        defaultProviderProfile: "high"
+      }),
+      {
+        provider: "codex",
+        providerProfile: "high",
+        modelOverride: "gpt-5.4"
+      }
+    );
+
     assert.deepEqual(resolveCreateTaskProviderConfig({}, settings, repository), {
       provider: "claude",
       providerProfile: "max",
@@ -64,7 +77,7 @@ describe("resolveCreateTaskProviderConfig", () => {
     });
   });
 
-  it("preserves explicit task-level values over repository defaults", () => {
+  it("preserves explicit task-level values over user and repository defaults", () => {
     assert.deepEqual(
       resolveCreateTaskProviderConfig(
         {
@@ -73,7 +86,12 @@ describe("resolveCreateTaskProviderConfig", () => {
           modelOverride: "gpt-5.4"
         },
         settings,
-        repository
+        repository,
+        {
+          defaultProvider: "claude",
+          defaultModel: "claude-haiku-4-5-20251001",
+          defaultProviderProfile: "low"
+        }
       ),
       {
         provider: "codex",
@@ -98,6 +116,26 @@ describe("resolveCreateTaskProviderConfig", () => {
         provider: "codex",
         providerProfile: "high",
         modelOverride: "gpt-5.4-mini"
+      }
+    );
+  });
+
+  it("falls through each null user preference to the next tier", () => {
+    assert.deepEqual(
+      resolveCreateTaskProviderConfig(
+        {},
+        settings,
+        repository,
+        {
+          defaultProvider: null,
+          defaultModel: null,
+          defaultProviderProfile: null
+        }
+      ),
+      {
+        provider: "claude",
+        providerProfile: "max",
+        modelOverride: "claude-sonnet-4-6"
       }
     );
   });

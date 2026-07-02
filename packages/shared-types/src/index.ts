@@ -316,7 +316,11 @@ export interface User {
   id: string;
   name: string;
   email: string;
+  githubUsername: string | null;
   slackUsername: string | null;
+  defaultProvider: AgentProvider | null;
+  defaultModel: string | null;
+  defaultProviderProfile: ProviderProfile | null;
   active: boolean;
   agentResponsePreference: AgentResponsePreference;
   roles: UserRoleRef[];
@@ -341,7 +345,11 @@ export interface AuthSession {
 export interface AuthProfile {
   name: string;
   email: string;
+  githubUsername: string | null;
   slackUsername: string | null;
+  defaultProvider: AgentProvider | null;
+  defaultModel: string | null;
+  defaultProviderProfile: ProviderProfile | null;
   agentResponsePreference: AgentResponsePreference;
 }
 
@@ -387,7 +395,11 @@ export interface CreateUserInput {
   name: string;
   email: string;
   password: string;
+  githubUsername?: string | null;
   slackUsername?: string | null;
+  defaultProvider?: AgentProvider | null;
+  defaultModel?: string | null;
+  defaultProviderProfile?: ProviderProfile | null;
   active?: boolean;
   roleIds?: string[];
   repositoryIds?: string[];
@@ -398,7 +410,11 @@ export interface UpdateUserInput {
   name?: string;
   email?: string;
   password?: string;
+  githubUsername?: string | null;
   slackUsername?: string | null;
+  defaultProvider?: AgentProvider | null;
+  defaultModel?: string | null;
+  defaultProviderProfile?: ProviderProfile | null;
   active?: boolean;
   roleIds?: string[];
   repositoryIds?: string[];
@@ -1447,7 +1463,11 @@ export interface UpdateCredentialSettingsInput {
 
 export interface UpdateAuthProfileInput {
   name?: string;
+  githubUsername?: string | null;
   slackUsername?: string | null;
+  defaultProvider?: AgentProvider | null;
+  defaultModel?: string | null;
+  defaultProviderProfile?: ProviderProfile | null;
   agentResponsePreference?: Partial<AgentResponsePreference>;
 }
 

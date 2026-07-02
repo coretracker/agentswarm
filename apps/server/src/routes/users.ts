@@ -17,11 +17,18 @@ const responsePreferenceSchema = z
     extraInstructions: z.string().trim().max(2000).optional()
   });
 
+const nullableDefaultProviderSchema = z.enum(["codex", "claude"]).nullable().optional();
+const nullableDefaultProviderProfileSchema = z.enum(["low", "medium", "high", "max"]).nullable().optional();
+
 const createUserSchema = z.object({
   name: z.string().trim().min(1),
   email: z.string().trim().email(),
   password: z.string().min(1),
+  githubUsername: z.string().trim().max(80).nullable().optional(),
   slackUsername: z.string().trim().max(80).nullable().optional(),
+  defaultProvider: nullableDefaultProviderSchema,
+  defaultModel: z.string().trim().max(200).nullable().optional(),
+  defaultProviderProfile: nullableDefaultProviderProfileSchema,
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),
   repositoryIds: z.array(z.string().trim().min(1)).optional(),
@@ -32,7 +39,11 @@ const updateUserSchema = z.object({
   name: z.string().trim().min(1).optional(),
   email: z.string().trim().email().optional(),
   password: z.string().min(1).optional(),
+  githubUsername: z.string().trim().max(80).nullable().optional(),
   slackUsername: z.string().trim().max(80).nullable().optional(),
+  defaultProvider: nullableDefaultProviderSchema,
+  defaultModel: z.string().trim().max(200).nullable().optional(),
+  defaultProviderProfile: nullableDefaultProviderProfileSchema,
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),
   repositoryIds: z.array(z.string().trim().min(1)).optional(),

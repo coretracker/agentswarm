@@ -43,7 +43,11 @@ export interface StoredUserRecord {
   email: string;
   gitAuthorName: string | null;
   gitAuthorEmail: string | null;
+  githubUsername: string | null;
   slackUsername: string | null;
+  defaultProvider: AgentProvider | null;
+  defaultModel: string | null;
+  defaultProviderProfile: ProviderProfile | null;
   active: boolean;
   agentResponsePreference: AgentResponsePreference;
   roleIds: string[];
@@ -65,10 +69,22 @@ const normalizeOptionalGitAuthorEmail = (value: string | null | undefined): stri
   const normalized = (value ?? "").trim().toLowerCase();
   return normalized || null;
 };
+const normalizeGithubUsername = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().replace(/^@+/, "").toLowerCase();
+  return normalized || null;
+};
 const normalizeSlackUsername = (value: string | null | undefined): string | null => {
   const normalized = (value ?? "").trim().replace(/^@+/, "").replace(/\s+/g, " ");
   return normalized || null;
 };
+const normalizeDefaultProvider = (value: AgentProvider | string | null | undefined): AgentProvider | null =>
+  value === "codex" || value === "claude" ? value : null;
+const normalizeDefaultModel = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim();
+  return normalized || null;
+};
+const normalizeDefaultProviderProfile = (value: ProviderProfile | string | null | undefined): ProviderProfile | null =>
+  value === "low" || value === "medium" || value === "high" || value === "max" ? value : null;
 const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
 const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
 const RESPONSE_EXPLANATION_DEPTH = new Set(["one_line", "brief", "standard", "detailed", "deep_dive"]);
@@ -160,6 +176,7 @@ export interface UserStore {
   ensureDefaultAdminUser(input: BootstrapAdminInput): Promise<User>;
   listUsers(): Promise<User[]>;
   getUser(userId: string): Promise<User | null>;
+  findByGithubUsername(githubUsername: string): Promise<User | null>;
   getAuthSessionUser(userId: string): Promise<AuthSessionUser | null>;
   authenticate(email: string, password: string): Promise<User | null>;
   createUser(input: CreateUserInput): Promise<User>;
@@ -191,7 +208,11 @@ export class RedisUserStore implements UserStore {
       email: normalizeUserEmail(user.email),
       gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
       gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
+      githubUsername: normalizeGithubUsername(user.githubUsername),
       slackUsername: normalizeSlackUsername(user.slackUsername),
+      defaultProvider: normalizeDefaultProvider(user.defaultProvider),
+      defaultModel: normalizeDefaultModel(user.defaultModel),
+      defaultProviderProfile: normalizeDefaultProviderProfile(user.defaultProviderProfile),
       active: user.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
@@ -275,7 +296,11 @@ export class RedisUserStore implements UserStore {
       id: user.id,
       name: user.name,
       email: user.email,
+      githubUsername: user.githubUsername,
       slackUsername: user.slackUsername,
+      defaultProvider: user.defaultProvider,
+      defaultModel: user.defaultModel,
+      defaultProviderProfile: user.defaultProviderProfile,
       active: user.active,
       agentResponsePreference: user.agentResponsePreference,
       roles: this.buildRoleRefs(roles),
@@ -396,6 +421,18 @@ export class RedisUserStore implements UserStore {
     return this.sanitizeUser(user);
   }
 
+  async findByGithubUsername(githubUsername: string): Promise<User | null> {
+    const normalizedGithubUsername = normalizeGithubUsername(githubUsername);
+    if (!normalizedGithubUsername) {
+      return null;
+    }
+
+    const userIds = await this.redis.smembers(USER_IDS_KEY);
+    const users = await this.getStoredUsers(userIds);
+    const user = users.find((entry) => entry.active && entry.githubUsername === normalizedGithubUsername);
+    return user ? this.sanitizeUser(user) : null;
+  }
+
   async getAuthSessionUser(userId: string): Promise<AuthSessionUser | null> {
     const user = await this.getStoredUser(userId);
     if (!user || !user.active) {
@@ -481,7 +518,11 @@ export class RedisUserStore implements UserStore {
       email,
       gitAuthorName: null,
       gitAuthorEmail: null,
+      githubUsername: normalizeGithubUsername(input.githubUsername),
       slackUsername: normalizeSlackUsername(input.slackUsername),
+      defaultProvider: normalizeDefaultProvider(input.defaultProvider),
+      defaultModel: normalizeDefaultModel(input.defaultModel),
+      defaultProviderProfile: normalizeDefaultProviderProfile(input.defaultProviderProfile),
       active: input.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
@@ -544,7 +585,14 @@ export class RedisUserStore implements UserStore {
       ...current,
       name: nextName,
       email: nextEmail,
+      githubUsername: input.githubUsername === undefined ? current.githubUsername : normalizeGithubUsername(input.githubUsername),
       slackUsername: input.slackUsername === undefined ? current.slackUsername : normalizeSlackUsername(input.slackUsername),
+      defaultProvider: input.defaultProvider === undefined ? current.defaultProvider : normalizeDefaultProvider(input.defaultProvider),
+      defaultModel: input.defaultModel === undefined ? current.defaultModel : normalizeDefaultModel(input.defaultModel),
+      defaultProviderProfile:
+        input.defaultProviderProfile === undefined
+          ? current.defaultProviderProfile
+          : normalizeDefaultProviderProfile(input.defaultProviderProfile),
       active: nextActive,
       agentResponsePreference:
         input.agentResponsePreference === undefined
@@ -611,7 +659,11 @@ export class PostgresUserStore implements UserStore {
       email: String(row.email ?? ""),
       gitAuthorName: typeof row.git_author_name === "string" ? row.git_author_name : null,
       gitAuthorEmail: typeof row.git_author_email === "string" ? row.git_author_email : null,
+      githubUsername: typeof row.github_username === "string" ? row.github_username : null,
       slackUsername: typeof row.slack_username === "string" ? row.slack_username : null,
+      defaultProvider: normalizeDefaultProvider(row.default_provider as AgentProvider | string | null | undefined),
+      defaultModel: typeof row.default_model === "string" ? row.default_model : null,
+      defaultProviderProfile: normalizeDefaultProviderProfile(row.default_provider_profile as ProviderProfile | string | null | undefined),
       active: row.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(
         row.agent_response_preference && typeof row.agent_response_preference === "object"
@@ -635,7 +687,11 @@ export class PostgresUserStore implements UserStore {
       email: normalizeUserEmail(user.email),
       gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
       gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
+      githubUsername: normalizeGithubUsername(user.githubUsername),
       slackUsername: normalizeSlackUsername(user.slackUsername),
+      defaultProvider: normalizeDefaultProvider(user.defaultProvider),
+      defaultModel: normalizeDefaultModel(user.defaultModel),
+      defaultProviderProfile: normalizeDefaultProviderProfile(user.defaultProviderProfile),
       active: user.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
@@ -755,7 +811,11 @@ export class PostgresUserStore implements UserStore {
       id: user.id,
       name: user.name,
       email: user.email,
+      githubUsername: user.githubUsername,
       slackUsername: user.slackUsername,
+      defaultProvider: user.defaultProvider,
+      defaultModel: user.defaultModel,
+      defaultProviderProfile: user.defaultProviderProfile,
       active: user.active,
       agentResponsePreference: user.agentResponsePreference,
       roles: this.buildRoleRefs(roles),
@@ -811,7 +871,11 @@ export class PostgresUserStore implements UserStore {
           email,
           git_author_name,
           git_author_email,
+          github_username,
           slack_username,
+          default_provider,
+          default_model,
+          default_provider_profile,
           active,
           agent_response_preference,
           password_hash,
@@ -820,14 +884,18 @@ export class PostgresUserStore implements UserStore {
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11, $12, $13)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17)
         ON CONFLICT (id) DO UPDATE
         SET
           name = EXCLUDED.name,
           email = EXCLUDED.email,
           git_author_name = EXCLUDED.git_author_name,
           git_author_email = EXCLUDED.git_author_email,
+          github_username = EXCLUDED.github_username,
           slack_username = EXCLUDED.slack_username,
+          default_provider = EXCLUDED.default_provider,
+          default_model = EXCLUDED.default_model,
+          default_provider_profile = EXCLUDED.default_provider_profile,
           active = EXCLUDED.active,
           agent_response_preference = EXCLUDED.agent_response_preference,
           password_hash = EXCLUDED.password_hash,
@@ -842,7 +910,11 @@ export class PostgresUserStore implements UserStore {
         nextUser.email,
         nextUser.gitAuthorName,
         nextUser.gitAuthorEmail,
+        nextUser.githubUsername,
         nextUser.slackUsername,
+        nextUser.defaultProvider,
+        nextUser.defaultModel,
+        nextUser.defaultProviderProfile,
         nextUser.active,
         JSON.stringify(nextUser.agentResponsePreference),
         nextUser.passwordHash,
@@ -970,6 +1042,20 @@ export class PostgresUserStore implements UserStore {
     return this.sanitizeUser(user);
   }
 
+  async findByGithubUsername(githubUsername: string): Promise<User | null> {
+    const normalizedGithubUsername = normalizeGithubUsername(githubUsername);
+    if (!normalizedGithubUsername) {
+      return null;
+    }
+
+    const result = await this.pool.query<{ id: string }>(
+      "SELECT id FROM users WHERE github_username = $1 AND active = TRUE ORDER BY name ASC, email ASC LIMIT 1",
+      [normalizedGithubUsername]
+    );
+    const userId = result.rows[0]?.id ?? null;
+    return userId ? this.getUser(userId) : null;
+  }
+
   async getAuthSessionUser(userId: string): Promise<AuthSessionUser | null> {
     const user = await this.getStoredUser(userId);
     if (!user || !user.active) {
@@ -1058,7 +1144,11 @@ export class PostgresUserStore implements UserStore {
       email,
       gitAuthorName: null,
       gitAuthorEmail: null,
+      githubUsername: normalizeGithubUsername(input.githubUsername),
       slackUsername: normalizeSlackUsername(input.slackUsername),
+      defaultProvider: normalizeDefaultProvider(input.defaultProvider),
+      defaultModel: normalizeDefaultModel(input.defaultModel),
+      defaultProviderProfile: normalizeDefaultProviderProfile(input.defaultProviderProfile),
       active: input.active !== false,
       agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
@@ -1124,7 +1214,14 @@ export class PostgresUserStore implements UserStore {
       ...current,
       name: nextName,
       email: nextEmail,
+      githubUsername: input.githubUsername === undefined ? current.githubUsername : normalizeGithubUsername(input.githubUsername),
       slackUsername: input.slackUsername === undefined ? current.slackUsername : normalizeSlackUsername(input.slackUsername),
+      defaultProvider: input.defaultProvider === undefined ? current.defaultProvider : normalizeDefaultProvider(input.defaultProvider),
+      defaultModel: input.defaultModel === undefined ? current.defaultModel : normalizeDefaultModel(input.defaultModel),
+      defaultProviderProfile:
+        input.defaultProviderProfile === undefined
+          ? current.defaultProviderProfile
+          : normalizeDefaultProviderProfile(input.defaultProviderProfile),
       active: nextActive,
       agentResponsePreference:
         input.agentResponsePreference === undefined
