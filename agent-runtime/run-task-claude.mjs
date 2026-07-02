@@ -292,7 +292,7 @@ await ensureGitAskPass(runtimeHome);
 const sessionIdFilePath = path.join(providerStatePath, "agentswarm-session-id.txt");
 const persistedSessionId = await readPersistedSessionId(sessionIdFilePath);
 if (persistedSessionId) {
-  args.push("--resume", persistedSessionId);
+  args.push("--continue");
 }
 const claudeBinary = await resolveClaudeBinary(runtimeHome);
 

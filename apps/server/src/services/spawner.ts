@@ -1818,7 +1818,39 @@ export class SpawnerService {
   }
 
   private resolveProviderStateContainerPath(provider: AgentProvider): string {
-    return provider === "claude" ? "/runtime/home/.claude" : "/root/.codex";
+    return provider === "claude" ? "/home/agent/.claude" : "/root/.codex";
+  }
+
+  private resolveProviderHomeContainerPath(provider: AgentProvider): string {
+    return provider === "claude" ? "/home/agent" : "/root";
+  }
+
+  private resolveProviderStateMountSourceRelativePath(
+    taskId: string,
+    provider: AgentProvider,
+    providerStatePaths: Awaited<ReturnType<typeof ensureTaskProviderStatePaths>>
+  ): string {
+    const mountHostPath = provider === "claude" ? providerStatePaths.homeHostPath : providerStatePaths.hostPath;
+    if (!mountHostPath) {
+      throw new Error(`Provider state mount path is not available for ${provider}.`);
+    }
+
+    const sourceRelativePath = path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, mountHostPath);
+    const normalizedSource = sourceRelativePath.split(path.sep).join(path.posix.sep);
+    const expectedRoot = path
+      .relative(env.TASK_WORKSPACE_DOCKER_SOURCE, resolveTaskStateRootPaths(taskId).hostPath)
+      .split(path.sep)
+      .join(path.posix.sep);
+    const expectedPrefix = `${expectedRoot}/`;
+    if (
+      normalizedSource === ".claude" ||
+      normalizedSource.endsWith("/.claude") ||
+      !normalizedSource.startsWith(expectedPrefix)
+    ) {
+      throw new Error(`Refusing to mount unsafe provider state path for ${provider}: ${normalizedSource}`);
+    }
+
+    return sourceRelativePath;
   }
 
   private resolveRepoCachePath(task: Task): string {
@@ -5609,7 +5641,14 @@ export class SpawnerService {
         linkedWorkspaces: task.linkedWorkspaces
       });
       const providerStateContainerPath = this.resolveProviderStateContainerPath(task.provider);
+      const providerHomeContainerPath = this.resolveProviderHomeContainerPath(task.provider);
+      const providerStateMountContainerPath = task.provider === "claude" ? providerHomeContainerPath : providerStateContainerPath;
       const providerStatePaths = await ensureTaskProviderStatePaths(task.id, task.provider);
+      const providerStateMountSourceRelativePath = this.resolveProviderStateMountSourceRelativePath(
+        task.id,
+        task.provider,
+        providerStatePaths
+      );
       const dockerSocketPolicy = resolveDockerSocketAccessPolicy(task.provider);
       const dockerSocketMountArgs = resolveDockerSocketMountArgs(dockerSocketPolicy);
       const dockerSocketEnvEntries = resolveDockerSocketEnvEntries(dockerSocketPolicy);
@@ -5662,8 +5701,8 @@ export class SpawnerService {
         ...gitRuntimeMounts,
         ...hostexecRuntime.mountArgs,
         ...this.buildTaskWorkspaceMountArgs(
-          path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, providerStatePaths.hostPath),
-          providerStateContainerPath,
+          providerStateMountSourceRelativePath,
+          providerStateMountContainerPath,
           "rw"
         ),
         ...dockerSocketMountArgs,
@@ -5678,7 +5717,7 @@ export class SpawnerService {
         "-e",
         `TASK_PROVIDER_STATE_PATH=${providerStateContainerPath}`,
         "-e",
-        `TASK_PROVIDER_HOME=${path.dirname(providerStateContainerPath)}`
+        `TASK_PROVIDER_HOME=${providerHomeContainerPath}`
       ];
 
       const addRuntimeEnv = (name: string, value: string): void => {
