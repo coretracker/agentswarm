@@ -8,6 +8,7 @@ import type { AgentProvider, McpServerConfig, PermissionScope, ProviderProfile }
 import type { User } from "@agentswarm/shared-types";
 import { env } from "../config/env.js";
 import { collectMcpServerEnvEntries, normalizeMcpServers } from "../lib/mcp-config.js";
+import { buildTaskRuntimeGitEnvEntries } from "../lib/task-interactive-terminal-git-env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 import type { PersonalAccessTokenStore } from "./personal-access-token-store.js";
 import type { SettingsStore } from "./settings-store.js";
@@ -395,10 +396,20 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
       `TASK_PROVIDER_HOME=${providerHomePath}`
     ];
     const providerRuntimeEnv = providerDefinition.getRuntimeEnv(credentials);
+    const runtimeGitEnvEntries = buildTaskRuntimeGitEnvEntries({
+      workspacePath,
+      githubToken: credentials.githubToken,
+      gitUsername: credentials.gitUsername,
+      gitIdentity:
+        credentials.gitAuthorName?.trim() && credentials.gitAuthorEmail?.trim()
+          ? { name: credentials.gitAuthorName, email: credentials.gitAuthorEmail }
+          : null
+    });
     const runtimeEnv = {
       ...Object.fromEntries(collectMcpServerEnvEntries(runtimeMcp.servers, { ...process.env, ...runtimeMcp.env })),
       ...runtimeMcp.env,
-      ...providerRuntimeEnv
+      ...providerRuntimeEnv,
+      ...Object.fromEntries(runtimeGitEnvEntries)
     };
     for (const [name, value] of Object.entries(runtimeEnv)) {
       if (value) {

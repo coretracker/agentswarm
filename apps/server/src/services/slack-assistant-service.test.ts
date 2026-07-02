@@ -132,10 +132,10 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
         openaiApiKey: "openai-key",
         codexAuthJson: null,
         anthropicApiKey: null,
-        githubToken: null,
-        gitUsername: "x-access-token",
-        gitAuthorName: null,
-        gitAuthorEmail: null,
+        githubToken: "github-token",
+        gitUsername: "agent-user",
+        gitAuthorName: "Agent Bot",
+        gitAuthorEmail: "agent@example.com",
         openaiBaseUrl: null,
         anthropicBaseUrl: null
       })
@@ -169,10 +169,20 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       const providerConfigEnv = args.find((arg) => arg.startsWith("PROVIDER_CONFIG_FILE="));
       const providerStateEnv = args.find((arg) => arg.startsWith("TASK_PROVIDER_STATE_PATH="));
       const mcpTokenEnv = args.find((arg) => arg === "AGENTSWARM_MCP_TOKEN=runtime-token");
+      const githubCliTokenEnv = args.find((arg) => arg === "GH_TOKEN=github-token");
+      const gitTokenEnv = args.find((arg) => arg === "GIT_TOKEN=github-token");
+      const gitUsernameEnv = args.find((arg) => arg === "GIT_USERNAME=agent-user");
+      const gitAuthorEnv = args.find((arg) => arg === "GIT_AUTHOR_NAME=Agent Bot");
+      const gitAuthorEmailEnv = args.find((arg) => arg === "GIT_AUTHOR_EMAIL=agent@example.com");
       assert.ok(manifestEnv);
       assert.ok(providerConfigEnv);
       assert.ok(providerStateEnv);
       assert.ok(mcpTokenEnv);
+      assert.ok(githubCliTokenEnv);
+      assert.ok(gitTokenEnv);
+      assert.ok(gitUsernameEnv);
+      assert.ok(gitAuthorEnv);
+      assert.ok(gitAuthorEmailEnv);
 
       const manifest = JSON.parse(await readFile(manifestEnv!.slice("TASK_MANIFEST_FILE=".length), "utf8")) as {
         provider: string;
@@ -181,6 +191,7 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
         resultJsonPath: string;
         workspacePath: string;
       };
+      const workspaceGitSafeDirectoryKeyIndex = args.findIndex((arg) => arg === "GIT_CONFIG_KEY_0=safe.directory");
       const providerConfig = await readFile(providerConfigEnv!.slice("PROVIDER_CONFIG_FILE=".length), "utf8");
       const slackHarness = await readFile(path.join(manifest.workspacePath, "AGENTS.md"), "utf8");
       assert.match(manifest.content, /detached Slack DM assistant/);
@@ -191,6 +202,8 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       assert.equal(manifest.provider, "codex");
       assert.equal(manifest.resolvedModel, "gpt-5.4-mini");
       assert.match(providerStateEnv!, /\/codex\/gpt-5\.4-mini$/);
+      assert.ok(workspaceGitSafeDirectoryKeyIndex >= 0);
+      assert.equal(args[workspaceGitSafeDirectoryKeyIndex + 2], `GIT_CONFIG_VALUE_0=${manifest.workspacePath}`);
       assert.match(providerConfig, /mcp_servers\.agentswarm/);
       assert.match(providerConfig, /mcp_servers\.github/);
       assert.doesNotMatch(providerConfig, /should-not-override/);
