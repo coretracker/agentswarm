@@ -28,7 +28,13 @@ function resolveInitialThemeMode(): AppThemeMode {
     storedMode === "github" ||
     storedMode === "github-light" ||
     storedMode === "verft-light" ||
-    storedMode === "verft-dark"
+    storedMode === "verft-dark" ||
+    storedMode === "ember-light" ||
+    storedMode === "ember-dark" ||
+    storedMode === "moss-light" ||
+    storedMode === "moss-dark" ||
+    storedMode === "graphite-light" ||
+    storedMode === "graphite-dark"
   ) {
     return storedMode;
   }
