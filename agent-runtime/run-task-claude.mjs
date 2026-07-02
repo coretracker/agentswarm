@@ -251,7 +251,7 @@ const mcpTools = providerConfigPath
   : [];
 const isAsk = manifest.action === "ask";
 const allowedTools = (isAsk
-  ? ["Read", "LS", "Grep", "Glob", "TodoWrite", "Task", "ExitPlanMode", ...mcpTools]
+  ? ["Read", "LS", "Grep", "Glob", "TodoWrite", "Task", ...mcpTools]
   : ["Bash", "Read", "Edit", "Write", "MultiEdit", "LS", "Grep", "Glob", "TodoWrite", "Task", ...mcpTools]
 ).join(",");
 
@@ -267,11 +267,7 @@ const args = [
   "--mcp-config",
   providerConfigPath
 ];
-if (isAsk) {
-  args.push("--permission-mode", "plan");
-} else {
-  args.push("--dangerously-skip-permissions");
-}
+args.push("--dangerously-skip-permissions");
 if (manifest.resolvedModel) {
   args.push("--model", manifest.resolvedModel);
 }
