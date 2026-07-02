@@ -251,7 +251,7 @@ const mcpTools = providerConfigPath
   : [];
 const isAsk = manifest.action === "ask";
 const allowedTools = (isAsk
-  ? ["Read", "LS", "Grep", "Glob", "TodoWrite", "Task", ...mcpTools]
+  ? ["Read", "LS", "Grep", "Glob", "TodoWrite", "Task", "ExitPlanMode", ...mcpTools]
   : ["Bash", "Read", "Edit", "Write", "MultiEdit", "LS", "Grep", "Glob", "TodoWrite", "Task", ...mcpTools]
 ).join(",");
 
@@ -267,7 +267,11 @@ const args = [
   "--mcp-config",
   providerConfigPath
 ];
-args.push("--dangerously-skip-permissions");
+if (isAsk) {
+  args.push("--permission-mode", "plan");
+} else {
+  args.push("--dangerously-skip-permissions");
+}
 if (manifest.resolvedModel) {
   args.push("--model", manifest.resolvedModel);
 }
@@ -297,6 +301,9 @@ console.log(
 );
 console.log(`[runtime] claude thinking_budget_tokens=${manifest.resolvedThinkingBudgetTokens ?? "default"}`);
 await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath)]);
+if (!isAsk) {
+  await runCommand("chown", ["-R", runtimeIdentity, manifest.workspacePath]).catch(() => undefined);
+}
 console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
 
 let finalMarkdown = "";
