@@ -1,5 +1,5 @@
 import { createWriteStream } from "node:fs";
-import { access, chmod, constants, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, constants, copyFile, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
@@ -60,6 +60,26 @@ const writePersistedSessionId = async (sessionIdPath, sessionId) => {
   }
 
   await writeFile(sessionIdPath, `${sessionId.trim()}\n`, "utf8");
+};
+
+const restoreClaudeProjectConfig = async (runtimeHome, providerStatePath) => {
+  const persistedConfigPath = path.join(providerStatePath, "agentswarm-claude.json");
+  const homeConfigPath = path.join(runtimeHome, ".claude.json");
+  await copyFile(persistedConfigPath, homeConfigPath).catch((error) => {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  });
+};
+
+const persistClaudeProjectConfig = async (runtimeHome, providerStatePath) => {
+  const homeConfigPath = path.join(runtimeHome, ".claude.json");
+  const persistedConfigPath = path.join(providerStatePath, "agentswarm-claude.json");
+  await copyFile(homeConfigPath, persistedConfigPath).catch((error) => {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  });
 };
 
 const runCommand = (command, args, options = {}) =>
@@ -266,6 +286,7 @@ const providerStatePath = configuredStatePath && configuredStatePath.length > 0
   : path.join(runtimeHome, ".claude");
 await mkdir(runtimeHome, { recursive: true });
 await mkdir(providerStatePath, { recursive: true });
+await restoreClaudeProjectConfig(runtimeHome, providerStatePath);
 preserveHostexecPath();
 await ensureGitAskPass(runtimeHome);
 const sessionIdFilePath = path.join(providerStatePath, "agentswarm-session-id.txt");
@@ -549,6 +570,7 @@ await new Promise((resolve, reject) => {
 }).catch((error) => {
   claudeProcessError = error;
 });
+await persistClaudeProjectConfig(runtimeHome, providerStatePath);
 await new Promise((resolve, reject) => {
   rawEventsStream.end(() => resolve());
   rawEventsStream.on("error", reject);
