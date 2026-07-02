@@ -463,6 +463,9 @@ export interface Repository {
   name: string;
   url: string;
   defaultBranch: string;
+  defaultProvider?: AgentProvider | null;
+  defaultModel?: string | null;
+  defaultProviderProfile?: ProviderProfile | null;
   envVars: RepositoryEnvVarValue[];
   envSecrets?: RepositoryEnvSecret[];
   mcpServers: McpServerConfig[];
@@ -947,6 +950,9 @@ export interface CreateRepositoryInput {
   name: string;
   url: string;
   defaultBranch?: string;
+  defaultProvider?: AgentProvider | null;
+  defaultModel?: string | null;
+  defaultProviderProfile?: ProviderProfile | null;
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   mcpServers?: McpServerConfig[];
@@ -978,6 +984,9 @@ export interface UpdateRepositoryInput {
   name?: string;
   url?: string;
   defaultBranch?: string;
+  defaultProvider?: AgentProvider | null;
+  defaultModel?: string | null;
+  defaultProviderProfile?: ProviderProfile | null;
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   mcpServers?: McpServerConfig[];

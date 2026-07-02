@@ -18,6 +18,7 @@ import type { TaskStore } from "../services/task-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SlackClient } from "../services/slack-client.js";
 import type { PersonalAccessTokenRuntimeContext } from "../services/personal-access-token-store.js";
+import { resolveCreateTaskProviderConfig } from "../lib/task-create-defaults.js";
 import { clampLimit, compactCheckpoint, compactMessage, compactRepository, compactRun, compactTask, detailTask } from "./format.js";
 
 export interface McpToolDefinition {
@@ -193,16 +194,6 @@ const ensureNotArchived = (task: Task): void => {
   }
 };
 
-const getDefaultedProviderConfig = async (context: McpToolContext, input: z.infer<typeof createTaskSchema>) => {
-  const settings = await context.deps.settingsStore.getSettings();
-  const provider = input.provider ?? settings.defaultProvider;
-  return {
-    provider,
-    providerProfile: input.providerProfile ?? (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort),
-    modelOverride: input.modelOverride ?? (provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel)
-  };
-};
-
 const startTask = async (context: McpToolContext, task: Task, action?: TaskAction): Promise<Task> => {
   ensureNotArchived(task);
   const resolvedAction = action ?? (task.taskType === "ask" ? "ask" : "build");
@@ -352,7 +343,8 @@ export const createMcpTools = (): McpToolDefinition[] => [
       if (!repository || !canUserAccessRepository(context.user, repository.id)) {
         throw new McpToolError(404, "Repository not found", "not_found");
       }
-      const providerConfig = await getDefaultedProviderConfig(context, input);
+      const settings = await context.deps.settingsStore.getSettings();
+      const providerConfig = resolveCreateTaskProviderConfig(input, settings, repository);
       const task = await context.deps.taskStore.createTask(
         {
           ...input,
@@ -386,14 +378,11 @@ export const createMcpTools = (): McpToolDefinition[] => [
       if (task.status !== "draft") {
         throw new McpToolError(409, "Only draft tasks can be updated with this tool.", "not_draft");
       }
-      const providerConfig = await getDefaultedProviderConfig(context, {
-        title: input.title ?? task.title,
-        repoId: task.repoId,
-        prompt: input.prompt ?? task.prompt,
+      const providerConfig = {
         provider: input.provider ?? task.provider,
         providerProfile: input.providerProfile ?? task.providerProfile,
         modelOverride: input.modelOverride ?? task.modelOverride ?? undefined
-      });
+      };
       const updated = await context.deps.taskStore.patchTask(task.id, {
         ...(input.title !== undefined ? { title: input.title } : {}),
         ...(input.prompt !== undefined ? { prompt: input.prompt } : {}),

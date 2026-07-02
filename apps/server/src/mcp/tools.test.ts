@@ -253,6 +253,56 @@ describe("MCP Phase 1 tools", () => {
     });
   });
 
+  it("resolves repository defaults before system defaults when creating tasks through MCP", async () => {
+    const tool = toolByName("agentswarm_create_task");
+    let createdInput: unknown = null;
+
+    await tool.handler(
+      {
+        title: "Task",
+        repoId: "repo-1",
+        prompt: "Do work"
+      },
+      {
+        user,
+        deps: {
+          repositoryStore: {
+            getRepository: async () => ({
+              ...repository,
+              defaultProvider: "claude",
+              defaultModel: "claude-sonnet-4-6",
+              defaultProviderProfile: "max"
+            })
+          },
+          settingsStore: {
+            getSettings: async () => ({
+              defaultProvider: "codex",
+              codexDefaultEffort: "medium",
+              claudeDefaultEffort: "high",
+              codexDefaultModel: "gpt-5.5",
+              claudeDefaultModel: "claude-opus-4-8"
+            })
+          },
+          taskStore: {
+            createTask: async (input: unknown) => {
+              createdInput = input;
+              return createTask();
+            },
+            appendMessage: async () => null,
+            getTask: async () => createTask()
+          },
+          taskQueueStore: {} as never,
+          scheduler: {} as never,
+          spawner: {} as never
+        } as never
+      }
+    );
+
+    assert.equal((createdInput as { provider: string }).provider, "claude");
+    assert.equal((createdInput as { providerProfile: string }).providerProfile, "max");
+    assert.equal((createdInput as { modelOverride: string }).modelOverride, "claude-sonnet-4-6");
+  });
+
   it("rejects notes when creating tasks through MCP", async () => {
     const tool = toolByName("agentswarm_create_task");
 

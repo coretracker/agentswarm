@@ -765,5 +765,14 @@ Feedback:
       ALTER TABLE personal_access_tokens
       ADD COLUMN IF NOT EXISTS runtime_context jsonb NULL;
     `
+  },
+  {
+    id: "20260702_01_repository_default_agent_settings",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS default_provider text NULL,
+      ADD COLUMN IF NOT EXISTS default_model text NULL,
+      ADD COLUMN IF NOT EXISTS default_provider_profile text NULL;
+    `
   }
 ];

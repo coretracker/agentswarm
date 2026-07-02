@@ -85,6 +85,21 @@ const getProviderConfiguredModels = (provider: AgentProvider, settings?: SystemS
   return models && models.length > 0 ? models : getModelsForProvider(provider);
 };
 
+const getResolvedProviderForRepository = (repository?: Repository | null, settings?: SystemSettings | null): AgentProvider =>
+  repository?.defaultProvider ?? settings?.defaultProvider ?? "codex";
+
+const getTaskDefinitionResolvedDefaults = (
+  settings?: SystemSettings | null,
+  repository?: Repository | null
+): { provider: AgentProvider; model: string; providerProfile: ProviderProfile } => {
+  const provider = getResolvedProviderForRepository(repository, settings);
+  return {
+    provider,
+    model: repository?.defaultModel ?? getProviderDefaultModel(provider, settings),
+    providerProfile: repository?.defaultProviderProfile ?? getProviderDefaultProfile(provider, settings)
+  };
+};
+
 const deriveTitleFromPrompt = (prompt: string): string => {
   const lines = prompt
     .split(/\r?\n/)
@@ -112,14 +127,15 @@ export const getTaskDefinitionDeadlineIso = (value: TaskDefinitionFormValues["de
 };
 
 export const getTaskDefinitionInitialValues = (
-  settings?: SystemSettings | null
+  settings?: SystemSettings | null,
+  repository?: Repository | null
 ): Partial<TaskDefinitionFormValues> => {
-  const provider = settings?.defaultProvider ?? "codex";
+  const resolvedDefaults = getTaskDefinitionResolvedDefaults(settings, repository);
   return {
     taskType: "build",
-    provider,
-    model: getProviderDefaultModel(provider, settings),
-    providerProfile: getProviderDefaultProfile(provider, settings),
+    provider: resolvedDefaults.provider,
+    model: resolvedDefaults.model,
+    providerProfile: resolvedDefaults.providerProfile,
     codexCredentialSource: "auto",
     branchStrategy: "feature_branch"
   };
@@ -214,26 +230,22 @@ export function TaskDefinitionFields({
     }
 
     const currentProvider = form.getFieldValue("provider") as AgentProvider | undefined;
-    const shouldReplaceProvider = !form.isFieldTouched("provider") && (!currentProvider || currentProvider === "codex");
-    const nextProvider = shouldReplaceProvider ? settings.defaultProvider : currentProvider ?? settings.defaultProvider;
-    const providerChanged = nextProvider !== currentProvider;
-
-    if (shouldReplaceProvider) {
-      form.setFieldValue("provider", nextProvider);
+    const resolvedDefaults = getTaskDefinitionResolvedDefaults(settings, selectedRepository);
+    const effectiveProvider =
+      form.isFieldTouched("provider") && currentProvider ? currentProvider : resolvedDefaults.provider;
+    if (!form.isFieldTouched("provider")) {
+      form.setFieldValue("provider", resolvedDefaults.provider);
     }
-
-    const currentModel = form.getFieldValue("model") as string | undefined;
-    const currentProfile = form.getFieldValue("providerProfile") as ProviderProfile | undefined;
-    const genericModel = getDefaultModelForProvider(currentProvider ?? nextProvider);
-
-    if (!form.isFieldTouched("model") && (providerChanged || !currentModel || currentModel === genericModel)) {
-      form.setFieldValue("model", getProviderDefaultModel(nextProvider, settings));
+    if (!form.isFieldTouched("model")) {
+      form.setFieldValue("model", selectedRepository?.defaultModel ?? getProviderDefaultModel(effectiveProvider, settings));
     }
-
-    if (!form.isFieldTouched("providerProfile") && (providerChanged || !currentProfile || currentProfile === "high")) {
-      form.setFieldValue("providerProfile", getProviderDefaultProfile(nextProvider, settings));
+    if (!form.isFieldTouched("providerProfile")) {
+      form.setFieldValue(
+        "providerProfile",
+        selectedRepository?.defaultProviderProfile ?? getProviderDefaultProfile(effectiveProvider, settings)
+      );
     }
-  }, [form, settings, syncSettingsDefaults]);
+  }, [form, selectedRepository, settings, syncSettingsDefaults]);
 
   useEffect(() => {
     const selected = providerSelectOptions.find((option) => option.value === selectedProvider && !option.disabled);

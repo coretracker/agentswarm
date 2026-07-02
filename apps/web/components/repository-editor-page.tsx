@@ -3,8 +3,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type {
+  AgentProvider,
   CreateRepositoryInput,
   McpServerTransport,
+  ProviderProfile,
   Repository,
   RepositoryEnvSecretInput,
   RepositoryEnvVarInput,
@@ -14,11 +16,15 @@ import {
   DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
   DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
   DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
-  DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
+  DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE,
+  getAgentProviderLabel,
+  getEffortOptionsForProvider
 } from "@agentswarm/shared-types";
 import { Alert, Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { ApiError, api } from "../src/api/client";
+import { useProviderModels } from "../src/hooks/useProviderModels";
+import { useSettings } from "../src/hooks/useSettings";
 import { trackEvent } from "../src/utils/analytics";
 import { buildApiUrl } from "../src/lib/public-url";
 
@@ -31,6 +37,9 @@ type RepositoryFormValues = {
   name: string;
   url: string;
   defaultBranch: string;
+  defaultProvider?: AgentProvider;
+  defaultModel?: string;
+  defaultProviderProfile?: ProviderProfile;
   envVars: Array<{ key: string; type: "text" | "file"; value: string; fileName: string; fileContentBase64: string }>;
   envSecrets: Array<{ key: string; type: "text" | "file"; value: string; fileName: string; fileContentBase64: string }>;
   mcpServers: Array<{
@@ -69,6 +78,9 @@ const emptyValues = (): RepositoryFormValues => ({
   name: "",
   url: "",
   defaultBranch: "develop",
+  defaultProvider: undefined,
+  defaultModel: undefined,
+  defaultProviderProfile: undefined,
   envVars: [],
   envSecrets: [],
   mcpServers: [],
@@ -99,6 +111,15 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   name: typeof values?.name === "string" ? values.name : "",
   url: typeof values?.url === "string" ? values.url : "",
   defaultBranch: typeof values?.defaultBranch === "string" ? values.defaultBranch : "develop",
+  defaultProvider: values?.defaultProvider === "claude" ? "claude" : values?.defaultProvider === "codex" ? "codex" : undefined,
+  defaultModel: typeof values?.defaultModel === "string" && values.defaultModel.trim().length > 0 ? values.defaultModel : undefined,
+  defaultProviderProfile:
+    values?.defaultProviderProfile === "low" ||
+    values?.defaultProviderProfile === "medium" ||
+    values?.defaultProviderProfile === "high" ||
+    values?.defaultProviderProfile === "max"
+      ? values.defaultProviderProfile
+      : undefined,
   envVars: (values?.envVars ?? []).map((entry) => ({
     key: typeof entry?.key === "string" ? entry.key : "",
     type: entry?.type === "file" ? "file" : "text",
@@ -196,6 +217,11 @@ const parseAllowedGitHubUsers = (value: string): string[] => {
   return users;
 };
 
+const repositoryDefaultProviderOptions: Array<{ label: string; value: AgentProvider }> = [
+  { label: "Codex (OpenAI)", value: "codex" },
+  { label: getAgentProviderLabel("claude"), value: "claude" }
+];
+
 const GITHUB_TEMPLATE_MARKER_HELP =
   "Template markers: {{target_label}}, {{target_ref}}, {{title}}, {{title_line}}, {{feedback_type}}, {{author}}, {{requested_reviewer}}, {{requested_reviewer_line}}, {{issue_title_line}}, {{review_state_line}}, {{file_line}}, {{url_line}}, {{diff_context_block}}, {{feedback_body}}.";
 
@@ -239,6 +265,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const router = useRouter();
   const searchParams = useSearchParams();
   const entryPoint = searchParams.get("from") === "list" ? "list" : "direct_url";
+  const { settings } = useSettings();
   const [form] = Form.useForm<RepositoryFormValues>();
   const [messageApi, contextHolder] = message.useMessage();
   const [submitting, setSubmitting] = useState(false);
@@ -250,6 +277,13 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const [usersLoadError, setUsersLoadError] = useState<string | null>(null);
   const [initialSnapshot, setInitialSnapshot] = useState("");
   const watchedValues = Form.useWatch([], form) as RepositoryFormValues | undefined;
+  const selectedDefaultProvider =
+    (Form.useWatch("defaultProvider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
+  const selectedDefaultModel = Form.useWatch("defaultModel", form) as string | undefined;
+  const selectedDefaultProviderProfile = Form.useWatch("defaultProviderProfile", form) as ProviderProfile | undefined;
+  const { models: defaultProviderModels, loading: defaultProviderModelsLoading, source: defaultProviderModelsSource } =
+    useProviderModels(selectedDefaultProvider);
+  const allowedDefaultEffortOptions = getEffortOptionsForProvider(selectedDefaultProvider);
 
   const hasUnsavedChanges = useMemo(() => {
     if (!initialSnapshot) {
@@ -313,6 +347,9 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           name: repository.name,
           url: repository.url,
           defaultBranch: repository.defaultBranch,
+          defaultProvider: repository.defaultProvider ?? undefined,
+          defaultModel: repository.defaultModel ?? undefined,
+          defaultProviderProfile: repository.defaultProviderProfile ?? undefined,
           envVars: (repository.envVars ?? []).map((entry) => ({
             key: entry.key,
             type: entry.type === "file" ? "file" : "text",
@@ -398,6 +435,29 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
       window.removeEventListener("beforeunload", onBeforeUnload);
     };
   }, [hasUnsavedChanges]);
+
+  useEffect(() => {
+    if (defaultProviderModelsLoading) {
+      return;
+    }
+    if (!selectedDefaultModel?.trim()) {
+      return;
+    }
+    if (defaultProviderModels.some((option) => option.value === selectedDefaultModel)) {
+      return;
+    }
+    form.setFieldValue("defaultModel", undefined);
+  }, [defaultProviderModels, defaultProviderModelsLoading, form, selectedDefaultModel]);
+
+  useEffect(() => {
+    if (!selectedDefaultProviderProfile) {
+      return;
+    }
+    if (allowedDefaultEffortOptions.some((option) => option.value === selectedDefaultProviderProfile)) {
+      return;
+    }
+    form.setFieldValue("defaultProviderProfile", undefined);
+  }, [allowedDefaultEffortOptions, form, selectedDefaultProviderProfile]);
 
   const confirmLeave = (): boolean => {
     if (!hasUnsavedChanges || typeof window === "undefined") {
@@ -668,6 +728,9 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               name: normalized.name,
               url: normalized.url,
               defaultBranch: normalized.defaultBranch,
+              defaultProvider: normalized.defaultProvider ?? null,
+              defaultModel: normalized.defaultModel?.trim() || null,
+              defaultProviderProfile: normalized.defaultProviderProfile ?? null,
               envVars,
               envSecrets,
               mcpServers: normalized.mcpServers.map((server) =>
@@ -764,6 +827,50 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             </Form.Item>
             <Form.Item name="defaultBranch" label="Default Branch" rules={[{ required: true }]}>
               <Input />
+            </Form.Item>
+          </Card>
+          <Card bordered={false} title="Default Agent">
+            <Typography.Text type="secondary">
+              Optional repository-level defaults for new tasks. Leave any field empty to fall back to the system setting.
+            </Typography.Text>
+            <Form.Item name="defaultProvider" label="Provider" style={{ marginTop: 16 }}>
+              <Select
+                allowClear
+                placeholder="System default"
+                options={repositoryDefaultProviderOptions}
+                onChange={(value: AgentProvider | undefined) => {
+                  if (!value) {
+                    form.setFieldValue("defaultModel", undefined);
+                    form.setFieldValue("defaultProviderProfile", undefined);
+                    return;
+                  }
+                  const nextEffortOptions = getEffortOptionsForProvider(value);
+                  if (!nextEffortOptions.some((option) => option.value === form.getFieldValue("defaultProviderProfile"))) {
+                    form.setFieldValue("defaultProviderProfile", undefined);
+                  }
+                }}
+              />
+            </Form.Item>
+            <Form.Item
+              name="defaultModel"
+              label="Model"
+              extra={
+                defaultProviderModelsSource === "api"
+                  ? "Model suggestions were refreshed from the provider."
+                  : "Model choices come from the model list in Settings."
+              }
+            >
+              <Select
+                allowClear
+                showSearch
+                options={defaultProviderModels}
+                loading={defaultProviderModelsLoading}
+                optionFilterProp="label"
+                placeholder="System default"
+              />
+            </Form.Item>
+            <Form.Item name="defaultProviderProfile" label="Effort">
+              <Select allowClear options={allowedDefaultEffortOptions} placeholder="System default" />
             </Form.Item>
           </Card>
           <Card bordered={false} title="Github Integration">
