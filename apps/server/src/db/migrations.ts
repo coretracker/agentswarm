@@ -774,5 +774,15 @@ Feedback:
       ADD COLUMN IF NOT EXISTS default_model text NULL,
       ADD COLUMN IF NOT EXISTS default_provider_profile text NULL;
     `
+  },
+  {
+    id: "20260702_02_user_default_agent_settings",
+    sql: `
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS github_username text NULL,
+      ADD COLUMN IF NOT EXISTS default_provider text NULL,
+      ADD COLUMN IF NOT EXISTS default_model text NULL,
+      ADD COLUMN IF NOT EXISTS default_provider_profile text NULL;
+    `
   }
 ];

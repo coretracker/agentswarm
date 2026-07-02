@@ -7,12 +7,14 @@ import {
   DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
 } from "@agentswarm/shared-types";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
+import { resolveCreateTaskProviderConfig } from "../lib/task-create-defaults.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
+import type { UserStore } from "../services/user-store.js";
 import { beginTaskStart } from "../lib/task-start-orchestrator.js";
 import { env } from "../config/env.js";
 
@@ -578,6 +580,7 @@ export const registerGitHubPrWebhookRoutes = (
     scheduler: SchedulerService;
     settingsStore: SettingsStore;
     spawner: SpawnerService;
+    userStore?: Pick<UserStore, "findByGithubUsername">;
   }
 ): void => {
   app.post<{ Params: { repositoryId: string } }>("/github/webhooks/:repositoryId", async (request, reply) => {
@@ -672,6 +675,8 @@ export const registerGitHubPrWebhookRoutes = (
       return reply.status(202).send({ queued: false, reason: "missing_bot_mention" });
     }
 
+    const requestingUser = deps.userStore ? await deps.userStore.findByGithubUsername(feedback.author).catch(() => null) : null;
+
     if (feedback.target === "issue") {
       const task = await deps.taskStore.findTaskByGitHubIssueNumber(repository.id, feedback.issueNumber);
       if (!task) {
@@ -685,6 +690,7 @@ export const registerGitHubPrWebhookRoutes = (
           feedback: repository.githubPrFeedbackInstructions,
           review: repository.githubPrReviewInstructions
         });
+        const settings = await deps.settingsStore.getSettings();
         const createdTask = await deps.taskStore.createTask(
           {
             title: formatNewIssueTaskTitle(feedback),
@@ -694,7 +700,8 @@ export const registerGitHubPrWebhookRoutes = (
             taskType: "build",
             baseBranch: repository.defaultBranch,
             branchStrategy: "feature_branch",
-            autoApplyCheckpoints: true
+            autoApplyCheckpoints: true,
+            ...resolveCreateTaskProviderConfig({}, settings, repository, requestingUser)
           },
           repository,
           ownerUserId
@@ -804,7 +811,10 @@ export const registerGitHubPrWebhookRoutes = (
         return reply.status(202).send({ queued: false, reason: "missing_github_task_owner" });
       }
 
-      const credentials = await deps.settingsStore.getRuntimeCredentials(null, "auto");
+      const [credentials, settings] = await Promise.all([
+        deps.settingsStore.getRuntimeCredentials(null, "auto"),
+        deps.settingsStore.getSettings()
+      ]);
       const branchDetails = await resolveGitHubPrBranchDetails(feedback, credentials.githubToken);
       if (!branchDetails) {
         return reply.status(202).send({ queued: false, reason: "pr_branch_unavailable" });
@@ -832,6 +842,7 @@ export const registerGitHubPrWebhookRoutes = (
           taskType: "build",
           baseBranch: branchDetails.headBranch,
           branchStrategy: "work_on_branch",
+          ...resolveCreateTaskProviderConfig({}, settings, repository, requestingUser),
           ...(feedback.kind === "review_requested" ? { autoApplyCheckpoints: true } : {})
         },
         repository,

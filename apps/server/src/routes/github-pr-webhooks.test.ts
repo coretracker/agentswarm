@@ -5,6 +5,13 @@ import Fastify from "fastify";
 import { registerGitHubPrWebhookRoutes } from "./github-pr-webhooks.js";
 
 const defaultSettingsStore = {
+  getSettings: async () => ({
+    defaultProvider: "codex",
+    codexDefaultEffort: "high",
+    codexDefaultModel: "gpt-5.5",
+    claudeDefaultEffort: "high",
+    claudeDefaultModel: "claude-opus-4-8"
+  }),
   getRuntimeCredentials: async () => ({
     githubToken: null
   })
@@ -960,7 +967,10 @@ test("GitHub PR webhook creates build task on PR branch when mentioned without l
       prompt: (appendedMessages[0] as { content: string }).content,
       taskType: "build",
       baseBranch: "feature/pr-branch",
-      branchStrategy: "work_on_branch"
+      branchStrategy: "work_on_branch",
+      provider: "codex",
+      providerProfile: "high",
+      modelOverride: "gpt-5.5"
     }
   });
   assert.deepEqual(patches[0], {
@@ -1213,6 +1223,9 @@ test("GitHub PR webhook creates auto-apply build task for unlinked review reques
       taskType: "build",
       baseBranch: "feature/importer",
       branchStrategy: "work_on_branch",
+      provider: "codex",
+      providerProfile: "high",
+      modelOverride: "gpt-5.5",
       autoApplyCheckpoints: true
     }
   });
@@ -1445,6 +1458,7 @@ test("GitHub webhook reacts with eyes to linked issue comments", async () => {
       } as never,
       scheduler: {} as never,
       settingsStore: {
+        ...defaultSettingsStore,
         getRuntimeCredentials: async () => ({
           githubToken: "github-token"
         })
@@ -1534,6 +1548,7 @@ test("GitHub webhook ignores task-created issue comments without reacting", asyn
       } as never,
       scheduler: {} as never,
       settingsStore: {
+        ...defaultSettingsStore,
         getRuntimeCredentials: async () => ({
           githubToken: "github-token"
         })
@@ -1939,7 +1954,10 @@ test("GitHub webhook creates feature branch task from issue body mention without
       taskType: "build",
       baseBranch: "main",
       branchStrategy: "feature_branch",
-      autoApplyCheckpoints: true
+      autoApplyCheckpoints: true,
+      provider: "codex",
+      providerProfile: "high",
+      modelOverride: "gpt-5.5"
     }
   });
   assert.deepEqual(patches[0], {
@@ -2021,6 +2039,7 @@ test("GitHub webhook posts an initial task comment when creating an issue task",
         triggerAction: async () => true
       } as never,
       settingsStore: {
+        ...defaultSettingsStore,
         getRuntimeCredentials: async () => ({
           githubToken: "github-token"
         })
@@ -2131,6 +2150,7 @@ test("GitHub webhook uses a custom task created comment template", async () => {
         triggerAction: async () => true
       } as never,
       settingsStore: {
+        ...defaultSettingsStore,
         getRuntimeCredentials: async () => ({
           githubToken: "github-token"
         })
@@ -2237,6 +2257,7 @@ test("GitHub webhook skips duplicate initial task comments for retried issue tas
         triggerAction: async () => true
       } as never,
       settingsStore: {
+        ...defaultSettingsStore,
         getRuntimeCredentials: async () => ({
           githubToken: "github-token"
         })
@@ -2399,7 +2420,10 @@ test("GitHub webhook creates feature branch task when bot is assigned to an unli
       taskType: "build",
       baseBranch: "main",
       branchStrategy: "feature_branch",
-      autoApplyCheckpoints: true
+      autoApplyCheckpoints: true,
+      provider: "codex",
+      providerProfile: "high",
+      modelOverride: "gpt-5.5"
     }
   });
   assert.deepEqual(patches[0], {
