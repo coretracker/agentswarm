@@ -23,18 +23,10 @@ function resolveInitialThemeMode(): AppThemeMode {
   if (
     storedMode === "light" ||
     storedMode === "dark" ||
-    storedMode === "cyber" ||
     storedMode === "forge" ||
     storedMode === "forge-light" ||
     storedMode === "github" ||
-    storedMode === "github-light" ||
-    storedMode === "nord" ||
-    storedMode === "solarized-light" ||
-    storedMode === "gruvbox-dark" ||
-    storedMode === "high-contrast" ||
-    storedMode === "tokyo-night" ||
-    storedMode === "solarized-dark" ||
-    storedMode === "paper"
+    storedMode === "github-light"
   ) {
     return storedMode;
   }
