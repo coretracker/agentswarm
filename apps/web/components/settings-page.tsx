@@ -161,6 +161,7 @@ const normalizeMcpServerName = (value: string | undefined): string =>
     .replace(/[^a-z0-9._-]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "");
+const trimFormString = (value: string | null | undefined): string => (value ?? "").trim();
 const normalizeProviderModelOptions = (models: ProviderModelOption[] | undefined, fallback: ProviderModelOption[]): ProviderModelOption[] => {
   const normalized: ProviderModelOption[] = [];
   const seen = new Set<string>();
@@ -629,37 +630,37 @@ export function SettingsPage() {
         claudeModels: values.claudeModels,
         claudeDefaultEffort: values.claudeDefaultEffort,
         slackAssistantProvider: values.slackAssistantProvider,
-        slackAssistantModel: values.slackAssistantModel.trim(),
-        slackHarnessWhatExists: values.slackHarnessWhatExists.trim() || null,
-        slackHarnessAllowedActions: values.slackHarnessAllowedActions.trim() || null,
-        slackHarnessHowToWork: values.slackHarnessHowToWork.trim() || null,
-        slackHarnessDefinitionOfDone: values.slackHarnessDefinitionOfDone.trim() || null,
-        slackHarnessEvidenceExpectations: values.slackHarnessEvidenceExpectations.trim() || null,
-        slackAgentMcpServers: values.slackAgentMcpServers.map((server) =>
+        slackAssistantModel: trimFormString(values.slackAssistantModel),
+        slackHarnessWhatExists: trimFormString(values.slackHarnessWhatExists) || null,
+        slackHarnessAllowedActions: trimFormString(values.slackHarnessAllowedActions) || null,
+        slackHarnessHowToWork: trimFormString(values.slackHarnessHowToWork) || null,
+        slackHarnessDefinitionOfDone: trimFormString(values.slackHarnessDefinitionOfDone) || null,
+        slackHarnessEvidenceExpectations: trimFormString(values.slackHarnessEvidenceExpectations) || null,
+        slackAgentMcpServers: (values.slackAgentMcpServers ?? []).map((server) =>
           server.transport === "http"
             ? {
                 name: server.name,
                 enabled: server.enabled,
                 transport: "http" as const,
-                url: server.url.trim(),
-                bearerTokenEnvVar: server.bearerTokenEnvVar.trim() || null,
-                ...(server.bearerToken.trim().length > 0 ? { bearerToken: server.bearerToken.trim() } : {}),
+                url: trimFormString(server.url),
+                bearerTokenEnvVar: trimFormString(server.bearerTokenEnvVar) || null,
+                ...(trimFormString(server.bearerToken).length > 0 ? { bearerToken: trimFormString(server.bearerToken) } : {}),
                 ...(server.clearBearerToken ? { clearBearerToken: true } : {})
               }
             : {
                 name: server.name,
                 enabled: server.enabled,
                 transport: "stdio" as const,
-                command: server.command.trim(),
-                args: server.argsText
+                command: trimFormString(server.command),
+                args: trimFormString(server.argsText)
                   .split("\n")
                   .map((item) => item.trim())
                   .filter(Boolean)
               }
         ),
-        ...(values.slackBotToken.trim().length > 0 ? { slackBotToken: values.slackBotToken.trim() } : {}),
+        ...(trimFormString(values.slackBotToken).length > 0 ? { slackBotToken: trimFormString(values.slackBotToken) } : {}),
         ...(values.clearSlackBotToken ? { clearSlackBotToken: true } : {}),
-        ...(values.slackSigningSecret.trim().length > 0 ? { slackSigningSecret: values.slackSigningSecret.trim() } : {}),
+        ...(trimFormString(values.slackSigningSecret).length > 0 ? { slackSigningSecret: trimFormString(values.slackSigningSecret) } : {}),
         ...(values.clearSlackSigningSecret ? { clearSlackSigningSecret: true } : {})
       });
       setSettings(nextSettings);
