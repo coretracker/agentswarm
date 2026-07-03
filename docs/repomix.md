@@ -360,7 +360,7 @@ tools/
 .env.example
 .gitignore
 AGENTS.md
-agentswarm.sh
+verft.sh
 ARCHITECTURE.md
 docker-compose.yml
 package.json
@@ -414,7 +414,7 @@ const sanitizeBranchPrefix = (branchPrefix: string): string => {
     .replace(/\/+/g, "/")
     .replace(/^\/+|\/+$/g, "");
 
-  return cleaned || "agentswarm";
+  return cleaned || "verft";
 };
 
 export const makeBranchName = (title: string, taskId: string, branchPrefix: string): string => {
@@ -434,7 +434,7 @@ export const makeBranchName = (title: string, taskId: string, branchPrefix: stri
 ## File: apps/server/src/lib/events.ts
 ````typescript
 import type Redis from "ioredis";
-import type { RealtimeEvent } from "@agentswarm/shared-types";
+import type { RealtimeEvent } from "@verft/shared-types";
 
 export class EventBus {
   constructor(
@@ -486,7 +486,7 @@ describe("buildGitProcessEnv", () => {
   });
 
   it("allows squash merges in a worktree without relying on global git config", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-git-env-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-git-env-"));
     const originPath = path.join(root, "origin.git");
     const seedPath = path.join(root, "seed");
     const managedPath = path.join(root, "managed");
@@ -550,7 +550,7 @@ export async function ensureGitAskPassScript(): Promise<string> {
     return gitAskPassPath;
   }
 
-  const askPassPath = "/tmp/agentswarm-git-askpass.sh";
+  const askPassPath = "/tmp/verft-git-askpass.sh";
   await writeFile(
     askPassPath,
     `#!/usr/bin/env sh
@@ -719,7 +719,7 @@ import { resolveGitPaths } from "./git-paths.js";
 
 describe("resolveGitPaths", () => {
   it("returns a standard git directory unchanged", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-git-paths-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-git-paths-"));
     const gitDir = path.join(root, ".git");
 
     try {
@@ -736,7 +736,7 @@ describe("resolveGitPaths", () => {
   });
 
   it("resolves linked worktree .git files to the shared common dir", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-git-paths-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-git-paths-"));
     const workspacePath = path.join(root, "workspace");
     const commonDir = path.join(root, "repo", ".git");
     const worktreeGitDir = path.join(commonDir, "worktrees", "task-1");
@@ -833,7 +833,7 @@ describe("resolveGitRuntimeMountsForPaths", () => {
       usesLinkedWorktree: true
     });
 
-    assert.deepEqual(mounts, ["-v", "agentswarm_repo_cache:/repo-cache:rw"]);
+    assert.deepEqual(mounts, ["-v", "verft_repo_cache:/repo-cache:rw"]);
   });
 
   it("skips extra mounts when linked worktree metadata lives outside the repo cache root", () => {
@@ -920,7 +920,7 @@ import { installManagedGitHooks, MANAGED_GIT_HOOKS } from "./managed-git-hooks.j
 
 describe("installManagedGitHooks", () => {
   it("writes blocking git hooks with execute permissions", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-managed-hooks-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-managed-hooks-"));
     const gitDir = path.join(root, ".git");
 
     try {
@@ -938,7 +938,7 @@ describe("installManagedGitHooks", () => {
   });
 
   it("installs hooks into the shared common dir for linked worktrees", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-managed-hooks-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-managed-hooks-"));
     const workspacePath = path.join(root, "workspace");
     const commonDir = path.join(root, "repo", ".git");
     const worktreeGitDir = path.join(commonDir, "worktrees", "task-1");
@@ -971,8 +971,8 @@ import path from "node:path";
 import { resolveGitPaths } from "./git-paths.js";
 
 export const MANAGED_GIT_HOOKS = {
-  "pre-commit": "#!/bin/sh\n# AgentSwarm: only the spawner may create commits.\nexit 1\n",
-  "pre-push": "#!/bin/sh\n# AgentSwarm: only the spawner may push.\nexit 1\n"
+  "pre-commit": "#!/bin/sh\n# Verft: only the spawner may create commits.\nexit 1\n",
+  "pre-push": "#!/bin/sh\n# Verft: only the spawner may push.\nexit 1\n"
 } as const;
 
 export async function installManagedGitHooks(gitPath: string): Promise<void> {
@@ -1173,7 +1173,7 @@ describe("collectMissingMcpServerBearerTokenEnvVars", () => {
 
 ## File: apps/server/src/lib/mcp-config.ts
 ````typescript
-import type { McpServerConfig } from "@agentswarm/shared-types";
+import type { McpServerConfig } from "@verft/shared-types";
 
 const tomlString = (value: string): string => JSON.stringify(value);
 const ENV_VAR_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -1396,7 +1396,7 @@ on_failure: fail_task
 
 ## File: apps/server/src/lib/postflight-config.ts
 ````typescript
-import type { AgentProvider, Task } from "@agentswarm/shared-types";
+import type { AgentProvider, Task } from "@verft/shared-types";
 import { z } from "zod";
 
 type ParsedYamlValue = string | number | boolean | ParsedYamlObject | ParsedYamlValue[];
@@ -1866,7 +1866,7 @@ describe("claudeThinkingBudgetTokensForProfile", () => {
 
 ## File: apps/server/src/lib/provider-config.ts
 ````typescript
-import type { AgentProvider, ProviderProfile, TaskReasoningEffort } from "@agentswarm/shared-types";
+import type { AgentProvider, ProviderProfile, TaskReasoningEffort } from "@verft/shared-types";
 
 export const DEFAULT_PROVIDER: AgentProvider = "codex";
 export const DEFAULT_PROVIDER_PROFILE: ProviderProfile = "high";
@@ -1986,7 +1986,7 @@ import path from "node:path";
 import { normalizeSafeWorkspaceRelativePath, resolveSafeWorkspaceFilePath } from "./safe-workspace-file.js";
 
 describe("resolveSafeWorkspaceFilePath", () => {
-  const base = mkdtempSync(path.join(tmpdir(), "agentswarm-ws-"));
+  const base = mkdtempSync(path.join(tmpdir(), "verft-ws-"));
 
   after(() => {
     rmSync(base, { recursive: true, force: true });
@@ -2332,7 +2332,7 @@ export function buildTaskCommitSubject(taskTitle: string, files: string[]): stri
 
 ## File: apps/server/src/lib/task-intelligence.ts
 ````typescript
-import type { TaskComplexity } from "@agentswarm/shared-types";
+import type { TaskComplexity } from "@verft/shared-types";
 
 const pathPattern = /\b(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\b/g;
 const complexityKeywords = /(refactor|migrate|architecture|redis|docker|socket|websocket|backend|frontend|database|queue|worker|concurrency|stream|realtime|multi[- ]step|full stack|end[- ]to[- ]end)/i;
@@ -2429,7 +2429,7 @@ export function buildExecutionSummaryFromPrompt(title: string, prompt: string): 
 
 ## File: apps/server/src/lib/task-ownership.ts
 ````typescript
-import type { AuthSessionUser, Task } from "@agentswarm/shared-types";
+import type { AuthSessionUser, Task } from "@verft/shared-types";
 import { SYSTEM_ADMIN_ROLE_ID } from "../services/role-store.js";
 
 type AdminCheckUser = Pick<AuthSessionUser, "roles"> | null | undefined;
@@ -2476,7 +2476,7 @@ import {
   TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES,
   type CreateTaskPromptAttachmentInput,
   type TaskPromptAttachment
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { env } from "../config/env.js";
 
 const ATTACHMENT_ROOT_DIRNAME = ".prompt-attachments";
@@ -2665,7 +2665,7 @@ describe("task-provider-state", () => {
   it("builds task-scoped provider state paths", () => {
     const paths = resolveTaskProviderStatePaths("task 123", "codex");
     assert.equal(paths.serverPath, "/task-workspaces/.task-state/task-123/.codex");
-    assert.equal(paths.hostPath, "/tmp/agentswarm-task-workspaces/.task-state/task-123/.codex");
+    assert.equal(paths.hostPath, "/tmp/verft-task-workspaces/.task-state/task-123/.codex");
     assert.equal(paths.legacyServerPath, "/task-workspaces/.interactive-homes/codex/task-123");
     assert.equal(paths.configServerPath, null);
     assert.equal(paths.configHostPath, null);
@@ -2674,16 +2674,16 @@ describe("task-provider-state", () => {
   it("builds Claude sidecar config paths", () => {
     const paths = resolveTaskProviderStatePaths("task 123", "claude");
     assert.equal(paths.serverPath, "/task-workspaces/.task-state/task-123/.claude");
-    assert.equal(paths.hostPath, "/tmp/agentswarm-task-workspaces/.task-state/task-123/.claude");
+    assert.equal(paths.hostPath, "/tmp/verft-task-workspaces/.task-state/task-123/.claude");
     assert.equal(paths.legacyServerPath, "/task-workspaces/.interactive-homes/claude/task-123");
     assert.equal(paths.configServerPath, "/task-workspaces/.task-state/task-123/.claude.json");
-    assert.equal(paths.configHostPath, "/tmp/agentswarm-task-workspaces/.task-state/task-123/.claude.json");
+    assert.equal(paths.configHostPath, "/tmp/verft-task-workspaces/.task-state/task-123/.claude.json");
   });
 
   it("builds the task state root path", () => {
     const paths = resolveTaskStateRootPaths("task/abc");
     assert.equal(paths.serverPath, "/task-workspaces/.task-state/task-abc");
-    assert.equal(paths.hostPath, "/tmp/agentswarm-task-workspaces/.task-state/task-abc");
+    assert.equal(paths.hostPath, "/tmp/verft-task-workspaces/.task-state/task-abc");
   });
 });
 ````
@@ -2692,7 +2692,7 @@ describe("task-provider-state", () => {
 ````typescript
 import { access, chmod, chown, constants, copyFile, mkdir, readdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AgentProvider } from "@agentswarm/shared-types";
+import type { AgentProvider } from "@verft/shared-types";
 import { env } from "../config/env.js";
 
 const TASK_PROVIDER_STATE_ROOT = ".task-state";
@@ -2819,7 +2819,7 @@ export async function ensureTaskProviderStatePaths(
 ````typescript
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AgentProvider, McpServerConfig, ProviderProfile } from "@agentswarm/shared-types";
+import type { AgentProvider, McpServerConfig, ProviderProfile } from "@verft/shared-types";
 import {
   claudeModelSupportsThinkingBudget,
   claudeThinkingBudgetTokensForProfile,
@@ -2848,7 +2848,7 @@ export interface ProviderRuntimeDefinition {
 export const providerRuntimeDefinitions: Record<AgentProvider, ProviderRuntimeDefinition> = {
   codex: {
     provider: "codex",
-    image: "agentswarm-agent-runtime-codex:latest",
+    image: "verft-agent-runtime-codex:latest",
     context: path.join(repoRoot, "agent-runtime-codex"),
     configFileName: "codex-config.toml",
     getMissingCredentialMessage: (credentials) =>
@@ -2868,7 +2868,7 @@ export const providerRuntimeDefinitions: Record<AgentProvider, ProviderRuntimeDe
   },
   claude: {
     provider: "claude",
-    image: "agentswarm-agent-runtime-claude:latest",
+    image: "verft-agent-runtime-claude:latest",
     context: path.join(repoRoot, "agent-runtime-claude"),
     configFileName: "claude-mcp.json",
     getMissingCredentialMessage: (credentials) =>
@@ -2965,7 +2965,7 @@ describe("github webhook event coverage", () => {
 ````typescript
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import type { PermissionScope } from "@agentswarm/shared-types";
+import type { PermissionScope } from "@verft/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
 import type { RoleStore } from "../services/role-store.js";
@@ -3118,11 +3118,11 @@ export const registerRoleRoutes = (
 import { randomUUID } from "node:crypto";
 import type Redis from "ioredis";
 
-const OUTBOUND_QUEUE_KEY = "agentswarm:github_outbound_queue";
-const OUTBOUND_JOB_KEY_PREFIX = "agentswarm:github_outbound:";
-const OUTBOUND_IDEMPOTENCY_KEY_PREFIX = "agentswarm:github_outbound_idempotency:";
-const OUTBOUND_DEAD_LETTER_KEY = "agentswarm:github_outbound_dead_letter";
-const OUTBOUND_RATE_GUARD_KEY_PREFIX = "agentswarm:github_outbound_rate_guard:";
+const OUTBOUND_QUEUE_KEY = "verft:github_outbound_queue";
+const OUTBOUND_JOB_KEY_PREFIX = "verft:github_outbound:";
+const OUTBOUND_IDEMPOTENCY_KEY_PREFIX = "verft:github_outbound_idempotency:";
+const OUTBOUND_DEAD_LETTER_KEY = "verft:github_outbound_dead_letter";
+const OUTBOUND_RATE_GUARD_KEY_PREFIX = "verft:github_outbound_rate_guard:";
 const IDEMPOTENCY_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 export type GitHubOutboundJobType = "summary_comment" | "label_update";
@@ -3292,7 +3292,7 @@ export class RedisGitHubOutboundQueueStore implements GitHubOutboundQueueStore {
 ````typescript
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { Repository } from "@agentswarm/shared-types";
+import type { Repository } from "@verft/shared-types";
 import type { GitHubOutboundJob, GitHubOutboundQueueStore } from "./github-outbound-queue-store.js";
 import { GitHubOutboundService } from "./github-outbound-service.js";
 
@@ -3471,7 +3471,7 @@ describe("GitHubOutboundService", () => {
 
 ## File: apps/server/src/services/github-outbound-service.ts
 ````typescript
-import type { Repository } from "@agentswarm/shared-types";
+import type { Repository } from "@verft/shared-types";
 import type { RepositoryStore } from "./repository-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type {
@@ -3599,7 +3599,7 @@ export class GitHubOutboundService {
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${token}`,
-        "User-Agent": "AgentSwarm",
+        "User-Agent": "Verft",
         "X-GitHub-Api-Version": "2022-11-28",
         ...(init.headers ?? {})
       }
@@ -3793,8 +3793,8 @@ describe("RepoSyncManager", () => {
 import { randomBytes } from "node:crypto";
 import type Redis from "ioredis";
 
-const SESSION_KEY_PREFIX = "agentswarm:session:";
-const USER_SESSION_IDS_KEY_PREFIX = "agentswarm:user_session_ids:";
+const SESSION_KEY_PREFIX = "verft:session:";
+const USER_SESSION_IDS_KEY_PREFIX = "verft:user_session_ids:";
 
 export interface SessionRecord {
   token: string;
@@ -3891,11 +3891,11 @@ export class RedisSessionStore implements SessionStore {
 import { nanoid } from "nanoid";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
-import type { CreateSnippetInput, Snippet, SnippetVariable, UpdateSnippetInput } from "@agentswarm/shared-types";
+import type { CreateSnippetInput, Snippet, SnippetVariable, UpdateSnippetInput } from "@verft/shared-types";
 import { EventBus } from "../lib/events.js";
 
-const SNIPPET_KEY_PREFIX = "agentswarm:snippet:";
-const SNIPPET_IDS_KEY = "agentswarm:snippet_ids";
+const SNIPPET_KEY_PREFIX = "verft:snippet:";
+const SNIPPET_IDS_KEY = "verft:snippet_ids";
 const SNIPPET_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SNIPPET_VARIABLE_MAX_COUNT = 100;
 const SNIPPET_VARIABLE_NAME_MAX_LENGTH = 128;
@@ -4145,10 +4145,10 @@ export class PostgresSnippetStore implements SnippetStore {
 ## File: apps/server/src/services/task-queue-store.ts
 ````typescript
 import type Redis from "ioredis";
-import type { TaskAction, TaskExecutionInput, TaskPromptAttachment } from "@agentswarm/shared-types";
+import type { TaskAction, TaskExecutionInput, TaskPromptAttachment } from "@verft/shared-types";
 import { normalizeTaskPromptAttachment } from "../lib/task-prompt-attachments.js";
 
-const TASK_QUEUE_KEY = "agentswarm:queue";
+const TASK_QUEUE_KEY = "verft:queue";
 
 export type QueueReason = "manual" | "auto";
 
@@ -4265,7 +4265,7 @@ export class RedisTaskQueueStore implements TaskQueueStore {
 ## File: apps/server/src/services/webhook-delivery-service.ts
 ````typescript
 import { createHmac } from "node:crypto";
-import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
+import type { RealtimeEvent, Repository, Task } from "@verft/shared-types";
 import type { RepositoryStore } from "./repository-store.js";
 import type { WebhookDeliveryStore, WebhookEventType, WebhookJob } from "./webhook-delivery-store.js";
 
@@ -4435,10 +4435,10 @@ export class WebhookDeliveryService {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-agentswarm-event": job.eventType,
-        "x-agentswarm-delivery-id": job.id,
-        "x-agentswarm-timestamp": timestamp,
-        "x-agentswarm-signature": `sha256=${signature}`
+        "x-verft-event": job.eventType,
+        "x-verft-delivery-id": job.id,
+        "x-verft-timestamp": timestamp,
+        "x-verft-signature": `sha256=${signature}`
       },
       body,
       signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS)
@@ -4504,9 +4504,9 @@ export class WebhookDeliveryService {
 import { randomUUID } from "node:crypto";
 import type Redis from "ioredis";
 
-const WEBHOOK_QUEUE_KEY = "agentswarm:webhook_delivery_queue";
-const WEBHOOK_JOB_KEY_PREFIX = "agentswarm:webhook_delivery:";
-const WEBHOOK_LAST_TASK_STATUS_KEY_PREFIX = "agentswarm:webhook_task_status:";
+const WEBHOOK_QUEUE_KEY = "verft:webhook_delivery_queue";
+const WEBHOOK_JOB_KEY_PREFIX = "verft:webhook_delivery:";
+const WEBHOOK_LAST_TASK_STATUS_KEY_PREFIX = "verft:webhook_task_status:";
 
 export type WebhookEventType = "created" | "updated" | "deleted" | "pushed" | "merged";
 
@@ -4644,7 +4644,7 @@ COPY . .
 ENV NODE_ENV=production
 
 EXPOSE 4000
-CMD ["npm", "run", "start", "-w", "@agentswarm/server"]
+CMD ["npm", "run", "start", "-w", "@verft/server"]
 ````
 
 ## File: apps/server/tsconfig.json
@@ -4757,7 +4757,7 @@ import "./globals.css";
 import "react-diff-view/style/index.css";
 
 export const metadata: Metadata = {
-  title: "AgentSwarm",
+  title: "Verft",
   description: "Build, ask, and manage autonomous coding tasks"
 };
 
@@ -4867,7 +4867,7 @@ export function AppLogo({
   return (
     <img
       src="/logo.svg"
-      alt="AgentSwarm logo"
+      alt="Verft logo"
       style={{
         width,
         height,
@@ -4928,7 +4928,7 @@ export function useAppRightPanel(): AppRightPanelContextValue {
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
-import type { AuthSession, LoginInput, PermissionScope } from "@agentswarm/shared-types";
+import type { AuthSession, LoginInput, PermissionScope } from "@verft/shared-types";
 import { ApiError, api } from "../src/api/client";
 
 interface AuthContextValue {
@@ -5022,7 +5022,7 @@ export const useAuth = (): AuthContextValue => {
 import dynamic from "next/dynamic";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Flex, Modal, Select, Space, Spin, Tag, Typography, message } from "antd";
-import type { TaskWorkspaceFilePreview } from "@agentswarm/shared-types";
+import type { TaskWorkspaceFilePreview } from "@verft/shared-types";
 import { api } from "../src/api/client";
 import { isDarkAppTheme } from "../src/theme/antd-theme";
 import { useThemeMode } from "./theme-provider";
@@ -5431,7 +5431,7 @@ export function CheckpointFileEditorModal({
 ````typescript
 "use client";
 
-import type { ProviderModelOption } from "@agentswarm/shared-types";
+import type { ProviderModelOption } from "@verft/shared-types";
 import { AutoComplete, Spin } from "antd";
 import type { CSSProperties } from "react";
 
@@ -5952,7 +5952,7 @@ export function TaskBinaryDiffCard({
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BellOutlined } from "@ant-design/icons";
 import { Button } from "antd";
-import type { Task, TaskRun } from "@agentswarm/shared-types";
+import type { Task, TaskRun } from "@verft/shared-types";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "./auth-provider";
 import { api } from "../src/api/client";
@@ -6180,13 +6180,13 @@ export function TaskBrowserNotifications() {
 import { useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import { getTaskTerminalSessionLabel, getTaskTerminalSessionSentenceLabel, type TaskTerminalSessionMode } from "@agentswarm/shared-types";
+import { getTaskTerminalSessionLabel, getTaskTerminalSessionSentenceLabel, type TaskTerminalSessionMode } from "@verft/shared-types";
 import "@xterm/xterm/css/xterm.css";
 
 import { api } from "../src/api/client";
 import { buildWebSocketUrl } from "../src/lib/public-url";
 
-const FONT_SIZE_STORAGE_KEY = "agentswarm-interactive-terminal-font-size";
+const FONT_SIZE_STORAGE_KEY = "verft-interactive-terminal-font-size";
 const FONT_MIN = 10;
 const FONT_MAX = 28;
 
@@ -6450,7 +6450,7 @@ export function TaskInteractiveTerminalView({
 "use client";
 
 import { useEffect, useMemo, useRef, type ChangeEvent, type ReactNode } from "react";
-import { TASK_PROMPT_ATTACHMENT_MAX_COUNT } from "@agentswarm/shared-types";
+import { TASK_PROMPT_ATTACHMENT_MAX_COUNT } from "@verft/shared-types";
 import { Button, Card, Flex, Typography } from "antd";
 import { formatAttachmentSize, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 
@@ -6747,7 +6747,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { ConfigProvider } from "antd";
 import { getAppAntdTheme, isDarkAppTheme, type AppThemeMode } from "../src/theme/antd-theme";
 
-const THEME_STORAGE_KEY = "agentswarm-theme-mode";
+const THEME_STORAGE_KEY = "verft-theme-mode";
 
 interface ThemeModeContextValue {
   mode: AppThemeMode;
@@ -7713,8 +7713,8 @@ export function WorkspaceFilePreviewModal({
 "use client";
 
 import { useEffect, useState } from "react";
-import type { AgentProvider, ProviderModelOption } from "@agentswarm/shared-types";
-import { getModelsForProvider } from "@agentswarm/shared-types";
+import type { AgentProvider, ProviderModelOption } from "@verft/shared-types";
+import { getModelsForProvider } from "@verft/shared-types";
 import { api } from "../api/client";
 
 interface UseProviderModelsResult {
@@ -7787,7 +7787,7 @@ export function useProviderModels(provider: AgentProvider): UseProviderModelsRes
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Repository } from "@agentswarm/shared-types";
+import type { Repository } from "@verft/shared-types";
 import { api } from "../api/client";
 import { useSocket } from "./useSocket";
 
@@ -7855,7 +7855,7 @@ export const useRepositories = () => {
 "use client";
 
 import { useEffect, useState } from "react";
-import type { SystemSettings } from "@agentswarm/shared-types";
+import type { SystemSettings } from "@verft/shared-types";
 import { api } from "../api/client";
 import { useSocket } from "./useSocket";
 
@@ -7903,7 +7903,7 @@ export const useSettings = () => {
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Snippet } from "@agentswarm/shared-types";
+import type { Snippet } from "@verft/shared-types";
 import { api } from "../api/client";
 import { useSocket } from "./useSocket";
 
@@ -8053,7 +8053,7 @@ export const useSocket = (): Socket | null => {
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Task } from "@agentswarm/shared-types";
+import type { Task } from "@verft/shared-types";
 import { api } from "../api/client";
 import { markTaskSeen } from "../utils/seen-tasks";
 import { useSocket } from "./useSocket";
@@ -8198,7 +8198,7 @@ export const useTask = (taskId: string) => {
 ````typescript
 "use client";
 
-import type { TaskChangeProposal } from "@agentswarm/shared-types";
+import type { TaskChangeProposal } from "@verft/shared-types";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useSocket } from "./useSocket";
@@ -8322,7 +8322,7 @@ export const useTaskChangeProposals = (taskId: string) => {
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { TaskMessage } from "@agentswarm/shared-types";
+import type { TaskMessage } from "@verft/shared-types";
 import { api } from "../api/client";
 import { useSocket } from "./useSocket";
 
@@ -8461,7 +8461,7 @@ export const useTaskMessages = (taskId: string) => {
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { TaskRun } from "@agentswarm/shared-types";
+import type { TaskRun } from "@verft/shared-types";
 import { api } from "../api/client";
 import { useSocket } from "./useSocket";
 
@@ -10553,7 +10553,7 @@ export const trackEvent = (name: string, properties?: Record<string, unknown>): 
   }
 
   window.dispatchEvent(
-    new CustomEvent("agentswarm:analytics", {
+    new CustomEvent("verft:analytics", {
       detail: {
         name,
         properties: properties ?? {},
@@ -10883,7 +10883,7 @@ describe("applySnippetVariables", () => {
 
 ## File: apps/web/src/utils/snippets.ts
 ````typescript
-import type { SnippetVariable } from "@agentswarm/shared-types";
+import type { SnippetVariable } from "@verft/shared-types";
 
 const SNIPPET_PLACEHOLDER_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
 
@@ -10947,11 +10947,11 @@ ENV NODE_ENV=production
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_SOCKET_URL=$NEXT_PUBLIC_SOCKET_URL
 
-RUN npm run build -w @agentswarm/shared-types
-RUN npm run build -w @agentswarm/web
+RUN npm run build -w @verft/shared-types
+RUN npm run build -w @verft/web
 
 EXPOSE 3217
-CMD ["npm", "run", "start", "-w", "@agentswarm/web"]
+CMD ["npm", "run", "start", "-w", "@verft/web"]
 ````
 
 ## File: apps/web/logo.svg
@@ -10981,7 +10981,7 @@ const nextConfig = {
   experimental: {
     typedRoutes: false
   },
-  transpilePackages: ["@agentswarm/shared-types"]
+  transpilePackages: ["@verft/shared-types"]
 };
 
 export default nextConfig;
@@ -11243,7 +11243,7 @@ Reason:
 ## File: packages/shared-types/package.json
 ````json
 {
-  "name": "@agentswarm/shared-types",
+  "name": "@verft/shared-types",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -11592,7 +11592,7 @@ This is a local experiment only: **no authentication**, and mounting the Docker 
 
 ## Build images (order matters)
 
-Build the restricted **Git terminal** image first if you want AgentSwarm's browser Git terminal to run inside a minimal Alpine container with `git`, `vim`, and `diff3`:
+Build the restricted **Git terminal** image first if you want Verft's browser Git terminal to run inside a minimal Alpine container with `git`, `vim`, and `diff3`:
 
 ```bash
 cd tools/codex-web-terminal
@@ -12029,8 +12029,8 @@ fi
 
 BASE_BRANCH="${BASE_BRANCH:-develop}"
 REPO_DEFAULT_BRANCH="${REPO_DEFAULT_BRANCH:-$BASE_BRANCH}"
-BRANCH_NAME="${BRANCH_NAME:-agentswarm/task}"
-TASK_TITLE="${TASK_TITLE:-AgentSwarm task}"
+BRANCH_NAME="${BRANCH_NAME:-verft/task}"
+TASK_TITLE="${TASK_TITLE:-Verft task}"
 TASK_PLAN_PATH="${TASK_PLAN_PATH:-local-plans/plan.md}"
 TASK_BRANCH_STRATEGY="${TASK_BRANCH_STRATEGY:-feature_branch}"
 TASK_PROMPT_FILE="${TASK_PROMPT_FILE:-}"
@@ -12044,8 +12044,8 @@ REPO_CACHE_PATH="${REPO_CACHE_PATH:-}"
 TASK_MODEL="${TASK_MODEL:-}"
 TASK_REASONING_EFFORT="${TASK_REASONING_EFFORT:-}"
 EXECUTION_ACTION="${EXECUTION_ACTION:-build}"
-GIT_USER_NAME="${GIT_USER_NAME:-AgentSwarm Bot}"
-GIT_USER_EMAIL="${GIT_USER_EMAIL:-agentswarm@local.dev}"
+GIT_USER_NAME="${GIT_USER_NAME:-Verft Bot}"
+GIT_USER_EMAIL="${GIT_USER_EMAIL:-verft@local.dev}"
 GIT_USERNAME="${GIT_USERNAME:-x-access-token}"
 GIT_TOKEN="${GIT_TOKEN:-}"
 OPENAI_API_KEY="${OPENAI_API_KEY:-}"
@@ -12168,7 +12168,7 @@ fi
 echo "[runtime] rg available: $(rg --version | head -n 1)"
 
 if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-  echo "[runtime] OPENAI_API_KEY is missing. Configure it in AgentSwarm Settings before running this task."
+  echo "[runtime] OPENAI_API_KEY is missing. Configure it in Verft Settings before running this task."
   exit 1
 fi
 
@@ -12365,7 +12365,7 @@ if [[ "$EXECUTION_ACTION" == "plan" || "$EXECUTION_ACTION" == "iterate" || "$EXE
   fi
 
   if [[ "$EXECUTION_ACTION" == "plan" || "$EXECUTION_ACTION" == "iterate" ]]; then
-    echo "[runtime] plan markdown generated; local storage handled by AgentSwarm server at $TASK_PLAN_PATH"
+    echo "[runtime] plan markdown generated; local storage handled by Verft server at $TASK_PLAN_PATH"
   else
     echo "[runtime] result markdown generated"
   fi
@@ -12384,7 +12384,7 @@ if git diff --cached --quiet; then
   exit 0
 fi
 
-git commit -m "feat(agentswarm): ${TASK_TITLE}"
+git commit -m "feat(verft): ${TASK_TITLE}"
 
 echo "[runtime] branch diff begin"
 git diff "$START_REF..HEAD" || true
@@ -12506,7 +12506,7 @@ describe("parseAgentJsonlEvents", () => {
 
 ## File: apps/server/src/lib/agent-event-parser.ts
 ````typescript
-import type { AgentProvider, NormalizedAgentEvent } from "@agentswarm/shared-types";
+import type { AgentProvider, NormalizedAgentEvent } from "@verft/shared-types";
 
 type JsonObject = Record<string, unknown>;
 
@@ -13007,7 +13007,7 @@ describe("docker socket mount/env helpers", () => {
 
 ## File: apps/server/src/lib/docker-socket-access.ts
 ````typescript
-import type { AgentProvider } from "@agentswarm/shared-types";
+import type { AgentProvider } from "@verft/shared-types";
 import { env } from "../config/env.js";
 
 export type DockerSocketAccessDeniedReason = "feature_disabled" | "invalid_socket_path";
@@ -13126,9 +13126,9 @@ export function emitNestedContainerSpawnedEvent(input: {
 
 ## File: apps/server/src/lib/github-status-sync.ts
 ````typescript
-const SYNC_NOTE_REGEX = /<!--\s*agentswarm:github_sync_status_enabled=(true|false)\s*-->/gi;
+const SYNC_NOTE_REGEX = /<!--\s*verft:github_sync_status_enabled=(true|false)\s*-->/gi;
 
-const toSyncMarker = (enabled: boolean): string => `<!-- agentswarm:github_sync_status_enabled=${enabled ? "true" : "false"} -->`;
+const toSyncMarker = (enabled: boolean): string => `<!-- verft:github_sync_status_enabled=${enabled ? "true" : "false"} -->`;
 
 export const withGitHubStatusSyncMarker = (notes: string | null | undefined, enabled: boolean): string => {
   const base = typeof notes === "string" ? notes.replace(SYNC_NOTE_REGEX, "").trim() : "";
@@ -13212,7 +13212,7 @@ import {
   type TaskAction,
   type TaskReasoningEffort,
   type TaskType
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   defaultModelForProvider,
   normalizeModelOverride,
@@ -13322,7 +13322,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { resolveTaskGitCommitIdentity } from "./task-git-identity.js";
 
-const fallback = { name: "AgentSwarm Bot", email: "agentswarm@local.dev" };
+const fallback = { name: "Verft Bot", email: "verft@local.dev" };
 
 describe("resolveTaskGitCommitIdentity", () => {
   it("uses the task owner's name and email when available", async () => {
@@ -13384,7 +13384,7 @@ describe("resolveTaskGitCommitIdentity", () => {
 
 ## File: apps/server/src/lib/task-git-identity.ts
 ````typescript
-import type { Task, User } from "@agentswarm/shared-types";
+import type { Task, User } from "@verft/shared-types";
 
 export interface GitCommitIdentity {
   name: string;
@@ -13427,9 +13427,9 @@ export function buildGitTerminalStartScript(): string {
     'printf "\\033[90mTerminal ready in %s. The shell is restricted to this workspace and only exposes git, nvim, vim, vi, and diff3.\\033[0m\\n" "$PWD"',
     [
       'if [ -n "${GIT_TOKEN:-}" ]; then',
-      "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > /tmp/agentswarm-git-askpass.sh",
-      "  chmod 700 /tmp/agentswarm-git-askpass.sh",
-      '  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/agentswarm-git-askpass.sh',
+      "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > /tmp/verft-git-askpass.sh",
+      "  chmod 700 /tmp/verft-git-askpass.sh",
+      '  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/verft-git-askpass.sh',
       "fi"
     ].join("\n"),
     "exec git-terminal-shell"
@@ -13962,10 +13962,10 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
-import type { UpdateCredentialSettingsInput } from "@agentswarm/shared-types";
+import type { UpdateCredentialSettingsInput } from "@verft/shared-types";
 import { env } from "../config/env.js";
 
-const CREDENTIALS_KEY = "agentswarm:credential_settings";
+const CREDENTIALS_KEY = "verft:credential_settings";
 const nowIso = (): string => new Date().toISOString();
 
 interface StoredCredentials {
@@ -14425,7 +14425,7 @@ export class PostgresCredentialStore implements CredentialStore {
 
 ## File: apps/server/src/services/github-status-sync-service.ts
 ````typescript
-import type { RealtimeEvent, Task, TaskStatus } from "@agentswarm/shared-types";
+import type { RealtimeEvent, Task, TaskStatus } from "@verft/shared-types";
 import type { RepositoryStore } from "./repository-store.js";
 import type { GitHubOutboundService } from "./github-outbound-service.js";
 import { getGitHubStatusSyncFromNotes } from "../lib/github-status-sync.js";
@@ -14565,7 +14565,7 @@ export class GitHubStatusSyncService {
 ````typescript
 import { access } from "node:fs/promises";
 import path from "node:path";
-import type { OpenAiDiffAssistResult, ProviderProfile } from "@agentswarm/shared-types";
+import type { OpenAiDiffAssistResult, ProviderProfile } from "@verft/shared-types";
 import { env } from "../config/env.js";
 import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
 import { readSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
@@ -15021,13 +15021,13 @@ import {
   type ProviderProfile,
   type Role,
   type UpdateRoleInput
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { HttpError } from "../lib/http-error.js";
 import { parseJsonColumn, type PostgresQueryable } from "../lib/postgres.js";
 
-const ROLE_KEY_PREFIX = "agentswarm:role:";
-const ROLE_IDS_KEY = "agentswarm:role_ids";
-const ROLE_NAME_KEY_PREFIX = "agentswarm:role_name:";
+const ROLE_KEY_PREFIX = "verft:role:";
+const ROLE_IDS_KEY = "verft:role_ids";
+const ROLE_NAME_KEY_PREFIX = "verft:role_name:";
 
 export const SYSTEM_ADMIN_ROLE_ID = "admin";
 const SYSTEM_ADMIN_ROLE_NAME = "Admin";
@@ -15778,16 +15778,16 @@ import {
   type User,
   type UserRoleRef,
   type UpdateUserInput
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { HttpError } from "../lib/http-error.js";
 import { type PostgresQueryable, withPostgresTransaction } from "../lib/postgres.js";
 import type { RepositoryStore } from "./repository-store.js";
 import { SYSTEM_ADMIN_ROLE_ID, type RoleStore } from "./role-store.js";
 
-const USER_KEY_PREFIX = "agentswarm:user:";
-const USER_IDS_KEY = "agentswarm:user_ids";
-const USER_EMAIL_KEY_PREFIX = "agentswarm:user_email:";
-const BOOTSTRAP_ADMIN_MARKER_KEY = "agentswarm:bootstrap_admin_user_id";
+const USER_KEY_PREFIX = "verft:user:";
+const USER_IDS_KEY = "verft:user_ids";
+const USER_EMAIL_KEY_PREFIX = "verft:user_email:";
+const BOOTSTRAP_ADMIN_MARKER_KEY = "verft:bootstrap_admin_user_id";
 
 const scrypt = promisify(scryptCallback);
 const nowIso = (): string => new Date().toISOString();
@@ -16991,7 +16991,7 @@ import {
   getProviderProfileLabel,
   getTaskTerminalSessionLabel,
   type TaskTerminalSessionMode
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Flex, Typography, theme as antTheme } from "antd";
 import { TaskInteractiveTerminalView } from "../../../../components/task-interactive-terminal-view";
 import { useTask } from "../../../../src/hooks/useTask";
@@ -17091,7 +17091,7 @@ import {
   getTaskTerminalSessionLabel,
   isTaskWorking,
   type Task
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import dayjs from "dayjs";
 import { api } from "../src/api/client";
 import { useTasks } from "../src/hooks/useTasks";
@@ -17508,7 +17508,7 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Alert, App, Button, Card, Flex, Form, Input, Typography } from "antd";
-import type { LoginInput } from "@agentswarm/shared-types";
+import type { LoginInput } from "@verft/shared-types";
 import { ApiError } from "../src/api/client";
 import { resolveDefaultPath } from "../src/auth/access";
 import { isDarkAppTheme } from "../src/theme/antd-theme";
@@ -17618,7 +17618,7 @@ export function LoginPage() {
             <Flex align="center" gap={12} style={{ marginBottom: 8 }}>
               <AppLogo width={22} height={32} />
               <Typography.Title level={3} style={{ margin: 0 }}>
-                AgentSwarm
+                Verft
               </Typography.Title>
             </Flex>
             <Typography.Title level={2} style={{ margin: 0 }}>
@@ -17711,7 +17711,7 @@ import {
   getEffortOptionsForProvider,
   type ProviderProfile,
   type TaskLiveDiff
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Alert, Button, Card, Collapse, Flex, Input, Modal, Select, Space, Spin, Typography, message } from "antd";
 import { Diff, Hunk, getChangeKey, type ChangeData, type FileData } from "react-diff-view";
 import ReactMarkdown from "react-markdown";
@@ -18126,7 +18126,7 @@ export function TaskDiffOpenAiPanel({
 
 import dynamic from "next/dynamic";
 import { LoadingOutlined, ReloadOutlined } from "@ant-design/icons";
-import type { TaskWorkspaceFilePreview, TaskWorkspaceFileTreeEntryKind } from "@agentswarm/shared-types";
+import type { TaskWorkspaceFilePreview, TaskWorkspaceFileTreeEntryKind } from "@verft/shared-types";
 import { Alert, AutoComplete, Button, Empty, Flex, Input, Space, Spin, Tag, Tree, Typography } from "antd";
 import type { DataNode } from "antd/es/tree";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -18770,7 +18770,7 @@ import type {
   ResponsePreferencePreset,
   Role,
   User
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   App,
   Button,
@@ -19206,10 +19206,10 @@ export function UsersPage() {
 
 ## File: apps/web/src/utils/seen-tasks.ts
 ````typescript
-import { isActiveTaskStatus, isQueuedTaskStatus, type Task } from "@agentswarm/shared-types";
+import { isActiveTaskStatus, isQueuedTaskStatus, type Task } from "@verft/shared-types";
 
-const SEEN_TASKS_STORAGE_KEY = "agentswarm.seen-task-ids";
-const SEEN_TASKS_UPDATED_EVENT = "agentswarm:seen-task-ids-updated";
+const SEEN_TASKS_STORAGE_KEY = "verft.seen-task-ids";
+const SEEN_TASKS_UPDATED_EVENT = "verft:seen-task-ids-updated";
 const LEGACY_SEEN_TASK_VERSION = "__legacy__";
 
 export type SeenTaskVersions = Record<string, string>;
@@ -19350,7 +19350,7 @@ export const subscribeToSeenTasks = (onChange: () => void): (() => void) => {
 
 ## File: apps/web/src/utils/task-prompt-attachments.ts
 ````typescript
-import type { CreateTaskPromptAttachmentInput } from "@agentswarm/shared-types";
+import type { CreateTaskPromptAttachmentInput } from "@verft/shared-types";
 
 export interface SelectedTaskPromptImageFile {
   id: string;
@@ -19550,13 +19550,13 @@ This repository uses lightweight, mechanical boundary checks through:
 
 ### Rule 4: Apps must use package import for shared types
 - Forbidden: files under `apps/web` or `apps/server` importing shared-types by filesystem path.
-- Required: import shared types from `@agentswarm/shared-types`.
+- Required: import shared types from `@verft/shared-types`.
 - Reason: package imports enforce a stable public boundary.
 - Fix: replace relative path import with package import.
 
 ### Rule 5: No deep imports from shared-types package
-- Forbidden: `@agentswarm/shared-types/...` deep paths.
-- Required: import from `@agentswarm/shared-types` root export only.
+- Forbidden: `@verft/shared-types/...` deep paths.
+- Required: import from `@verft/shared-types` root export only.
 - Reason: deep imports bypass public package boundaries.
 - Fix: use root package export.
 
@@ -19604,7 +19604,7 @@ This section lists major code domains visible in the repository.
 - Paths:
   - `docker-compose.yml`
   - `deploy/nginx.conf`
-  - `agentswarm.sh`
+  - `verft.sh`
 - Purpose: local stack orchestration and service routing.
 
 ## TODO
@@ -19699,7 +19699,7 @@ Use this short note in PRs or task summaries:
 ## What To Look For In Logs
 Server logs are structured JSON. Useful fields:
 - `time`, `level`, `msg`
-- `service` (should be `agentswarm-server`)
+- `service` (should be `verft-server`)
 - `requestId` (correlates request start/end/error)
 - `operationId` (when `x-operation-id` header is sent)
 - `method`, `url`, `statusCode`, `durationMs`
@@ -19927,9 +19927,9 @@ Stable selectors used:
 4. In remote mode on musl-based runners, auto-runs Playwright in a container fallback (`mcr.microsoft.com/playwright:v1.60.0-noble` by default).
 
 Useful environment options:
-- `AGENTSWARM_UI_BASE_URL` (default: `http://localhost:3217`)
-- `AGENTSWARM_E2E_EMAIL` (default: `admin@agentswarm.local`)
-- `AGENTSWARM_E2E_PASSWORD` (default: `admin123!`)
+- `VERFT_UI_BASE_URL` (default: `http://localhost:3217`)
+- `VERFT_E2E_EMAIL` (default: `admin@verft.local`)
+- `VERFT_E2E_PASSWORD` (default: `admin123!`)
 - `PLAYWRIGHT_CAPTURE_VIDEO=1` to keep video on failures
 - `PLAYWRIGHT_SKIP_INSTALL=1` to skip browser install step
 - `PLAYWRIGHT_DOCKER_IMAGE` to override the Playwright fallback container image in remote mode
@@ -19951,7 +19951,7 @@ The harness sets stable defaults for repeatable runs:
 - `TZ=UTC`
 - `LANG=C`, `LC_ALL=C`
 - `NO_COLOR=1`, `FORCE_COLOR=0`
-- `AGENTSWARM_TEST_SEED`
+- `VERFT_TEST_SEED`
 
 ## Troubleshooting
 - If E2E cannot boot app: run `./scripts/harness/start.sh` directly and inspect logs.
@@ -20043,8 +20043,8 @@ See also: `docs/development/debugging.md`.
 ## Validation Commands
 - `./scripts/harness/test.sh`
 - `./scripts/harness/check.sh`
-- `npm --workspace @agentswarm/server test -- task-status.test.ts`
-- `npm --workspace @agentswarm/web test -- task-lifecycle-view-model.test.ts`
+- `npm --workspace @verft/server test -- task-status.test.ts`
+- `npm --workspace @verft/web test -- task-lifecycle-view-model.test.ts`
 
 ## Risks
 - Introducing new status can break existing status assumptions in UI and services.
@@ -20290,7 +20290,7 @@ See also: `docs/development/debugging.md`.
 - User Approval To Start: YES (issue request)
 - Baseline Checks Run: PARTIAL (`doctor.sh` blocked in this environment: Docker Compose missing)
 - Visible Task List Updated: YES (this execution plan)
-- Task-Level Tests/Lint/Build: YES (`check.sh` passed; `npm run test -w @agentswarm/server` and `npm run test -w @agentswarm/web` passed)
+- Task-Level Tests/Lint/Build: YES (`check.sh` passed; `npm run test -w @verft/server` and `npm run test -w @verft/web` passed)
 - Self Review Complete: YES
 - Code Review Complete: TODO (awaiting maintainer review)
 - Final Verification Complete: PARTIAL (`harness/test.sh` reached e2e boot and failed due missing Docker Compose)
@@ -20298,11 +20298,11 @@ See also: `docs/development/debugging.md`.
 - Docs/Changelog Updated: YES (execution plan and product terminology/flow notes updated)
 
 ## Validation Commands
-- `npm run lint -w @agentswarm/shared-types`
-- `npm run lint -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
-- `npm run test -w @agentswarm/server`
-- `npm run test -w @agentswarm/web`
+- `npm run lint -w @verft/shared-types`
+- `npm run lint -w @verft/server`
+- `npm run lint -w @verft/web`
+- `npm run test -w @verft/server`
+- `npm run test -w @verft/web`
 
 ## Risks
 - Secret value handling regressions in update semantics (keep vs replace vs delete).
@@ -20336,7 +20336,7 @@ See also: `docs/development/debugging.md`.
 # Product Docs
 
 ## Overview
-AgentSwarm is a web app for managing AI coding tasks against real repositories.
+Verft is a web app for managing AI coding tasks against real repositories.
 
 ## Key References
 - Product overview and setup: `README.md`
@@ -20357,14 +20357,14 @@ These rules are based on recurring patterns already used in this repository.
 ## 1) Preserve architectural layering
 - Rule: Keep web, server, and shared-types separated by the documented boundaries.
 - Rationale: Cross-layer imports create fragile coupling and break deploy/runtime assumptions.
-- Good behavior: In `apps/web`, call server APIs or use `@agentswarm/shared-types` instead of importing from `apps/server`.
+- Good behavior: In `apps/web`, call server APIs or use `@verft/shared-types` instead of importing from `apps/server`.
 - Bad behavior: Importing `apps/server/*` directly into `apps/web/*`.
 - Mechanically enforced: Yes (`scripts/harness/boundary-check.mjs`, run by `scripts/harness/check.sh` and CI).
 
 ## 2) Prefer existing shared contracts and utilities
-- Rule: Reuse `@agentswarm/shared-types` and existing helper modules before creating new ad-hoc copies.
+- Rule: Reuse `@verft/shared-types` and existing helper modules before creating new ad-hoc copies.
 - Rationale: Shared contracts keep server and web behavior aligned and reduce drift.
-- Good behavior: Import `Task`, enums, and shared limits from `@agentswarm/shared-types` in routes/components.
+- Good behavior: Import `Task`, enums, and shared limits from `@verft/shared-types` in routes/components.
 - Bad behavior: Duplicating task status enums or payload shapes in individual files.
 - Mechanically enforced: Partly (shared-types import boundaries are enforced; utility reuse choice is not).
 
@@ -20454,7 +20454,7 @@ Scale:
 | `apps/web` | 3 | 3 | 4 | 3 | 2 | 3 | 4 |
 | `packages/shared-types` | 1 | 2 | 4 | 3 | unknown | 3 | 3 |
 | Runtime (`agent-runtime*`, `tools/codex-web-terminal`) | 1 | 2 | 3 | 2 | 1 | unknown | 2 |
-| Deployment (`docker-compose.yml`, `deploy/`, `agentswarm.sh`) | 2 | 3 | 4 | 4 | 3 | 2 | 4 |
+| Deployment (`docker-compose.yml`, `deploy/`, `verft.sh`) | 2 | 3 | 4 | 4 | 3 | 2 | 4 |
 | Harness + CI (`scripts/harness`, `.github/workflows`) | 3 | 4 | 5 | 4 | 4 | 3 | 5 |
 
 ## Evidence Notes
@@ -20480,7 +20480,7 @@ Scale:
 - Security is `unknown` due to limited direct hardening evidence in repo docs/tests.
 
 ### Deployment domain
-- Local orchestration is documented and scripted (`docker-compose.yml`, `agentswarm.sh`, harness setup/start/doctor).
+- Local orchestration is documented and scripted (`docker-compose.yml`, `verft.sh`, harness setup/start/doctor).
 - Reliability is improved by health checks and doctor checks.
 - Security remains low for production use because current repo evidence is mainly local/dev setup.
 
@@ -20578,9 +20578,9 @@ build_remote_command() {
     DOC_STALE_DAYS
     FOLLOW
     TAIL_LINES
-    AGENTSWARM_UI_BASE_URL
-    AGENTSWARM_E2E_EMAIL
-    AGENTSWARM_E2E_PASSWORD
+    VERFT_UI_BASE_URL
+    VERFT_E2E_EMAIL
+    VERFT_E2E_PASSWORD
     PLAYWRIGHT_CAPTURE_VIDEO
     PLAYWRIGHT_SKIP_INSTALL
     CI
@@ -20590,7 +20590,7 @@ build_remote_command() {
     LC_ALL
     NO_COLOR
     FORCE_COLOR
-    AGENTSWARM_TEST_SEED
+    VERFT_TEST_SEED
     PUBLIC_PORT
     REDIS_HOST_PORT
     POSTGRES_HOST_PORT
@@ -20794,14 +20794,14 @@ const collectSpecifiers = (content) => {
 const analyzeImport = ({ filePath, fileKind, specifier }) => {
   const violations = [];
 
-  if (specifier.startsWith("@agentswarm/shared-types/")) {
+  if (specifier.startsWith("@verft/shared-types/")) {
     violations.push(
       createViolation({
         filePath,
         specifier,
-        rule: "Do not deep-import from @agentswarm/shared-types.",
+        rule: "Do not deep-import from @verft/shared-types.",
         why: "Deep imports bypass the package boundary and can break when internals change.",
-        fix: "Import from @agentswarm/shared-types root export instead."
+        fix: "Import from @verft/shared-types root export instead."
       })
     );
     return violations;
@@ -20862,7 +20862,7 @@ const analyzeImport = ({ filePath, fileKind, specifier }) => {
         specifier,
         rule: "Apps must import shared-types via package name, not filesystem paths.",
         why: "Package imports preserve clear boundaries and stable public exports.",
-        fix: "Replace relative path import with @agentswarm/shared-types."
+        fix: "Replace relative path import with @verft/shared-types."
       })
     );
   }
@@ -21334,7 +21334,7 @@ if [[ "${HARNESS_DB_RESET:-0}" == "1" ]]; then
 fi
 
 log "running first-time stack initialization (build + start)"
-./agentswarm.sh init
+./verft.sh init
 
 log "setup complete"
 log "admin seed is created on first boot from .env defaults (DEFAULT_ADMIN_*)"
@@ -21424,7 +21424,7 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 log "starting stack"
-./agentswarm.sh start
+./verft.sh start
 
 log "waiting for health endpoint: $HEALTH_URL"
 for attempt in $(seq 1 60); do
@@ -21468,7 +21468,7 @@ RUN addgroup claude \
 WORKDIR /workspace
 USER claude
 
-# Interactive image: the AgentSwarm server spawns `docker run ... <image> sh -lc <startScript>`.
+# Interactive image: the Verft server spawns `docker run ... <image> sh -lc <startScript>`.
 CMD ["bash"]
 ````
 
@@ -21516,7 +21516,7 @@ local-plans/
 task-workspaces/
 ````
 
-## File: agentswarm.sh
+## File: verft.sh
 ````bash
 #!/usr/bin/env bash
 set -euo pipefail
@@ -21530,8 +21530,8 @@ print_usage() {
 Usage: ./${SCRIPT_NAME} <start|stop|rebuild|init|help>
 
 Commands:
-  start    Start the AgentSwarm compose stack in the background.
-  stop     Stop the AgentSwarm compose stack.
+  start    Start the Verft compose stack in the background.
+  stop     Stop the Verft compose stack.
   rebuild  Rebuild compose, automated runtime, and interactive runtime images, then restart.
   init     Alias for rebuild.
   help     Show this help text.
@@ -21592,7 +21592,7 @@ compose() {
 
 print_access_hint() {
   local public_port="${PUBLIC_PORT:-$DEFAULT_PUBLIC_PORT}"
-  echo "AgentSwarm should be reachable at http://localhost:${public_port}/login"
+  echo "Verft should be reachable at http://localhost:${public_port}/login"
 }
 
 warn_if_missing_interactive_images() {
@@ -21658,7 +21658,7 @@ build_interactive_images() {
 }
 
 start_stack() {
-  echo "Starting AgentSwarm services"
+  echo "Starting Verft services"
   compose up -d
   warn_if_missing_runtime_images
   warn_if_missing_interactive_images
@@ -21666,16 +21666,16 @@ start_stack() {
 }
 
 stop_stack() {
-  echo "Stopping AgentSwarm services"
+  echo "Stopping Verft services"
   compose down
 }
 
 rebuild_stack() {
   build_runtime_images
   build_interactive_images
-  echo "Rebuilding AgentSwarm compose images"
+  echo "Rebuilding Verft compose images"
   compose build --pull --no-cache
-  echo "Restarting AgentSwarm services"
+  echo "Restarting Verft services"
   compose up -d --force-recreate
   print_access_hint
 }
@@ -21692,8 +21692,8 @@ main() {
       require_docker
       detect_compose
       cd "$ROOT_DIR"
-      CODEX_RUNTIME_IMAGE="${CODEX_RUNTIME_IMAGE:-agentswarm-agent-runtime-codex:latest}"
-      CLAUDE_RUNTIME_IMAGE="${CLAUDE_RUNTIME_IMAGE:-agentswarm-agent-runtime-claude:latest}"
+      CODEX_RUNTIME_IMAGE="${CODEX_RUNTIME_IMAGE:-verft-agent-runtime-codex:latest}"
+      CLAUDE_RUNTIME_IMAGE="${CLAUDE_RUNTIME_IMAGE:-verft-agent-runtime-claude:latest}"
       GIT_TERMINAL_IMAGE="${GIT_TERMINAL_IMAGE:-local/git-terminal:latest}"
       CODEX_INTERACTIVE_IMAGE="${CODEX_INTERACTIVE_IMAGE:-local/codex-interactive:latest}"
       CLAUDE_INTERACTIVE_IMAGE="${CLAUDE_INTERACTIVE_IMAGE:-local/claude-interactive:latest}"
@@ -21725,7 +21725,7 @@ main "$@"
 ````markdown
 # Architecture Overview
 
-This repository is a TypeScript monorepo for AgentSwarm.
+This repository is a TypeScript monorepo for Verft.
 
 ## Main Parts
 - `apps/server`: backend API and task orchestration service.
@@ -21752,7 +21752,7 @@ This repository is a TypeScript monorepo for AgentSwarm.
 ## File: package.json
 ````json
 {
-  "name": "agentswarm",
+  "name": "verft",
   "private": true,
   "version": "0.1.0",
   "workspaces": [
@@ -21760,13 +21760,13 @@ This repository is a TypeScript monorepo for AgentSwarm.
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev -w @agentswarm/server\" \"npm run dev -w @agentswarm/web\"",
-    "dev:server": "npm run dev -w @agentswarm/server",
-    "dev:web": "npm run dev -w @agentswarm/web",
+    "dev": "concurrently \"npm run dev -w @verft/server\" \"npm run dev -w @verft/web\"",
+    "dev:server": "npm run dev -w @verft/server",
+    "dev:web": "npm run dev -w @verft/web",
     "test": "./scripts/harness/test.sh",
     "typecheck": "npm run lint",
-    "build": "npm run build -w @agentswarm/shared-types && npm run build -w @agentswarm/server && npm run build -w @agentswarm/web",
-    "lint": "npm run lint -w @agentswarm/server && npm run lint -w @agentswarm/web"
+    "build": "npm run build -w @verft/shared-types && npm run build -w @verft/server && npm run build -w @verft/web",
+    "lint": "npm run lint -w @verft/server && npm run lint -w @verft/web"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
@@ -21781,7 +21781,7 @@ This repository is a TypeScript monorepo for AgentSwarm.
 import { defineConfig, devices } from "@playwright/test";
 
 const captureVideo = process.env.PLAYWRIGHT_CAPTURE_VIDEO === "1";
-const baseURL = process.env.AGENTSWARM_UI_BASE_URL ?? `http://localhost:${process.env.PUBLIC_PORT ?? "3217"}`;
+const baseURL = process.env.VERFT_UI_BASE_URL ?? `http://localhost:${process.env.PUBLIC_PORT ?? "3217"}`;
 
 export default defineConfig({
   testDir: "apps/web/e2e",
@@ -22030,7 +22030,7 @@ const providerStatePath = configuredStatePath && configuredStatePath.length > 0
   : path.join(runtimeHome, ".claude");
 await mkdir(runtimeHome, { recursive: true });
 await mkdir(providerStatePath, { recursive: true });
-const sessionIdFilePath = path.join(providerStatePath, "agentswarm-session-id.txt");
+const sessionIdFilePath = path.join(providerStatePath, "verft-session-id.txt");
 const persistedSessionId = await readPersistedSessionId(sessionIdFilePath);
 if (persistedSessionId) {
   args.push("--resume", persistedSessionId);
@@ -22181,7 +22181,7 @@ const buildResultError = () => {
 
   if (resultSubtype.includes("max_turns")) {
     return new Error(
-      `Claude hit a turn limit before producing a final answer.${resultDetails ? ` ${resultDetails}` : ""} AgentSwarm did not set --max-turns for this run.`
+      `Claude hit a turn limit before producing a final answer.${resultDetails ? ` ${resultDetails}` : ""} Verft did not set --max-turns for this run.`
     );
   }
 
@@ -22439,7 +22439,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ProviderProfile } from "@agentswarm/shared-types";
+import type { ProviderProfile } from "@verft/shared-types";
 import { env } from "../config/env.js";
 import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
 import type { SettingsRuntimeCredentials } from "./settings-store.js";
@@ -22621,7 +22621,7 @@ export async function executeCodexUtility(input: {
 
 ## File: apps/server/src/services/openai-task-prompt-magic-service.ts
 ````typescript
-import type { TaskPromptMagicResult } from "@agentswarm/shared-types";
+import type { TaskPromptMagicResult } from "@verft/shared-types";
 
 const MAX_USER_PROMPT = 16_000;
 const DEFAULT_MODEL = "gpt-5.4-mini";
@@ -22729,7 +22729,7 @@ export async function executeTaskPromptMagic(input: {
 
 ## File: apps/server/src/services/scheduler.ts
 ````typescript
-import { type Task, type TaskAction, type TaskExecutionInput } from "@agentswarm/shared-types";
+import { type Task, type TaskAction, type TaskExecutionInput } from "@verft/shared-types";
 import type { TaskStore } from "./task-store.js";
 import type { QueueEntry, TaskQueueStore } from "./task-queue-store.js";
 import type { SettingsStore } from "./settings-store.js";
@@ -23020,7 +23020,7 @@ export class SchedulerService {
 
 import { useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { Repository } from "@agentswarm/shared-types";
+import type { Repository } from "@verft/shared-types";
 import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";
@@ -23152,7 +23152,7 @@ export function RepositoriesPage() {
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { Snippet } from "@agentswarm/shared-types";
+import type { Snippet } from "@verft/shared-types";
 import { ArrowDownOutlined, ArrowUpOutlined, CopyOutlined, MinusCircleOutlined, PlusOutlined } from "@ant-design/icons";
 import { Button, Card, Flex, Form, Input, Result, Select, Space, Spin, Typography, message } from "antd";
 import { ApiError, api } from "../src/api/client";
@@ -23573,7 +23573,7 @@ export function SnippetEditorPage({ mode, snippetId }: SnippetEditorPageProps) {
 "use client";
 
 import { useEffect, useState } from "react";
-import type { Task } from "@agentswarm/shared-types";
+import type { Task } from "@verft/shared-types";
 import { api } from "../api/client";
 import { useSocket } from "./useSocket";
 
@@ -23729,28 +23729,28 @@ Notes:
 - Set `HARNESS_REQUIRE_ACTIVE_EXEC_PLAN=1` to fail when no active execution plan exists.
 
 ## Workspace Commands
-- Server (`@agentswarm/server`):
-  - `npm run -w @agentswarm/server dev`
-  - `npm run -w @agentswarm/server start`
-  - `npm run -w @agentswarm/server build`
-  - `npm run -w @agentswarm/server lint`
-  - `npm run -w @agentswarm/server test`
-  - `npm run -w @agentswarm/server db:migrate`
-  - `npm run -w @agentswarm/server db:backfill:redis-to-postgres`
-- Web (`@agentswarm/web`):
-  - `npm run -w @agentswarm/web dev`
-  - `npm run -w @agentswarm/web start`
-  - `npm run -w @agentswarm/web build`
-  - `npm run -w @agentswarm/web lint`
-  - `npm run -w @agentswarm/web test`
-- Shared types (`@agentswarm/shared-types`):
-  - `npm run -w @agentswarm/shared-types build`
+- Server (`@verft/server`):
+  - `npm run -w @verft/server dev`
+  - `npm run -w @verft/server start`
+  - `npm run -w @verft/server build`
+  - `npm run -w @verft/server lint`
+  - `npm run -w @verft/server test`
+  - `npm run -w @verft/server db:migrate`
+  - `npm run -w @verft/server db:backfill:redis-to-postgres`
+- Web (`@verft/web`):
+  - `npm run -w @verft/web dev`
+  - `npm run -w @verft/web start`
+  - `npm run -w @verft/web build`
+  - `npm run -w @verft/web lint`
+  - `npm run -w @verft/web test`
+- Shared types (`@verft/shared-types`):
+  - `npm run -w @verft/shared-types build`
 
 ## Existing Docker Control Commands
-- `./agentswarm.sh init`
-- `./agentswarm.sh start`
-- `./agentswarm.sh rebuild`
-- `./agentswarm.sh stop`
+- `./verft.sh init`
+- `./verft.sh start`
+- `./verft.sh rebuild`
+- `./verft.sh stop`
 
 ## CI / Local Parity Notes
 - CI workflow: `.github/workflows/harness-check.yml`.
@@ -23838,7 +23838,7 @@ HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
 What it does:
 - Creates `.env` from `.env.example` if missing.
 - Ensures runtime folders exist (`local-plans`, `task-workspaces`).
-- Runs `./agentswarm.sh init` (builds and starts required containers).
+- Runs `./verft.sh init` (builds and starts required containers).
 - Installs npm dependencies (because `HARNESS_INSTALL_NPM_DEPS=1` is set above).
 
 If you only need Docker services and do not plan to run local checks/tests:
@@ -24015,8 +24015,8 @@ GitHub/OpenAI/Anthropic credentials are configured in the app Settings UI, not i
 ## Validation Commands
 - `./scripts/harness/check.sh`
 - `./scripts/harness/test.sh`
-- `npm run lint -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
+- `npm run lint -w @verft/server`
+- `npm run lint -w @verft/web`
 - Targeted tests for scheduler/task-store/routes/sequence execution.
 
 ## Risks
@@ -24035,10 +24035,10 @@ GitHub/OpenAI/Anthropic credentials are configured in the app Settings UI, not i
 - 2026-05-27 17:48 UTC: Captured task-entry inventory snapshot for create/import/webhook/manual actions and git/checkpoint mutation endpoints.
 - 2026-05-27 17:53 UTC: Started Step 3 incrementally by introducing shared mutation guard reason codes in `apps/server/src/lib/task-mutation-guards.ts` and wiring `/tasks` mutation/action endpoints to return `{ message, reasonCode }` for blocked mutations.
 - 2026-05-27 17:54 UTC: Added guard coverage in `apps/server/src/lib/task-mutation-guards.test.ts` for blocker code priority (`pending_checkpoint` over `active_terminal_session`).
-- 2026-05-27 17:56 UTC: `npm run test -w @agentswarm/server` completed with one existing environment-sensitive failure in `spawner.workspace-provisioning.test.ts` (ask workspace path assertion), unrelated to changed files.
+- 2026-05-27 17:56 UTC: `npm run test -w @verft/server` completed with one existing environment-sensitive failure in `spawner.workspace-provisioning.test.ts` (ask workspace path assertion), unrelated to changed files.
 - 2026-05-27 18:02 UTC: Step 2 started. Added shared start orchestrator in `apps/server/src/lib/task-start-orchestrator.ts` and baseline tests in `apps/server/src/lib/task-start-orchestrator.test.ts`.
 - 2026-05-27 18:03 UTC: Refactored task start entry points to use orchestrator: `POST /tasks`, import routes, and webhook-created task starts.
-- 2026-05-27 18:04 UTC: `npm run lint -w @agentswarm/server` and targeted orchestrator/start/guard tests passed; full server test run still has the same existing `spawner.workspace-provisioning.test.ts` environment-sensitive failure.
+- 2026-05-27 18:04 UTC: `npm run lint -w @verft/server` and targeted orchestrator/start/guard tests passed; full server test run still has the same existing `spawner.workspace-provisioning.test.ts` environment-sensitive failure.
 - 2026-05-27 18:08 UTC: Began Step 4 consolidation by introducing a shared checkpoint transition helper in `apps/server/src/routes/tasks.ts` so apply/reject/revert/revert-file now all follow one continuation path (resume-check + refreshed response).
 - 2026-05-27 18:09 UTC: Re-ran server lint and full server tests; lint passed and full test run still only fails at the same known environment-sensitive `spawner.workspace-provisioning.test.ts` assertion.
 - 2026-05-27 18:17 UTC: Completed Step 5 by adding shared Git mutation handling helpers in `apps/server/src/routes/tasks.ts` (`ensureGitMutationAllowed`, `runGitCommand`) and applying them to pull/push/merge routes with consistent error responses.
@@ -24047,7 +24047,7 @@ GitHub/OpenAI/Anthropic credentials are configured in the app Settings UI, not i
 - 2026-05-27 18:24 UTC: Extended shared start orchestration coverage for explicit task action triggers via `orchestrateTaskActionStart` in `apps/server/src/lib/task-start-orchestrator.ts`, applied in `/tasks/:id/actions`.
 - 2026-05-27 18:25 UTC: Added `orchestrateTaskActionStart` tests in `apps/server/src/lib/task-start-orchestrator.test.ts`.
 - 2026-05-27 18:27 UTC: Fixed `spawner.workspace-provisioning.test.ts` host-path assertion setup to match current workspace host path resolution and restored full server test pass.
-- 2026-05-27 18:29 UTC: Hardening run complete: `./scripts/harness/check.sh` passed; `TEST_SCOPE=integration ./scripts/harness/test.sh` passed; `npm run test -w @agentswarm/server` passed; `npm run test -w @agentswarm/web` passed.
+- 2026-05-27 18:29 UTC: Hardening run complete: `./scripts/harness/check.sh` passed; `TEST_SCOPE=integration ./scripts/harness/test.sh` passed; `npm run test -w @verft/server` passed; `npm run test -w @verft/web` passed.
 
 ## Decisions
 - 2026-05-27: Use incremental refactor with contract-preserving route APIs first, then internal consolidation.
@@ -24125,7 +24125,7 @@ GitHub/OpenAI/Anthropic credentials are configured in the app Settings UI, not i
 - User Approval To Start: YES (issue request)
 - Baseline Checks Run: YES (`REMOTE_BUILD=0 ./scripts/harness/check.sh`)
 - Visible Task List Updated: YES
-- Task-Level Tests/Lint/Build: YES (`npm run build -w @agentswarm/server`, `npm run build -w @agentswarm/web`, package tests, harness check)
+- Task-Level Tests/Lint/Build: YES (`npm run build -w @verft/server`, `npm run build -w @verft/web`, package tests, harness check)
 - Self Review Complete: YES
 - Code Review Complete: NO (pending maintainer review)
 - Final Verification Complete: YES (repository check pipeline completed successfully)
@@ -24133,12 +24133,12 @@ GitHub/OpenAI/Anthropic credentials are configured in the app Settings UI, not i
 - Docs/Changelog Updated: YES (execution plan documentation updated)
 
 ## Validation Commands
-- `npm run lint -w @agentswarm/server`
-- `npm run test -w @agentswarm/server`
-- `npm run build -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
-- `npm run test -w @agentswarm/web`
-- `npm run build -w @agentswarm/web`
+- `npm run lint -w @verft/server`
+- `npm run test -w @verft/server`
+- `npm run build -w @verft/server`
+- `npm run lint -w @verft/web`
+- `npm run test -w @verft/web`
+- `npm run build -w @verft/web`
 - `REMOTE_BUILD=0 ./scripts/harness/check.sh`
 - `REMOTE_BUILD=0 ./scripts/harness/test.sh` (fails in this environment because Docker Compose is unavailable)
 
@@ -24400,8 +24400,8 @@ if [[ -f .env.example ]]; then
   done
 fi
 
-if [[ ! -x ./agentswarm.sh ]]; then
-  echo "[harness:doctor] error: ./agentswarm.sh is missing or not executable" >&2
+if [[ ! -x ./verft.sh ]]; then
+  echo "[harness:doctor] error: ./verft.sh is missing or not executable" >&2
   exit 1
 fi
 
@@ -24427,8 +24427,8 @@ fi
 
 log "validating npm workspace scripts"
 npm run >/dev/null
-npm run -w @agentswarm/server >/dev/null
-npm run -w @agentswarm/web >/dev/null
+npm run -w @verft/server >/dev/null
+npm run -w @verft/web >/dev/null
 
 log "doctor checks passed"
 log "next: run ./scripts/harness/setup.sh"
@@ -24501,8 +24501,8 @@ run npm run lint
 
 step "6/9 typecheck"
 # In this repo, lint commands are TypeScript no-emit checks.
-run npm run -w @agentswarm/server lint
-run npm run -w @agentswarm/web lint
+run npm run -w @verft/server lint
+run npm run -w @verft/web lint
 
 step "7/9 tests"
 run ./scripts/harness/test.sh
@@ -24554,7 +24554,7 @@ export LANG="${LANG:-C}"
 export LC_ALL="${LC_ALL:-C}"
 export NO_COLOR="${NO_COLOR:-1}"
 export FORCE_COLOR="${FORCE_COLOR:-0}"
-export AGENTSWARM_TEST_SEED="${AGENTSWARM_TEST_SEED:-20260523}"
+export VERFT_TEST_SEED="${VERFT_TEST_SEED:-20260523}"
 
 if ! node -e 'require.resolve("tsx/package.json")' >/dev/null 2>&1; then
   echo "[harness:test] error: required test dependency 'tsx' is not installed" >&2
@@ -24565,7 +24565,7 @@ fi
 FIXTURE_ROOT="${REPO_ROOT}/.tmp/harness-tests"
 rm -rf "$FIXTURE_ROOT"
 mkdir -p "$FIXTURE_ROOT"
-export AGENTSWARM_TEST_FIXTURE_ROOT="$FIXTURE_ROOT"
+export VERFT_TEST_FIXTURE_ROOT="$FIXTURE_ROOT"
 
 CURRENT_PHASE="initializing"
 CURRENT_CMD=""
@@ -24724,7 +24724,7 @@ run_playwright_e2e() {
   if [[ "${HARNESS_REMOTE_EXECUTING:-0}" == "1" ]]; then
     default_ui_host="host.docker.internal"
   fi
-  local ui_base_url="${AGENTSWARM_UI_BASE_URL:-http://${default_ui_host}:${public_port}}"
+  local ui_base_url="${VERFT_UI_BASE_URL:-http://${default_ui_host}:${public_port}}"
 
   ensure_ui_for_playwright "$ui_base_url"
 
@@ -24747,7 +24747,7 @@ run_playwright_e2e() {
       docker run --rm \
         -w /workspace \
         -v "$musl_docker_workspace_mount:/workspace" \
-        -e AGENTSWARM_UI_BASE_URL="$ui_base_url" \
+        -e VERFT_UI_BASE_URL="$ui_base_url" \
         -e CI="${CI:-1}" \
         -e NO_COLOR="${NO_COLOR:-1}" \
         -e FORCE_COLOR="${FORCE_COLOR:-0}" \
@@ -24768,8 +24768,8 @@ run_playwright_e2e() {
     echo "[harness:test] skipping browser install (PLAYWRIGHT_SKIP_INSTALL=1)"
   fi
 
-  if env AGENTSWARM_UI_BASE_URL="$ui_base_url" node -e 'const { chromium } = require("@playwright/test"); chromium.launch({ headless: true }).then((browser) => browser.close()).then(() => process.exit(0)).catch(() => process.exit(1));'; then
-    run_phase "e2e:playwright" env AGENTSWARM_UI_BASE_URL="$ui_base_url" npx playwright test --config playwright.config.ts
+  if env VERFT_UI_BASE_URL="$ui_base_url" node -e 'const { chromium } = require("@playwright/test"); chromium.launch({ headless: true }).then((browser) => browser.close()).then(() => process.exit(0)).catch(() => process.exit(1));'; then
+    run_phase "e2e:playwright" env VERFT_UI_BASE_URL="$ui_base_url" npx playwright test --config playwright.config.ts
     return
   fi
 
@@ -24785,7 +24785,7 @@ run_playwright_e2e() {
       docker run --rm \
         -w /workspace \
         -v "$docker_workspace_mount:/workspace" \
-        -e AGENTSWARM_UI_BASE_URL="$ui_base_url" \
+        -e VERFT_UI_BASE_URL="$ui_base_url" \
         -e CI="${CI:-1}" \
         -e NO_COLOR="${NO_COLOR:-1}" \
         -e FORCE_COLOR="${FORCE_COLOR:-0}" \
@@ -24802,8 +24802,8 @@ run_playwright_e2e() {
 
 echo "[harness:test] repo root: $REPO_ROOT"
 echo "[harness:test] scope: $TEST_SCOPE"
-echo "[harness:test] deterministic seed: $AGENTSWARM_TEST_SEED"
-echo "[harness:test] fixture root: $AGENTSWARM_TEST_FIXTURE_ROOT"
+echo "[harness:test] deterministic seed: $VERFT_TEST_SEED"
+echo "[harness:test] fixture root: $VERFT_TEST_FIXTURE_ROOT"
 echo "[harness:test] discovered tests: total=${#all_tests[@]}, unit=${#unit_tests[@]}, integration=${#integration_tests[@]}, e2e=${#e2e_tests[@]}"
 
 case "$TEST_SCOPE" in
@@ -24833,7 +24833,7 @@ echo "[harness:test] all requested test phases passed"
 ````typescript
 import type { IncomingHttpHeaders } from "node:http";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { AuthSession, PermissionScope, RealtimeEvent } from "@agentswarm/shared-types";
+import type { AuthSession, PermissionScope, RealtimeEvent } from "@verft/shared-types";
 import type { Server as SocketIOServer, Socket } from "socket.io";
 import type { CredentialStore } from "../services/credential-store.js";
 import type { SessionStore } from "../services/session-store.js";
@@ -25310,7 +25310,7 @@ describe("buildGitTerminalDockerEnvEntries", () => {
 
 ## File: apps/server/src/lib/task-status.ts
 ````typescript
-import { type TaskAction, type TaskStatus } from "@agentswarm/shared-types";
+import { type TaskAction, type TaskStatus } from "@verft/shared-types";
 
 export const resolveTaskReadyStatus = (hasPendingCheckpoint: boolean): TaskStatus =>
   hasPendingCheckpoint ? "awaiting_review" : "open";
@@ -25394,8 +25394,8 @@ export const normalizeTaskLifecycleStatus = (
 ````typescript
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import type { AgentProvider } from "@agentswarm/shared-types";
-import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
+import type { AgentProvider } from "@verft/shared-types";
+import { CODEX_MODELS, CLAUDE_MODELS } from "@verft/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
@@ -25608,7 +25608,7 @@ import type {
   GitHubIssueReference,
   GitHubPullRequestReference,
   Repository
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import type { SettingsStore } from "./settings-store.js";
 
 const GITHUB_API_URL = "https://api.github.com";
@@ -25733,7 +25733,7 @@ export class GitHubImportService {
       headers: {
         Accept: "application/vnd.github+json",
         Authorization: `Bearer ${token}`,
-        "User-Agent": "AgentSwarm",
+        "User-Agent": "Verft",
         "X-GitHub-Api-Version": "2022-11-28"
       }
     });
@@ -25753,7 +25753,7 @@ export class GitHubImportService {
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${token}`,
-        "User-Agent": "AgentSwarm"
+        "User-Agent": "Verft"
       },
       body: JSON.stringify({ query, variables })
     });
@@ -26720,8 +26720,8 @@ html[data-theme="forge-light"] .diff-widget-content {
 ````typescript
 import { expect, test } from "@playwright/test";
 
-const loginEmail = process.env.AGENTSWARM_E2E_EMAIL ?? "admin@agentswarm.local";
-const loginPassword = process.env.AGENTSWARM_E2E_PASSWORD ?? "admin123!";
+const loginEmail = process.env.VERFT_E2E_EMAIL ?? "admin@verft.local";
+const loginPassword = process.env.VERFT_E2E_PASSWORD ?? "admin123!";
 
 test("smoke: login route renders", async ({ page }) => {
   await page.goto("/login");
@@ -26776,7 +26776,7 @@ The terms below come from current repository docs and code.
 
 ## File: apps/server/src/lib/task-start-orchestrator.ts
 ````typescript
-import { isActiveTaskStatus, type Task, type TaskAction, type TaskExecutionInput } from "@agentswarm/shared-types";
+import { isActiveTaskStatus, type Task, type TaskAction, type TaskExecutionInput } from "@verft/shared-types";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
@@ -27545,15 +27545,15 @@ import type {
   RepositoryEnvSecret,
   RepositoryEnvSecretInput,
   UpdateRepositoryInput
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { EventBus } from "../lib/events.js";
 import { HttpError } from "../lib/http-error.js";
 import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
 
-const REPO_KEY_PREFIX = "agentswarm:repo:";
-const REPO_IDS_KEY = "agentswarm:repo_ids";
-const USER_KEY_PREFIX = "agentswarm:user:";
-const USER_IDS_KEY = "agentswarm:user_ids";
+const REPO_KEY_PREFIX = "verft:repo:";
+const REPO_IDS_KEY = "verft:repo_ids";
+const USER_KEY_PREFIX = "verft:user:";
+const USER_IDS_KEY = "verft:user_ids";
 const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
 const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
@@ -28981,7 +28981,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
 ````typescript
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
+import type { RealtimeEvent, Repository, Task } from "@verft/shared-types";
 import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
 import { WebhookDeliveryService } from "./webhook-delivery-service.js";
 
@@ -29109,7 +29109,7 @@ const baseTask = (): Task => ({
   baseBranch: "main",
   branchStrategy: "feature_branch",
   complexity: "normal",
-  branchName: "agentswarm/task-1",
+  branchName: "verft/task-1",
   workspaceBaseRef: null,
   prompt: "Do it",
   resultMarkdown: null,
@@ -29185,8 +29185,8 @@ describe("WebhookDeliveryService", () => {
     assert.equal(fetchCalls.length, 1);
     assert.equal(fetchCalls[0]?.url, "https://example.com/webhook");
     const headers = fetchCalls[0]?.init?.headers as Record<string, string>;
-    assert.equal(headers["x-agentswarm-event"], "created");
-    assert.equal(typeof headers["x-agentswarm-signature"], "string");
+    assert.equal(headers["x-verft-event"], "created");
+    assert.equal(typeof headers["x-verft-signature"], "string");
     assert.equal(deliveryResults.length, 1);
     assert.equal(deliveryResults[0]?.status, "success");
   });
@@ -29212,7 +29212,7 @@ describe("WebhookDeliveryService", () => {
       }
     });
 
-    const queued = await redis.zrangebyscore("agentswarm:webhook_delivery_queue", 0, Number.MAX_SAFE_INTEGER);
+    const queued = await redis.zrangebyscore("verft:webhook_delivery_queue", 0, Number.MAX_SAFE_INTEGER);
     assert.equal(queued.length, 2);
   });
 });
@@ -29225,7 +29225,7 @@ describe("WebhookDeliveryService", () => {
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import dayjs from "dayjs";
-import type { Snippet } from "@agentswarm/shared-types";
+import type { Snippet } from "@verft/shared-types";
 import { CopyOutlined } from "@ant-design/icons";
 import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
@@ -29397,7 +29397,7 @@ export function SnippetsPage() {
 ## File: apps/web/package.json
 ````json
 {
-  "name": "@agentswarm/web",
+  "name": "@verft/web",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -29408,7 +29408,7 @@ export function SnippetsPage() {
     "test": "node --import tsx --test src/utils/task-history.test.ts src/utils/snippets.test.ts src/utils/diff.test.ts src/utils/workspace-file-links.test.ts src/utils/task-lifecycle-view-model.test.ts"
   },
   "dependencies": {
-    "@agentswarm/shared-types": "*",
+    "@verft/shared-types": "*",
     "@ant-design/icons": "^6.0.0",
     "@ant-design/nextjs-registry": "^1.0.2",
     "@dnd-kit/core": "^6.3.1",
@@ -29581,7 +29581,7 @@ const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
 const codexDir = configuredStatePath && configuredStatePath.length > 0 ? configuredStatePath : path.join("/root", ".codex");
 const homeDir = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : path.dirname(codexDir);
 const lastMessageFile = path.join(path.dirname(manifest.resultJsonPath), "codex-last-message.txt");
-const sessionIdFile = path.join(codexDir, "agentswarm-session-id.txt");
+const sessionIdFile = path.join(codexDir, "verft-session-id.txt");
 const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
   ? manifest.rawEventsJsonlPath.trim()
   : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
@@ -29949,33 +29949,33 @@ import { env } from "../config/env.js";
 import { createPostgresPool, runPostgresMigrations, withPostgresTransaction } from "../lib/postgres.js";
 import { createRedisClients } from "../lib/redis.js";
 
-const ROLE_KEY_PREFIX = "agentswarm:role:";
-const ROLE_IDS_KEY = "agentswarm:role_ids";
+const ROLE_KEY_PREFIX = "verft:role:";
+const ROLE_IDS_KEY = "verft:role_ids";
 
-const USER_KEY_PREFIX = "agentswarm:user:";
-const USER_IDS_KEY = "agentswarm:user_ids";
-const BOOTSTRAP_ADMIN_MARKER_KEY = "agentswarm:bootstrap_admin_user_id";
+const USER_KEY_PREFIX = "verft:user:";
+const USER_IDS_KEY = "verft:user_ids";
+const BOOTSTRAP_ADMIN_MARKER_KEY = "verft:bootstrap_admin_user_id";
 
-const REPO_KEY_PREFIX = "agentswarm:repo:";
-const REPO_IDS_KEY = "agentswarm:repo_ids";
+const REPO_KEY_PREFIX = "verft:repo:";
+const REPO_IDS_KEY = "verft:repo_ids";
 
-const SNIPPET_KEY_PREFIX = "agentswarm:snippet:";
-const SNIPPET_IDS_KEY = "agentswarm:snippet_ids";
+const SNIPPET_KEY_PREFIX = "verft:snippet:";
+const SNIPPET_IDS_KEY = "verft:snippet_ids";
 
-const SETTINGS_KEY = "agentswarm:settings";
-const CREDENTIALS_KEY = "agentswarm:credential_settings";
+const SETTINGS_KEY = "verft:settings";
+const CREDENTIALS_KEY = "verft:credential_settings";
 
-const TASK_KEY_PREFIX = "agentswarm:task:";
-const TASK_LOG_KEY_PREFIX = "agentswarm:task_logs:";
-const TASK_MESSAGE_KEY_PREFIX = "agentswarm:task_messages:";
-const TASK_RUN_KEY_PREFIX = "agentswarm:task_run:";
-const TASK_RUN_LOG_KEY_PREFIX = "agentswarm:task_run_logs:";
-const TASK_RUN_IDS_KEY_PREFIX = "agentswarm:task_run_ids:";
-const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_change_proposal:";
-const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "agentswarm:task_change_proposal_ids:";
-const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "agentswarm:task_active_interactive_session:";
-const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "agentswarm:task_interactive_terminal_transcript:";
-const TASK_IDS_KEY = "agentswarm:task_ids";
+const TASK_KEY_PREFIX = "verft:task:";
+const TASK_LOG_KEY_PREFIX = "verft:task_logs:";
+const TASK_MESSAGE_KEY_PREFIX = "verft:task_messages:";
+const TASK_RUN_KEY_PREFIX = "verft:task_run:";
+const TASK_RUN_LOG_KEY_PREFIX = "verft:task_run_logs:";
+const TASK_RUN_IDS_KEY_PREFIX = "verft:task_run_ids:";
+const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "verft:task_change_proposal:";
+const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "verft:task_change_proposal_ids:";
+const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "verft:task_active_interactive_session:";
+const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "verft:task_interactive_terminal_transcript:";
+const TASK_IDS_KEY = "verft:task_ids";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -30519,7 +30519,7 @@ const main = async (): Promise<void> => {
           [
             trimString(settings.defaultProvider) ?? "codex",
             typeof settings.maxAgents === "number" ? settings.maxAgents : 2,
-            trimString(settings.branchPrefix) ?? "agentswarm",
+            trimString(settings.branchPrefix) ?? "verft",
             trimString((settings as { workspaceProvisioningMode?: string }).workspaceProvisioningMode) ?? "clone_only",
             trimString(settings.gitUsername) ?? "x-access-token",
             JSON.stringify(Array.isArray(settings.mcpServers) ? settings.mcpServers : []),
@@ -30764,7 +30764,7 @@ export const createPostgresStores = (
 ````typescript
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
+import type { RealtimeEvent, Repository, Task } from "@verft/shared-types";
 import type { RepositoryStore } from "./repository-store.js";
 import { GitHubStatusSyncService } from "./github-status-sync-service.js";
 
@@ -30931,11 +30931,11 @@ describe("GitHubStatusSyncService", () => {
 
     await service.handleRealtimeEvent({
       type: "task:created",
-      payload: buildTask("build_queued", { notes: "<!-- agentswarm:github_sync_status_enabled=false -->" })
+      payload: buildTask("build_queued", { notes: "<!-- verft:github_sync_status_enabled=false -->" })
     });
     await service.handleRealtimeEvent({
       type: "task:updated",
-      payload: buildTask("building", { notes: "<!-- agentswarm:github_sync_status_enabled=false -->" })
+      payload: buildTask("building", { notes: "<!-- verft:github_sync_status_enabled=false -->" })
     });
 
     assert.equal(outbound.labels.length, 0);
@@ -30948,7 +30948,7 @@ describe("GitHubStatusSyncService", () => {
 ````typescript
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { CreateTaskInput, Repository } from "@agentswarm/shared-types";
+import type { CreateTaskInput, Repository } from "@verft/shared-types";
 import { RedisTaskStore } from "./task-store.js";
 
 class FakeRedis {
@@ -31212,7 +31212,7 @@ import type {
   Repository,
   RepositoryEnvSecretInput,
   RepositoryEnvVarInput
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
 import { ApiError, api } from "../src/api/client";
 import { buildApiUrl } from "../src/lib/public-url";
@@ -31939,7 +31939,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 })
               ]}
             >
-              <Input placeholder="https://example.com/webhooks/agentswarm" />
+              <Input placeholder="https://example.com/webhooks/verft" />
             </Form.Item>
             <Form.Item
               name="webhookSecret"
@@ -32041,13 +32041,13 @@ import type {
   ResponsePreferencePreset,
   Role,
   SystemSettings
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   PERMISSION_SCOPE_GROUPS,
   getAgentProviderLabel,
   getEffortOptionsForProvider,
   getModelsForProvider
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { DeleteOutlined, LockOutlined, PlusOutlined } from "@ant-design/icons";
 import {
   Alert,
@@ -32431,7 +32431,7 @@ export function SettingsPage() {
                     showIcon
                     style={{ marginTop: 8 }}
                     message="Experimental"
-                    description="Claude Code in AgentSwarm is experimental; behavior and defaults may change."
+                    description="Claude Code in Verft is experimental; behavior and defaults may change."
                   />
                   <Flex vertical gap={12} style={{ width: "100%", marginTop: 8 }}>
                     <Form.Item
@@ -32453,7 +32453,7 @@ export function SettingsPage() {
             <Card bordered={false} loading={loading} title="Git & Branching">
               <Flex vertical gap={16} style={{ width: "100%" }}>
                 <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
-                  <Input placeholder="agentswarm" />
+                  <Input placeholder="verft" />
                 </Form.Item>
                 <Form.Item
                   name="gitUsername"
@@ -33219,7 +33219,7 @@ export function SettingsPage() {
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import type { TaskType } from "@agentswarm/shared-types";
+import type { TaskType } from "@verft/shared-types";
 import { Button, Flex, Form, Space, Typography, message } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
 import { trackEvent } from "../src/utils/analytics";
@@ -33329,7 +33329,7 @@ import {
   getTaskTypeLabel,
   isTaskWorking,
   type Task
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Button, Card, Checkbox, DatePicker, Divider, Flex, Input, Modal, Select, Space, Spin, Table, Typography, message } from "antd";
 import { PushpinFilled } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -33663,7 +33663,7 @@ import {
   type TaskChangeProposal,
   type TaskMessage,
   type TaskRun
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 
 type RawMessageHistoryEntry = {
   key: string;
@@ -34013,7 +34013,7 @@ export function buildTaskHistoryEntries(input: {
 
 ## File: apps/web/src/utils/task-lifecycle-view-model.ts
 ````typescript
-import { isActiveTaskStatus, isQueuedTaskStatus, isTaskWorking, type Task } from "@agentswarm/shared-types";
+import { isActiveTaskStatus, isQueuedTaskStatus, isTaskWorking, type Task } from "@verft/shared-types";
 
 export interface TaskLifecycleViewModel {
   isArchived: boolean;
@@ -34084,7 +34084,7 @@ import {
   isQueuedTaskStatus,
   type Task,
   type TaskTerminalSessionMode
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 
 import { env } from "../config/env.js";
 import type { AuthService } from "./auth.js";
@@ -34131,7 +34131,7 @@ const INTERACTIVE_WS_PING_INTERVAL_MS = 25_000;
 const INTERACTIVE_TRANSCRIPT_LIMIT = 2_000_000;
 const INTERACTIVE_EXIT_WAIT_MS = 1_500;
 const INTERACTIVE_TERMINAL_CLOSE_CODE = 1012;
-const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
+const PROVIDER_SESSION_ID_FILE = "verft-session-id.txt";
 const repositoryEnvFileStore = new RepositoryEnvFileStore();
 
 function normalizeTerminalSessionMode(value: string | null | undefined): TaskTerminalSessionMode {
@@ -34193,7 +34193,7 @@ function buildCodexStartScript(
     ...(missingMcpBearerEnvVars.length > 0
       ? [
           `echo ${shellSingleQuote(
-            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
+            `[verft] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
           )} >&2`
         ]
       : []),
@@ -34234,7 +34234,7 @@ function buildClaudeStartScript(
     ...(missingMcpBearerEnvVars.length > 0
       ? [
           `echo ${shellSingleQuote(
-            `[agentswarm] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
+            `[verft] warning: missing MCP bearer token env vars: ${missingMcpBearerEnvVars.join(", ")}`
           )} >&2`
         ]
       : []),
@@ -34802,7 +34802,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
         cols: 80,
         rows: 24,
         cwd: process.env.HOME || "/",
-        env: { ...process.env, TERM: "xterm-256color", AGENTSWARM_TERMINAL_MODE: mode }
+        env: { ...process.env, TERM: "xterm-256color", VERFT_TERMINAL_MODE: mode }
       });
 
       wireTerminalWebSocket(ws, child, {
@@ -34897,7 +34897,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       cols: 80,
       rows: 24,
       cwd: process.env.HOME || "/",
-      env: { ...process.env, TERM: "xterm-256color", AGENTSWARM_TERMINAL_MODE: mode },
+      env: { ...process.env, TERM: "xterm-256color", VERFT_TERMINAL_MODE: mode },
     });
 
     wireTerminalWebSocket(ws, child, {
@@ -35153,7 +35153,7 @@ function wireTerminalWebSocket(
 ````typescript
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Task } from "@agentswarm/shared-types";
+import type { Task } from "@verft/shared-types";
 import { getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "./task-start-orchestrator.js";
 
 const createTask = (overrides: Partial<Task> = {}): Task =>
@@ -35387,7 +35387,7 @@ describe("orchestrateTaskActionStart", () => {
 ````typescript
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import type { CreateRepositoryInput, GitHubAutomationRule, UpdateRepositoryInput } from "@agentswarm/shared-types";
+import type { CreateRepositoryInput, GitHubAutomationRule, UpdateRepositoryInput } from "@verft/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
 import { canUserAccessRepository } from "../lib/task-ownership.js";
@@ -35695,7 +35695,7 @@ export const registerRepositoryRoutes = (
 ````typescript
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { TaskChangeProposal, TaskMessage, TaskRun } from "@agentswarm/shared-types";
+import type { TaskChangeProposal, TaskMessage, TaskRun } from "@verft/shared-types";
 import {
   buildTaskHistoryEntries,
   GIT_TERMINAL_END_REVIEW_MESSAGE,
@@ -36073,14 +36073,14 @@ import type {
   UserNotes,
   UpdateCredentialSettingsInput,
   UpdateSettingsInput
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { EventBus } from "../lib/events.js";
 import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from "../lib/provider-config.js";
 import { defaultModelForProvider } from "../lib/provider-config.js";
 import type { CredentialStore, RuntimeCredentials } from "./credential-store.js";
 
-const SETTINGS_KEY = "agentswarm:settings";
-const USER_NOTES_KEY_PREFIX = "agentswarm:user-notes:";
+const SETTINGS_KEY = "verft:settings";
+const USER_NOTES_KEY_PREFIX = "verft:user-notes:";
 const SYSTEM_RESPONSE_PREFERENCE_PRESET_ID = "neutral";
 
 const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
@@ -36116,7 +36116,7 @@ const buildSystemDataStores = (): SystemDataStores => ({
 const defaultSettings: SystemSettings = {
   defaultProvider: DEFAULT_PROVIDER,
   maxAgents: 2,
-  branchPrefix: "agentswarm",
+  branchPrefix: "verft",
   workspaceProvisioningMode: "clone_only",
   gitUsername: "x-access-token",
   mcpServers: [],
@@ -36813,7 +36813,7 @@ import type {
   AgentJargonLevel,
   AudienceType,
   UserNotes
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
@@ -36832,7 +36832,7 @@ const menuIconByPath: Record<string, ReactNode> = {
   "/users": <TeamOutlined />
 };
 
-const NOTES_PANEL_STATE_STORAGE_KEY_PREFIX = "agentswarm:notes-sidebar-state:v1";
+const NOTES_PANEL_STATE_STORAGE_KEY_PREFIX = "verft:notes-sidebar-state:v1";
 const DEFAULT_NOTES_PANEL_WIDTH = 420;
 const NOTES_PANEL_MIN_WIDTH = 320;
 const NOTES_PANEL_MAX_WIDTH = 720;
@@ -37205,7 +37205,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <AppLogo width={28} height={40} />
               <Flex vertical gap={0}>
                 <Typography.Title level={4} style={{ margin: 0, color: token.colorText }}>
-                  AgentSwarm
+                  Verft
                 </Typography.Title>
               </Flex>
             </Flex>
@@ -37512,7 +37512,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
 ## File: apps/web/src/auth/access.ts
 ````typescript
-import type { PermissionScope } from "@agentswarm/shared-types";
+import type { PermissionScope } from "@verft/shared-types";
 
 export interface NavigationRoute {
   key: string;
@@ -37621,7 +37621,7 @@ export const getSelectedNavigationKey = (pathname: string): string => {
 ````typescript
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Task } from "@agentswarm/shared-types";
+import type { Task } from "@verft/shared-types";
 import { buildTaskLifecycleViewModel } from "./task-lifecycle-view-model";
 
 const createTask = (overrides: Partial<Task> = {}): Task =>
@@ -37789,7 +37789,7 @@ import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import * as Sentry from "@sentry/node";
 import { Server as SocketIOServer } from "socket.io";
-import type { RealtimeEvent } from "@agentswarm/shared-types";
+import type { RealtimeEvent } from "@verft/shared-types";
 import { env } from "./config/env.js";
 import { createAuthService } from "./lib/auth.js";
 import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
@@ -37840,7 +37840,7 @@ const bootstrap = async (): Promise<void> => {
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
-      base: { service: "agentswarm-server" }
+      base: { service: "verft-server" }
     },
     disableRequestLogging: true,
     requestIdHeader: "x-request-id",
@@ -38124,7 +38124,7 @@ void bootstrap().catch((error) => {
 ````typescript
 "use client";
 
-import type { Task, TaskDefinitionInput } from "@agentswarm/shared-types";
+import type { Task, TaskDefinitionInput } from "@verft/shared-types";
 import { api } from "../api/client";
 
 export const startMessageForDefinition = (definition: TaskDefinitionInput): string => {
@@ -38154,12 +38154,12 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput, option
 ## File: README.md
 ````markdown
 <p align="center">
-  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
+  <img src="apps/web/public/logo.svg" width="120" alt="Verft logo"/>
 </p>
 
-# AgentSwarm
+# Verft
 
-AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
+Verft is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
 
 The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
 
@@ -38172,7 +38172,7 @@ The project is built for developers and teams who want agent-assisted coding wor
 - Open task workspaces in an interactive browser terminal.
 - Configure repositories, credentials, roles, users, provider defaults, and snippets.
 - Automate task creation from GitHub webhooks and repository automation rules.
-- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
+- Add repository-local postflight checks with `.verft/postflight.yml`.
 
 ## Requirements
 
@@ -38189,8 +38189,8 @@ The project is built for developers and teams who want agent-assisted coding wor
 Clone the repository:
 
 ```bash
-git clone git@github.com:coretracker/agentswarm.git
-cd agentswarm
+git clone git@github.com:coretracker/verft.git
+cd verft
 ```
 
 Create a local environment file:
@@ -38202,7 +38202,7 @@ cp .env.example .env
 Initialize the Docker stack and runtime images:
 
 ```bash
-./agentswarm.sh init
+./verft.sh init
 ```
 
 For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
@@ -38216,7 +38216,7 @@ HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
 Start the app:
 
 ```bash
-./agentswarm.sh start
+./verft.sh start
 ```
 
 Open the UI:
@@ -38237,7 +38237,7 @@ After signing in:
 Stop the app:
 
 ```bash
-./agentswarm.sh stop
+./verft.sh stop
 ```
 
 ## Usage
@@ -38246,10 +38246,10 @@ Stop the app:
 
 | Command | Description |
 | --- | --- |
-| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
-| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
-| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
-| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
+| `./verft.sh init` | Build runtime images, rebuild compose images, and start the stack. |
+| `./verft.sh start` | Start the Docker Compose stack in the background. |
+| `./verft.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
+| `./verft.sh stop` | Stop the Docker Compose stack. |
 | `./scripts/harness/start.sh` | Start the development stack and wait for health. |
 
 The health endpoint is available at:
@@ -38260,7 +38260,7 @@ curl -fsS http://localhost:3217/api/health
 
 ### Creating Tasks
 
-Tasks are the main unit of work in AgentSwarm.
+Tasks are the main unit of work in Verft.
 
 - **Build tasks** ask an agent to make repository changes.
 - **Ask tasks** ask an agent to inspect and answer without changing code.
@@ -38271,7 +38271,7 @@ Task workspaces are isolated under `task-workspaces/` and are runtime data. Do n
 
 ### GitHub Webhooks
 
-AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
+Verft supports repository-scoped GitHub webhooks that can create tasks automatically.
 
 For each repository, configure this webhook URL in GitHub:
 
@@ -38315,7 +38315,7 @@ Supported automation triggers include:
 
 ### Postflight Checks
 
-Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
+Repositories can define post-build automation in `.verft/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
 
 Example:
 
@@ -38340,7 +38340,7 @@ on_failure: "fail_task"
 
 ## Configuration
 
-Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
+Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the Verft Settings UI, not in `.env`.
 
 ### Core Environment Variables
 
@@ -38349,9 +38349,9 @@ Most runtime configuration starts in `.env`. Provider API keys and GitHub creden
 | `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
 | `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
 | `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
-| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
+| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@verft.local` |
 | `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
-| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
+| `AUTH_COOKIE_NAME` | Session cookie name. | `verft_session` |
 | `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
 | `APP_ENVIRONMENT` | Runtime environment label. | `local` |
 
@@ -38370,8 +38370,8 @@ Durable application data is stored in Postgres. Redis is still required for sess
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
-| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
+| `GIT_USER_NAME` | Git author name used by the server. | `Verft Bot` |
+| `GIT_USER_EMAIL` | Git author email used by the server. | `verft@local.dev` |
 | `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
 | `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
 
@@ -38390,8 +38390,8 @@ Leave these empty to use the bundled same-origin `/api` proxy.
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
-| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
+| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `verft-agent-runtime-codex:latest` |
+| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `verft-agent-runtime-claude:latest` |
 | `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
 | `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
 | `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
@@ -38425,7 +38425,7 @@ Mounting `docker.sock` is highly privileged and can effectively grant host-level
 +-- scripts/harness/     # Canonical setup, check, test, and PR scripts
 +-- task-workspaces/     # Runtime task workspaces; do not commit
 +-- docker-compose.yml   # Local Docker stack
-+-- agentswarm.sh        # Main stack helper script
++-- verft.sh        # Main stack helper script
 ```
 
 ## Development
@@ -38453,9 +38453,9 @@ Useful development commands:
 Workspace-specific commands:
 
 ```bash
-npm run dev -w @agentswarm/server
-npm run dev -w @agentswarm/web
-npm run build -w @agentswarm/shared-types
+npm run dev -w @verft/server
+npm run dev -w @verft/web
+npm run build -w @verft/shared-types
 ```
 
 Before opening a pull request, run:
@@ -38476,7 +38476,7 @@ The repository uses execution-plan and human-gated-flow checks for non-trivial c
 
 ### Where do I configure API keys?
 
-Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
+Configure GitHub, OpenAI, and Anthropic credentials in the Verft Settings UI. Credentials are write-only from the UI and are not returned by the API.
 
 ### Can I run without Docker?
 
@@ -38484,7 +38484,7 @@ The documented and supported path is Docker-based. Some server and web commands 
 
 ### What does a `202` response from a GitHub webhook mean?
 
-It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
+It means Verft accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
 
 ### How do I reset local data?
 
@@ -38936,7 +38936,7 @@ import {
   getTaskWorkflowStatusLabel,
   type Task,
   type UpdateTaskStateInput
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Button, Card, Empty, Flex, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
 import dayjs from "dayjs";
 import { api } from "../src/api/client";
@@ -39437,7 +39437,7 @@ import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import type { Task } from "@agentswarm/shared-types";
+import type { Task } from "@verft/shared-types";
 import { SpawnerService } from "./spawner.js";
 
 const createTask = (overrides: Partial<Task> = {}): Task =>
@@ -39489,7 +39489,7 @@ const createSpawner = (): SpawnerService =>
   new SpawnerService(
     {} as never,
     {
-      getSettings: async () => ({ workspaceProvisioningMode: "clone_only", branchPrefix: "agentswarm" })
+      getSettings: async () => ({ workspaceProvisioningMode: "clone_only", branchPrefix: "verft" })
     } as never,
     {} as never,
     {} as never
@@ -39512,14 +39512,14 @@ describe("SpawnerService workspace provisioning", () => {
 
     const mount = spawner.resolveTaskRunRawEventsMount("task-123", "run-with-spaces");
 
-    assert.equal(mount.hostDir, "/tmp/agentswarm-task-workspaces/.task-state/task-123/raw-runs");
+    assert.equal(mount.hostDir, "/tmp/verft-task-workspaces/.task-state/task-123/raw-runs");
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
   });
 
   it("ignores incomplete trailing raw JSON events during live timeline parsing", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-raw-events-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-raw-events-"));
     const rawEventsPath = path.join(root, "events.jsonl");
     await writeFile(
       rawEventsPath,
@@ -39546,7 +39546,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("prepares build workspace via clone model", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-clone-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-clone-"));
     const workspacePath = path.join(root, "task");
     const task = createTask();
 
@@ -39599,7 +39599,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("reuses the existing task workspace for ask runs", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-ask-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-ask-"));
     const taskWorkspacePath = path.join(root, "task-workspace");
     const task = createTask();
     await mkdir(taskWorkspacePath, { recursive: true });
@@ -39639,7 +39639,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("rebuilds ask workspace when the folder exists but is not a git repo", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-ask-rebuild-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-ask-rebuild-"));
     const taskWorkspacePath = path.join(root, "task-workspace");
     const task = createTask();
     await mkdir(taskWorkspacePath, { recursive: true });
@@ -39670,7 +39670,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("cleans up ephemeral clone workspace directory", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-cleanup-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-cleanup-"));
     const workspacePath = path.join(root, "workspace");
     await mkdir(workspacePath, { recursive: true });
     await writeFile(path.join(workspacePath, "file.txt"), "x", "utf8");
@@ -39694,7 +39694,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("uses clone workspace metadata for manual postflight runs", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-postflight-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-postflight-"));
     const workspacePath = path.join(root, "workspace");
     const task = createTask({ id: "task-postflight" });
     await mkdir(workspacePath, { recursive: true });
@@ -39728,7 +39728,7 @@ describe("SpawnerService workspace provisioning", () => {
       defaultProvider: "codex"
     };
     spawnerAny.settingsStore = {
-      getSettings: async () => ({ branchPrefix: "agentswarm" }),
+      getSettings: async () => ({ branchPrefix: "verft" }),
       getRuntimeCredentials: async () => runtimeCredentials
     };
     spawnerAny.taskStore = {
@@ -39751,7 +39751,7 @@ describe("SpawnerService workspace provisioning", () => {
 ## File: apps/server/package.json
 ````json
 {
-  "name": "@agentswarm/server",
+  "name": "@verft/server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -39765,7 +39765,7 @@ describe("SpawnerService workspace provisioning", () => {
     "test": "node --import tsx --test src/lib/provider-config.test.ts src/lib/postflight-config.test.ts src/lib/task-status.test.ts src/lib/safe-workspace-file.test.ts src/lib/task-mutation-guards.test.ts src/lib/git-locks.test.ts src/lib/git-paths.test.ts src/lib/git-env.test.ts src/lib/git-runtime-mounts.test.ts src/lib/managed-git-hooks.test.ts src/lib/task-commit-subject.test.ts src/lib/task-git-identity.test.ts src/lib/task-provider-state.test.ts src/lib/task-interactive-terminal.test.ts src/lib/mcp-config.test.ts src/lib/task-start-orchestrator.test.ts src/lib/docker-socket-access.test.ts src/lib/agent-event-parser.test.ts src/services/repo-sync-manager.test.ts src/services/scheduler.test.ts src/services/task-store.test.ts src/services/webhook-delivery-service.test.ts src/services/github-outbound-service.test.ts src/services/spawner.workspace-provisioning.test.ts"
   },
   "dependencies": {
-    "@agentswarm/shared-types": "*",
+    "@verft/shared-types": "*",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^10.0.1",
     "@sentry/node": "^10.53.1",
@@ -39794,7 +39794,7 @@ describe("SpawnerService workspace provisioning", () => {
 
 import { useEffect, useState } from "react";
 import dayjs from "dayjs";
-import { getDefaultModelForProvider, type Task, type UpdateTaskDraftInput } from "@agentswarm/shared-types";
+import { getDefaultModelForProvider, type Task, type UpdateTaskDraftInput } from "@verft/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
 import { trackEvent } from "../src/utils/analytics";
@@ -40063,8 +40063,8 @@ import type {
   UpdateUserInput,
   User,
   UserNotes
-} from "@agentswarm/shared-types";
-export type { TaskWorkspaceFilePreview } from "@agentswarm/shared-types";
+} from "@verft/shared-types";
+export type { TaskWorkspaceFilePreview } from "@verft/shared-types";
 import { buildApiUrl } from "../lib/public-url";
 
 export interface ProviderModelsResponse {
@@ -40568,7 +40568,7 @@ import {
   type TaskChangeProposalStatus,
   type TaskInteractiveTerminalTranscript,
   type TaskTerminalSessionMode
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { EventBus } from "../lib/events.js";
 import {
   normalizeModelOverride,
@@ -40587,20 +40587,20 @@ function resolveTaskTitleForCreate(input: CreateTaskInput): string {
   return (input.title ?? "").trim();
 }
 
-const TASK_KEY_PREFIX = "agentswarm:task:";
-const TASK_LOG_KEY_PREFIX = "agentswarm:task_logs:";
-const TASK_MESSAGE_KEY_PREFIX = "agentswarm:task_messages:";
-const TASK_RUN_KEY_PREFIX = "agentswarm:task_run:";
-const TASK_RUN_LOG_KEY_PREFIX = "agentswarm:task_run_logs:";
-const TASK_RUN_IDS_KEY_PREFIX = "agentswarm:task_run_ids:";
-const TASK_GIT_OPERATION_KEY_PREFIX = "agentswarm:task_git_operation:";
-const TASK_GIT_OPERATION_IDS_KEY_PREFIX = "agentswarm:task_git_operation_ids:";
-const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_change_proposal:";
-const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "agentswarm:task_change_proposal_ids:";
-const TASK_PENDING_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_pending_change_proposal:";
-const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "agentswarm:task_active_interactive_session:";
-const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "agentswarm:task_interactive_terminal_transcript:";
-const TASK_IDS_KEY = "agentswarm:task_ids";
+const TASK_KEY_PREFIX = "verft:task:";
+const TASK_LOG_KEY_PREFIX = "verft:task_logs:";
+const TASK_MESSAGE_KEY_PREFIX = "verft:task_messages:";
+const TASK_RUN_KEY_PREFIX = "verft:task_run:";
+const TASK_RUN_LOG_KEY_PREFIX = "verft:task_run_logs:";
+const TASK_RUN_IDS_KEY_PREFIX = "verft:task_run_ids:";
+const TASK_GIT_OPERATION_KEY_PREFIX = "verft:task_git_operation:";
+const TASK_GIT_OPERATION_IDS_KEY_PREFIX = "verft:task_git_operation_ids:";
+const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "verft:task_change_proposal:";
+const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "verft:task_change_proposal_ids:";
+const TASK_PENDING_CHANGE_PROPOSAL_KEY_PREFIX = "verft:task_pending_change_proposal:";
+const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "verft:task_active_interactive_session:";
+const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "verft:task_interactive_terminal_transcript:";
+const TASK_IDS_KEY = "verft:task_ids";
 const MAX_LOG_LINES = 400;
 const MAX_MESSAGES = 200;
 const DEFAULT_HISTORY_PAGE_LIMIT = 25;
@@ -43499,7 +43499,7 @@ import {
   type TaskGitOperation,
   type TaskGitOperationFailureCode,
   type TaskGitOperationType
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { makeBranchName } from "../lib/branch.js";
 import { buildGitProcessEnv } from "../lib/git-env.js";
 import { extractGitLockPathFromErrorMessage, isPathInside, resolveGitTargetLockKey } from "../lib/git-locks.js";
@@ -43704,7 +43704,7 @@ function isBinaryBuffer(buffer: Buffer): boolean {
 }
 
 export class SpawnerService {
-  private static readonly MANAGED_REPO_HEAD_REF = "refs/heads/agentswarm-cache";
+  private static readonly MANAGED_REPO_HEAD_REF = "refs/heads/verft-cache";
 
   private readonly runtimeReady = new Set<AgentProvider>();
   private activeExecutions = new Map<string, Map<string, { label: string; process: ReturnType<typeof spawn>; containerName?: string }>>();
@@ -43980,9 +43980,9 @@ export class SpawnerService {
       [
         "set -eu",
         "if [ -n \"${GIT_TOKEN:-}\" ]; then",
-        "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > /tmp/agentswarm-git-askpass.sh",
-        "  chmod 700 /tmp/agentswarm-git-askpass.sh",
-        "  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/agentswarm-git-askpass.sh",
+        "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > /tmp/verft-git-askpass.sh",
+        "  chmod 700 /tmp/verft-git-askpass.sh",
+        "  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/verft-git-askpass.sh",
         "fi",
         "exec git \"$@\""
       ].join("\n");
@@ -44672,12 +44672,12 @@ export class SpawnerService {
   }
 
   private async stripEphemeralWorkspaceFiles(workspacePath: string): Promise<void> {
-    await rm(path.join(workspacePath, ".agentswarm-runtime"), { recursive: true, force: true }).catch(() => undefined);
+    await rm(path.join(workspacePath, ".verft-runtime"), { recursive: true, force: true }).catch(() => undefined);
   }
 
   private async loadPostflightConfig(workspacePath: string): Promise<PostflightConfig | null> {
     for (const fileName of ["postflight.yml", "postflight.yaml"]) {
-      const configPath = path.join(workspacePath, ".agentswarm", fileName);
+      const configPath = path.join(workspacePath, ".verft", fileName);
       let raw: string | null = null;
 
       try {
@@ -44693,7 +44693,7 @@ export class SpawnerService {
         return parsePostflightConfig(raw);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        throw new Error(`Invalid .agentswarm/${fileName}: ${detail}`);
+        throw new Error(`Invalid .verft/${fileName}: ${detail}`);
       }
     }
 
@@ -44860,7 +44860,7 @@ export class SpawnerService {
     await chmod(scriptPath, 0o755);
 
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
-    const containerName = `agentswarm-postflight-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
+    const containerName = `verft-postflight-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
     await appendRunLog(
       `Spawner: running postflight (${config.steps.length} step${config.steps.length === 1 ? "" : "s"}) in ${config.runner.image}.`
     );
@@ -44918,7 +44918,7 @@ export class SpawnerService {
 
     const config = await this.loadPostflightConfig(workspacePath);
     if (!config) {
-      throw new Error("No .agentswarm/postflight.yml found in this task workspace.");
+      throw new Error("No .verft/postflight.yml found in this task workspace.");
     }
 
     if (!postflightAppliesToTask(config, task)) {
@@ -46462,7 +46462,7 @@ export class SpawnerService {
     githubToken?: string | null,
     gitUsername = "x-access-token"
   ): Promise<{ branchDiff: string; changedFiles: string[]; commitSha: string; providerCommitted: boolean; changeOutcome: "changed" | "no_change" }> {
-    // Keep repo-owned .agentswarm files. Only strip workspace scratch paths from diffs/commits.
+    // Keep repo-owned .verft files. Only strip workspace scratch paths from diffs/commits.
     await this.stripEphemeralWorkspaceFiles(workspacePath);
     const commitSha = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
     const providerCommitted = commitSha !== runStartRef;
@@ -47143,7 +47143,7 @@ export class SpawnerService {
     const diffBody = proposal.diff.trim();
     let patchDir: string | null = null;
     try {
-      patchDir = await mkdtemp(path.join(tmpdir(), "agentswarm-reapply-"));
+      patchDir = await mkdtemp(path.join(tmpdir(), "verft-reapply-"));
       const patchPath = path.join(patchDir, "checkpoint.patch");
       await writeFile(patchPath, `${diffBody}\n`, "utf8");
       await this.gitCommand(["-C", workspacePath, "apply", "--check", patchPath], githubToken, gitUsername);
@@ -47274,7 +47274,7 @@ export class SpawnerService {
     let patchError: string | null = null;
     let patchDir: string | null = null;
     try {
-      patchDir = await mkdtemp(path.join(tmpdir(), "agentswarm-revert-"));
+      patchDir = await mkdtemp(path.join(tmpdir(), "verft-revert-"));
       const patchPath = path.join(patchDir, "checkpoint.patch");
       await writeFile(patchPath, `${diffBody}\n`, "utf8");
       await this.gitCommand(["-C", workspacePath, "apply", "--check", patchPath], githubToken, gitUsername);
@@ -47744,9 +47744,9 @@ export class SpawnerService {
         throw new Error(`Task branch ${branchName} is not available on origin`);
       }
 
-      const mergeRoot = await mkdtemp(path.join(tmpdir(), `agentswarm-merge-${task.id}-`));
+      const mergeRoot = await mkdtemp(path.join(tmpdir(), `verft-merge-${task.id}-`));
       const mergeWorkspacePath = path.join(mergeRoot, "workspace");
-      const mergeBranchName = `agentswarm-merge-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${nanoid(6).toLowerCase()}`;
+      const mergeBranchName = `verft-merge-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${nanoid(6).toLowerCase()}`;
 
       try {
         await this.addManagedWorktree(
@@ -48290,7 +48290,7 @@ export class SpawnerService {
         });
       }
 
-      const containerName = `agentswarm-task-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
+      const containerName = `verft-task-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
       const workspaceMountMode = action === "ask" ? "ro" : "rw";
       const rawEventsMount = runId ? this.resolveTaskRunRawEventsMount(task.id, runId) : null;
       const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
@@ -48612,13 +48612,13 @@ import type {
   TaskBranchStrategy,
   TaskDefinitionInput,
   TaskType
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   getAgentProviderLabel,
   getDefaultModelForProvider,
   getEffortOptionsForProvider,
   getModelsForProvider
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Typography, message } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
@@ -49316,7 +49316,7 @@ import {
   type TaskAction,
   type TaskPromptAttachment,
   type TaskTerminalSessionMode
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
@@ -49530,7 +49530,7 @@ const historyPageQuerySchema = z.object({
 });
 
 const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
-const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
+const PROVIDER_SESSION_ID_FILE = "verft-session-id.txt";
 
 const clearTaskProviderSessionId = async (taskId: string): Promise<void> => {
   for (const provider of ["codex", "claude"] as const) {
@@ -49910,7 +49910,7 @@ export const registerTaskRoutes = (
       reply.header("Content-Type", "application/x-ndjson");
       reply.header("Cache-Control", "no-store");
       reply.header("Content-Length", String(fileStats.size));
-      reply.header("Content-Disposition", `attachment; filename="agentswarm-${task.id}-${run.id}-${provider}-raw.jsonl"`);
+      reply.header("Content-Disposition", `attachment; filename="verft-${task.id}-${run.id}-${provider}-raw.jsonl"`);
       return reply.send(createReadStream(rawEventsJsonlPath));
     }
   );
@@ -52851,7 +52851,7 @@ import {
   type TaskGitOperation,
   type CodexCredentialSource,
   type User
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   Alert,
   Button,
@@ -52949,7 +52949,7 @@ const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
 const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
 const SYSTEM_ADMIN_ROLE_ID = "admin";
 const HISTORY_PAGE_SIZE = 5;
-const getComposerDraftStorageKey = (taskId: string): string => `agentswarm:task:${taskId}:composerDraft`;
+const getComposerDraftStorageKey = (taskId: string): string => `verft:task:${taskId}:composerDraft`;
 
 function normalizeAiCommitSubject(raw: string): string {
   const firstLine = raw
@@ -58179,7 +58179,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       >
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            Optional commit message. Click Magic to draft one with {OPENAI_COMMIT_MESSAGE_MODEL}, or leave blank to use AgentSwarm's generated subject on apply.
+            Optional commit message. Click Magic to draft one with {OPENAI_COMMIT_MESSAGE_MODEL}, or leave blank to use Verft's generated subject on apply.
           </Typography.Paragraph>
           <Input.TextArea
             autoFocus
@@ -58275,7 +58275,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Input
                 value={mergeCommitMessage}
                 onChange={(event) => setMergeCommitMessage(event.target.value)}
-                placeholder="feat(agentswarm): update files"
+                placeholder="feat(verft): update files"
                 maxLength={72}
                 disabled={mergeFooterBusy}
               />
@@ -58503,7 +58503,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         onOk={() => void handleKillInteractiveTerminal()}
         destroyOnClose
       >
-        This stops the live {activeTerminalSentenceLabel.toLowerCase()} session and keeps whatever is currently in the workspace so AgentSwarm
+        This stops the live {activeTerminalSentenceLabel.toLowerCase()} session and keeps whatever is currently in the workspace so Verft
         can create the usual checkpoint for recovery.
       </Modal>
       <Modal

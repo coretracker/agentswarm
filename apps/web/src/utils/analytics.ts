@@ -6,7 +6,7 @@ export const trackEvent = (name: string, properties?: Record<string, unknown>): 
   }
 
   window.dispatchEvent(
-    new CustomEvent("agentswarm:analytics", {
+    new CustomEvent("verft:analytics", {
       detail: {
         name,
         properties: properties ?? {},

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import Fastify from "fastify";
-import type { AuthSessionUser, CreateRepositoryInput, PermissionScope, Repository, User } from "@agentswarm/shared-types";
+import type { AuthSessionUser, CreateRepositoryInput, PermissionScope, Repository, User } from "@verft/shared-types";
 import { registerRepositoryRoutes } from "./repositories.js";
 
 const now = "2026-06-24T00:00:00.000Z";

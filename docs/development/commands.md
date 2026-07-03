@@ -43,28 +43,27 @@ Notes:
 - `npm ci` requires `python3` in this repo because `node-pty` may need local native build steps.
 
 ## Workspace Commands
-- Server (`@agentswarm/server`):
-  - `npm run -w @agentswarm/server dev`
-  - `npm run -w @agentswarm/server start`
-  - `npm run -w @agentswarm/server build`
-  - `npm run -w @agentswarm/server lint`
-  - `npm run -w @agentswarm/server test`
-  - `npm run -w @agentswarm/server db:migrate`
-  - `npm run -w @agentswarm/server db:backfill:redis-to-postgres`
-- Web (`@agentswarm/web`):
-  - `npm run -w @agentswarm/web dev`
-  - `npm run -w @agentswarm/web start`
-  - `npm run -w @agentswarm/web build`
-  - `npm run -w @agentswarm/web lint`
-  - `npm run -w @agentswarm/web test`
-- Shared types (`@agentswarm/shared-types`):
-  - `npm run -w @agentswarm/shared-types build`
+- Server (`@verft/server`):
+  - `npm run -w @verft/server dev`
+  - `npm run -w @verft/server start`
+  - `npm run -w @verft/server build`
+  - `npm run -w @verft/server lint`
+  - `npm run -w @verft/server test`
+  - `npm run -w @verft/server db:migrate`
+- Web (`@verft/web`):
+  - `npm run -w @verft/web dev`
+  - `npm run -w @verft/web start`
+  - `npm run -w @verft/web build`
+  - `npm run -w @verft/web lint`
+  - `npm run -w @verft/web test`
+- Shared types (`@verft/shared-types`):
+  - `npm run -w @verft/shared-types build`
 
 ## Existing Docker Control Commands
-- `./agentswarm.sh init`
-- `./agentswarm.sh start`
-- `./agentswarm.sh rebuild`
-- `./agentswarm.sh stop`
+- `./verft.sh init`
+- `./verft.sh start`
+- `./verft.sh rebuild`
+- `./verft.sh stop`
 
 `init` and `rebuild` build the unified agent toolbox image from `agent-runtime/Dockerfile`. Override the tag with `AGENT_RUNTIME_IMAGE` when testing a custom runtime image.
 

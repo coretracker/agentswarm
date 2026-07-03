@@ -1,4 +1,4 @@
-import { isActiveTaskStatus, type Task, type TaskAction, type TaskExecutionInput } from "@agentswarm/shared-types";
+import { isActiveTaskStatus, type Task, type TaskAction, type TaskExecutionInput } from "@verft/shared-types";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";

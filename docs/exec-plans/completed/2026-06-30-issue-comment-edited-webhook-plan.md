@@ -4,7 +4,7 @@
 - Respect GitHub `issue_comment.edited` mention triggers with duplicate protection.
 
 ## Goal
-- Allow edited GitHub issue and PR conversation comments to trigger AgentSwarm when the edited body mentions the configured integration bot.
+- Allow edited GitHub issue and PR conversation comments to trigger Verft when the edited body mentions the configured integration bot.
 - Keep duplicate protection so a comment that already created or queued task feedback is not processed again after subsequent edits.
 
 ## Non-goals
@@ -51,7 +51,7 @@
 - Task-Level Tests/Lint/Build: done - targeted route test, unit test scope, integration test scope, and `./scripts/harness/check.sh` passed.
 - Self Review Complete: done - reviewed diff against `docs/development/agent-review.md`.
 - Code Review Complete: done - self-review found no behavior outside `issue_comment.created|edited` normalization and related tests/docs.
-- Final Verification Complete: done - full PR-ready/e2e stack startup was not run because an existing `agentswarm-redis-1` container owns host port 6379; local doctor/check/unit/integration verification passed.
+- Final Verification Complete: done - full PR-ready/e2e stack startup was not run because an existing `verft-redis-1` container owns host port 6379; local doctor/check/unit/integration verification passed.
 - Security/Privacy Review Complete: done - webhook signature validation, bot-user filtering, allowed-user filtering, and token handling were unchanged.
 - Docs/Changelog Updated: done - product user flow notes now mention created or edited issue/PR conversation comment processing.
 
@@ -73,7 +73,7 @@
 ## Progress Log
 - 2026-06-30 10:59 UTC: Researched issue #78, confirmed current code drops `issue_comment.edited`, and documented the implementation plan.
 - 2026-06-30 11:14 UTC: Implemented edited `issue_comment` handling, added PR and issue regression tests with duplicate coverage, and updated product docs.
-- 2026-06-30 11:24 UTC: Verification passed for focused webhook route tests, `doctor.sh`, `check-human-gated-flow.sh`, `check.sh`, `TEST_SCOPE=unit ./scripts/harness/test.sh`, and `TEST_SCOPE=integration ./scripts/harness/test.sh`; full setup/start is blocked by host port 6379 already in use by an existing `agentswarm-redis-1` container.
+- 2026-06-30 11:24 UTC: Verification passed for focused webhook route tests, `doctor.sh`, `check-human-gated-flow.sh`, `check.sh`, `TEST_SCOPE=unit ./scripts/harness/test.sh`, and `TEST_SCOPE=integration ./scripts/harness/test.sh`; full setup/start is blocked by host port 6379 already in use by an existing `verft-redis-1` container.
 
 ## Decisions
 - 2026-06-30: Treat `created` and `edited` comment deliveries as the same feedback identity by keeping the existing comment-ID-based external IDs.

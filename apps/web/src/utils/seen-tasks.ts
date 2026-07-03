@@ -1,7 +1,7 @@
-import { isActiveTaskStatus, isQueuedTaskStatus, type Task } from "@agentswarm/shared-types";
+import { isActiveTaskStatus, isQueuedTaskStatus, type Task } from "@verft/shared-types";
 
-const SEEN_TASKS_STORAGE_KEY = "agentswarm.seen-task-ids";
-const SEEN_TASKS_UPDATED_EVENT = "agentswarm:seen-task-ids-updated";
+const SEEN_TASKS_STORAGE_KEY = "verft.seen-task-ids";
+const SEEN_TASKS_UPDATED_EVENT = "verft:seen-task-ids-updated";
 const LEGACY_SEEN_TASK_VERSION = "__legacy__";
 
 export type SeenTaskVersions = Record<string, string>;

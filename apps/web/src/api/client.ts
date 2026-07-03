@@ -64,8 +64,8 @@ import type {
   UpdateUserInput,
   User,
   UserNotes
-} from "@agentswarm/shared-types";
-export type { TaskWorkspaceFilePreview } from "@agentswarm/shared-types";
+} from "@verft/shared-types";
+export type { TaskWorkspaceFilePreview } from "@verft/shared-types";
 import { buildApiUrl } from "../lib/public-url";
 
 export interface ProviderModelsResponse {

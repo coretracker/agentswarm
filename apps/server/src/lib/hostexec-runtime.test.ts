@@ -16,7 +16,7 @@ afterEach(() => {
 
 describe("buildHostexecRuntimeConfig", () => {
   async function withPayloadDir<T>(run: (payloadDir: string) => Promise<T>): Promise<T> {
-    const fixtureRoot = process.env.AGENTSWARM_TEST_FIXTURE_ROOT ?? path.join(process.cwd(), ".tmp", "harness-tests");
+    const fixtureRoot = process.env.VERFT_TEST_FIXTURE_ROOT ?? path.join(process.cwd(), ".tmp", "harness-tests");
     env.RUNTIME_PAYLOAD_ROOT = path.join(fixtureRoot, "runtime-payloads");
     const payloadDir = path.join(env.RUNTIME_PAYLOAD_ROOT, `hostexec-runtime-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     await mkdir(payloadDir, { recursive: true });
@@ -57,7 +57,7 @@ describe("buildHostexecRuntimeConfig", () => {
       assert.deepEqual(result.commands, ["xcodebuild"]);
       assert.deepEqual(result.mountArgs, [
         "--mount",
-        `type=volume,src=agentswarm_runtime_payloads,dst=${HOSTEXEC_CONTAINER_BIN_PATH},volume-subpath=${path.relative(env.RUNTIME_PAYLOAD_ROOT, path.join(payloadDir, "hostexec-bin"))},readonly`
+        `type=volume,src=verft_runtime_payloads,dst=${HOSTEXEC_CONTAINER_BIN_PATH},volume-subpath=${path.relative(env.RUNTIME_PAYLOAD_ROOT, path.join(payloadDir, "hostexec-bin"))},readonly`
       ]);
       const resultEnv = Object.fromEntries(result.envEntries);
       assert.equal(resultEnv.HOSTEXEC_URL, "http://hostexec.test");

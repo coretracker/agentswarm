@@ -1,4 +1,4 @@
-import type { PermissionScope } from "@agentswarm/shared-types";
+import type { PermissionScope } from "@verft/shared-types";
 
 export interface NavigationRoute {
   key: string;

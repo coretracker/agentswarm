@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { Repository } from "@agentswarm/shared-types";
+import type { Repository } from "@verft/shared-types";
 import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";
 import { useRepositories } from "../src/hooks/useRepositories";

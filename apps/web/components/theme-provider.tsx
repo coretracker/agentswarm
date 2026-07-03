@@ -4,7 +4,7 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { ConfigProvider } from "antd";
 import { getAppAntdTheme, isDarkAppTheme, type AppThemeMode } from "../src/theme/antd-theme";
 
-const THEME_STORAGE_KEY = "agentswarm-theme-mode";
+const THEME_STORAGE_KEY = "verft-theme-mode";
 
 interface ThemeModeContextValue {
   mode: AppThemeMode;

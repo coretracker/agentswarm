@@ -1,4 +1,4 @@
-import { type TaskAction, type TaskStatus } from "@agentswarm/shared-types";
+import { type TaskAction, type TaskStatus } from "@verft/shared-types";
 
 export const resolveTaskReadyStatus = (hasPendingCheckpoint: boolean): TaskStatus =>
   hasPendingCheckpoint ? "awaiting_review" : "open";

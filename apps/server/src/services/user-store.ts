@@ -16,16 +16,16 @@ import {
   type User,
   type UserRoleRef,
   type UpdateUserInput
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { HttpError } from "../lib/http-error.js";
 import { type PostgresQueryable, withPostgresTransaction } from "../lib/postgres.js";
 import type { RepositoryStore } from "./repository-store.js";
 import { SYSTEM_ADMIN_ROLE_ID, type RoleStore } from "./role-store.js";
 
-const USER_KEY_PREFIX = "agentswarm:user:";
-const USER_IDS_KEY = "agentswarm:user_ids";
-const USER_EMAIL_KEY_PREFIX = "agentswarm:user_email:";
-const BOOTSTRAP_ADMIN_MARKER_KEY = "agentswarm:bootstrap_admin_user_id";
+const USER_KEY_PREFIX = "verft:user:";
+const USER_IDS_KEY = "verft:user_ids";
+const USER_EMAIL_KEY_PREFIX = "verft:user_email:";
+const BOOTSTRAP_ADMIN_MARKER_KEY = "verft:bootstrap_admin_user_id";
 
 const scrypt = promisify(scryptCallback);
 const nowIso = (): string => new Date().toISOString();

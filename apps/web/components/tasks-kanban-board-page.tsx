@@ -11,7 +11,7 @@ import {
   getTaskWorkflowStatusLabel,
   type Task,
   type UpdateTaskStateInput
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Button, Card, Empty, Flex, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
 import dayjs from "dayjs";
 import { api } from "../src/api/client";

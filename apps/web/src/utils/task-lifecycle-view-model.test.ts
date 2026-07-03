@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Task } from "@agentswarm/shared-types";
+import type { Task } from "@verft/shared-types";
 import { buildTaskLifecycleViewModel } from "./task-lifecycle-view-model";
 
 const createTask = (overrides: Partial<Task> = {}): Task =>

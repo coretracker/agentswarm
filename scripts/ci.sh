@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 IMAGE="${CI_DOCKER_IMAGE:-node:22-bookworm}"
-CONTAINER_NAME="${CI_DOCKER_CONTAINER_NAME:-agentswarm-ci-$(date +%s)-$$}"
+CONTAINER_NAME="${CI_DOCKER_CONTAINER_NAME:-verft-ci-$(date +%s)-$$}"
 
 cleanup() {
   docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
@@ -32,8 +32,8 @@ docker run --rm "${tty_args[@]}" \
   --user "$(id -u):$(id -g)" \
   -e CI=1 \
   -e NODE_ENV=test \
-  -e NPM_CONFIG_CACHE=/tmp/agentswarm-npm-cache \
-  -e HOME=/tmp/agentswarm-home \
+  -e NPM_CONFIG_CACHE=/tmp/verft-npm-cache \
+  -e HOME=/tmp/verft-home \
   -v "${REPO_ROOT}:/workspace" \
   -w /workspace \
   "${IMAGE}" \

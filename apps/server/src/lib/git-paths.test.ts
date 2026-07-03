@@ -7,7 +7,7 @@ import { resolveGitPaths } from "./git-paths.js";
 
 describe("resolveGitPaths", () => {
   it("returns a standard git directory unchanged", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-git-paths-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-git-paths-"));
     const gitDir = path.join(root, ".git");
 
     try {
@@ -24,7 +24,7 @@ describe("resolveGitPaths", () => {
   });
 
   it("resolves linked worktree .git files to the shared common dir", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-git-paths-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-git-paths-"));
     const workspacePath = path.join(root, "workspace");
     const commonDir = path.join(root, "repo", ".git");
     const worktreeGitDir = path.join(commonDir, "worktrees", "task-1");

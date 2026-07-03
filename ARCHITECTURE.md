@@ -1,6 +1,6 @@
 # Architecture Overview
 
-This repository is a TypeScript monorepo for AgentSwarm.
+This repository is a TypeScript monorepo for Verft.
 
 ## Main Parts
 - `apps/server`: backend API and task orchestration service.

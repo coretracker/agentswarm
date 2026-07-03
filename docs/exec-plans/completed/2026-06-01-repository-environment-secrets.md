@@ -54,7 +54,7 @@
 - User Approval To Start: YES (issue request)
 - Baseline Checks Run: PARTIAL (`doctor.sh` blocked in this environment: Docker Compose missing)
 - Visible Task List Updated: YES (this execution plan)
-- Task-Level Tests/Lint/Build: YES (`check.sh` passed; `npm run test -w @agentswarm/server` and `npm run test -w @agentswarm/web` passed)
+- Task-Level Tests/Lint/Build: YES (`check.sh` passed; `npm run test -w @verft/server` and `npm run test -w @verft/web` passed)
 - Self Review Complete: YES
 - Code Review Complete: TODO (awaiting maintainer review)
 - Final Verification Complete: PARTIAL (`harness/test.sh` reached e2e boot and failed due missing Docker Compose)
@@ -62,11 +62,11 @@
 - Docs/Changelog Updated: YES (execution plan and product terminology/flow notes updated)
 
 ## Validation Commands
-- `npm run lint -w @agentswarm/shared-types`
-- `npm run lint -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
-- `npm run test -w @agentswarm/server`
-- `npm run test -w @agentswarm/web`
+- `npm run lint -w @verft/shared-types`
+- `npm run lint -w @verft/server`
+- `npm run lint -w @verft/web`
+- `npm run test -w @verft/server`
+- `npm run test -w @verft/web`
 
 ## Risks
 - Secret value handling regressions in update semantics (keep vs replace vs delete).

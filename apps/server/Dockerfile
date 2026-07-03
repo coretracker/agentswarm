@@ -14,4 +14,4 @@ COPY . .
 ENV NODE_ENV=production
 
 EXPOSE 4000
-CMD ["npm", "run", "start", "-w", "@agentswarm/server"]
+CMD ["npm", "run", "start", "-w", "@verft/server"]

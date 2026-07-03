@@ -6,7 +6,7 @@ import {
   type PermissionScope,
   type Task,
   type TaskAction
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { beginTaskStart } from "../lib/task-start-orchestrator.js";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
 import { canUserAccessRepository, canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
@@ -237,7 +237,7 @@ const startTask = async (context: McpToolContext, task: Task, action?: TaskActio
 
 export const createMcpTools = (): McpToolDefinition[] => [
   {
-    name: "agentswarm_slack_post_update",
+    name: "verft_slack_post_update",
     description: "Post a concise progress update to the Slack DM that started this assistant run.",
     inputSchema: schemaToJson(slackPostUpdateSchema),
     scopes: ["task:ask"],
@@ -264,7 +264,7 @@ export const createMcpTools = (): McpToolDefinition[] => [
     }
   },
   {
-    name: "agentswarm_list_repositories",
+    name: "verft_list_repositories",
     description: "List repositories accessible to the authenticated user.",
     inputSchema: schemaToJson(listRepositoriesSchema),
     scopes: ["repo:list"],
@@ -281,7 +281,7 @@ export const createMcpTools = (): McpToolDefinition[] => [
     }
   },
   {
-    name: "agentswarm_list_tasks",
+    name: "verft_list_tasks",
     description: "List tasks accessible to the authenticated user.",
     inputSchema: schemaToJson(listTasksSchema),
     scopes: ["task:list", "task:read"],
@@ -303,7 +303,7 @@ export const createMcpTools = (): McpToolDefinition[] => [
     }
   },
   {
-    name: "agentswarm_get_task",
+    name: "verft_get_task",
     description: "Get task detail and optional bounded related records.",
     inputSchema: schemaToJson(getTaskSchema),
     scopes: ["task:read"],
@@ -331,7 +331,7 @@ export const createMcpTools = (): McpToolDefinition[] => [
     }
   },
   {
-    name: "agentswarm_create_task",
+    name: "verft_create_task",
     description: "Create a draft task by default. Set draft=false to create and start it.",
     inputSchema: schemaToJson(createTaskSchema),
     scopes: ["task:create", "repo:list"],
@@ -368,7 +368,7 @@ export const createMcpTools = (): McpToolDefinition[] => [
     }
   },
   {
-    name: "agentswarm_update_draft",
+    name: "verft_update_draft",
     description: "Update a draft task definition.",
     inputSchema: schemaToJson(updateDraftSchema),
     scopes: ["task:edit"],
@@ -399,7 +399,7 @@ export const createMcpTools = (): McpToolDefinition[] => [
     }
   },
   {
-    name: "agentswarm_start_task",
+    name: "verft_start_task",
     description: "Start a draft/open task.",
     inputSchema: schemaToJson(startTaskSchema),
     scopes: ["task:edit"],
@@ -410,7 +410,7 @@ export const createMcpTools = (): McpToolDefinition[] => [
     }
   },
   {
-    name: "agentswarm_add_task_message",
+    name: "verft_add_task_message",
     description: "Add a comment or build/ask follow-up to a task.",
     inputSchema: schemaToJson(addTaskMessageSchema),
     scopes: ["task:edit"],
@@ -448,7 +448,7 @@ export const createMcpTools = (): McpToolDefinition[] => [
     }
   },
   {
-    name: "agentswarm_link_pull_request",
+    name: "verft_link_pull_request",
     description: "Link a task to a GitHub pull request number after creating the PR with GitHub MCP.",
     inputSchema: schemaToJson(linkPullRequestSchema),
     scopes: ["task:edit"],
@@ -463,7 +463,7 @@ export const createMcpTools = (): McpToolDefinition[] => [
     }
   },
   {
-    name: "agentswarm_link_issue",
+    name: "verft_link_issue",
     description: "Link a task to a GitHub issue number.",
     inputSchema: schemaToJson(linkIssueSchema),
     scopes: ["task:edit"],
@@ -478,7 +478,7 @@ export const createMcpTools = (): McpToolDefinition[] => [
     }
   },
   {
-    name: "agentswarm_update_task_config",
+    name: "verft_update_task_config",
     description: "Update Phase 1 MCP-safe task configuration: auto-apply checkpoints.",
     inputSchema: schemaToJson(updateTaskConfigSchema),
     scopes: ["task:edit"],

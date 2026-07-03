@@ -3,13 +3,13 @@
 import { useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import { getTaskTerminalSessionLabel, getTaskTerminalSessionSentenceLabel, type TaskTerminalSessionMode } from "@agentswarm/shared-types";
+import { getTaskTerminalSessionLabel, getTaskTerminalSessionSentenceLabel, type TaskTerminalSessionMode } from "@verft/shared-types";
 import "@xterm/xterm/css/xterm.css";
 
 import { api } from "../src/api/client";
 import { buildWebSocketUrl } from "../src/lib/public-url";
 
-const FONT_SIZE_STORAGE_KEY = "agentswarm-interactive-terminal-font-size";
+const FONT_SIZE_STORAGE_KEY = "verft-interactive-terminal-font-size";
 const FONT_MIN = 10;
 const FONT_MAX = 28;
 

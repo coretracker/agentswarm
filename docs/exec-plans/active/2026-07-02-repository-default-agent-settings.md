@@ -58,7 +58,7 @@
 - User Approval To Start: 2026-07-02 UTC - Current request supplies the implementation scope to proceed.
 - Baseline Checks Run: 2026-07-02 UTC - `git diff --check` passed before verification; initial focused test/lint attempts were blocked because this checkout had no `node_modules`.
 - Visible Task List Updated: 2026-07-02 UTC - Plan and task list captured in this execution plan and conversation.
-- Task-Level Tests/Lint/Build: 2026-07-02 UTC - `node --import tsx --test apps/server/src/lib/task-create-defaults.test.ts apps/server/src/services/repository-store.test.ts apps/server/src/mcp/tools.test.ts`, `node --import tsx --test apps/web/components/task-definition-fields.test.ts`, `npm run lint -w @agentswarm/server`, and `npm run lint -w @agentswarm/web` passed after installing dependencies with `npm ci --include=dev`.
+- Task-Level Tests/Lint/Build: 2026-07-02 UTC - `node --import tsx --test apps/server/src/lib/task-create-defaults.test.ts apps/server/src/services/repository-store.test.ts apps/server/src/mcp/tools.test.ts`, `node --import tsx --test apps/web/components/task-definition-fields.test.ts`, `npm run lint -w @verft/server`, and `npm run lint -w @verft/web` passed after installing dependencies with `npm ci --include=dev`.
 - Self Review Complete: 2026-07-02 UTC - Reviewed the fallback chain across shared types, repository persistence, HTTP task creation, MCP task creation, and task/repository UI behavior.
 - Code Review Complete: 2026-07-02 UTC - Checked for fallback-order regressions, nullable repository-default handling, and task-form clobbering risks when repository selection changes.
 - Final Verification Complete: 2026-07-02 UTC - `git diff --check` and `./scripts/harness/check-human-gated-flow.sh` passed. `npm run ci` failed for a repository-level baseline issue because `./scripts/ci.sh` runs `npm ci` in a Node 22 container, but this repository currently has no `package-lock.json`.
@@ -70,8 +70,8 @@
 - `node --import tsx --test apps/server/src/lib/task-create-defaults.test.ts`
 - `node --import tsx --test apps/server/src/routes/tasks.test.ts apps/server/src/mcp/tools.test.ts`
 - `node --import tsx --test apps/web/components/task-definition-fields.test.ts`
-- `npm run lint -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
+- `npm run lint -w @verft/server`
+- `npm run lint -w @verft/web`
 - `git diff --check`
 - `./scripts/harness/check-human-gated-flow.sh`
 

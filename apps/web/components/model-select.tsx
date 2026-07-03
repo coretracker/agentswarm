@@ -1,6 +1,6 @@
 "use client";
 
-import type { ProviderModelOption } from "@agentswarm/shared-types";
+import type { ProviderModelOption } from "@verft/shared-types";
 import { AutoComplete, Spin } from "antd";
 import type { CSSProperties } from "react";
 

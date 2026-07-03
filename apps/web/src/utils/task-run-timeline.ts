@@ -1,4 +1,4 @@
-import type { NormalizedAgentEvent } from "@agentswarm/shared-types";
+import type { NormalizedAgentEvent } from "@verft/shared-types";
 
 export interface TimelineToolCallDisplayItem {
   id: string;

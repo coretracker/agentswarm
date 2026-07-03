@@ -478,7 +478,7 @@ test("GitHub PR webhook ignores comments without required bot mention", async ()
     repositoryStore: {
       getRepository: async () => ({
         id: "repo-1",
-        githubIntegrationBotLogin: "agentswarm-bot",
+        githubIntegrationBotLogin: "verft-bot",
         githubPrRequireBotMention: true
       }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
@@ -550,7 +550,7 @@ test("GitHub PR webhook queues comments with required bot mention", async () => 
     repositoryStore: {
       getRepository: async () => ({
         id: "repo-1",
-        githubIntegrationBotLogin: "agentswarm-bot",
+        githubIntegrationBotLogin: "verft-bot",
         githubPrRequireBotMention: true
       }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
@@ -583,7 +583,7 @@ test("GitHub PR webhook queues comments with required bot mention", async () => 
     },
     comment: {
       id: 1001,
-      body: "@AgentSwarm-Bot please add a regression test.",
+      body: "@Verft-Bot please add a regression test.",
       html_url: "https://github.com/acme/repo/pull/42#issuecomment-1001"
     },
     sender: {
@@ -607,7 +607,7 @@ test("GitHub PR webhook queues comments with required bot mention", async () => 
   assert.equal(response.statusCode, 202);
   assert.deepEqual(JSON.parse(response.body), { queued: true, taskId: "task-1", messageId: "message-1" });
   assert.equal(appendedMessages.length, 1);
-  assert.match((appendedMessages[0] as { content: string }).content, /@AgentSwarm-Bot please add a regression test\./);
+  assert.match((appendedMessages[0] as { content: string }).content, /@Verft-Bot please add a regression test\./);
 
   await app.close();
 });
@@ -627,7 +627,7 @@ test("GitHub PR webhook queues edited comments with required bot mention", async
     repositoryStore: {
       getRepository: async () => ({
         id: "repo-1",
-        githubIntegrationBotLogin: "agentswarm-bot",
+        githubIntegrationBotLogin: "verft-bot",
         githubPrRequireBotMention: true
       }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
@@ -659,7 +659,7 @@ test("GitHub PR webhook queues edited comments with required bot mention", async
     },
     comment: {
       id: 1001,
-      body: "@agentswarm-bot please add a regression test after this edit.",
+      body: "@verft-bot please add a regression test after this edit.",
       html_url: "https://github.com/acme/repo/pull/42#issuecomment-1001"
     },
     sender: {
@@ -711,7 +711,7 @@ test("GitHub PR webhook ignores edited comments that were already processed", as
     repositoryStore: {
       getRepository: async () => ({
         id: "repo-1",
-        githubIntegrationBotLogin: "agentswarm-bot",
+        githubIntegrationBotLogin: "verft-bot",
         githubPrRequireBotMention: true
       }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
@@ -740,7 +740,7 @@ test("GitHub PR webhook ignores edited comments that were already processed", as
     },
     comment: {
       id: 1001,
-      body: "@agentswarm-bot please add one more test.",
+      body: "@verft-bot please add one more test.",
       html_url: "https://github.com/acme/repo/pull/42#issuecomment-1001"
     },
     sender: {
@@ -873,7 +873,7 @@ test("GitHub PR webhook creates build task on PR branch when mentioned without l
         name: "repo",
         url: "https://github.com/acme/repo.git",
         defaultBranch: "main",
-        githubIntegrationBotLogin: "agentswarm-bot",
+        githubIntegrationBotLogin: "verft-bot",
         githubPrRequireBotMention: true,
         githubPrTaskOwnerUserId: "user-1"
       }),
@@ -926,7 +926,7 @@ test("GitHub PR webhook creates build task on PR branch when mentioned without l
     },
     review: {
       id: 2001,
-      body: "@agentswarm-bot please fix the failing test.",
+      body: "@verft-bot please fix the failing test.",
       html_url: "https://github.com/acme/repo/pull/42#pullrequestreview-2001",
       state: "commented"
     },
@@ -989,7 +989,7 @@ test("GitHub PR webhook creates build task on PR branch when mentioned without l
     externalId: "github:review:2001",
     content: (appendedMessages[0] as { content: string }).content
   });
-  assert.match((appendedMessages[0] as { content: string }).content, /@agentswarm-bot please fix the failing test\./);
+  assert.match((appendedMessages[0] as { content: string }).content, /@verft-bot please fix the failing test\./);
   assert.deepEqual(triggeredActions[0], [
     "task-created",
     "build",
@@ -1016,7 +1016,7 @@ test("GitHub PR webhook queues linked review requests for the integration bot", 
     repositoryStore: {
       getRepository: async () => ({
         id: "repo-1",
-        githubIntegrationBotLogin: "agentswarm-bot",
+        githubIntegrationBotLogin: "verft-bot",
         githubPrRequireBotMention: true
       }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
@@ -1065,7 +1065,7 @@ test("GitHub PR webhook queues linked review requests for the integration bot", 
       }
     },
     requested_reviewer: {
-      login: "agentswarm-bot"
+      login: "verft-bot"
     },
     sender: {
       login: "alice",
@@ -1092,9 +1092,9 @@ test("GitHub PR webhook queues linked review requests for the integration bot", 
     action: "build",
     queueState: "pending",
     queueSource: "github_pr",
-    externalId: "github:review_requested:42:reviewer:agentswarm-bot",
+    externalId: "github:review_requested:42:reviewer:verft-bot",
     content:
-      "A GitHub pull request review was requested for PR #42.\n\nRequested by: @alice\nRequested reviewer: @agentswarm-bot\nTitle: Improve importer\nURL: https://github.com/acme/repo/pull/42\n\nPull request body:\nPlease review the importer changes.\n\nReview the pull request and leave GitHub review feedback or comments.\nDo not make code changes unless these instructions explicitly request them.\n\nAfter completing the review, reply on GitHub at the URL above with a brief status."
+      "A GitHub pull request review was requested for PR #42.\n\nRequested by: @alice\nRequested reviewer: @verft-bot\nTitle: Improve importer\nURL: https://github.com/acme/repo/pull/42\n\nPull request body:\nPlease review the importer changes.\n\nReview the pull request and leave GitHub review feedback or comments.\nDo not make code changes unless these instructions explicitly request them.\n\nAfter completing the review, reply on GitHub at the URL above with a brief status."
   });
   assert.deepEqual(triggeredActions[0], ["task-1", "build", { content: (appendedMessages[0] as { content: string }).content }, { promptMessageId: "message-1" }]);
 
@@ -1129,7 +1129,7 @@ test("GitHub PR webhook creates auto-apply build task for unlinked review reques
         name: "repo",
         url: "https://github.com/acme/repo.git",
         defaultBranch: "main",
-        githubIntegrationBotLogin: "agentswarm-bot",
+        githubIntegrationBotLogin: "verft-bot",
         githubPrReviewInstructions: reviewInstructions,
         githubPrTaskOwnerUserId: "user-1"
       }),
@@ -1184,7 +1184,7 @@ test("GitHub PR webhook creates auto-apply build task for unlinked review reques
       }
     },
     requested_reviewer: {
-      login: "agentswarm-bot"
+      login: "verft-bot"
     },
     sender: {
       login: "alice",
@@ -1219,7 +1219,7 @@ test("GitHub PR webhook creates auto-apply build task for unlinked review reques
       title: "GitHub PR #42 review requested",
       draft: true,
       repoId: "repo-1",
-      prompt: "Review PR #42 for @agentswarm-bot by @alice\nURL: https://github.com/acme/repo/pull/42",
+      prompt: "Review PR #42 for @verft-bot by @alice\nURL: https://github.com/acme/repo/pull/42",
       taskType: "build",
       baseBranch: "feature/importer",
       branchStrategy: "work_on_branch",
@@ -1242,13 +1242,13 @@ test("GitHub PR webhook creates auto-apply build task for unlinked review reques
     action: "build",
     queueState: "pending",
     queueSource: "github_pr",
-    externalId: "github:review_requested:42:reviewer:agentswarm-bot",
-    content: "Review PR #42 for @agentswarm-bot by @alice\nURL: https://github.com/acme/repo/pull/42"
+    externalId: "github:review_requested:42:reviewer:verft-bot",
+    content: "Review PR #42 for @verft-bot by @alice\nURL: https://github.com/acme/repo/pull/42"
   });
   assert.deepEqual(triggeredActions[0], [
     "task-created",
     "build",
-    { content: "Review PR #42 for @agentswarm-bot by @alice\nURL: https://github.com/acme/repo/pull/42" },
+    { content: "Review PR #42 for @verft-bot by @alice\nURL: https://github.com/acme/repo/pull/42" },
     { promptMessageId: "message-created" }
   ]);
 
@@ -1270,7 +1270,7 @@ test("GitHub PR webhook ignores review requests for other reviewers", async () =
     repositoryStore: {
       getRepository: async () => ({
         id: "repo-1",
-        githubIntegrationBotLogin: "agentswarm-bot"
+        githubIntegrationBotLogin: "verft-bot"
       }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
     } as never,
@@ -1569,11 +1569,11 @@ test("GitHub webhook ignores task-created issue comments without reacting", asyn
       comment: {
         id: 3002,
         body:
-          "🤖 A new task has been created and will start working on this shortly.\n\nTask: http://localhost:3217/tasks/task-issue\n\nI’ll post progress updates here as work continues.\n\n<!-- agentswarm-task-created:task-issue -->",
+          "🤖 A new task has been created and will start working on this shortly.\n\nTask: http://localhost:3217/tasks/task-issue\n\nI’ll post progress updates here as work continues.\n\n<!-- verft-task-created:task-issue -->",
         html_url: "https://github.com/acme/repo/issues/77#issuecomment-3002"
       },
       sender: {
-        login: "agentswarmbot",
+        login: "verftbot",
         type: "User"
       }
     });
@@ -1616,7 +1616,7 @@ test("GitHub webhook ignores assigned issue comments without required bot mentio
     repositoryStore: {
       getRepository: async () => ({
         id: "repo-1",
-        githubIntegrationBotLogin: "agentswarm-bot",
+        githubIntegrationBotLogin: "verft-bot",
         githubPrRequireBotMention: true
       }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
@@ -1647,7 +1647,7 @@ test("GitHub webhook ignores assigned issue comments without required bot mentio
       title: "Import customers fails",
       assignees: [
         {
-          login: "agentswarm-bot"
+          login: "verft-bot"
         }
       ]
     },
@@ -1697,7 +1697,7 @@ test("GitHub webhook queues edited issue comments with required bot mention", as
     repositoryStore: {
       getRepository: async () => ({
         id: "repo-1",
-        githubIntegrationBotLogin: "agentswarm-bot",
+        githubIntegrationBotLogin: "verft-bot",
         githubPrRequireBotMention: true
       }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
@@ -1730,7 +1730,7 @@ test("GitHub webhook queues edited issue comments with required bot mention", as
     },
     comment: {
       id: 3001,
-      body: "@agentswarm-bot please fix the import failure after this edit.",
+      body: "@verft-bot please fix the import failure after this edit.",
       html_url: "https://github.com/acme/repo/issues/77#issuecomment-3001"
     },
     sender: {
@@ -1782,7 +1782,7 @@ test("GitHub webhook ignores edited issue comments that were already processed",
     repositoryStore: {
       getRepository: async () => ({
         id: "repo-1",
-        githubIntegrationBotLogin: "agentswarm-bot",
+        githubIntegrationBotLogin: "verft-bot",
         githubPrRequireBotMention: true
       }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
@@ -1812,7 +1812,7 @@ test("GitHub webhook ignores edited issue comments that were already processed",
     },
     comment: {
       id: 3001,
-      body: "@agentswarm-bot please add one more issue test.",
+      body: "@verft-bot please add one more issue test.",
       html_url: "https://github.com/acme/repo/issues/77#issuecomment-3001"
     },
     sender: {
@@ -1867,7 +1867,7 @@ test("GitHub webhook creates feature branch task from issue body mention without
         name: "repo",
         url: "https://github.com/acme/repo.git",
         defaultBranch: "main",
-        githubIntegrationBotLogin: "agentswarm-bot",
+        githubIntegrationBotLogin: "verft-bot",
         githubPrRequireBotMention: true,
         githubPrInitialInstructions: "Initial template for {{target_ref}}\n{{issue_title_line}}Body: {{feedback_body}}",
         githubPrTaskOwnerUserId: "user-1"
@@ -1914,7 +1914,7 @@ test("GitHub webhook creates feature branch task from issue body mention without
       id: 9001,
       number: 77,
       title: "Import customers fails",
-      body: "@agentswarm-bot please fix customer imports.",
+      body: "@verft-bot please fix customer imports.",
       html_url: "https://github.com/acme/repo/issues/77"
     },
     sender: {
@@ -1974,7 +1974,7 @@ test("GitHub webhook creates feature branch task from issue body mention without
     queueState: "pending",
     queueSource: "github_issue",
     externalId: "github:issue:9001",
-    content: "Initial template for issue #77\nIssue title: Import customers fails\nBody: @agentswarm-bot please fix customer imports."
+    content: "Initial template for issue #77\nIssue title: Import customers fails\nBody: @verft-bot please fix customer imports."
   });
   assert.deepEqual(triggeredActions[0], [
     "task-issue-created",
@@ -2019,7 +2019,7 @@ test("GitHub webhook posts an initial task comment when creating an issue task",
           name: "repo",
           url: "https://github.com/acme/repo.git",
           defaultBranch: "main",
-          githubIntegrationBotLogin: "agentswarm-bot",
+          githubIntegrationBotLogin: "verft-bot",
           githubPrRequireBotMention: true,
           githubPrTaskOwnerUserId: "user-1"
         }),
@@ -2056,7 +2056,7 @@ test("GitHub webhook posts an initial task comment when creating an issue task",
         id: 9001,
         number: 77,
         title: "Import customers fails",
-        body: "@agentswarm-bot please fix customer imports.",
+        body: "@verft-bot please fix customer imports.",
         html_url: "https://github.com/acme/repo/issues/77"
       },
       sender: {
@@ -2087,7 +2087,7 @@ test("GitHub webhook posts an initial task comment when creating an issue task",
     assert.equal((fetchCalls[1]?.init?.headers as Record<string, string>).Authorization, "Bearer github-token");
     assert.deepEqual(JSON.parse(String(fetchCalls[1]?.init?.body)), {
       body:
-        "🤖 A new task has been created and will start working on this shortly.\n\nTask: http://localhost:3217/tasks/task-issue-created\n\nI’ll post progress updates here as work continues.\n\n<!-- agentswarm-task-created:task-issue-created -->"
+        "🤖 A new task has been created and will start working on this shortly.\n\nTask: http://localhost:3217/tasks/task-issue-created\n\nI’ll post progress updates here as work continues.\n\n<!-- verft-task-created:task-issue-created -->"
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -2128,7 +2128,7 @@ test("GitHub webhook uses a custom task created comment template", async () => {
           name: "repo",
           url: "https://github.com/acme/repo.git",
           defaultBranch: "main",
-          githubIntegrationBotLogin: "agentswarm-bot",
+          githubIntegrationBotLogin: "verft-bot",
           githubPrRequireBotMention: true,
           githubPrTaskOwnerUserId: "user-1",
           githubPrTaskCreatedCommentTemplate:
@@ -2167,7 +2167,7 @@ test("GitHub webhook uses a custom task created comment template", async () => {
         id: 9001,
         number: 77,
         title: "Import customers fails",
-        body: "@agentswarm-bot please fix customer imports.",
+        body: "@verft-bot please fix customer imports.",
         html_url: "https://github.com/acme/repo/issues/77"
       },
       sender: {
@@ -2194,7 +2194,7 @@ test("GitHub webhook uses a custom task created comment template", async () => {
     assert.equal(fetchCalls[1]?.init?.method, "POST");
     assert.deepEqual(JSON.parse(String(fetchCalls[1]?.init?.body)), {
       body:
-        "Task task-custom-comment is ready for issue #77 in acme/repo.\nOpen: http://localhost:3217/tasks/task-custom-comment\nRequested by @alice.\n\n<!-- agentswarm-task-created:task-custom-comment -->"
+        "Task task-custom-comment is ready for issue #77 in acme/repo.\nOpen: http://localhost:3217/tasks/task-custom-comment\nRequested by @alice.\n\n<!-- verft-task-created:task-custom-comment -->"
     });
   } finally {
     globalThis.fetch = originalFetch;
@@ -2218,7 +2218,7 @@ test("GitHub webhook skips duplicate initial task comments for retried issue tas
     return Response.json([
       {
         body:
-          "🤖 A new task has been created and will start working on this shortly.\n\nTask: http://localhost:3217/tasks/task-issue-created\n\nI’ll post progress updates here as work continues.\n\n<!-- agentswarm-task-created:task-issue-created -->"
+          "🤖 A new task has been created and will start working on this shortly.\n\nTask: http://localhost:3217/tasks/task-issue-created\n\nI’ll post progress updates here as work continues.\n\n<!-- verft-task-created:task-issue-created -->"
       }
     ]);
   }) as typeof fetch;
@@ -2237,7 +2237,7 @@ test("GitHub webhook skips duplicate initial task comments for retried issue tas
           name: "repo",
           url: "https://github.com/acme/repo.git",
           defaultBranch: "main",
-          githubIntegrationBotLogin: "agentswarm-bot",
+          githubIntegrationBotLogin: "verft-bot",
           githubPrRequireBotMention: true,
           githubPrTaskOwnerUserId: "user-1"
         }),
@@ -2274,7 +2274,7 @@ test("GitHub webhook skips duplicate initial task comments for retried issue tas
         id: 9001,
         number: 77,
         title: "Import customers fails",
-        body: "@agentswarm-bot please fix customer imports.",
+        body: "@verft-bot please fix customer imports.",
         html_url: "https://github.com/acme/repo/issues/77"
       },
       sender: {
@@ -2332,7 +2332,7 @@ test("GitHub webhook creates feature branch task when bot is assigned to an unli
         name: "repo",
         url: "https://github.com/acme/repo.git",
         defaultBranch: "main",
-        githubIntegrationBotLogin: "agentswarm-bot",
+        githubIntegrationBotLogin: "verft-bot",
         githubPrRequireBotMention: true,
         githubPrTaskOwnerUserId: "user-1"
       }),
@@ -2379,7 +2379,7 @@ test("GitHub webhook creates feature branch task when bot is assigned to an unli
       html_url: "https://github.com/acme/repo/issues/78",
       assignees: [
         {
-          login: "agentswarm-bot"
+          login: "verft-bot"
         }
       ]
     },
@@ -2461,7 +2461,7 @@ test("GitHub PR webhook does not create task without configured GitHub task owne
     repositoryStore: {
       getRepository: async () => ({
         id: "repo-1",
-        githubIntegrationBotLogin: "agentswarm-bot",
+        githubIntegrationBotLogin: "verft-bot",
         githubPrRequireBotMention: true
       }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
@@ -2494,7 +2494,7 @@ test("GitHub PR webhook does not create task without configured GitHub task owne
     },
     review: {
       id: 2001,
-      body: "@agentswarm-bot please fix the failing test.",
+      body: "@verft-bot please fix the failing test.",
       html_url: "https://github.com/acme/repo/pull/42#pullrequestreview-2001",
       state: "commented"
     },

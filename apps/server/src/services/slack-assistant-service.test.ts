@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import type { User } from "@agentswarm/shared-types";
+import type { User } from "@verft/shared-types";
 import { env } from "../config/env.js";
 import { DockerSlackAssistantRuntime } from "./slack-assistant-service.js";
 import type {
@@ -19,7 +19,7 @@ const originalRuntimePayloadRoot = env.RUNTIME_PAYLOAD_ROOT;
 let runtimePayloadRoot: string | null = null;
 
 test.before(async () => {
-  runtimePayloadRoot = await mkdtemp(path.join(tmpdir(), "agentswarm-slack-runtime-test-"));
+  runtimePayloadRoot = await mkdtemp(path.join(tmpdir(), "verft-slack-runtime-test-"));
   env.RUNTIME_PAYLOAD_ROOT = runtimePayloadRoot;
 });
 
@@ -72,7 +72,7 @@ class MemorySlackAssistantStore implements SlackAssistantStore {
   }
 }
 
-test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwarm MCP", async () => {
+test("DockerSlackAssistantRuntime builds detached provider payload with Verft MCP", async () => {
   const conversation: SlackAssistantConversation = {
     id: "conv-runtime-test",
     repositoryId: null,
@@ -113,7 +113,7 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
             args: ["-y", "github-mcp"]
           },
           {
-            name: "AgentSwarm",
+            name: "Verft",
             enabled: true,
             transport: "stdio",
             command: "should-not-override"
@@ -173,7 +173,7 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       const providerConfigEnv = args.find((arg) => arg.startsWith("PROVIDER_CONFIG_FILE="));
       const providerStateEnv = args.find((arg) => arg.startsWith("TASK_PROVIDER_STATE_PATH="));
       const providerHomeEnv = args.find((arg) => arg.startsWith("TASK_PROVIDER_HOME="));
-      const mcpTokenEnv = args.find((arg) => arg === "AGENTSWARM_MCP_TOKEN=runtime-token");
+      const mcpTokenEnv = args.find((arg) => arg === "VERFT_MCP_TOKEN=runtime-token");
       const githubCliTokenEnv = args.find((arg) => arg === "GH_TOKEN=github-token");
       const gitTokenEnv = args.find((arg) => arg === "GIT_TOKEN=github-token");
       const gitUsernameEnv = args.find((arg) => arg === "GIT_USERNAME=agent-user");
@@ -217,7 +217,7 @@ test("DockerSlackAssistantRuntime builds detached provider payload with AgentSwa
       assert.match(providerHomeEnv!, /\/codex\/gpt-5\.4-mini$/);
       assert.ok(workspaceGitSafeDirectoryKeyIndex >= 0);
       assert.equal(args[workspaceGitSafeDirectoryKeyIndex + 2], `GIT_CONFIG_VALUE_0=${manifest.workspacePath}`);
-      assert.match(providerConfig, /mcp_servers\.agentswarm/);
+      assert.match(providerConfig, /mcp_servers\.verft/);
       assert.match(providerConfig, /mcp_servers\.github/);
       assert.doesNotMatch(providerConfig, /should-not-override/);
       await writeFile(
@@ -322,7 +322,7 @@ test("DockerSlackAssistantRuntime stores Slack Claude sessions under model-scope
       assert.equal(manifest.resolvedModel, "claude-sonnet-4-5");
       assert.match(providerStateEnv!, /\/claude\/claude-sonnet-4-5\/\.claude$/);
       assert.match(providerHomeEnv!, /\/claude\/claude-sonnet-4-5$/);
-      assert.ok(providerConfig.mcpServers?.agentswarm);
+      assert.ok(providerConfig.mcpServers?.verft);
 
       await writeFile(
         manifest.resultJsonPath,
@@ -432,7 +432,7 @@ test("DockerSlackAssistantRuntime stops active Slack assistant container", async
     activeRuntime: {
       provider: "codex",
       status: "active",
-      containerName: "agentswarm-slack-active",
+      containerName: "verft-slack-active",
       startedAt: "2026-07-01T00:00:00.000Z",
       lastUserMessageAt: "2026-07-01T00:00:00.000Z",
       stoppedAt: null,
@@ -456,7 +456,7 @@ test("DockerSlackAssistantRuntime stops active Slack assistant container", async
   const stopped = await runtime.stop(conversation);
 
   assert.equal(stopped, true);
-  assert.deepEqual(commands, [{ command: "docker", args: ["stop", "agentswarm-slack-active"] }]);
+  assert.deepEqual(commands, [{ command: "docker", args: ["stop", "verft-slack-active"] }]);
   assert.equal(store.updates.at(-1)?.status, "stopped");
   assert.equal(store.updates.at(-1)?.containerName, null);
   assert.equal(store.updates.at(-1)?.stoppedAt, "2026-07-01T00:07:00.000Z");

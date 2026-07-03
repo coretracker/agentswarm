@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import type { AgentProvider, HostexecAvailability, HostexecSettings } from "@agentswarm/shared-types";
-import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
+import type { AgentProvider, HostexecAvailability, HostexecSettings } from "@verft/shared-types";
+import { CODEX_MODELS, CLAUDE_MODELS } from "@verft/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import { discoverHostexecEndpoint } from "../lib/hostexec-discovery.js";
 import type { SchedulerService } from "../services/scheduler.js";

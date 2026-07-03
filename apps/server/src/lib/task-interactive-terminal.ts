@@ -17,7 +17,7 @@ import {
   isQueuedTaskStatus,
   type Task,
   type TaskTerminalSessionMode
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 
 import { AGENT_RUNTIME_IMAGE, DEFAULT_GIT_COMMIT_IDENTITY, env } from "../config/env.js";
 import type { AuthService } from "./auth.js";
@@ -463,7 +463,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       entries: repositoryRuntimeEnvEntries,
       fileStore: repositoryEnvFileStore
     });
-    const runtimeMcpDockerArgs = deps.spawner.buildRuntimeMcpDockerArgs(runtimeMcp.injectedAgentSwarmMcp);
+    const runtimeMcpDockerArgs = deps.spawner.buildRuntimeMcpDockerArgs(runtimeMcp.injectedVerftMcp);
     const hostexecRuntime = await buildHostexecRuntimeConfig({
       settings: settings.hostexec,
       repositoryCommands: repositoryHostCommands,
@@ -519,7 +519,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       cols: 80,
       rows: 24,
       cwd: process.env.HOME || "/",
-      env: { ...process.env, TERM: "xterm-256color", AGENTSWARM_TERMINAL_MODE: mode },
+      env: { ...process.env, TERM: "xterm-256color", VERFT_TERMINAL_MODE: mode },
     });
 
     wireTerminalWebSocket(ws, child, {

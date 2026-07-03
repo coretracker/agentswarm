@@ -32,7 +32,7 @@ const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
 const codexDir = configuredStatePath && configuredStatePath.length > 0 ? configuredStatePath : path.join("/root", ".codex");
 const homeDir = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : path.dirname(codexDir);
 const lastMessageFile = path.join(path.dirname(manifest.resultJsonPath), "codex-last-message.txt");
-const sessionIdFile = path.join(codexDir, "agentswarm-session-id.txt");
+const sessionIdFile = path.join(codexDir, "verft-session-id.txt");
 const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
   ? manifest.rawEventsJsonlPath.trim()
   : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
@@ -163,7 +163,7 @@ const ensureGitAskPass = async (runtimeHome) => {
     return;
   }
 
-  const askPassPath = path.join(runtimeHome, "agentswarm-git-askpass.sh");
+  const askPassPath = path.join(runtimeHome, "verft-git-askpass.sh");
   await writeFile(
     askPassPath,
     `#!/usr/bin/env sh

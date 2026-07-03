@@ -15,13 +15,13 @@ import type {
   TaskDefinitionInput,
   TaskType,
   User
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   getAgentProviderLabel,
   getDefaultModelForProvider,
   getEffortOptionsForProvider,
   getModelsForProvider
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Typography, message } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";

@@ -1,4 +1,4 @@
-import type { AgentProvider, NormalizedAgentEvent } from "@agentswarm/shared-types";
+import type { AgentProvider, NormalizedAgentEvent } from "@verft/shared-types";
 
 type JsonObject = Record<string, unknown>;
 

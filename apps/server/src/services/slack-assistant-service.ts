@@ -4,8 +4,8 @@ import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { nanoid } from "nanoid";
-import type { AgentProvider, McpServerConfig, PermissionScope, ProviderProfile } from "@agentswarm/shared-types";
-import type { User } from "@agentswarm/shared-types";
+import type { AgentProvider, McpServerConfig, PermissionScope, ProviderProfile } from "@verft/shared-types";
+import type { User } from "@verft/shared-types";
 import { env } from "../config/env.js";
 import { collectMcpServerEnvEntries, normalizeMcpServers } from "../lib/mcp-config.js";
 import { buildTaskRuntimeGitEnvEntries } from "../lib/task-interactive-terminal-git-env.js";
@@ -21,10 +21,10 @@ import type {
 
 const nowIso = (): string => new Date().toISOString();
 const SLACK_ASSISTANT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
-const SLACK_ASSISTANT_MCP_SERVER_NAME = "agentswarm";
-const SLACK_ASSISTANT_MCP_ENDPOINT_ENV = "AGENTSWARM_MCP_ENDPOINT";
-const SLACK_ASSISTANT_MCP_ENDPOINTS_ENV = "AGENTSWARM_MCP_ENDPOINTS";
-const SLACK_ASSISTANT_MCP_TOKEN_ENV = "AGENTSWARM_MCP_TOKEN";
+const SLACK_ASSISTANT_MCP_SERVER_NAME = "verft";
+const SLACK_ASSISTANT_MCP_ENDPOINT_ENV = "VERFT_MCP_ENDPOINT";
+const SLACK_ASSISTANT_MCP_ENDPOINTS_ENV = "VERFT_MCP_ENDPOINTS";
+const SLACK_ASSISTANT_MCP_TOKEN_ENV = "VERFT_MCP_TOKEN";
 const SLACK_ASSISTANT_MCP_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const SLACK_ASSISTANT_MCP_SCOPES: PermissionScope[] = [
   "repo:list",
@@ -106,7 +106,7 @@ const defaultCommandRunner: SlackAssistantCommandRunner = (command, args) =>
     });
   });
 
-const internalAgentSwarmMcpEndpoints = (): string[] => {
+const internalVerftMcpEndpoints = (): string[] => {
   if (existsSync("/.dockerenv")) {
     return [
       `http://127.0.0.1:${env.PORT}/mcp`,
@@ -117,7 +117,7 @@ const internalAgentSwarmMcpEndpoints = (): string[] => {
   return [`http://host.docker.internal:${env.PORT}/mcp`, `http://172.17.0.1:${env.PORT}/mcp`];
 };
 
-const internalAgentSwarmMcpDockerArgs = (): string[] => {
+const internalVerftMcpDockerArgs = (): string[] => {
   if (existsSync("/.dockerenv")) {
     return ["--network", `container:${hostname()}`];
   }
@@ -137,9 +137,9 @@ const normalizeMcpServerName = (value: string | undefined): string =>
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "");
 
-const mergeSlackRuntimeMcpServers = (agentSwarmServer: McpServerConfig, slackAgentMcpServers: McpServerConfig[]): McpServerConfig[] => {
-  const servers = [agentSwarmServer];
-  const seen = new Set([normalizeMcpServerName(agentSwarmServer.name)]);
+const mergeSlackRuntimeMcpServers = (verftServer: McpServerConfig, slackAgentMcpServers: McpServerConfig[]): McpServerConfig[] => {
+  const servers = [verftServer];
+  const seen = new Set([normalizeMcpServerName(verftServer.name)]);
   for (const server of normalizeMcpServers(slackAgentMcpServers)) {
     const name = normalizeMcpServerName(server.name);
     if (!name || seen.has(name)) {
@@ -192,13 +192,13 @@ const buildConversationPrompt = (input: SlackAssistantMessageInput): string => {
         ].join("\n")
       : "";
   return [
-    "You are AgentSwarm's detached Slack DM assistant.",
-    "Use AgentSwarm MCP as the source of truth for AgentSwarm data. Use configured Slack agent MCP tools or AgentSwarm repository/task context when relevant.",
-    "Do not create or mutate AgentSwarm tasks unless the user explicitly asks for that.",
+    "You are Verft's detached Slack DM assistant.",
+    "Use Verft MCP as the source of truth for Verft data. Use configured Slack agent MCP tools or Verft repository/task context when relevant.",
+    "Do not create or mutate Verft tasks unless the user explicitly asks for that.",
     "Keep Slack replies concise and practical.",
-    "No single repository is pre-selected; use AgentSwarm data and user intent to choose targets.",
+    "No single repository is pre-selected; use Verft data and user intent to choose targets.",
     "",
-    `Matched AgentSwarm user: ${input.user.name} <${input.user.email}>`,
+    `Matched Verft user: ${input.user.name} <${input.user.email}>`,
     "",
     "Conversation so far:",
     transcript || "(new conversation)",
@@ -248,26 +248,26 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
         slackChannelId: conversation.slackChannelId
       }
     });
-    const endpoints = internalAgentSwarmMcpEndpoints();
-    const agentSwarmMcpEnv = {
+    const endpoints = internalVerftMcpEndpoints();
+    const verftMcpEnv = {
       [SLACK_ASSISTANT_MCP_ENDPOINT_ENV]: endpoints[0] ?? `http://127.0.0.1:${env.PORT}/mcp`,
       [SLACK_ASSISTANT_MCP_ENDPOINTS_ENV]: endpoints.join(","),
       [SLACK_ASSISTANT_MCP_TOKEN_ENV]: token.token
     };
-    const agentSwarmServer: McpServerConfig = {
+    const verftServer: McpServerConfig = {
       name: SLACK_ASSISTANT_MCP_SERVER_NAME,
       transport: "stdio",
       command: "node",
-      args: ["/usr/local/bin/agentswarm-mcp-bridge.mjs"],
-      env: agentSwarmMcpEnv,
+      args: ["/usr/local/bin/verft-mcp-bridge.mjs"],
+      env: verftMcpEnv,
       enabled: true
     };
     return {
       env: {
         ...slackAgentMcpRuntimeEnv,
-        ...agentSwarmMcpEnv
+        ...verftMcpEnv
       },
-      servers: mergeSlackRuntimeMcpServers(agentSwarmServer, slackAgentMcpServers)
+      servers: mergeSlackRuntimeMcpServers(verftServer, slackAgentMcpServers)
     };
   }
 
@@ -342,7 +342,7 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
     const resultMarkdownPath = path.join(payloadDir, "result.md");
     const resultJsonPath = path.join(payloadDir, "result.json");
     const rawEventsJsonlPath = path.join(payloadDir, "raw-events.jsonl");
-    const containerName = `agentswarm-slack-${conversationSegment.slice(0, 32)}-${executionSegment.slice(0, 8)}`;
+    const containerName = `verft-slack-${conversationSegment.slice(0, 32)}-${executionSegment.slice(0, 8)}`;
     const timestamp = this.now().toISOString();
     const activeRuntime: SlackAssistantActiveRuntime = {
       provider,
@@ -404,7 +404,7 @@ export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
       "--rm",
       "--name",
       containerName,
-      ...internalAgentSwarmMcpDockerArgs(),
+      ...internalVerftMcpDockerArgs(),
       "-v",
       `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
       "-e",

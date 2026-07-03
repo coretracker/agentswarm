@@ -1,6 +1,6 @@
 import type { IncomingHttpHeaders } from "node:http";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { AuthSession, PermissionScope, RealtimeEvent } from "@agentswarm/shared-types";
+import type { AuthSession, PermissionScope, RealtimeEvent } from "@verft/shared-types";
 import type { Server as SocketIOServer, Socket } from "socket.io";
 import type { PersonalAccessTokenRuntimeContext, PersonalAccessTokenStore } from "../services/personal-access-token-store.js";
 import type { SessionStore } from "../services/session-store.js";

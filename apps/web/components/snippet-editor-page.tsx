@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { Snippet } from "@agentswarm/shared-types";
+import type { Snippet } from "@verft/shared-types";
 import { ArrowDownOutlined, ArrowUpOutlined, CopyOutlined, MinusCircleOutlined, PlusOutlined } from "@ant-design/icons";
 import { Button, Card, Flex, Form, Input, Result, Select, Space, Spin, Typography, message } from "antd";
 import { ApiError, api } from "../src/api/client";

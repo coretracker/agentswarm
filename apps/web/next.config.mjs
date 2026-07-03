@@ -3,7 +3,7 @@ const nextConfig = {
   experimental: {
     typedRoutes: false
   },
-  transpilePackages: ["@agentswarm/shared-types"]
+  transpilePackages: ["@verft/shared-types"]
 };
 
 export default nextConfig;

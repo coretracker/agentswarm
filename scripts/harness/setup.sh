@@ -73,7 +73,7 @@ if [[ "${HARNESS_DB_RESET:-0}" == "1" ]]; then
 fi
 
 log "running first-time stack initialization (build + start)"
-./agentswarm.sh init
+./verft.sh init
 
 log "setup complete"
 log "admin seed is created on first boot from .env defaults (DEFAULT_ADMIN_*)"

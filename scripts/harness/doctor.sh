@@ -62,8 +62,8 @@ if [[ -f .env.example ]]; then
   done
 fi
 
-if [[ ! -x ./agentswarm.sh ]]; then
-  echo "[harness:doctor] error: ./agentswarm.sh is missing or not executable" >&2
+if [[ ! -x ./verft.sh ]]; then
+  echo "[harness:doctor] error: ./verft.sh is missing or not executable" >&2
   exit 1
 fi
 
@@ -89,8 +89,8 @@ fi
 
 log "validating npm workspace scripts"
 npm run >/dev/null
-npm run -w @agentswarm/server >/dev/null
-npm run -w @agentswarm/web >/dev/null
+npm run -w @verft/server >/dev/null
+npm run -w @verft/web >/dev/null
 
 log "doctor checks passed"
 log "next: run ./scripts/harness/setup.sh"

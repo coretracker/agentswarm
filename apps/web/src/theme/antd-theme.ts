@@ -1728,8 +1728,8 @@ export const graphiteDarkAntdTheme: ThemeConfig = {
 };
 
 export const appThemeOptions: Array<{ label: string; value: AppThemeMode }> = [
-  { label: "Agentswarm Light", value: "light" },
-  { label: "Agentswarm Dark", value: "dark" },
+  { label: "Default Light", value: "light" },
+  { label: "Default Dark", value: "dark" },
   { label: "Forge Light", value: "forge-light" },
   { label: "Forge Dark", value: "forge" },
   { label: "Github Light", value: "github-light" },

@@ -8,7 +8,7 @@ import {
   getTaskTypeLabel,
   isTaskWorking,
   type Task
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Button, Card, Checkbox, DatePicker, Divider, Flex, Input, Modal, Select, Space, Spin, Table, Typography, message } from "antd";
 import { PushpinFilled } from "@ant-design/icons";
 import dayjs from "dayjs";

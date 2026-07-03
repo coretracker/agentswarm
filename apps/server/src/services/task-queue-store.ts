@@ -1,8 +1,8 @@
 import type Redis from "ioredis";
-import type { TaskAction, TaskExecutionInput, TaskPromptAttachment } from "@agentswarm/shared-types";
+import type { TaskAction, TaskExecutionInput, TaskPromptAttachment } from "@verft/shared-types";
 import { normalizeTaskPromptAttachment } from "../lib/task-prompt-attachments.js";
 
-const TASK_QUEUE_KEY = "agentswarm:queue";
+const TASK_QUEUE_KEY = "verft:queue";
 
 export type QueueReason = "manual" | "auto";
 

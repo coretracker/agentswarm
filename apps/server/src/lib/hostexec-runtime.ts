@@ -1,6 +1,6 @@
 import { chmod, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { HostexecSettings } from "@agentswarm/shared-types";
+import type { HostexecSettings } from "@verft/shared-types";
 import { env } from "../config/env.js";
 import { buildDockerWorkspaceMountArgs } from "./docker-workspace-mounts.js";
 import { normalizeHostCommands } from "./hostexec-config.js";

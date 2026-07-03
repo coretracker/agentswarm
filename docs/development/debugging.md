@@ -16,7 +16,7 @@
 ## What To Look For In Logs
 Server logs are structured JSON. Useful fields:
 - `time`, `level`, `msg`
-- `service` (should be `agentswarm-server`)
+- `service` (should be `verft-server`)
 - `requestId` (correlates request start/end/error)
 - `operationId` (when `x-operation-id` header is sent)
 - `method`, `url`, `statusCode`, `durationMs`

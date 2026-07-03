@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import type { AuthSessionUser, CreateRepositoryInput, UpdateRepositoryInput } from "@agentswarm/shared-types";
+import type { AuthSessionUser, CreateRepositoryInput, UpdateRepositoryInput } from "@verft/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
 import { canUserAccessRepository } from "../lib/task-ownership.js";

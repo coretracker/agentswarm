@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import type { TaskMessage } from "@agentswarm/shared-types";
+import type { TaskMessage } from "@verft/shared-types";
 import { api } from "../api/client";
 import { useSocket } from "./useSocket";
 

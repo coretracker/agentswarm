@@ -1,4 +1,4 @@
-import { type Task, type TaskAction, type TaskExecutionInput } from "@agentswarm/shared-types";
+import { type Task, type TaskAction, type TaskExecutionInput } from "@verft/shared-types";
 import type { TaskStore } from "./task-store.js";
 import type { QueueEntry, QueueReason, TaskQueueStore } from "./task-queue-store.js";
 import type { SettingsStore } from "./settings-store.js";

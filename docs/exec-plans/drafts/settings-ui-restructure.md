@@ -159,8 +159,8 @@
 - Docs/Changelog Updated: TODO
 
 ## Validation Commands
-- `npm run lint -w @agentswarm/web`
-- `npm run lint -w @agentswarm/server`
+- `npm run lint -w @verft/web`
+- `npm run lint -w @verft/server`
 - `./scripts/harness/check-human-gated-flow.sh`
 - `./scripts/harness/check.sh`
 - `./scripts/harness/test.sh`

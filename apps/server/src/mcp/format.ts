@@ -1,4 +1,4 @@
-import type { Repository, Task, TaskChangeProposal, TaskMessage, TaskRun } from "@agentswarm/shared-types";
+import type { Repository, Task, TaskChangeProposal, TaskMessage, TaskRun } from "@verft/shared-types";
 
 const DEFAULT_TEXT_LIMIT = 4_000;
 

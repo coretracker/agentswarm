@@ -7,13 +7,13 @@ This is the recommended verification entry point for agents and local developmen
 
 ## Test Levels
 The root test command runs the server and web workspace test scripts:
-- Server tests: `npm run test -w @agentswarm/server`
-- Web tests: `npm run test -w @agentswarm/web`
+- Server tests: `npm run test -w @verft/server`
+- Web tests: `npm run test -w @verft/web`
 
 ## Scope Selection
 - All current tests: `npm test`
-- Server only: `npm run test -w @agentswarm/server`
-- Web only: `npm run test -w @agentswarm/web`
+- Server only: `npm run test -w @verft/server`
+- Web only: `npm run test -w @verft/web`
 - Legacy scoped harness runner: `TEST_SCOPE=unit|integration|e2e ./scripts/harness/test.sh`
 
 ## UI Test Harness (Playwright)
@@ -38,9 +38,9 @@ The legacy `test.sh` runner handles most setup automatically for E2E:
 4. In remote mode on musl-based runners, auto-runs Playwright in a container fallback (`mcr.microsoft.com/playwright:v1.60.0-noble` by default).
 
 Useful environment options:
-- `AGENTSWARM_UI_BASE_URL` (default: `http://localhost:3217`)
-- `AGENTSWARM_E2E_EMAIL` (default: `admin@agentswarm.local`)
-- `AGENTSWARM_E2E_PASSWORD` (default: `admin123!`)
+- `VERFT_UI_BASE_URL` (default: `http://localhost:3217`)
+- `VERFT_E2E_EMAIL` (default: `admin@verft.local`)
+- `VERFT_E2E_PASSWORD` (default: `admin123!`)
 - `PLAYWRIGHT_CAPTURE_VIDEO=1` to keep video on failures
 - `PLAYWRIGHT_SKIP_INSTALL=1` to skip browser install step
 - `PLAYWRIGHT_DOCKER_IMAGE` to override the Playwright fallback container image in remote mode
@@ -62,7 +62,7 @@ The legacy harness runner sets stable defaults for repeatable runs:
 - `TZ=UTC`
 - `LANG=C`, `LC_ALL=C`
 - `NO_COLOR=1`, `FORCE_COLOR=0`
-- `AGENTSWARM_TEST_SEED`
+- `VERFT_TEST_SEED`
 
 ## Troubleshooting
 - If E2E cannot boot app: run `./scripts/harness/start.sh` directly and inspect logs.

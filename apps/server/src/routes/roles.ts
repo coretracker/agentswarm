@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import type { PermissionScope } from "@agentswarm/shared-types";
+import type { PermissionScope } from "@verft/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
 import type { RoleStore } from "../services/role-store.js";

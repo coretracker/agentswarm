@@ -10,13 +10,13 @@ import {
   type ProviderProfile,
   type Role,
   type UpdateRoleInput
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { HttpError } from "../lib/http-error.js";
 import { parseJsonColumn, type PostgresQueryable } from "../lib/postgres.js";
 
-const ROLE_KEY_PREFIX = "agentswarm:role:";
-const ROLE_IDS_KEY = "agentswarm:role_ids";
-const ROLE_NAME_KEY_PREFIX = "agentswarm:role_name:";
+const ROLE_KEY_PREFIX = "verft:role:";
+const ROLE_IDS_KEY = "verft:role_ids";
+const ROLE_NAME_KEY_PREFIX = "verft:role_name:";
 
 export const SYSTEM_ADMIN_ROLE_ID = "admin";
 const SYSTEM_ADMIN_ROLE_NAME = "Admin";

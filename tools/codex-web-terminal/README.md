@@ -11,7 +11,7 @@ This is a local experiment only: **no authentication**, and mounting the Docker 
 
 ## Build images
 
-This standalone PoC uses its own Codex image. The main AgentSwarm app uses the unified toolbox image from `agent-runtime/Dockerfile`.
+This standalone PoC uses its own Codex image. The main Verft app uses the unified toolbox image from `agent-runtime/Dockerfile`.
 
 Build the PoC **Codex runtime** image on the Docker host (the name must match `CODEX_IMAGE`, default `local/codex-interactive:latest`):
 

@@ -6,7 +6,7 @@ import {
   getEffortOptionsForProvider,
   type ProviderProfile,
   type TaskLiveDiff
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Alert, Button, Card, Collapse, Flex, Input, Modal, Select, Space, Spin, Typography, message } from "antd";
 import { Diff, Hunk, getChangeKey, type ChangeData, type FileData } from "react-diff-view";
 import ReactMarkdown from "react-markdown";

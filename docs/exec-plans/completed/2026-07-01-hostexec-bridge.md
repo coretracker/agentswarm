@@ -9,7 +9,7 @@
 
 ## Recommendation
 - Implement a small hostexec bridge surface using existing settings, repository, and runtime launch patterns.
-- Store daemon connection settings globally because there is one host daemon endpoint for the AgentSwarm deployment.
+- Store daemon connection settings globally because there is one host daemon endpoint for the Verft deployment.
 - Store command names per repository because tool exposure is repository-specific.
 - Generate a per-run read-only shim directory and prepend it to `PATH`; do not mount over existing bin directories.
 
@@ -24,7 +24,7 @@
 ## Current State
 - Repository-level MCP settings already follow the desired storage/API/UI/runtime scoping model.
 - Runtime task containers and interactive terminals already mount per-run payloads and workspace paths.
-- The runtime image already includes small Node bridge scripts for internal AgentSwarm MCP; hostexec can follow the same runtime-image pattern.
+- The runtime image already includes small Node bridge scripts for internal Verft MCP; hostexec can follow the same runtime-image pattern.
 
 ## Acceptance Criteria
 - Settings can store hostexec enabled flag, URL, and token/secret reference.
@@ -51,7 +51,7 @@
 10. Update docs and run verification.
 
 ## Human-Gated Flow Evidence
-- Requirements Read: 2026-06-30 18:45 UTC - Owner requested implementation at https://github.com/coretracker/agentswarm/issues/91#issuecomment-4846882075 after plan discussion in issue #91.
+- Requirements Read: 2026-06-30 18:45 UTC - Owner requested implementation at https://github.com/coretracker/verft/issues/91#issuecomment-4846882075 after plan discussion in issue #91.
 - Requirements Understood: 2026-07-01 04:59 UTC - Implement strict v1 hostexec: manual daemon, Settings connection/check, per-repository command names, no bin overwrite, PATH shadowing only, task-workspace execution.
 - Repository Research Complete: 2026-07-01 04:58 UTC - Reviewed shared types, repository/settings stores, routes, migrations, repository/settings UI, runtime Docker launch paths, interactive terminal path, and runtime bridge scripts.
 - Uncertainties Logged: 2026-07-01 04:59 UTC - v1 assumes daemon exposes capabilities/health and exec HTTP endpoints; exact daemon implementation can be minimal and documented.
@@ -62,7 +62,7 @@
 - Task-Level Tests/Lint/Build: 2026-07-01 05:15 UTC - Focused hostexec/settings/repository/runtime tests passed; `./scripts/harness/check.sh` passed; `TEST_SCOPE=unit ./scripts/harness/test.sh` passed; `TEST_SCOPE=integration ./scripts/harness/test.sh` passed.
 - Self Review Complete: 2026-07-01 05:15 UTC - Reviewed runtime/proxy/store/settings/UI/docs diff against strict v1 requirements and simplified redundant Docker host helper branch.
 - Code Review Complete: 2026-07-01 05:15 UTC - Checked database placeholder ordering, route/store normalization, shim mount path, command allowlist flow, and workspace cwd guard.
-- Final Verification Complete: 2026-07-01 05:15 UTC - `AGENTSWARM_UI_BASE_URL=http://172.18.0.1:3217 ./scripts/harness/test.sh` passed unit/integration and the first two Playwright smoke tests, then failed seeded-admin login against the already-running shared stack; default localhost e2e boot also cannot be used here because existing stack ports 3217/5432/6379 are already allocated.
+- Final Verification Complete: 2026-07-01 05:15 UTC - `VERFT_UI_BASE_URL=http://172.18.0.1:3217 ./scripts/harness/test.sh` passed unit/integration and the first two Playwright smoke tests, then failed seeded-admin login against the already-running shared stack; default localhost e2e boot also cannot be used here because existing stack ports 3217/5432/6379 are already allocated.
 - Security/Privacy Review Complete: 2026-07-01 05:15 UTC - Hostexec stores only token env var names, validates command names, uses daemon capabilities as the allowlist, mounts generated shims read-only, and rejects proxy cwd outside the task workspace before calling the daemon.
 - Docs/Changelog Updated: 2026-07-01 05:15 UTC - Updated README, `.env.example`, and product user flows for manual daemon start, settings check, per-repository commands, workspace cwd, and non-overwriting shim mount behavior.
 
@@ -71,8 +71,8 @@
 - `node --import tsx --test apps/server/src/lib/hostexec-runtime.test.ts`
 - `node --import tsx --test apps/server/src/services/repository-store.test.ts`
 - `node --import tsx --test apps/server/src/services/settings-store.test.ts`
-- `npm run lint -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
+- `npm run lint -w @verft/server`
+- `npm run lint -w @verft/web`
 - `./scripts/harness/check.sh`
 - `./scripts/harness/test.sh`
 

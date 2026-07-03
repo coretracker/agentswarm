@@ -1,4 +1,4 @@
-import type { TaskPromptMagicResult } from "@agentswarm/shared-types";
+import type { TaskPromptMagicResult } from "@verft/shared-types";
 
 const MAX_USER_PROMPT = 16_000;
 const DEFAULT_MODEL = "gpt-5.4-mini";

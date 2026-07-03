@@ -12,23 +12,23 @@ import type {
   RepositoryEnvSecretInput,
   RepositorySlackEventStatus,
   UpdateRepositoryInput
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
   DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
   DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
   DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { EventBus } from "../lib/events.js";
 import { normalizeHostCommands } from "../lib/hostexec-config.js";
 import { HttpError } from "../lib/http-error.js";
 import { normalizeMcpServers } from "../lib/mcp-config.js";
 import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
 
-const REPO_KEY_PREFIX = "agentswarm:repo:";
-const REPO_IDS_KEY = "agentswarm:repo_ids";
-const USER_KEY_PREFIX = "agentswarm:user:";
-const USER_IDS_KEY = "agentswarm:user_ids";
+const REPO_KEY_PREFIX = "verft:repo:";
+const REPO_IDS_KEY = "verft:repo_ids";
+const USER_KEY_PREFIX = "verft:user:";
+const USER_IDS_KEY = "verft:user_ids";
 const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
 const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;

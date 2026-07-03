@@ -1,4 +1,4 @@
-import type { SystemSettings } from "@agentswarm/shared-types";
+import type { SystemSettings } from "@verft/shared-types";
 
 export interface GitCommitIdentity {
   name: string;

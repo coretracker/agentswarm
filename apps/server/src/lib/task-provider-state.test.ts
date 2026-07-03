@@ -37,7 +37,7 @@ describe("task-provider-state", () => {
   it("migrates legacy Claude task state into the task-scoped home", async () => {
     const originalTaskWorkspaceRoot = env.TASK_WORKSPACE_ROOT;
     const originalTaskWorkspaceDockerSource = env.TASK_WORKSPACE_DOCKER_SOURCE;
-    const root = path.join("/tmp", `agentswarm-provider-state-${Date.now()}`);
+    const root = path.join("/tmp", `verft-provider-state-${Date.now()}`);
     env.TASK_WORKSPACE_ROOT = root;
     env.TASK_WORKSPACE_DOCKER_SOURCE = root;
 
@@ -45,12 +45,12 @@ describe("task-provider-state", () => {
       const legacyClaudeDir = path.join(root, ".task-state/task-legacy/.claude");
       const legacyConfigPath = path.join(root, ".task-state/task-legacy/.claude.json");
       await mkdir(legacyClaudeDir, { recursive: true });
-      await writeFile(path.join(legacyClaudeDir, "agentswarm-session-id.txt"), "session\n", "utf8");
+      await writeFile(path.join(legacyClaudeDir, "verft-session-id.txt"), "session\n", "utf8");
       await writeFile(legacyConfigPath, "{\"legacy\":true}\n", "utf8");
 
       const paths = await ensureTaskProviderStatePaths("task legacy", "claude");
 
-      assert.equal(await readFile(path.join(paths.serverPath, "agentswarm-session-id.txt"), "utf8"), "session\n");
+      assert.equal(await readFile(path.join(paths.serverPath, "verft-session-id.txt"), "utf8"), "session\n");
       assert.equal(await readFile(paths.configServerPath!, "utf8"), "{\"legacy\":true}\n");
     } finally {
       env.TASK_WORKSPACE_ROOT = originalTaskWorkspaceRoot;

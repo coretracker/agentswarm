@@ -5,7 +5,7 @@ import {
   DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
   DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
   DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
 import { resolveCreateTaskProviderConfig } from "../lib/task-create-defaults.js";
 import type { RepositoryStore } from "../services/repository-store.js";
@@ -103,7 +103,7 @@ const booleanValue = (record: Record<string, unknown>, key: string): boolean | n
   return typeof value === "boolean" ? value : null;
 };
 
-const GITHUB_TASK_CREATED_COMMENT_MARKER_PREFIX = "<!-- agentswarm-task-created:";
+const GITHUB_TASK_CREATED_COMMENT_MARKER_PREFIX = "<!-- verft-task-created:";
 
 const isGitHubTaskCreatedCommentBody = (body: string): boolean => body.includes(GITHUB_TASK_CREATED_COMMENT_MARKER_PREFIX);
 
@@ -445,7 +445,7 @@ const resolveGitHubPrBranchDetails = async (
   const response = await fetch(feedback.prApiUrl, {
     headers: {
       Accept: "application/vnd.github+json",
-      "User-Agent": "AgentSwarm GitHub PR webhook",
+      "User-Agent": "Verft GitHub PR webhook",
       ...(githubToken?.trim() ? { Authorization: `Bearer ${githubToken.trim()}` } : {})
     }
   });
@@ -469,7 +469,7 @@ const formatNewIssueTaskTitle = (feedback: GitHubIssueFeedback): string =>
   feedback.issueTitle?.trim() || `GitHub issue #${feedback.issueNumber} feedback from @${feedback.author}`;
 
 const GITHUB_API_BASE_URL = "https://api.github.com";
-const GITHUB_USER_AGENT = "AgentSwarm GitHub PR webhook";
+const GITHUB_USER_AGENT = "Verft GitHub PR webhook";
 
 const buildTaskUrl = (taskId: string): string => `${env.CORS_ORIGIN.replace(/\/+$/, "")}/tasks/${encodeURIComponent(taskId)}`;
 

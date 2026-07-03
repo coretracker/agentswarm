@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_NAME="$(basename "$0")"
 DEFAULT_PUBLIC_PORT="3217"
-DEFAULT_AGENT_RUNTIME_IMAGE="agentswarm-agent-toolbox:latest"
+DEFAULT_AGENT_RUNTIME_IMAGE="verft-agent-toolbox:latest"
 DEFAULT_TASK_WORKSPACE_DIR="$ROOT_DIR/task-workspaces"
 
 print_usage() {
@@ -12,8 +12,8 @@ print_usage() {
 Usage: ./${SCRIPT_NAME} <start|stop|rebuild|init|help>
 
 Commands:
-  start    Start the AgentSwarm compose stack in the background.
-  stop     Stop the AgentSwarm compose stack.
+  start    Start the Verft compose stack in the background.
+  stop     Stop the Verft compose stack.
   rebuild  Rebuild compose and agent toolbox runtime images, then restart.
   init     Alias for rebuild.
   help     Show this help text.
@@ -74,7 +74,7 @@ compose() {
 
 print_access_hint() {
   local public_port="${PUBLIC_PORT:-$DEFAULT_PUBLIC_PORT}"
-  echo "AgentSwarm should be reachable at http://localhost:${public_port}/login"
+  echo "Verft should be reachable at http://localhost:${public_port}/login"
 }
 
 warn_if_missing_runtime_image() {
@@ -100,7 +100,7 @@ build_runtime_image() {
 }
 
 start_stack() {
-  echo "Starting AgentSwarm services"
+  echo "Starting Verft services"
   ensure_task_workspace_dir
   compose up -d
   warn_if_missing_runtime_image
@@ -108,15 +108,15 @@ start_stack() {
 }
 
 stop_stack() {
-  echo "Stopping AgentSwarm services"
+  echo "Stopping Verft services"
   compose down
 }
 
 rebuild_stack() {
   build_runtime_image
-  echo "Rebuilding AgentSwarm compose images"
+  echo "Rebuilding Verft compose images"
   compose build --pull --no-cache
-  echo "Restarting AgentSwarm services"
+  echo "Restarting Verft services"
   ensure_task_workspace_dir
   compose up -d --force-recreate
   print_access_hint

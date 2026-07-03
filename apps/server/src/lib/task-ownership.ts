@@ -1,4 +1,4 @@
-import type { AuthSessionUser, Task } from "@agentswarm/shared-types";
+import type { AuthSessionUser, Task } from "@verft/shared-types";
 import { SYSTEM_ADMIN_ROLE_ID } from "../services/role-store.js";
 
 type AdminCheckUser = Pick<AuthSessionUser, "roles"> | null | undefined;

@@ -12,7 +12,7 @@ export async function ensureGitAskPassScript(): Promise<string> {
     return gitAskPassPath;
   }
 
-  const askPassPath = "/tmp/agentswarm-git-askpass.sh";
+  const askPassPath = "/tmp/verft-git-askpass.sh";
   await writeFile(
     askPassPath,
     `#!/usr/bin/env sh

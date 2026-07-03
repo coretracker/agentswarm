@@ -34,7 +34,7 @@ describe("buildGitProcessEnv", () => {
   });
 
   it("allows squash merges in a worktree without relying on global git config", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-git-env-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-git-env-"));
     const originPath = path.join(root, "origin.git");
     const seedPath = path.join(root, "seed");
     const managedPath = path.join(root, "managed");
@@ -81,7 +81,7 @@ describe("buildGitProcessEnv", () => {
   });
 
   it("allows rebases without relying on global git config", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-git-rebase-env-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-git-rebase-env-"));
     const originPath = path.join(root, "origin.git");
     const seedPath = path.join(root, "seed");
     const workspacePath = path.join(root, "workspace");

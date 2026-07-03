@@ -1,7 +1,7 @@
 import path from "node:path";
 import { constants } from "node:fs";
 import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import type { TaskLinkedWorkspace } from "@agentswarm/shared-types";
+import type { TaskLinkedWorkspace } from "@verft/shared-types";
 import { env } from "../config/env.js";
 import { buildDockerWorkspaceMountArgs } from "./docker-workspace-mounts.js";
 import { resolveGitPaths } from "./git-paths.js";

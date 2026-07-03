@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useState } from "react";
-import type { AuthSession, LoginInput, PermissionScope } from "@agentswarm/shared-types";
+import type { AuthSession, LoginInput, PermissionScope } from "@verft/shared-types";
 import { ApiError, api } from "../src/api/client";
 
 interface AuthContextValue {

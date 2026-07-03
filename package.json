@@ -1,5 +1,5 @@
 {
-  "name": "agentswarm",
+  "name": "verft",
   "private": true,
   "version": "0.1.0",
   "workspaces": [
@@ -7,15 +7,15 @@
     "packages/*"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev -w @agentswarm/server\" \"npm run dev -w @agentswarm/web\"",
-    "dev:server": "npm run dev -w @agentswarm/server",
-    "dev:web": "npm run dev -w @agentswarm/web",
+    "dev": "concurrently \"npm run dev -w @verft/server\" \"npm run dev -w @verft/web\"",
+    "dev:server": "npm run dev -w @verft/server",
+    "dev:web": "npm run dev -w @verft/web",
     "hostexec": "node hostexec/daemon.mjs",
     "ci": "./scripts/ci.sh",
-    "test": "npm run test -w @agentswarm/server && npm run test -w @agentswarm/web",
+    "test": "npm run test -w @verft/server && npm run test -w @verft/web",
     "typecheck": "npm run lint",
-    "build": "npm run build -w @agentswarm/shared-types && npm run build -w @agentswarm/server && npm run build -w @agentswarm/web",
-    "lint": "npm run lint -w @agentswarm/server && npm run lint -w @agentswarm/web"
+    "build": "npm run build -w @verft/shared-types && npm run build -w @verft/server && npm run build -w @verft/web",
+    "lint": "npm run lint -w @verft/server && npm run lint -w @verft/web"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",

@@ -27,23 +27,23 @@ Notes:
 - Existing secrets are shown as configured placeholders only; values are never shown again after save.
 - Editing can keep an existing secret by leaving its value blank, replace it by entering a new value, or delete it by removing the row.
 - Repository MCP servers are scoped to the repository being edited. They are not inherited from Settings and are not shared with other repositories.
-- MCP bearer token environment variable names resolve from the AgentSwarm server process environment. Missing values are reported in task runtime logs.
-- Repository host commands are simple command names only. AgentSwarm mounts generated shims read-only under `/hostexec/bin` and prepends that directory to `PATH`; existing container bin directories are not overwritten.
+- MCP bearer token environment variable names resolve from the Verft server process environment. Missing values are reported in task runtime logs.
+- Repository host commands are simple command names only. Verft mounts generated shims read-only under `/hostexec/bin` and prepends that directory to `PATH`; existing container bin directories are not overwritten.
 - Repository default agent provider/model/effort values are fallback values. Task payload values win first, then matching user profile defaults, then repository defaults, then system settings.
 - Installations that previously used global MCP server settings must recreate the intended MCP servers on each repository that should expose them.
 - GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
 - GitHub Integration can optionally archive linked tasks when a GitHub pull request webhook reports the PR as merged.
 - GitHub Integration creates or queues build-mode tasks when a `pull_request.review_requested` webhook targets the configured integration bot.
 - GitHub Integration processes created or edited issue comments and pull request conversation comments when the comment body passes the configured bot mention and user filters.
-- GitHub Integration adds an `eyes` reaction to accepted issue comments and pull request conversation comments, but skips the hidden task-created comment that AgentSwarm posts after opening a task.
+- GitHub Integration adds an `eyes` reaction to accepted issue comments and pull request conversation comments, but skips the hidden task-created comment that Verft posts after opening a task.
 - GitHub Integration supports separate editable agent templates for newly created GitHub tasks, feedback comments on linked tasks, and requested PR reviews. Templates can include markers such as `{{target_ref}}`, `{{title}}`, `{{title_line}}`, `{{author}}`, `{{requested_reviewer}}`, `{{url_line}}`, and `{{feedback_body}}`.
-- GitHub Integration supports an editable task-created comment template for the public GitHub reply posted after AgentSwarm creates a new task. The server appends the hidden duplicate-detection marker automatically.
+- GitHub Integration supports an editable task-created comment template for the public GitHub reply posted after Verft creates a new task. The server appends the hidden duplicate-detection marker automatically.
 
 ## Settings And Credentials Flow (Current)
 1. Open `/settings`.
 2. Use `General` to set the default provider, concurrent agents, access roles, and response presets.
 3. Use `Git` to set the GitHub token, Git username, optional commit author identity, and feature branch prefix. Default GitHub PAT HTTPS auth uses `x-access-token`.
-4. Start the host daemon with `npm run hostexec`, then use `Hostexec` to check availability and optionally set the bearer token env var reference. AgentSwarm autodetects the default daemon URLs; repository Host Commands restrict mounted shims.
+4. Start the host daemon with `npm run hostexec`, then use `Hostexec` to check availability and optionally set the bearer token env var reference. Verft autodetects the default daemon URLs; repository Host Commands restrict mounted shims.
 5. Use `Codex` to set the OpenAI API key or Codex `auth.json`, default effort/model, model list, prompt magic settings, and base URL override.
 6. Use `Claude Code` to set the Anthropic API key, default effort/model, model list, and base URL override.
 7. Open your profile to manage GitHub username linking, personal default agent settings, and personal access tokens.
@@ -51,7 +51,7 @@ Notes:
 Notes:
 - The GitHub token is used for both server-side Git actions and in-agent `git pull` / `git push` inside Codex and Claude runtimes.
 - Stored credential values are write-only and never returned in plaintext by the API/UI.
-- Agent-created commit identity resolves from system Git author settings when configured, otherwise from the built-in AgentSwarm fallback identity.
+- Agent-created commit identity resolves from system Git author settings when configured, otherwise from the built-in Verft fallback identity.
 - Codex runs use system/global OpenAI API key or Codex `auth.json`; user profiles do not store per-user Codex `auth.json`.
 - Hostexec tokens are referenced by environment variable name; token values are not stored in settings. Bridge commands execute on the host with the task workspace as `cwd` and are rejected if the resolved directory escapes the workspace.
 

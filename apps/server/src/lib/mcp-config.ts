@@ -1,4 +1,4 @@
-import type { McpServerConfig } from "@agentswarm/shared-types";
+import type { McpServerConfig } from "@verft/shared-types";
 
 const tomlString = (value: string): string => JSON.stringify(value);
 const ENV_VAR_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;

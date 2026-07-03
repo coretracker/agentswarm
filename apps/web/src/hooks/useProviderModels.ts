@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { AgentProvider, ProviderModelOption } from "@agentswarm/shared-types";
-import { getModelsForProvider } from "@agentswarm/shared-types";
+import type { AgentProvider, ProviderModelOption } from "@verft/shared-types";
+import { getModelsForProvider } from "@verft/shared-types";
 import { api } from "../api/client";
 
 interface UseProviderModelsResult {

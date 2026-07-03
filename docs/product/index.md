@@ -1,7 +1,7 @@
 # Product Docs
 
 ## Overview
-AgentSwarm is a web app for managing AI coding tasks against real repositories.
+Verft is a web app for managing AI coding tasks against real repositories.
 
 ## Key References
 - Product overview and setup: `README.md`

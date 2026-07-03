@@ -20,7 +20,7 @@ describe("resolveGitRuntimeMountsForPaths", () => {
       usesLinkedWorktree: true
     });
 
-    assert.deepEqual(mounts, ["-v", "agentswarm_repo_cache:/repo-cache:rw"]);
+    assert.deepEqual(mounts, ["-v", "verft_repo_cache:/repo-cache:rw"]);
   });
 
   it("skips extra mounts when linked worktree metadata lives outside the repo cache root", () => {

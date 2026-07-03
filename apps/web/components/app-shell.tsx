@@ -28,7 +28,7 @@ import { AppRightPanelProvider, type AppRightPanelConfig } from "./app-right-pan
 import { NotesMarkdownEditor } from "./notes-markdown-editor";
 import type {
   UserNotes
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
@@ -47,7 +47,7 @@ const menuIconByPath: Record<string, ReactNode> = {
   "/users": <TeamOutlined />
 };
 
-const NOTES_PANEL_STATE_STORAGE_KEY_PREFIX = "agentswarm:notes-sidebar-state:v1";
+const NOTES_PANEL_STATE_STORAGE_KEY_PREFIX = "verft:notes-sidebar-state:v1";
 const DEFAULT_NOTES_PANEL_WIDTH = 420;
 const NOTES_PANEL_MIN_WIDTH = 320;
 const NOTES_PANEL_MAX_WIDTH = 720;
@@ -319,7 +319,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <AppLogo width={28} height={40} />
               <Flex vertical gap={0}>
                 <Typography.Title level={4} style={{ margin: 0, color: token.colorText }}>
-                  AgentSwarm
+                  Verft
                 </Typography.Title>
               </Flex>
             </Flex>
