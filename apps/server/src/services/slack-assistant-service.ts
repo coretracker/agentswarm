@@ -54,8 +54,7 @@ export interface SlackFileAttachment {
   name: string;
   mimetype: string;
   size: number;
-  content: string;
-  truncated: boolean;
+  localPath: string;
 }
 
 export interface SlackAssistantMessageInput {
@@ -187,11 +186,9 @@ const buildConversationPrompt = (input: SlackAssistantMessageInput): string => {
     input.fileAttachments && input.fileAttachments.length > 0
       ? [
           "",
-          `Attached files (${input.fileAttachments.length}):`,
-          ...input.fileAttachments.map(
-            (f) =>
-              `--- ${f.name} (${f.mimetype}, ${f.size} bytes${f.truncated ? ", truncated at 512 KB" : ""}) ---\n${f.content}\n---`
-          )
+          `Attached files saved to filesystem (${input.fileAttachments.length}):`,
+          ...input.fileAttachments.map((f) => `- ${f.localPath} (${f.name}, ${f.mimetype}, ${f.size} bytes)`),
+          "Use Read to view file contents (text, image, or PDF), Grep to search text files."
         ].join("\n")
       : "";
   return [

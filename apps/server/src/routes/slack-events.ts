@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import path from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { RepositorySlackEventStatus, User } from "@agentswarm/shared-types";
 import { verifySlackRequestSignatureDetailed } from "../lib/slack-signature.js";
@@ -11,6 +13,7 @@ import {
 import { FetchSlackClient, type SlackClient } from "../services/slack-client.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { UserStore } from "../services/user-store.js";
+import { env } from "../config/env.js";
 
 type RawBodyRequest = { rawBody?: string };
 
@@ -19,21 +22,27 @@ const SLACK_ASSISTANT_BUSY_MESSAGE =
 const SLACK_ASSISTANT_STOPPED_MESSAGE = "Stopped the current Slack assistant run. You can send a new question now.";
 const SLACK_ASSISTANT_NOT_RUNNING_MESSAGE = "There is no active Slack assistant run to stop.";
 const SLACK_ASSISTANT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
-const SLACK_ATTACHMENT_MAX_FILE_BYTES = 1024 * 1024; // 1 MB — skip files larger than this
+const SLACK_UPLOAD_MAX_FILE_BYTES = 100 * 1024 * 1024; // 100 MB per file download limit
 const SLACK_ATTACHMENT_MAX_FILES = 5; // max files to download per message
 
-const TEXT_MIMETYPES = new Set([
-  "application/json",
-  "application/xml",
-  "application/x-yaml",
-  "application/yaml",
-  "application/javascript",
-  "application/typescript"
-]);
+const sanitizeUploadSegment = (value: string): string =>
+  value
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 80) || "unknown";
 
-const isTextMimetype = (mimetype: string): boolean => {
-  const base = mimetype.split(";")[0]?.trim() ?? "";
-  return base.startsWith("text/") || TEXT_MIMETYPES.has(base);
+const sanitizeUploadFilename = (name: string): string => {
+  const ext = path.extname(name);
+  const safeExt = /^(\.[a-zA-Z0-9]{1,10})+$/.test(ext) ? ext : "";
+  const base = path
+    .basename(name, ext)
+    .replace(/[^a-zA-Z0-9._-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^[._]+|[._]+$/g, "")
+    .slice(0, 60) || "file";
+  return base + safeExt;
 };
 
 const readHeader = (value: string | string[] | undefined): string | null => {
@@ -90,10 +99,12 @@ export const registerSlackEventRoutes = (
     slackAssistantStore: SlackAssistantStore;
     slackClient?: SlackClient;
     runtime?: SlackAssistantRuntime;
+    slackUploadRoot?: string;
   }
 ): void => {
   const slackClient = deps.slackClient ?? new FetchSlackClient();
   const assistantService = new SlackAssistantService(deps.slackAssistantStore, deps.runtime);
+  const uploadRoot = deps.slackUploadRoot ?? path.join(env.RUNTIME_PAYLOAD_ROOT, "slack-uploads");
 
   const handler = async (request: FastifyRequest, reply: FastifyReply) => {
     const integration = await deps.settingsStore.getSlackIntegration();
@@ -160,7 +171,6 @@ export const registerSlackEventRoutes = (
     const rawFiles = Array.isArray(event.files) ? (event.files as unknown[]) : [];
     const candidateFiles = rawFiles
       .filter((f): f is Record<string, unknown> => isRecord(f))
-      .filter((f) => isTextMimetype(stringValue(f, "mimetype") ?? ""))
       .slice(0, SLACK_ATTACHMENT_MAX_FILES);
     if (!slackUserId || !slackChannelId || (!text && candidateFiles.length === 0)) {
       await recordSlackEvent("ignored", "message.im", "missing_message_fields");
@@ -245,23 +255,30 @@ export const registerSlackEventRoutes = (
     void (async () => {
       try {
         const fileAttachments: SlackFileAttachment[] = [];
-        for (const file of candidateFiles) {
-          const fileUrl = stringValue(file, "url_private_download") ?? stringValue(file, "url_private");
-          const fileSize = typeof file.size === "number" ? file.size : 0;
-          if (!fileUrl || fileSize > SLACK_ATTACHMENT_MAX_FILE_BYTES) {
-            continue;
-          }
-          try {
-            const { content, truncated } = await slackClient.fetchFileContent(integration.botToken, fileUrl);
-            fileAttachments.push({
-              name: stringValue(file, "name") ?? "attachment",
-              mimetype: stringValue(file, "mimetype") ?? "text/plain",
-              size: fileSize,
-              content,
-              truncated
-            });
-          } catch (fileError) {
-            request.log.warn({ err: fileError }, "slack.file.fetch_failed");
+        if (candidateFiles.length > 0) {
+          const channelSegment = sanitizeUploadSegment(slackChannelId);
+          const tsSegment = sanitizeUploadSegment(slackMessageTs ?? "unknown");
+          const uploadDir = path.join(uploadRoot, channelSegment, tsSegment);
+          await mkdir(uploadDir, { recursive: true });
+          for (const file of candidateFiles) {
+            const fileUrl = stringValue(file, "url_private_download") ?? stringValue(file, "url_private");
+            if (!fileUrl) {
+              continue;
+            }
+            const fileName = sanitizeUploadFilename(stringValue(file, "name") ?? "attachment");
+            const localPath = path.join(uploadDir, fileName);
+            try {
+              const bytes = await slackClient.downloadFile(integration.botToken, fileUrl, SLACK_UPLOAD_MAX_FILE_BYTES);
+              await writeFile(localPath, bytes);
+              fileAttachments.push({
+                name: stringValue(file, "name") ?? "attachment",
+                mimetype: stringValue(file, "mimetype") ?? "application/octet-stream",
+                size: bytes.byteLength,
+                localPath
+              });
+            } catch (fileError) {
+              request.log.warn({ err: fileError }, "slack.file.fetch_failed");
+            }
           }
         }
         const responseText = await assistantService.handleMessage({
