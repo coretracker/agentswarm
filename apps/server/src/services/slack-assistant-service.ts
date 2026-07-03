@@ -50,11 +50,20 @@ export class SlackAssistantRunStoppedError extends Error {
   }
 }
 
+export interface SlackFileAttachment {
+  name: string;
+  mimetype: string;
+  size: number;
+  content: string;
+  truncated: boolean;
+}
+
 export interface SlackAssistantMessageInput {
   user: User;
   conversation: SlackAssistantConversation;
   text: string;
   mcpScopes?: PermissionScope[];
+  fileAttachments?: SlackFileAttachment[];
 }
 
 export interface SlackAssistantRuntime {
@@ -174,6 +183,17 @@ const buildConversationPrompt = (input: SlackAssistantMessageInput): string => {
   const transcript = turns
     .map((turn) => `${turn.role === "assistant" ? "Assistant" : "User"}: ${turn.content}`)
     .join("\n");
+  const fileSections =
+    input.fileAttachments && input.fileAttachments.length > 0
+      ? [
+          "",
+          `Attached files (${input.fileAttachments.length}):`,
+          ...input.fileAttachments.map(
+            (f) =>
+              `--- ${f.name} (${f.mimetype}, ${f.size} bytes${f.truncated ? ", truncated at 512 KB" : ""}) ---\n${f.content}\n---`
+          )
+        ].join("\n")
+      : "";
   return [
     "You are AgentSwarm's detached Slack DM assistant.",
     "Use AgentSwarm MCP as the source of truth for AgentSwarm data. Use configured Slack agent MCP tools or AgentSwarm repository/task context when relevant.",
@@ -187,8 +207,11 @@ const buildConversationPrompt = (input: SlackAssistantMessageInput): string => {
     transcript || "(new conversation)",
     "",
     "Latest Slack message:",
-    input.text
-  ].join("\n");
+    input.text || "(no text)",
+    fileSections
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
 };
 
 export class DockerSlackAssistantRuntime implements SlackAssistantRuntime {
@@ -491,7 +514,12 @@ export class SlackAssistantService {
   ) {}
 
   async handleMessage(input: SlackAssistantMessageInput): Promise<string> {
-    const userTurn: SlackAssistantTurn = { role: "user", content: input.text, at: nowIso() };
+    const fileRefs =
+      input.fileAttachments && input.fileAttachments.length > 0
+        ? input.fileAttachments.map((f) => `[File: ${f.name}]`).join(", ")
+        : null;
+    const turnContent = [input.text || null, fileRefs].filter(Boolean).join(" ") || "(file attachment)";
+    const userTurn: SlackAssistantTurn = { role: "user", content: turnContent, at: nowIso() };
     const conversationWithUserTurn = await this.conversationStore.appendTurn(input.conversation.id, userTurn);
     const reply = await this.runtime.respond({
       ...input,
