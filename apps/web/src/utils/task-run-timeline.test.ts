@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { NormalizedAgentEvent } from "@agentswarm/shared-types";
+import type { NormalizedAgentEvent } from "@verft/shared-types";
 import { buildTimelineDisplayItems } from "./task-run-timeline";
 
 function event(input: Partial<NormalizedAgentEvent> & Pick<NormalizedAgentEvent, "id" | "kind" | "rawEventIndex" | "title">): NormalizedAgentEvent {

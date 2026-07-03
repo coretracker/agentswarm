@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { RepositorySlackEventStatus, User } from "@agentswarm/shared-types";
+import type { RepositorySlackEventStatus, User } from "@verft/shared-types";
 import { verifySlackRequestSignatureDetailed } from "../lib/slack-signature.js";
 import type { SlackAssistantStore } from "../services/slack-assistant-store.js";
 import {
@@ -198,7 +198,7 @@ export const registerSlackEventRoutes = (
       await slackClient.postMessage(
         integration.botToken,
         slackChannelId,
-        "I could not find an active AgentSwarm profile with this Slack username."
+        "I could not find an active Verft profile with this Slack username."
       );
       await recordSlackEvent("ignored", "message.im", "unmatched_user");
       return reply.send({ ok: true, ignored: "unmatched_user" });
@@ -208,7 +208,7 @@ export const registerSlackEventRoutes = (
       await slackClient.postMessage(
         integration.botToken,
         slackChannelId,
-        "I could not find an active AgentSwarm profile with this Slack username."
+        "I could not find an active Verft profile with this Slack username."
       );
       await recordSlackEvent("ignored", "message.im", "unmatched_user");
       return reply.send({ ok: true, ignored: "unmatched_user" });

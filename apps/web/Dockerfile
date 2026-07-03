@@ -16,8 +16,8 @@ COPY . .
 
 ENV NODE_ENV=production
 
-RUN npm run build -w @agentswarm/shared-types
-RUN npm run build -w @agentswarm/web
+RUN npm run build -w @verft/shared-types
+RUN npm run build -w @verft/web
 
 EXPOSE 3217
-CMD ["npm", "run", "start", "-w", "@agentswarm/web"]
+CMD ["npm", "run", "start", "-w", "@verft/web"]

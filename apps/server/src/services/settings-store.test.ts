@@ -70,14 +70,14 @@ describe("RedisSettingsStore runtime credentials", () => {
     );
 
     await settingsStore.updateSettings({
-      gitAuthorName: "AgentSwarm",
-      gitAuthorEmail: "agentswarm@example.com"
+      gitAuthorName: "Verft",
+      gitAuthorEmail: "verft@example.com"
     });
 
     const credentials = await settingsStore.getRuntimeCredentials("user-1", "auto");
 
-    assert.equal(credentials.gitAuthorName, "AgentSwarm");
-    assert.equal(credentials.gitAuthorEmail, "agentswarm@example.com");
+    assert.equal(credentials.gitAuthorName, "Verft");
+    assert.equal(credentials.gitAuthorEmail, "verft@example.com");
   });
 
   it("returns provider base URL overrides with runtime credentials", async () => {
@@ -139,10 +139,10 @@ describe("RedisSettingsStore runtime credentials", () => {
 
   it("does not expose legacy global MCP servers", async () => {
     const redis = new FakeRedis();
-    redis.seed("agentswarm:settings", {
+    redis.seed("verft:settings", {
       defaultProvider: "codex",
       maxAgents: 2,
-      branchPrefix: "agentswarm",
+      branchPrefix: "verft",
       workspaceProvisioningMode: "clone_only",
       gitUsername: "x-access-token",
       mcpServers: [
@@ -185,7 +185,7 @@ describe("RedisSettingsStore runtime credentials", () => {
     await settingsStore.updateSettings({
       slackAssistantProvider: "claude",
       slackAssistantModel: "claude-sonnet-4-6",
-      slackHarnessWhatExists: "  Slack DMs and AgentSwarm MCP.  ",
+      slackHarnessWhatExists: "  Slack DMs and Verft MCP.  ",
       slackHarnessAllowedActions: "Answer questions.",
       slackHarnessHowToWork: "",
       slackHarnessDefinitionOfDone: null,
@@ -217,7 +217,7 @@ describe("RedisSettingsStore runtime credentials", () => {
     assert.equal(settings.slackSigningSecretConfigured, true);
     assert.equal(settings.slackAssistantProvider, "claude");
     assert.equal(settings.slackAssistantModel, "claude-sonnet-4-6");
-    assert.equal(settings.slackHarnessWhatExists, "Slack DMs and AgentSwarm MCP.");
+    assert.equal(settings.slackHarnessWhatExists, "Slack DMs and Verft MCP.");
     assert.equal(settings.slackHarnessAllowedActions, "Answer questions.");
     assert.equal(settings.slackHarnessHowToWork, null);
     assert.equal(settings.slackHarnessDefinitionOfDone, null);
@@ -229,11 +229,11 @@ describe("RedisSettingsStore runtime credentials", () => {
     assert.equal(integration?.signingSecret, "signing-secret");
     assert.equal(integration?.slackAssistantProvider, "claude");
     assert.equal(integration?.slackAssistantModel, "claude-sonnet-4-6");
-    assert.equal(integration?.slackHarnessWhatExists, "Slack DMs and AgentSwarm MCP.");
+    assert.equal(integration?.slackHarnessWhatExists, "Slack DMs and Verft MCP.");
     assert.equal(integration?.slackHarnessEvidenceExpectations, "Mention what was checked.");
     assert.equal(integration?.slackAgentMcpServers[0]?.bearerTokenConfigured, true);
     assert.equal(integration?.slackAgentMcpServers[0]?.bearerToken, undefined);
-    assert.equal(integration?.mcpRuntimeEnv?.AGENTSWARM_SLACK_MCP_BEARER_GITHUB_API, "gh-token");
+    assert.equal(integration?.mcpRuntimeEnv?.VERFT_SLACK_MCP_BEARER_GITHUB_API, "gh-token");
 
     await settingsStore.recordSlackEventResult({
       status: "failed",
@@ -249,7 +249,7 @@ describe("RedisSettingsStore runtime credentials", () => {
 
   it("defaults Slack assistant provider and model for legacy settings payloads", async () => {
     const redis = new FakeRedis();
-    redis.seed("agentswarm:settings", {
+    redis.seed("verft:settings", {
       defaultProvider: "claude",
       codexDefaultModel: "gpt-5.5",
       claudeDefaultModel: "claude-opus-4-8",

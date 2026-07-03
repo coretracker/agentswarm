@@ -18,13 +18,13 @@ import type {
   ResponsePreferencePreset,
   Role,
   SystemSettings
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   PERMISSION_SCOPE_GROUPS,
   getAgentProviderLabel,
   getEffortOptionsForProvider,
   getModelsForProvider
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { DeleteOutlined, LockOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   Alert,
@@ -895,7 +895,7 @@ export function SettingsPage() {
                 <Form.Item
                   name="openaiBaseUrl"
                   label="Base URL Override"
-                  extra="Set when pointing AgentSwarm at an OpenAI-compatible proxy or self-hosted gateway."
+                  extra="Set when pointing Verft at an OpenAI-compatible proxy or self-hosted gateway."
                   style={{ marginBottom: 0 }}
                 >
                   <Input placeholder="https://api.openai.com/v1" />
@@ -920,7 +920,7 @@ export function SettingsPage() {
                   type="warning"
                   showIcon
                   message="Experimental"
-                  description="Claude Code in AgentSwarm is experimental; behavior and defaults may change."
+                  description="Claude Code in Verft is experimental; behavior and defaults may change."
                 />
                 <Form.Item name="claudeDefaultEffort" label="Default Effort">
                   <Select options={getEffortOptionsForProvider("claude")} />
@@ -940,7 +940,7 @@ export function SettingsPage() {
                 <Form.Item
                   name="anthropicBaseUrl"
                   label="Base URL Override"
-                  extra="Set when pointing AgentSwarm at an Anthropic-compatible proxy or gateway."
+                  extra="Set when pointing Verft at an Anthropic-compatible proxy or gateway."
                   style={{ marginBottom: 0 }}
                 >
                   <Input placeholder="https://api.anthropic.com/v1" />
@@ -976,7 +976,7 @@ export function SettingsPage() {
                     extra="Used for agent-created Git commits. Leave blank to use the system default."
                     style={{ marginBottom: 0 }}
                   >
-                    <Input placeholder="AgentSwarm" />
+                    <Input placeholder="Verft" />
                   </Form.Item>
                   <Form.Item
                     name="gitAuthorEmail"
@@ -984,10 +984,10 @@ export function SettingsPage() {
                     extra="Used for agent-created Git commits. Leave blank to use the system default."
                     rules={[{ type: "email", message: "Enter a valid email address" }]}
                   >
-                    <Input placeholder="agentswarm@example.com" />
+                    <Input placeholder="verft@example.com" />
                   </Form.Item>
                   <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
-                    <Input placeholder="agentswarm" />
+                    <Input placeholder="verft" />
                   </Form.Item>
                 </Flex>
               </Card>
@@ -1082,7 +1082,7 @@ export function SettingsPage() {
                   description={
                     hostexecDetected
                       ? "Repository Host Commands decide which bridge shims are mounted for each repository."
-                      : "Start the host daemon with npm run hostexec. AgentSwarm checks the default daemon URLs automatically."
+                      : "Start the host daemon with npm run hostexec. Verft checks the default daemon URLs automatically."
                   }
                 />
                 <Form.Item
@@ -1241,7 +1241,7 @@ export function SettingsPage() {
                     type="info"
                     showIcon
                     message="Slack agent MCP"
-                    description="AgentSwarm MCP is added automatically. Add extra MCP servers here for Slack DM assistant runs."
+                    description="Verft MCP is added automatically. Add extra MCP servers here for Slack DM assistant runs."
                   />
                   {renderSlackMcpServerList()}
                 </Flex>
@@ -1254,7 +1254,7 @@ export function SettingsPage() {
                   <Form.Item
                     name="slackHarnessWhatExists"
                     label="1. What exists?"
-                    extra="Slack assistant context: available AgentSwarm data, Slack DM behavior, MCP tools, and workspace expectations."
+                    extra="Slack assistant context: available Verft data, Slack DM behavior, MCP tools, and workspace expectations."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
                     <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />

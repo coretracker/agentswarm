@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
-const loginEmail = process.env.AGENTSWARM_E2E_EMAIL ?? "admin@agentswarm.local";
-const loginPassword = process.env.AGENTSWARM_E2E_PASSWORD ?? "admin123!";
+const loginEmail = process.env.VERFT_E2E_EMAIL ?? "admin@verft.local";
+const loginPassword = process.env.VERFT_E2E_PASSWORD ?? "admin123!";
 
 test("smoke: login route renders", async ({ page }) => {
   await page.goto("/login");

@@ -12,7 +12,7 @@ import type {
   ResponsePreferencePreset,
   Role,
   User
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   App,
   Button,

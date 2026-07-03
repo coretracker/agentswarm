@@ -6,7 +6,7 @@ import {
   type TaskChangeProposal,
   type TaskMessage,
   type TaskRun
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 
 type RawMessageHistoryEntry = {
   key: string;

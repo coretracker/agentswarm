@@ -1,10 +1,10 @@
 # Execution Plan
 
 ## Title
-- AgentSwarm MCP Server Phase 1
+- Verft MCP Server Phase 1
 
 ## Goal
-- Implement Phase 1 of the AgentSwarm MCP server: personal access token authentication, repository discovery, task discovery, draft/start/follow-up task operations, and auto-apply toggling.
+- Implement Phase 1 of the Verft MCP server: personal access token authentication, repository discovery, task discovery, draft/start/follow-up task operations, and auto-apply toggling.
 
 ## Non-goals
 - No checkpoint apply/reject/revert tools in Phase 1.
@@ -14,7 +14,7 @@
 - No direct database/store access from MCP clients.
 
 ## Current State
-- Refined draft lives at `docs/exec-plans/drafts/agentswarm-mcp-server.md`.
+- Refined draft lives at `docs/exec-plans/drafts/verft-mcp-server.md`.
 - The backend has cookie/session auth only.
 - Existing HTTP routes already enforce most task/repository policies.
 - There is no MCP endpoint or personal access token storage.
@@ -71,8 +71,8 @@
 ## Validation Commands
 - `node --import tsx --test apps/server/src/lib/task-start-orchestrator.test.ts apps/server/src/mcp/tools.test.ts apps/server/src/services/scheduler.test.ts`
 - `node --import tsx --test apps/server/src/mcp/tools.test.ts apps/server/src/services/personal-access-token-store.test.ts apps/server/src/services/task-store.test.ts apps/server/src/services/scheduler.test.ts`
-- `npm run lint -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
+- `npm run lint -w @verft/server`
+- `npm run lint -w @verft/web`
 - `git diff --check`
 - `./scripts/harness/check-human-gated-flow.sh`
 
@@ -103,7 +103,7 @@
 ## Completion Notes
 - Implemented Phase 1 MCP server at `POST /mcp` with `initialize`, `tools/list`, and `tools/call`.
 - Implemented Phase 1 tools: repository listing, task listing/detail, task creation, draft update, task start, task message/follow-up, and auto-apply config update.
-- Added branch discovery through `agentswarm_list_repository_branches`; `agentswarm_create_task` accepts `baseBranch` and `branchStrategy`, and task responses include `branchStrategy`.
+- Added branch discovery through `verft_list_repository_branches`; `verft_create_task` accepts `baseBranch` and `branchStrategy`, and task responses include `branchStrategy`.
 - Added personal access token create/list/revoke routes under `/auth/personal-access-tokens`; token values are returned only at creation and stored as hashes.
 - Personal access token management is available in the Profile modal for the default MCP token; lower-level token metadata remains available through the API.
 - Start/create-start requests now return while workspace checkout continues; clients should poll or subscribe for task updates instead of keeping the MCP tool call open until the agent run finishes.

@@ -1,4 +1,4 @@
-import type { CreateTaskPromptAttachmentInput } from "@agentswarm/shared-types";
+import type { CreateTaskPromptAttachmentInput } from "@verft/shared-types";
 
 export interface SelectedTaskPromptImageFile {
   id: string;

@@ -5,7 +5,7 @@ import { useParams } from "next/navigation";
 import {
   getTaskTerminalSessionLabel,
   type TaskTerminalSessionMode
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Flex, Typography, theme as antTheme } from "antd";
 import { TaskInteractiveTerminalView } from "../../../../components/task-interactive-terminal-view";
 import { useTask } from "../../../../src/hooks/useTask";

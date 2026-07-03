@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { AuthSessionUser, Repository, Task } from "@agentswarm/shared-types";
+import type { AuthSessionUser, Repository, Task } from "@verft/shared-types";
 import { createMcpTools } from "./tools.js";
 
 const user: AuthSessionUser = {
@@ -97,7 +97,7 @@ const toolByName = (name: string) => {
 
 describe("MCP Phase 1 tools", () => {
   it("posts Slack progress updates only with Slack assistant runtime context", async () => {
-    const tool = toolByName("agentswarm_slack_post_update");
+    const tool = toolByName("verft_slack_post_update");
     const posts: unknown[] = [];
 
     await assert.rejects(
@@ -148,7 +148,7 @@ describe("MCP Phase 1 tools", () => {
   });
 
   it("lists only repositories accessible to the user", async () => {
-    const tool = toolByName("agentswarm_list_repositories");
+    const tool = toolByName("verft_list_repositories");
     const result = await tool.handler(
       {},
       {
@@ -189,7 +189,7 @@ describe("MCP Phase 1 tools", () => {
   });
 
   it("creates draft tasks by default and stores an initial user message", async () => {
-    const tool = toolByName("agentswarm_create_task");
+    const tool = toolByName("verft_create_task");
     const messages: unknown[] = [];
     let createdInput: unknown = null;
     const task = createTask();
@@ -258,7 +258,7 @@ describe("MCP Phase 1 tools", () => {
   });
 
   it("resolves repository defaults before system defaults when creating tasks through MCP", async () => {
-    const tool = toolByName("agentswarm_create_task");
+    const tool = toolByName("verft_create_task");
     let createdInput: unknown = null;
 
     await tool.handler(
@@ -308,7 +308,7 @@ describe("MCP Phase 1 tools", () => {
   });
 
   it("rejects notes when creating tasks through MCP", async () => {
-    const tool = toolByName("agentswarm_create_task");
+    const tool = toolByName("verft_create_task");
 
     await assert.rejects(
       () =>
@@ -329,7 +329,7 @@ describe("MCP Phase 1 tools", () => {
   });
 
   it("rejects notes when updating drafts through MCP", async () => {
-    const tool = toolByName("agentswarm_update_draft");
+    const tool = toolByName("verft_update_draft");
 
     await assert.rejects(
       () =>
@@ -348,7 +348,7 @@ describe("MCP Phase 1 tools", () => {
   });
 
   it("starts a task with the requested action mode", async () => {
-    const tool = toolByName("agentswarm_start_task");
+    const tool = toolByName("verft_start_task");
     const task = createTask({
       status: "open",
       workflowStatus: "ready",
@@ -406,7 +406,7 @@ describe("MCP Phase 1 tools", () => {
   });
 
   it("resumes the next pending follow-up when a message is added to a failed task", async () => {
-    const tool = toolByName("agentswarm_add_task_message");
+    const tool = toolByName("verft_add_task_message");
     const task = createTask({
       status: "open",
       executionStatus: "failed",

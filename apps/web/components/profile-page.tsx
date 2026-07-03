@@ -17,10 +17,10 @@ import type {
   AudienceType,
   PersonalAccessToken,
   ProviderProfile
-} from "@agentswarm/shared-types";
-import { getAgentProviderLabel, getEffortOptionsForProvider, getModelsForProvider } from "@agentswarm/shared-types";
+} from "@verft/shared-types";
+import { getAgentProviderLabel, getEffortOptionsForProvider, getModelsForProvider } from "@verft/shared-types";
 
-const MCP_PROFILE_TOKEN_NAME = "AgentSwarm MCP";
+const MCP_PROFILE_TOKEN_NAME = "Verft MCP";
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: getAgentProviderLabel("codex"), value: "codex" },

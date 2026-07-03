@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { BellOutlined } from "@ant-design/icons";
 import { Button } from "antd";
-import type { Task, TaskRun } from "@agentswarm/shared-types";
+import type { Task, TaskRun } from "@verft/shared-types";
 import { usePathname, useRouter } from "next/navigation";
 import { useAuth } from "./auth-provider";
 import { api } from "../src/api/client";

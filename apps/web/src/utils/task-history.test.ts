@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { TaskChangeProposal, TaskMessage, TaskRun } from "@agentswarm/shared-types";
+import type { TaskChangeProposal, TaskMessage, TaskRun } from "@verft/shared-types";
 import {
   buildTaskHistoryEntries,
   GIT_TERMINAL_END_REVIEW_MESSAGE,

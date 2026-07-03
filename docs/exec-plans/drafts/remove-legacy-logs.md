@@ -4,7 +4,7 @@
 - Remove Legacy Task Log Output
 
 ## Goal
-- Remove the legacy task-level log output stream from AgentSwarm.
+- Remove the legacy task-level log output stream from Verft.
 - Stop exposing task/run `logs` arrays and `task:log` realtime events as a user-facing history surface.
 - Keep the newer structured execution history surfaces: task messages, task runs, run timelines, checkpoint records, git operations, terminal transcripts, and server operational logs.
 
@@ -17,11 +17,11 @@
 - Shared types expose `Task.logs` and `TaskRun.logs`.
 - Realtime includes `TaskLogEvent` with type `task:log`.
 - `TaskStore.appendLog` and `appendLogForRun` persist log lines to Redis/Postgres task log stores and publish `task:log`.
-- Postgres has `task_logs` and `task_run_logs`; Redis has `agentswarm:task_logs:*` and `agentswarm:task_run_logs:*`.
+- Postgres has `task_logs` and `task_run_logs`; Redis has `verft:task_logs:*` and `verft:task_run_logs:*`.
 - `useTask` listens for `task:log` and appends lines to `task.logs`.
 - `useTaskRuns` listens for `task:log` and appends run-scoped lines to `run.logs`.
 - Several UI updates preserve old `logs` arrays when merging refreshed tasks/runs.
-- MCP `agentswarm_get_task` can include `logs`.
+- MCP `verft_get_task` can include `logs`.
 - Backfill code migrates Redis task/run logs into Postgres.
 - Newer run history already has structured events through normalized agent timelines and terminal transcript loading.
 
@@ -53,7 +53,6 @@
 - `apps/server/src/lib/task-interactive-terminal.ts`
 - `apps/server/src/routes/tasks.ts`
 - `apps/server/src/mcp/tools.ts`
-- `apps/server/src/db/backfill-redis-to-postgres.ts`
 - `apps/server/src/db/migrations.ts`
 - `apps/web/src/hooks/useTask.ts`
 - `apps/web/src/hooks/useTaskRuns.ts`
@@ -97,7 +96,7 @@
 - Decide whether to leave old tables unused or add a migration to drop them.
 
 6. Update MCP surface.
-- Remove `"logs"` from `agentswarm_get_task.include`.
+- Remove `"logs"` from `verft_get_task.include`.
 - Remove response shaping for task logs.
 - Update tests and README/MCP docs accordingly.
 
@@ -134,8 +133,8 @@
 - `node --import tsx --test apps/server/src/services/spawner.workspace-provisioning.test.ts`
 - `node --import tsx --test apps/server/src/mcp/tools.test.ts`
 - `npm test --workspace apps/web -- src/utils/task-history.test.ts`
-- `npm run lint -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
+- `npm run lint -w @verft/server`
+- `npm run lint -w @verft/web`
 - `./scripts/harness/check-human-gated-flow.sh`
 - `./scripts/harness/check.sh`
 - `./scripts/harness/test.sh`

@@ -17,7 +17,7 @@ import {
   getTaskTerminalSessionLabel,
   isTaskWorking,
   type Task
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import dayjs from "dayjs";
 import { api } from "../src/api/client";
 import { useTasks } from "../src/hooks/useTasks";

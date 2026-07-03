@@ -27,13 +27,13 @@ This repository uses lightweight, mechanical boundary checks through:
 
 ### Rule 4: Apps must use package import for shared types
 - Forbidden: files under `apps/web` or `apps/server` importing shared-types by filesystem path.
-- Required: import shared types from `@agentswarm/shared-types`.
+- Required: import shared types from `@verft/shared-types`.
 - Reason: package imports enforce a stable public boundary.
 - Fix: replace relative path import with package import.
 
 ### Rule 5: No deep imports from shared-types package
-- Forbidden: `@agentswarm/shared-types/...` deep paths.
-- Required: import from `@agentswarm/shared-types` root export only.
+- Forbidden: `@verft/shared-types/...` deep paths.
+- Required: import from `@verft/shared-types` root export only.
 - Reason: deep imports bypass public package boundaries.
 - Fix: use root package export.
 

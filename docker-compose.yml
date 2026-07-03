@@ -9,7 +9,7 @@ services:
   postgres:
     image: postgres:16-alpine
     environment:
-      - POSTGRES_DB=agentswarm
+      - POSTGRES_DB=verft
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
     ports:
@@ -24,18 +24,18 @@ services:
     environment:
       - PORT=4000
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:postgres@postgres:5432/agentswarm}
+      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:postgres@postgres:5432/verft}
       - REPO_CACHE_ROOT=/repo-cache
-      - REPO_CACHE_VOLUME=agentswarm_repo_cache
+      - REPO_CACHE_VOLUME=verft_repo_cache
       - RUNTIME_PAYLOAD_ROOT=/runtime-payloads
-      - RUNTIME_PAYLOAD_VOLUME=agentswarm_runtime_payloads
+      - RUNTIME_PAYLOAD_VOLUME=verft_runtime_payloads
       - TASK_WORKSPACE_ROOT=/task-workspaces
-      - SECRET_KEY_PATH=/secrets/agentswarm.key
+      - SECRET_KEY_PATH=/secrets/verft.key
       - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3217}
       - DEFAULT_ADMIN_NAME=${DEFAULT_ADMIN_NAME:-Administrator}
-      - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@agentswarm.local}
+      - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@verft.local}
       - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-admin123!}
-      - AUTH_COOKIE_NAME=${AUTH_COOKIE_NAME:-agentswarm_session}
+      - AUTH_COOKIE_NAME=${AUTH_COOKIE_NAME:-verft_session}
       - AUTH_SESSION_TTL_DAYS=${AUTH_SESSION_TTL_DAYS:-7}
       - DOCKER_SOCKET_ACCESS_ENABLED=${DOCKER_SOCKET_ACCESS_ENABLED:-false}
       - DOCKER_SOCKET_HOST_PATH=${DOCKER_SOCKET_HOST_PATH:-/var/run/docker.sock}
@@ -78,8 +78,8 @@ volumes:
   redis_data:
   postgres_data:
   repo_cache:
-    name: agentswarm_repo_cache
+    name: verft_repo_cache
   runtime_payloads:
-    name: agentswarm_runtime_payloads
+    name: verft_runtime_payloads
   server_secrets:
-    name: agentswarm_server_secrets
+    name: verft_server_secrets

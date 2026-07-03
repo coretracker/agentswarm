@@ -1,6 +1,6 @@
 "use client";
 
-import type { TaskChangeProposal } from "@agentswarm/shared-types";
+import type { TaskChangeProposal } from "@verft/shared-types";
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api/client";
 import { useSocket } from "./useSocket";

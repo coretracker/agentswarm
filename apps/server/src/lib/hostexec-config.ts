@@ -1,4 +1,4 @@
-import type { HostexecSettings } from "@agentswarm/shared-types";
+import type { HostexecSettings } from "@verft/shared-types";
 
 export const HOSTEXEC_COMMAND_MAX_COUNT = 80;
 export const HOSTEXEC_COMMAND_MAX_LENGTH = 120;

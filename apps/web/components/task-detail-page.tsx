@@ -37,7 +37,7 @@ import {
   type TaskGitOperation,
   type CodexCredentialSource,
   type User
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   Alert,
   Button,
@@ -136,7 +136,7 @@ const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
 const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
 const SYSTEM_ADMIN_ROLE_ID = "admin";
 const HISTORY_PAGE_SIZE = 5;
-const getComposerDraftStorageKey = (taskId: string): string => `agentswarm:task:${taskId}:composerDraft`;
+const getComposerDraftStorageKey = (taskId: string): string => `verft:task:${taskId}:composerDraft`;
 
 function normalizeAiCommitSubject(raw: string): string {
   const firstLine = raw
@@ -5943,7 +5943,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       >
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            Optional commit message. Click Magic to draft one with {OPENAI_COMMIT_MESSAGE_MODEL}, or leave blank to use AgentSwarm's generated subject on apply.
+            Optional commit message. Click Magic to draft one with {OPENAI_COMMIT_MESSAGE_MODEL}, or leave blank to use Verft's generated subject on apply.
           </Typography.Paragraph>
           <Input.TextArea
             autoFocus
@@ -6038,7 +6038,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Input
                 value={mergeCommitMessage}
                 onChange={(event) => setMergeCommitMessage(event.target.value)}
-                placeholder="feat(agentswarm): update files"
+                placeholder="feat(verft): update files"
                 maxLength={72}
                 disabled={mergeFooterBusy}
               />
@@ -6353,7 +6353,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         onOk={() => void handleKillInteractiveTerminal()}
         destroyOnClose
       >
-        This stops the live {activeTerminalSentenceLabel.toLowerCase()} session and keeps whatever is currently in the workspace so AgentSwarm
+        This stops the live {activeTerminalSentenceLabel.toLowerCase()} session and keeps whatever is currently in the workspace so Verft
         can create the usual checkpoint for recovery.
       </Modal>
       <Modal

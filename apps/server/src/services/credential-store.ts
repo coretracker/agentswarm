@@ -3,10 +3,10 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
-import type { UpdateCredentialSettingsInput } from "@agentswarm/shared-types";
+import type { UpdateCredentialSettingsInput } from "@verft/shared-types";
 import { env } from "../config/env.js";
 
-const CREDENTIALS_KEY = "agentswarm:credential_settings";
+const CREDENTIALS_KEY = "verft:credential_settings";
 const nowIso = (): string => new Date().toISOString();
 
 interface StoredCredentials {

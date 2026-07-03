@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const captureVideo = process.env.PLAYWRIGHT_CAPTURE_VIDEO === "1";
-const baseURL = process.env.AGENTSWARM_UI_BASE_URL ?? `http://localhost:${process.env.PUBLIC_PORT ?? "3217"}`;
+const baseURL = process.env.VERFT_UI_BASE_URL ?? `http://localhost:${process.env.PUBLIC_PORT ?? "3217"}`;
 
 export default defineConfig({
   testDir: "apps/web/e2e",

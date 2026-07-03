@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Alert, App, Button, Card, Flex, Form, Input, Typography } from "antd";
-import type { LoginInput } from "@agentswarm/shared-types";
+import type { LoginInput } from "@verft/shared-types";
 import { ApiError } from "../src/api/client";
 import { resolveDefaultPath } from "../src/auth/access";
 import { isDarkAppTheme } from "../src/theme/antd-theme";
@@ -113,7 +113,7 @@ export function LoginPage() {
             <Flex align="center" gap={12} style={{ marginBottom: 8 }}>
               <AppLogo width={22} height={32} />
               <Typography.Title level={3} style={{ margin: 0 }}>
-                AgentSwarm
+                Verft
               </Typography.Title>
             </Flex>
             <Typography.Title level={2} style={{ margin: 0 }}>

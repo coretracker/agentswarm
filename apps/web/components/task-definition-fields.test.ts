@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import type { Repository, SystemSettings } from "@agentswarm/shared-types";
+import type { Repository, SystemSettings } from "@verft/shared-types";
 import { getTaskDefinitionInitialValues } from "./task-definition-fields";
 
 const settings: SystemSettings = {
   defaultProvider: "codex",
   maxAgents: 3,
-  branchPrefix: "agentswarm/",
+  branchPrefix: "verft/",
   workspaceProvisioningMode: "clone_only",
-  gitUsername: "agentswarm",
+  gitUsername: "verft",
   gitAuthorName: null,
   gitAuthorEmail: null,
   hostexec: { enabled: false, url: null, bearerTokenEnvVar: null },

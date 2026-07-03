@@ -1,6 +1,6 @@
 # Hostexec Daemon
 
-Start this process on the host machine when AgentSwarm needs to expose selected host tools, such as `xcodebuild`, to agent containers.
+Start this process on the host machine when Verft needs to expose selected host tools, such as `xcodebuild`, to agent containers.
 
 ```sh
 npm run hostexec
@@ -18,4 +18,4 @@ For Docker containers on Linux to reach the daemon, bind it to the Docker bridge
 npm run hostexec -- --host 0.0.0.0
 ```
 
-AgentSwarm autodetects the daemon at the default host URLs. Repository **Host Commands** in the UI decide which shims are mounted for each repository. If `HOSTEXEC_TOKEN` is set, enter `HOSTEXEC_TOKEN` as the bearer token env var name in Settings.
+Verft autodetects the daemon at the default host URLs. Repository **Host Commands** in the UI decide which shims are mounted for each repository. If `HOSTEXEC_TOKEN` is set, enter `HOSTEXEC_TOKEN` as the bearer token env var name in Settings.

@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
+  <img src="apps/web/public/logo.svg" width="120" alt="Verft logo"/>
 </p>
 
-# AgentSwarm
+# Verft
 
-AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
+Verft is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
 
 The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
 
@@ -16,7 +16,7 @@ The project is built for developers and teams who want agent-assisted coding wor
 - Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
 - Open task workspaces in an interactive browser terminal.
 - Configure repositories, credentials, roles, users, provider defaults, and snippets.
-- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
+- Add repository-local postflight checks with `.verft/postflight.yml`.
 - Optionally expose selected manually started host commands through hostexec bridge shims.
 
 ## Requirements
@@ -34,8 +34,8 @@ The project is built for developers and teams who want agent-assisted coding wor
 Clone the repository:
 
 ```bash
-git clone git@github.com:coretracker/agentswarm.git
-cd agentswarm
+git clone git@github.com:coretracker/verft.git
+cd verft
 ```
 
 Create a local environment file:
@@ -47,7 +47,7 @@ cp .env.example .env
 Initialize the Docker stack and agent runtime image:
 
 ```bash
-./agentswarm.sh init
+./verft.sh init
 ```
 
 For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
@@ -61,7 +61,7 @@ HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
 Start the app:
 
 ```bash
-./agentswarm.sh start
+./verft.sh start
 ```
 
 Open the UI:
@@ -82,7 +82,7 @@ After signing in:
 Stop the app:
 
 ```bash
-./agentswarm.sh stop
+./verft.sh stop
 ```
 
 ## Usage
@@ -91,10 +91,10 @@ Stop the app:
 
 | Command | Description |
 | --- | --- |
-| `./agentswarm.sh init` | Build the agent toolbox runtime image, rebuild compose images, and start the stack. |
-| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
-| `./agentswarm.sh rebuild` | Rebuild the agent toolbox runtime and compose images, then restart the stack. |
-| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
+| `./verft.sh init` | Build the agent toolbox runtime image, rebuild compose images, and start the stack. |
+| `./verft.sh start` | Start the Docker Compose stack in the background. |
+| `./verft.sh rebuild` | Rebuild the agent toolbox runtime and compose images, then restart the stack. |
+| `./verft.sh stop` | Stop the Docker Compose stack. |
 | `./scripts/harness/start.sh` | Start the development stack and wait for health. |
 
 The health endpoint is available at:
@@ -105,7 +105,7 @@ curl -fsS http://localhost:3217/api/health
 
 ### Creating Tasks
 
-Tasks are the main unit of work in AgentSwarm.
+Tasks are the main unit of work in Verft.
 
 - **Build tasks** ask an agent to make repository changes.
 - **Ask tasks** ask an agent to inspect and answer without changing code.
@@ -117,7 +117,7 @@ Task workspaces are isolated under `task-workspaces/` and are runtime data. Do n
 
 ### Postflight Checks
 
-Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
+Repositories can define post-build automation in `.verft/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
 
 ### Hostexec Bridge Commands
 
@@ -126,11 +126,11 @@ Hostexec lets a manually started host daemon expose selected host commands, such
 1. Start the daemon on the host with `npm run hostexec`.
 2. Open a repository and add simple command names to **Host Commands**, for example `xcodebuild`, `xcrun`, or `gradlew`.
 
-AgentSwarm autodetects the daemon at the default host URLs. Repository **Host Commands** decide which command shims AgentSwarm mounts for each repository. The daemon reads `HOSTEXEC_HOST`, `HOSTEXEC_PORT`, and `HOSTEXEC_TOKEN` from `.env`.
+Verft autodetects the daemon at the default host URLs. Repository **Host Commands** decide which command shims Verft mounts for each repository. The daemon reads `HOSTEXEC_HOST`, `HOSTEXEC_PORT`, and `HOSTEXEC_TOKEN` from `.env`.
 
 See `hostexec/README.md` for the host daemon details.
 
-At runtime AgentSwarm creates a read-only shim directory, mounts it at `/hostexec/bin`, and prepends that directory to `PATH`. Existing container bin directories are not overwritten; configured command names only shadow matching commands through `PATH` order.
+At runtime Verft creates a read-only shim directory, mounts it at `/hostexec/bin`, and prepends that directory to `PATH`. Existing container bin directories are not overwritten; configured command names only shadow matching commands through `PATH` order.
 
 Bridge commands execute on the host with the task workspace as `cwd`. Nested workspace directories preserve their relative `cwd`, and execution is rejected if the resolved host directory escapes the task workspace. v1 requires the task workspace path to be visible to the host daemon.
 
@@ -157,7 +157,7 @@ on_failure: "fail_task"
 
 ## Configuration
 
-Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
+Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the Verft Settings UI, not in `.env`.
 
 ### Core Environment Variables
 
@@ -166,9 +166,9 @@ Most runtime configuration starts in `.env`. Provider API keys and GitHub creden
 | `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
 | `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
 | `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
-| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
+| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@verft.local` |
 | `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
-| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
+| `AUTH_COOKIE_NAME` | Session cookie name. | `verft_session` |
 | `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
 
 ### Storage
@@ -183,7 +183,7 @@ Durable application data is stored in Postgres. Redis is still required for sess
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `AGENT_RUNTIME_IMAGE` | Unified toolbox image for automated Codex/Claude runs, interactive terminals, utility runs, and Git worker containers. | `agentswarm-agent-toolbox:latest` |
+| `AGENT_RUNTIME_IMAGE` | Unified toolbox image for automated Codex/Claude runs, interactive terminals, utility runs, and Git worker containers. | `verft-agent-toolbox:latest` |
 
 The toolbox image includes Codex CLI, Claude Code, Git, GitHub CLI (`gh`), Docker CLI, Python, Node/npm, shell tools, and common build dependencies. Runtime image contents and mounted capabilities are part of the operator security boundary. GitHub CLI authentication is supplied at runtime from configured GitHub credentials; credentials are not baked into the image.
 
@@ -215,7 +215,7 @@ Mounting `docker.sock` is highly privileged and can effectively grant host-level
 +-- scripts/harness/     # Canonical setup, check, test, and PR scripts
 +-- task-workspaces/     # Runtime task workspaces; do not commit
 +-- docker-compose.yml   # Local Docker stack
-+-- agentswarm.sh        # Main stack helper script
++-- verft.sh        # Main stack helper script
 ```
 
 ## Development
@@ -243,9 +243,9 @@ Useful development commands:
 Workspace-specific commands:
 
 ```bash
-npm run dev -w @agentswarm/server
-npm run dev -w @agentswarm/web
-npm run build -w @agentswarm/shared-types
+npm run dev -w @verft/server
+npm run dev -w @verft/web
+npm run build -w @verft/shared-types
 ```
 
 Before opening a pull request, run:
@@ -264,7 +264,7 @@ The repository uses execution-plan and human-gated-flow checks for non-trivial c
 
 ## MCP Server
 
-AgentSwarm exposes a Phase 1 MCP-compatible HTTP JSON-RPC endpoint at `/mcp`.
+Verft exposes a Phase 1 MCP-compatible HTTP JSON-RPC endpoint at `/mcp`.
 
 Authentication uses user personal access tokens:
 
@@ -281,19 +281,19 @@ Supported MCP methods:
 
 Phase 1 tools:
 
-- `agentswarm_list_repositories`
-- `agentswarm_list_tasks`
-- `agentswarm_get_task`
-- `agentswarm_create_task`
-- `agentswarm_update_draft`
-- `agentswarm_start_task`
-- `agentswarm_add_task_message`
-- `agentswarm_link_pull_request`
-- `agentswarm_update_task_config`
+- `verft_list_repositories`
+- `verft_list_tasks`
+- `verft_get_task`
+- `verft_create_task`
+- `verft_update_draft`
+- `verft_start_task`
+- `verft_add_task_message`
+- `verft_link_pull_request`
+- `verft_update_task_config`
 
-Task agents receive the AgentSwarm MCP server automatically at runtime through an internal stdio bridge and a short-lived run token.
+Task agents receive the Verft MCP server automatically at runtime through an internal stdio bridge and a short-lived run token.
 
-Repository-specific MCP servers are configured on each repository. Task runs and interactive terminals receive only the MCP servers configured for the task repository, plus the internal AgentSwarm MCP bridge. Legacy global MCP server settings are no longer used; recreate any previously global MCP server on each repository that should expose it.
+Repository-specific MCP servers are configured on each repository. Task runs and interactive terminals receive only the MCP servers configured for the task repository, plus the internal Verft MCP bridge. Legacy global MCP server settings are no longer used; recreate any previously global MCP server on each repository that should expose it.
 
 Checkpoint mutation, push/merge, attachments, terminal control, and summarization are intentionally deferred to later phases.
 
@@ -301,7 +301,7 @@ Checkpoint mutation, push/merge, attachments, terminal control, and summarizatio
 
 ### Where do I configure API keys?
 
-Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
+Configure GitHub, OpenAI, and Anthropic credentials in the Verft Settings UI. Credentials are write-only from the UI and are not returned by the API.
 
 ### Can I run without Docker?
 

@@ -17,8 +17,8 @@ import type {
   UserNotes,
   UpdateCredentialSettingsInput,
   UpdateSettingsInput
-} from "@agentswarm/shared-types";
-import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
+} from "@verft/shared-types";
+import { CODEX_MODELS, CLAUDE_MODELS } from "@verft/shared-types";
 import { EventBus } from "../lib/events.js";
 import { defaultHostexecSettings, normalizeHostexecSettings } from "../lib/hostexec-config.js";
 import { normalizeMcpServers } from "../lib/mcp-config.js";
@@ -26,8 +26,8 @@ import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from ".
 import { defaultModelForProvider } from "../lib/provider-config.js";
 import type { CredentialStore, RuntimeCredentials } from "./credential-store.js";
 
-const SETTINGS_KEY = "agentswarm:settings";
-const USER_NOTES_KEY_PREFIX = "agentswarm:user-notes:";
+const SETTINGS_KEY = "verft:settings";
+const USER_NOTES_KEY_PREFIX = "verft:user-notes:";
 const SYSTEM_RESPONSE_PREFERENCE_PRESET_ID = "neutral";
 
 const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
@@ -63,7 +63,7 @@ const buildSystemDataStores = (): SystemDataStores => ({
 const defaultSettings: SystemSettings = {
   defaultProvider: DEFAULT_PROVIDER,
   maxAgents: 2,
-  branchPrefix: "agentswarm",
+  branchPrefix: "verft",
   workspaceProvisioningMode: "clone_only",
   gitUsername: "x-access-token",
   gitAuthorName: null,
@@ -144,7 +144,7 @@ const normalizeHarnessValue = (value: string | null | undefined): string | null 
 };
 
 const MCP_BEARER_TOKEN_ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const SLACK_MCP_BEARER_TOKEN_ENV_PREFIX = "AGENTSWARM_SLACK_MCP_BEARER_";
+const SLACK_MCP_BEARER_TOKEN_ENV_PREFIX = "VERFT_SLACK_MCP_BEARER_";
 
 type StoredSlackAgentMcpServer = McpServerConfig & { bearerToken?: string | null };
 

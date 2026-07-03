@@ -1,4 +1,4 @@
-import { isActiveTaskStatus, isQueuedTaskStatus, isTaskWorking, type Task } from "@agentswarm/shared-types";
+import { isActiveTaskStatus, isQueuedTaskStatus, isTaskWorking, type Task } from "@verft/shared-types";
 
 export interface TaskLifecycleViewModel {
   isArchived: boolean;

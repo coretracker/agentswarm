@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import Fastify from "fastify";
-import type { AuthSessionUser } from "@agentswarm/shared-types";
+import type { AuthSessionUser } from "@verft/shared-types";
 
 import { registerMcpRoutes } from "./server.js";
 
@@ -96,7 +96,7 @@ describe("MCP server route", () => {
     assert.equal(normalResponse.statusCode, 200);
     const normalPayload = normalResponse.json();
     assert.equal(
-      normalPayload.result.tools.some((tool: { name: string }) => tool.name === "agentswarm_slack_post_update"),
+      normalPayload.result.tools.some((tool: { name: string }) => tool.name === "verft_slack_post_update"),
       false
     );
 
@@ -121,7 +121,7 @@ describe("MCP server route", () => {
     assert.equal(slackResponse.statusCode, 200);
     const slackPayload = slackResponse.json();
     assert.equal(
-      slackPayload.result.tools.some((tool: { name: string }) => tool.name === "agentswarm_slack_post_update"),
+      slackPayload.result.tools.some((tool: { name: string }) => tool.name === "verft_slack_post_update"),
       true
     );
   });

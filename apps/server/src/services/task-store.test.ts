@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { CreateTaskInput, Repository } from "@agentswarm/shared-types";
+import type { CreateTaskInput, Repository } from "@verft/shared-types";
 import { RedisTaskStore } from "./task-store.js";
 
 class FakeRedis {

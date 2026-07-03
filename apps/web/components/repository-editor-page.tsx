@@ -11,7 +11,7 @@ import type {
   RepositoryEnvSecretInput,
   RepositoryEnvVarInput,
   User
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
   DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
@@ -19,7 +19,7 @@ import {
   DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE,
   getAgentProviderLabel,
   getEffortOptionsForProvider
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Alert, Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { ApiError, api } from "../src/api/client";
@@ -916,7 +916,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     tooltip="Comments from this GitHub login are ignored by the PR feedback webhook to prevent reply loops."
                     rules={[{ max: 255, message: "Login must be 255 characters or fewer." }]}
                   >
-                    <Input placeholder="agentswarm-bot" addonBefore="@" autoComplete="off" />
+                    <Input placeholder="verft-bot" addonBefore="@" autoComplete="off" />
                   </Form.Item>
                   <Form.Item
                     name="githubPrAllowedUsers"
@@ -966,7 +966,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   <Form.Item
                     name="githubPrTaskCreatedCommentTemplate"
                     label="Task Created Comment"
-                    extra="Posted back to GitHub when AgentSwarm creates a new task. Supports {{task_url}}, {{task_id}}, {{target_ref}}, {{author}}, and {{repository_full_name}}."
+                    extra="Posted back to GitHub when Verft creates a new task. Supports {{task_url}}, {{task_id}}, {{target_ref}}, {{author}}, and {{repository_full_name}}."
                     rules={[{ max: 8000, message: "Comment template must be 8000 characters or fewer." }]}
                   >
                     <Input.TextArea autoSize={{ minRows: 5, maxRows: 12 }} />
@@ -981,7 +981,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   <Form.Item
                     name="githubPrInitialInstructions"
                     label="Initial Agent Instructions"
-                    extra={`Used when GitHub creates a new AgentSwarm task. ${GITHUB_TEMPLATE_MARKER_HELP}`}
+                    extra={`Used when GitHub creates a new Verft task. ${GITHUB_TEMPLATE_MARKER_HELP}`}
                     rules={[{ max: 8000, message: "Instructions must be 8000 characters or fewer." }]}
                   >
                     <Input.TextArea autoSize={{ minRows: 8, maxRows: 16 }} />
@@ -1033,8 +1033,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                           1. Keep GitHub MCP available to agents so they can create pull requests.
                         </Typography.Text>
                         <Typography.Text>
-                          2. AgentSwarm MCP is connected to agents automatically. After creating a PR, agents call{" "}
-                          <Typography.Text code>agentswarm_link_pull_request</Typography.Text> with:
+                          2. Verft MCP is connected to agents automatically. After creating a PR, agents call{" "}
+                          <Typography.Text code>verft_link_pull_request</Typography.Text> with:
                         </Typography.Text>
                         <Typography.Text code>{`{ "taskId": "task_id", "prNumber": 123 }`}</Typography.Text>
                         <Typography.Text>
@@ -1050,7 +1050,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   type="info"
                   showIcon
                   message="Save the repository first"
-                  description="After creation, AgentSwarm will show the repository-scoped Github webhook URL and webhook secret setup."
+                  description="After creation, Verft will show the repository-scoped Github webhook URL and webhook secret setup."
                 />
               )}
             </Flex>
@@ -1400,7 +1400,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 })
               ]}
             >
-              <Input placeholder="https://example.com/webhooks/agentswarm" />
+              <Input placeholder="https://example.com/webhooks/verft" />
             </Form.Item>
             <Form.Item
               name="webhookSecret"

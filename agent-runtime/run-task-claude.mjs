@@ -63,7 +63,7 @@ const writePersistedSessionId = async (sessionIdPath, sessionId) => {
 };
 
 const restoreClaudeProjectConfig = async (runtimeHome, providerStatePath) => {
-  const persistedConfigPath = path.join(providerStatePath, "agentswarm-claude.json");
+  const persistedConfigPath = path.join(providerStatePath, "verft-claude.json");
   const homeConfigPath = path.join(runtimeHome, ".claude.json");
   await copyFile(persistedConfigPath, homeConfigPath).catch((error) => {
     if (error?.code !== "ENOENT") {
@@ -74,7 +74,7 @@ const restoreClaudeProjectConfig = async (runtimeHome, providerStatePath) => {
 
 const persistClaudeProjectConfig = async (runtimeHome, providerStatePath) => {
   const homeConfigPath = path.join(runtimeHome, ".claude.json");
-  const persistedConfigPath = path.join(providerStatePath, "agentswarm-claude.json");
+  const persistedConfigPath = path.join(providerStatePath, "verft-claude.json");
   await copyFile(homeConfigPath, persistedConfigPath).catch((error) => {
     if (error?.code !== "ENOENT") {
       throw error;
@@ -144,7 +144,7 @@ const ensureGitAskPass = async (runtimeHome) => {
     return;
   }
 
-  const askPassPath = path.join(runtimeHome, "agentswarm-git-askpass.sh");
+  const askPassPath = path.join(runtimeHome, "verft-git-askpass.sh");
   await writeFile(
     askPassPath,
     `#!/usr/bin/env sh
@@ -289,7 +289,7 @@ await mkdir(providerStatePath, { recursive: true });
 await restoreClaudeProjectConfig(runtimeHome, providerStatePath);
 preserveHostexecPath();
 await ensureGitAskPass(runtimeHome);
-const sessionIdFilePath = path.join(providerStatePath, "agentswarm-session-id.txt");
+const sessionIdFilePath = path.join(providerStatePath, "verft-session-id.txt");
 const persistedSessionId = await readPersistedSessionId(sessionIdFilePath);
 if (persistedSessionId) {
   args.push("--continue");
@@ -441,7 +441,7 @@ const buildResultError = () => {
 
   if (resultSubtype.includes("max_turns")) {
     return new Error(
-      `Claude hit a turn limit before producing a final answer.${resultDetails ? ` ${resultDetails}` : ""} AgentSwarm did not set --max-turns for this run.`
+      `Claude hit a turn limit before producing a final answer.${resultDetails ? ` ${resultDetails}` : ""} Verft did not set --max-turns for this run.`
     );
   }
 

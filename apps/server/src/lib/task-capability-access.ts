@@ -8,7 +8,7 @@ import {
   type TaskAction,
   type TaskReasoningEffort,
   type TaskType
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   defaultModelForProvider,
   normalizeModelOverride,

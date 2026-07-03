@@ -8,7 +8,7 @@ import {
   type CreatedPersonalAccessToken,
   type PermissionScope,
   type PersonalAccessToken
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import type { UserStore } from "./user-store.js";
 
 const TOKEN_PREFIX = "asw_pat";

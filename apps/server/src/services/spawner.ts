@@ -39,7 +39,7 @@ import {
   type TaskGitOperation,
   type TaskGitOperationFailureCode,
   type TaskGitOperationType
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { makeBranchName } from "../lib/branch.js";
 import { buildGitProcessEnv } from "../lib/git-env.js";
 import { extractGitLockPathFromErrorMessage, isPathInside, resolveGitTargetLockKey } from "../lib/git-locks.js";
@@ -90,14 +90,14 @@ const ansiPattern = /\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][\s\S]*?(?:\u0007|
 const LIVE_TIMELINE_POLL_INTERVAL_MS = 1_000;
 const AUTO_APPLY_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const AUTO_APPLY_COMMIT_MESSAGE_PROFILE = "low";
-const AGENTSWARM_RUNTIME_MCP_SERVER_NAME = "agentswarm";
-const AGENTSWARM_RUNTIME_MCP_ENDPOINT_ENV = "AGENTSWARM_MCP_ENDPOINT";
-const AGENTSWARM_RUNTIME_MCP_ENDPOINTS_ENV = "AGENTSWARM_MCP_ENDPOINTS";
-const AGENTSWARM_RUNTIME_MCP_TOKEN_ENV = "AGENTSWARM_MCP_TOKEN";
-const AGENTSWARM_RUNTIME_MCP_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
-const AGENTSWARM_RUNTIME_DIRNAME = ".agentswarm-runtime";
-const AGENTSWARM_RUNTIME_HARNESS_FILE_NAME = "harness.md";
-const AGENTSWARM_RUNTIME_MCP_SCOPES: PermissionScope[] = [
+const VERFT_RUNTIME_MCP_SERVER_NAME = "verft";
+const VERFT_RUNTIME_MCP_ENDPOINT_ENV = "VERFT_MCP_ENDPOINT";
+const VERFT_RUNTIME_MCP_ENDPOINTS_ENV = "VERFT_MCP_ENDPOINTS";
+const VERFT_RUNTIME_MCP_TOKEN_ENV = "VERFT_MCP_TOKEN";
+const VERFT_RUNTIME_MCP_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
+const VERFT_RUNTIME_DIRNAME = ".verft-runtime";
+const VERFT_RUNTIME_HARNESS_FILE_NAME = "harness.md";
+const VERFT_RUNTIME_MCP_SCOPES: PermissionScope[] = [
   "repo:list",
   "repo:read",
   "task:list",
@@ -291,7 +291,7 @@ function isBinaryBuffer(buffer: Buffer): boolean {
 }
 
 export class SpawnerService {
-  private static readonly MANAGED_REPO_HEAD_REF = "refs/heads/agentswarm-cache";
+  private static readonly MANAGED_REPO_HEAD_REF = "refs/heads/verft-cache";
 
   private readonly runtimeReady = new Set<string>();
   private activeExecutions = new Map<string, Map<string, { label: string; process: ReturnType<typeof spawn>; containerName?: string }>>();
@@ -589,9 +589,9 @@ export class SpawnerService {
       [
         "set -eu",
         "if [ -n \"${GIT_TOKEN:-}\" ]; then",
-        "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > /tmp/agentswarm-git-askpass.sh",
-        "  chmod 700 /tmp/agentswarm-git-askpass.sh",
-        "  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/agentswarm-git-askpass.sh",
+        "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > /tmp/verft-git-askpass.sh",
+        "  chmod 700 /tmp/verft-git-askpass.sh",
+        "  export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=/tmp/verft-git-askpass.sh",
         "fi",
         "exec git \"$@\""
       ].join("\n");
@@ -1318,12 +1318,12 @@ export class SpawnerService {
   }
 
   private async stripEphemeralWorkspaceFiles(workspacePath: string): Promise<void> {
-    await rm(path.join(workspacePath, ".agentswarm-runtime"), { recursive: true, force: true }).catch(() => undefined);
+    await rm(path.join(workspacePath, ".verft-runtime"), { recursive: true, force: true }).catch(() => undefined);
     await rm(path.join(workspacePath, LINKED_WORKSPACE_DIRNAME), { recursive: true, force: true }).catch(() => undefined);
   }
 
   private resolveRuntimeHarnessFilePath(workspacePath: string): string {
-    return path.join(workspacePath, AGENTSWARM_RUNTIME_DIRNAME, AGENTSWARM_RUNTIME_HARNESS_FILE_NAME);
+    return path.join(workspacePath, VERFT_RUNTIME_DIRNAME, VERFT_RUNTIME_HARNESS_FILE_NAME);
   }
 
   private normalizeRepositoryHarnessSection(value: string | null | undefined): string | null {
@@ -1371,7 +1371,7 @@ export class SpawnerService {
 
   private async loadPostflightConfig(workspacePath: string): Promise<PostflightConfig | null> {
     for (const fileName of ["postflight.yml", "postflight.yaml"]) {
-      const configPath = path.join(workspacePath, ".agentswarm", fileName);
+      const configPath = path.join(workspacePath, ".verft", fileName);
       let raw: string | null = null;
 
       try {
@@ -1387,7 +1387,7 @@ export class SpawnerService {
         return parsePostflightConfig(raw);
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
-        throw new Error(`Invalid .agentswarm/${fileName}: ${detail}`);
+        throw new Error(`Invalid .verft/${fileName}: ${detail}`);
       }
     }
 
@@ -1554,7 +1554,7 @@ export class SpawnerService {
     await chmod(scriptPath, 0o755);
 
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
-    const containerName = `agentswarm-postflight-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
+    const containerName = `verft-postflight-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
     await appendRunLog(
       `Spawner: running postflight (${config.steps.length} step${config.steps.length === 1 ? "" : "s"}) in ${config.runner.image}.`
     );
@@ -1611,7 +1611,7 @@ export class SpawnerService {
 
     const config = await this.loadPostflightConfig(workspacePath);
     if (!config) {
-      throw new Error("No .agentswarm/postflight.yml found in this task workspace.");
+      throw new Error("No .verft/postflight.yml found in this task workspace.");
     }
 
     if (!postflightAppliesToTask(config, task)) {
@@ -3107,11 +3107,11 @@ export class SpawnerService {
     return Object.fromEntries(collectMcpServerEnvEntries(servers, process.env));
   }
 
-  private resolveInternalAgentSwarmMcpEndpoint(): string {
-    return this.resolveInternalAgentSwarmMcpEndpoints()[0] ?? `http://127.0.0.1:${env.PORT}/mcp`;
+  private resolveInternalVerftMcpEndpoint(): string {
+    return this.resolveInternalVerftMcpEndpoints()[0] ?? `http://127.0.0.1:${env.PORT}/mcp`;
   }
 
-  private resolveInternalAgentSwarmMcpEndpoints(): string[] {
+  private resolveInternalVerftMcpEndpoints(): string[] {
     if (existsSync("/.dockerenv")) {
       return [
         `http://127.0.0.1:${env.PORT}/mcp`,
@@ -3122,15 +3122,15 @@ export class SpawnerService {
     return [`http://host.docker.internal:${env.PORT}/mcp`, `http://172.17.0.1:${env.PORT}/mcp`];
   }
 
-  private buildInternalAgentSwarmMcpDockerArgs(): string[] {
+  private buildInternalVerftMcpDockerArgs(): string[] {
     if (existsSync("/.dockerenv")) {
       return ["--network", `container:${hostname()}`];
     }
     return ["--add-host", "host.docker.internal:host-gateway"];
   }
 
-  buildRuntimeMcpDockerArgs(injectedAgentSwarmMcp: boolean): string[] {
-    return injectedAgentSwarmMcp ? this.buildInternalAgentSwarmMcpDockerArgs() : [];
+  buildRuntimeMcpDockerArgs(injectedVerftMcp: boolean): string[] {
+    return injectedVerftMcp ? this.buildInternalVerftMcpDockerArgs() : [];
   }
 
   private async resolveRuntimeMcpUserId(task: Task): Promise<string | null> {
@@ -3149,61 +3149,61 @@ export class SpawnerService {
     task: Task,
     configuredServers: McpServerConfig[],
     executionId: string
-  ): Promise<{ servers: McpServerConfig[]; env: Record<string, string>; injectedAgentSwarmMcp: boolean }> {
-    const baseServers = configuredServers.filter((server) => server.name !== AGENTSWARM_RUNTIME_MCP_SERVER_NAME);
+  ): Promise<{ servers: McpServerConfig[]; env: Record<string, string>; injectedVerftMcp: boolean }> {
+    const baseServers = configuredServers.filter((server) => server.name !== VERFT_RUNTIME_MCP_SERVER_NAME);
     const baseEnv = this.collectRuntimeMcpEnv(baseServers);
     if (!this.personalAccessTokenStore) {
-      return { servers: baseServers, env: baseEnv, injectedAgentSwarmMcp: false };
+      return { servers: baseServers, env: baseEnv, injectedVerftMcp: false };
     }
 
     const userId = await this.resolveRuntimeMcpUserId(task);
     if (!userId) {
-      return { servers: baseServers, env: baseEnv, injectedAgentSwarmMcp: false };
+      return { servers: baseServers, env: baseEnv, injectedVerftMcp: false };
     }
 
     const token = await this.personalAccessTokenStore
       .createToken({
         userId,
-        name: `AgentSwarm runtime MCP ${task.id}/${executionId}`,
-        scopes: AGENTSWARM_RUNTIME_MCP_SCOPES,
-        expiresAt: new Date(Date.now() + AGENTSWARM_RUNTIME_MCP_TOKEN_TTL_MS).toISOString()
+        name: `Verft runtime MCP ${task.id}/${executionId}`,
+        scopes: VERFT_RUNTIME_MCP_SCOPES,
+        expiresAt: new Date(Date.now() + VERFT_RUNTIME_MCP_TOKEN_TTL_MS).toISOString()
       })
       .catch(() => null);
     if (!token) {
-      return { servers: baseServers, env: baseEnv, injectedAgentSwarmMcp: false };
+      return { servers: baseServers, env: baseEnv, injectedVerftMcp: false };
     }
 
-    const agentSwarmMcpEndpoints = this.resolveInternalAgentSwarmMcpEndpoints();
-    const agentSwarmMcpEnv = {
-      [AGENTSWARM_RUNTIME_MCP_ENDPOINT_ENV]: agentSwarmMcpEndpoints[0] ?? this.resolveInternalAgentSwarmMcpEndpoint(),
-      [AGENTSWARM_RUNTIME_MCP_ENDPOINTS_ENV]: agentSwarmMcpEndpoints.join(","),
-      [AGENTSWARM_RUNTIME_MCP_TOKEN_ENV]: token.token
+    const verftMcpEndpoints = this.resolveInternalVerftMcpEndpoints();
+    const verftMcpEnv = {
+      [VERFT_RUNTIME_MCP_ENDPOINT_ENV]: verftMcpEndpoints[0] ?? this.resolveInternalVerftMcpEndpoint(),
+      [VERFT_RUNTIME_MCP_ENDPOINTS_ENV]: verftMcpEndpoints.join(","),
+      [VERFT_RUNTIME_MCP_TOKEN_ENV]: token.token
     };
 
     return {
       env: {
         ...baseEnv,
-        ...agentSwarmMcpEnv
+        ...verftMcpEnv
       },
       servers: [
         ...baseServers,
         {
-          name: AGENTSWARM_RUNTIME_MCP_SERVER_NAME,
+          name: VERFT_RUNTIME_MCP_SERVER_NAME,
           transport: "stdio",
           command: "node",
-          args: ["/usr/local/bin/agentswarm-mcp-bridge.mjs"],
-          env: agentSwarmMcpEnv,
+          args: ["/usr/local/bin/verft-mcp-bridge.mjs"],
+          env: verftMcpEnv,
           enabled: true
         }
       ],
-      injectedAgentSwarmMcp: true
+      injectedVerftMcp: true
     };
   }
 
   async buildRuntimeMcpConfigForTask(
     task: Task,
     executionId: string
-  ): Promise<{ servers: McpServerConfig[]; env: Record<string, string>; injectedAgentSwarmMcp: boolean }> {
+  ): Promise<{ servers: McpServerConfig[]; env: Record<string, string>; injectedVerftMcp: boolean }> {
     const configuredServers = await this.repositoryStore.getRepositoryMcpServers(task.repoId);
     return this.buildRuntimeMcpConfig(task, configuredServers, executionId);
   }
@@ -3596,7 +3596,7 @@ export class SpawnerService {
       { success: "build_finalize_diff_collected", failure: "build_finalize_diff_failed" },
       task.id,
       async () => {
-        // Keep repo-owned .agentswarm files. Only strip workspace scratch paths from diffs/commits.
+        // Keep repo-owned .verft files. Only strip workspace scratch paths from diffs/commits.
         await this.stripEphemeralWorkspaceFiles(workspacePath);
         const commitSha = await this.gitCommandCapture(["-C", workspacePath, "rev-parse", "HEAD"], githubToken, gitUsername);
         const providerCommitted = commitSha !== runStartRef;
@@ -4312,7 +4312,7 @@ export class SpawnerService {
     const diffBody = proposal.diff.trim();
     let patchDir: string | null = null;
     try {
-      patchDir = await mkdtemp(path.join(tmpdir(), "agentswarm-reapply-"));
+      patchDir = await mkdtemp(path.join(tmpdir(), "verft-reapply-"));
       const patchPath = path.join(patchDir, "checkpoint.patch");
       await writeFile(patchPath, `${diffBody}\n`, "utf8");
       await this.gitCommand(["-C", workspacePath, "apply", "--check", patchPath], githubToken, gitUsername);
@@ -4443,7 +4443,7 @@ export class SpawnerService {
     let patchError: string | null = null;
     let patchDir: string | null = null;
     try {
-      patchDir = await mkdtemp(path.join(tmpdir(), "agentswarm-revert-"));
+      patchDir = await mkdtemp(path.join(tmpdir(), "verft-revert-"));
       const patchPath = path.join(patchDir, "checkpoint.patch");
       await writeFile(patchPath, `${diffBody}\n`, "utf8");
       await this.gitCommand(["-C", workspacePath, "apply", "--check", patchPath], githubToken, gitUsername);
@@ -5032,9 +5032,9 @@ export class SpawnerService {
         throw new Error(`Task branch ${branchName} is not available on origin`);
       }
 
-      const mergeRoot = await mkdtemp(path.join(tmpdir(), `agentswarm-merge-${task.id}-`));
+      const mergeRoot = await mkdtemp(path.join(tmpdir(), `verft-merge-${task.id}-`));
       const mergeWorkspacePath = path.join(mergeRoot, "workspace");
-      const mergeBranchName = `agentswarm-merge-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${nanoid(6).toLowerCase()}`;
+      const mergeBranchName = `verft-merge-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${nanoid(6).toLowerCase()}`;
 
       try {
         await this.addManagedWorktree(
@@ -5565,7 +5565,7 @@ export class SpawnerService {
         entries: repositoryRuntimeEnvEntries,
         fileStore: this.repositoryEnvFileStore
       });
-      const runtimeMcpDockerArgs = this.buildRuntimeMcpDockerArgs(runtimeMcp.injectedAgentSwarmMcp);
+      const runtimeMcpDockerArgs = this.buildRuntimeMcpDockerArgs(runtimeMcp.injectedVerftMcp);
       const hostexecRuntime = await buildHostexecRuntimeConfig({
         settings: settings.hostexec,
         repositoryCommands: repository?.hostCommands ?? [],
@@ -5591,8 +5591,8 @@ export class SpawnerService {
       await appendRunLog(
         `Spawner: runtime config includes provider=${task.provider}, profile=${task.providerProfile}, and ${runtimeMcp.servers.length} MCP server${runtimeMcp.servers.length === 1 ? "" : "s"}.`
       );
-      if (runtimeMcp.injectedAgentSwarmMcp) {
-        await appendRunLog("Spawner: AgentSwarm MCP is connected automatically for this run.");
+      if (runtimeMcp.injectedVerftMcp) {
+        await appendRunLog("Spawner: Verft MCP is connected automatically for this run.");
       }
       if (missingMcpBearerEnvVars.length > 0) {
         await appendRunLog(
@@ -5629,7 +5629,7 @@ export class SpawnerService {
         await appendRunLog(`Spawner: runtime harness guidance available at ${runtimeHarnessFilePath}.`);
       }
 
-      const containerName = `agentswarm-task-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
+      const containerName = `verft-task-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
       const workspaceMountMode = action === "ask" ? "ro" : "rw";
       const rawEventsMount = runId ? this.resolveTaskRunRawEventsMount(task.id, runId) : null;
       const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);

@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import path from "node:path";
-import type { OpenAiDiffAssistResult, ProviderProfile } from "@agentswarm/shared-types";
+import type { OpenAiDiffAssistResult, ProviderProfile } from "@verft/shared-types";
 import { env } from "../config/env.js";
 import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
 import { readSafeWorkspaceFile } from "../lib/safe-workspace-file.js";

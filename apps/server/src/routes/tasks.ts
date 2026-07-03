@@ -14,7 +14,7 @@ import {
   type TaskLinkedWorkspace,
   type TaskPromptAttachment,
   type TaskTerminalSessionMode
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
@@ -244,7 +244,7 @@ const historyPageQuerySchema = z.object({
 });
 
 const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
-const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
+const PROVIDER_SESSION_ID_FILE = "verft-session-id.txt";
 
 const clearTaskProviderSessionId = async (taskId: string): Promise<void> => {
   for (const provider of ["codex", "claude"] as const) {
@@ -722,7 +722,7 @@ export const registerTaskRoutes = (
       reply.header("Content-Type", "application/x-ndjson");
       reply.header("Cache-Control", "no-store");
       reply.header("Content-Length", String(fileStats.size));
-      reply.header("Content-Disposition", `attachment; filename="agentswarm-${task.id}-${run.id}-${provider}-raw.jsonl"`);
+      reply.header("Content-Disposition", `attachment; filename="verft-${task.id}-${run.id}-${provider}-raw.jsonl"`);
       return reply.send(createReadStream(rawEventsJsonlPath));
     }
   );

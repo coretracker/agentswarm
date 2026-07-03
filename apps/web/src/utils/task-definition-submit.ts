@@ -1,6 +1,6 @@
 "use client";
 
-import type { Task, TaskDefinitionInput } from "@agentswarm/shared-types";
+import type { Task, TaskDefinitionInput } from "@verft/shared-types";
 import { api } from "../api/client";
 
 export const startMessageForDefinition = (definition: TaskDefinitionInput): string => {

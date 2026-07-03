@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { AuthSessionUser } from "@agentswarm/shared-types";
+import type { AuthSessionUser } from "@verft/shared-types";
 import { PostgresPersonalAccessTokenStore } from "./personal-access-token-store.js";
 
 const user: AuthSessionUser = {

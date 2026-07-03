@@ -1,11 +1,11 @@
 import { nanoid } from "nanoid";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
-import type { CreateSnippetInput, Snippet, SnippetVariable, UpdateSnippetInput } from "@agentswarm/shared-types";
+import type { CreateSnippetInput, Snippet, SnippetVariable, UpdateSnippetInput } from "@verft/shared-types";
 import { EventBus } from "../lib/events.js";
 
-const SNIPPET_KEY_PREFIX = "agentswarm:snippet:";
-const SNIPPET_IDS_KEY = "agentswarm:snippet_ids";
+const SNIPPET_KEY_PREFIX = "verft:snippet:";
+const SNIPPET_IDS_KEY = "verft:snippet_ids";
 const SNIPPET_VARIABLE_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SNIPPET_VARIABLE_MAX_COUNT = 100;
 const SNIPPET_VARIABLE_NAME_MAX_LENGTH = 128;

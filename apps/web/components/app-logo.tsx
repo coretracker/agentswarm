@@ -17,7 +17,7 @@ export function AppLogo({
   return (
     <img
       src="/logo.svg"
-      alt="AgentSwarm logo"
+      alt="Verft logo"
       style={{
         width,
         height,

@@ -20,13 +20,13 @@
 - Do not bundle browser/E2E dependencies into the default toolbox unless a later implementation pass proves the size and rebuild cost are acceptable.
 
 ## Current State
-- Automated Codex uses `agent-runtime-codex/Dockerfile`, image `agentswarm-agent-runtime-codex:latest`, and `agent-runtime-codex/run-task.mjs`.
-- Automated Claude uses `agent-runtime-claude/Dockerfile`, image `agentswarm-agent-runtime-claude:latest`, and `agent-runtime-claude/run-task.mjs`.
+- Automated Codex uses `agent-runtime-codex/Dockerfile`, image `verft-agent-runtime-codex:latest`, and `agent-runtime-codex/run-task.mjs`.
+- Automated Claude uses `agent-runtime-claude/Dockerfile`, image `verft-agent-runtime-claude:latest`, and `agent-runtime-claude/run-task.mjs`.
 - Interactive Codex uses `tools/codex-web-terminal/Dockerfile.codex`, image `local/codex-interactive:latest`.
 - Interactive Claude uses `tools/codex-web-terminal/Dockerfile.claude`, image `local/claude-interactive:latest`.
 - Git terminal uses `tools/codex-web-terminal/Dockerfile.git`, image `local/git-terminal:latest`, and a restricted wrapper path.
 - Git worker operations in `SpawnerService` also use `INTERACTIVE_RUNTIME_IMAGES.gitTerminal`, so the restricted Git image is both a UI terminal dependency and a hidden Git worker dependency.
-- `agentswarm.sh` builds five runtime/terminal images today.
+- `verft.sh` builds five runtime/terminal images today.
 - `agent-runtime/Dockerfile` already exists, but it is currently an Alpine/Node shell image and is not yet the planned Debian toolbox image.
 - `apps/server/src/providers/runtime-definitions.ts` owns automated provider image names and build contexts.
 - `apps/server/src/config/env.ts` owns interactive image names.
@@ -36,9 +36,9 @@
 - Baseline environment note: `./scripts/harness/doctor.sh` currently fails in this shell because `python3` is missing. The unified image should include `python3`.
 
 ## Acceptance Criteria
-- One Debian-based Dockerfile builds a single image, for example `agentswarm-agent-toolbox:latest`.
+- One Debian-based Dockerfile builds a single image, for example `verft-agent-toolbox:latest`.
 - The image includes at least: `bash`, `sh`, `git`, GitHub CLI (`gh`), `openssh-client`, `curl`, `ca-certificates`, `ripgrep`, `vim`/`neovim`, `diffutils`, `python3`, `make`, `g++`, `node`, `npm`, Docker CLI, Codex CLI, and Claude Code CLI.
-- `AGENT_RUNTIME_IMAGE` or an equivalent single env var replaces separate automated and interactive image constants in server runtime selection and `agentswarm.sh`.
+- `AGENT_RUNTIME_IMAGE` or an equivalent single env var replaces separate automated and interactive image constants in server runtime selection and `verft.sh`.
 - Automated Codex and Claude task runs both use the unified image while preserving their existing provider-specific entry behavior.
 - Interactive Codex and Claude sessions both use the unified image while preserving provider credentials, MCP config, persistent state, session resume, and model/profile behavior.
 - Terminal mode uses the unified image and launches a full-access shell against the mounted task workspace.
@@ -47,7 +47,7 @@
 - Playwright/browser E2E continues to use the existing dedicated Playwright image fallback unless explicitly configured otherwise.
 - Runtime image build/warning paths build and check one primary toolbox image instead of separate Codex/Claude/interactive images.
 - Documentation names the unified image and explains how to rebuild it.
-- Documentation states the product security posture: AgentSwarm is an advanced developer tool, runtime image choice and mounted capabilities are operator responsibilities, and Docker socket access remains highly privileged.
+- Documentation states the product security posture: Verft is an advanced developer tool, runtime image choice and mounted capabilities are operator responsibilities, and Docker socket access remains highly privileged.
 - Documentation explains that `gh` is available in the toolbox image, but authentication must come from operator-provided credentials or repository/task configuration.
 - Existing tests for runtime config, terminal behavior, Docker socket policy, and provider config pass.
 
@@ -62,7 +62,7 @@
 - `tools/codex-web-terminal/Dockerfile.claude`
 - `tools/codex-web-terminal/Dockerfile.git`
 - `tools/codex-web-terminal/README.md`
-- `agentswarm.sh`
+- `verft.sh`
 - `.env.example`
 - `docs/development/setup.md`
 - `docs/development/commands.md`
@@ -77,7 +77,7 @@
 
 ## Step-by-Step Plan
 1. Confirm image semantics.
-   - Decide final image tag and env var names, for example `AGENT_RUNTIME_IMAGE=agentswarm-agent-toolbox:latest`.
+   - Decide final image tag and env var names, for example `AGENT_RUNTIME_IMAGE=verft-agent-toolbox:latest`.
    - Replace the old `CODEX_RUNTIME_IMAGE`, `CLAUDE_RUNTIME_IMAGE`, `INTERACTIVE_RUNTIME_IMAGES.codex`, `INTERACTIVE_RUNTIME_IMAGES.claude`, and `INTERACTIVE_RUNTIME_IMAGES.gitTerminal` defaults with one toolbox image setting.
    - Remove the old restricted Git terminal image from the default path; terminal mode should use the full toolbox image.
    - Keep Playwright browser dependencies in the existing `PLAYWRIGHT_DOCKER_IMAGE` fallback rather than the default toolbox image.
@@ -118,11 +118,11 @@
    - Keep utility sandbox settings read-only and the ephemeral workdir behavior unchanged.
 
 7. Update build scripts and docs.
-   - Simplify `agentswarm.sh` to build one runtime toolbox image.
+   - Simplify `verft.sh` to build one runtime toolbox image.
    - Update warnings and build hints to mention the unified image.
    - Update setup/commands docs and terminal README to remove stale image-specific instructions.
    - Add `.env.example` overrides if the unified image tag should be user-configurable.
-   - Document that AgentSwarm is intended for experienced developers/operators and that runtime image contents, mounted secrets, Docker socket access, and repository permissions are part of the operator security boundary.
+   - Document that Verft is intended for experienced developers/operators and that runtime image contents, mounted secrets, Docker socket access, and repository permissions are part of the operator security boundary.
 
 8. Add or update tests.
    - Test provider definitions map both providers to the unified image but preserve provider config names and credential behavior.
@@ -158,12 +158,12 @@
 ## Validation Commands
 - `./scripts/harness/doctor.sh`
 - `./scripts/harness/check-human-gated-flow.sh`
-- `docker build -f agent-runtime/Dockerfile -t agentswarm-agent-toolbox:latest agent-runtime`
+- `docker build -f agent-runtime/Dockerfile -t verft-agent-toolbox:latest agent-runtime`
 - `node --check agent-runtime/run-task-codex.mjs`
 - `node --check agent-runtime/run-task-claude.mjs`
-- `docker run --rm agentswarm-agent-toolbox:test sh -lc 'node --version && npm --version && git --version && gh --version | head -n 1 && docker --version && python3 --version && rg --version | head -n 1 && codex --version && claude --version && test -f /usr/local/bin/run-task-codex.mjs && test -f /usr/local/bin/run-task-claude.mjs && test -x /usr/local/bin/su-exec'`
-- `npm run build -w @agentswarm/server`
-- `npm run build -w @agentswarm/web`
+- `docker run --rm verft-agent-toolbox:test sh -lc 'node --version && npm --version && git --version && gh --version | head -n 1 && docker --version && python3 --version && rg --version | head -n 1 && codex --version && claude --version && test -f /usr/local/bin/run-task-codex.mjs && test -f /usr/local/bin/run-task-claude.mjs && test -x /usr/local/bin/su-exec'`
+- `npm run build -w @verft/server`
+- `npm run build -w @verft/web`
 - `TEST_SCOPE=unit ./scripts/harness/test.sh`
 - `./scripts/harness/check.sh`
 - `./scripts/harness/test.sh`
@@ -181,7 +181,7 @@
 ## Rollback Plan
 - Keep the existing provider-specific Dockerfiles and image constants until the unified flow is verified.
 - If the unified image fails for one provider, restore provider definitions and interactive image constants to the previous provider-specific images.
-- Re-run `./agentswarm.sh rebuild` with the old image build functions restored.
+- Re-run `./verft.sh rebuild` with the old image build functions restored.
 - No database migration should be required.
 
 ## Progress Log

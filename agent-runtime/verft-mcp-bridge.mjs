@@ -1,18 +1,18 @@
-const endpoint = process.env.AGENTSWARM_MCP_ENDPOINT?.trim();
-const endpoints = (process.env.AGENTSWARM_MCP_ENDPOINTS?.split(",") ?? [])
+const endpoint = process.env.VERFT_MCP_ENDPOINT?.trim();
+const endpoints = (process.env.VERFT_MCP_ENDPOINTS?.split(",") ?? [])
   .map((value) => value.trim())
   .filter(Boolean);
-const token = process.env.AGENTSWARM_MCP_TOKEN?.trim();
+const token = process.env.VERFT_MCP_TOKEN?.trim();
 const requestTimeoutMs = 10_000;
 const endpointCandidates = endpoints.length > 0 ? endpoints : endpoint ? [endpoint] : [];
 
 if (endpointCandidates.length === 0) {
-  console.error("[agentswarm-mcp] AGENTSWARM_MCP_ENDPOINT or AGENTSWARM_MCP_ENDPOINTS is required");
+  console.error("[verft-mcp] VERFT_MCP_ENDPOINT or VERFT_MCP_ENDPOINTS is required");
   process.exit(1);
 }
 
 if (!token) {
-  console.error("[agentswarm-mcp] AGENTSWARM_MCP_TOKEN is required");
+  console.error("[verft-mcp] VERFT_MCP_TOKEN is required");
   process.exit(1);
 }
 
@@ -118,7 +118,7 @@ const requestEndpoint = async (candidateEndpoint, message) => {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    parsed = toErrorResponse(message?.id, `AgentSwarm MCP returned non-JSON response (${response.status})`);
+    parsed = toErrorResponse(message?.id, `Verft MCP returned non-JSON response (${response.status})`);
   }
 
   process.stdout.write(encodeFrame(parsed));
@@ -135,7 +135,7 @@ const forwardMessage = async (message) => {
       failures.push(`${candidateEndpoint}: ${message}`);
     }
   }
-  throw new Error(`AgentSwarm MCP bridge request failed (${failures.join("; ")})`);
+  throw new Error(`Verft MCP bridge request failed (${failures.join("; ")})`);
 };
 
 const handleMessage = async (message) => {
@@ -143,7 +143,7 @@ const handleMessage = async (message) => {
     await forwardMessage(message);
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : "request failed";
-    console.error(`[agentswarm-mcp] ${errorMessage}`);
+    console.error(`[verft-mcp] ${errorMessage}`);
     if (message && Object.prototype.hasOwnProperty.call(message, "id")) {
       process.stdout.write(encodeFrame(toErrorResponse(message.id, errorMessage)));
     }
@@ -156,7 +156,7 @@ process.stdin.on("data", (chunk) => {
   try {
     messages = readMessages();
   } catch (error) {
-    console.error(`[agentswarm-mcp] ${error instanceof Error ? error.message : "invalid input"}`);
+    console.error(`[verft-mcp] ${error instanceof Error ? error.message : "invalid input"}`);
     buffer = Buffer.alloc(0);
     return;
   }

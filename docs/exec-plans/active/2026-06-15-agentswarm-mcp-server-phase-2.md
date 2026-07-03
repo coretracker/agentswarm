@@ -1,10 +1,10 @@
 # Execution Plan
 
 ## Title
-- AgentSwarm MCP Server Phase 2
+- Verft MCP Server Phase 2
 
 ## Goal
-- Extend the AgentSwarm MCP server with checkpoint review operations so MCP clients can discover pending checkpoints, inspect bounded checkpoint detail, apply checkpoints, and reject checkpoints through the same policy and lifecycle paths as the web UI.
+- Extend the Verft MCP server with checkpoint review operations so MCP clients can discover pending checkpoints, inspect bounded checkpoint detail, apply checkpoints, and reject checkpoints through the same policy and lifecycle paths as the web UI.
 - Make MCP-created tasks default to automatic checkpoint apply so agent-driven task workflows continue without requiring a human to manually toggle task config after creation.
 
 ## Non-goals
@@ -19,22 +19,22 @@
 
 ## Current State
 - Phase 1 MCP is implemented at `POST /mcp` with personal access token authentication, `initialize`, `tools/list`, `tools/call`, repository discovery, task discovery/detail, draft/create/start/follow-up, and auto-apply config update.
-- The Phase 1 plan is completed at `docs/exec-plans/completed/2026-06-12-agentswarm-mcp-server-phase-1.md`.
-- The broader MCP draft already identifies Phase 2 checkpoint review operations in `docs/exec-plans/drafts/agentswarm-mcp-server.md`.
+- The Phase 1 plan is completed at `docs/exec-plans/completed/2026-06-12-verft-mcp-server-phase-1.md`.
+- The broader MCP draft already identifies Phase 2 checkpoint review operations in `docs/exec-plans/drafts/verft-mcp-server.md`.
 - HTTP task routes already support checkpoint list, apply, reject, revert, and file-level revert through `apps/server/src/routes/tasks.ts`.
 - Checkpoint mutation behavior lives behind `SpawnerService` methods such as `applyChangeProposal` and `rejectChangeProposal`.
-- MCP currently exposes compact recent checkpoints only through `agentswarm_get_task` with `include: ["checkpoints"]`.
+- MCP currently exposes compact recent checkpoints only through `verft_get_task` with `include: ["checkpoints"]`.
 - MCP task creation does not currently accept `autoApplyCheckpoints`; tasks therefore default to manual checkpoint review unless updated after creation.
 
 ## Acceptance Criteria
-- `agentswarm_create_task` accepts `autoApplyCheckpoints?: boolean`.
+- `verft_create_task` accepts `autoApplyCheckpoints?: boolean`.
 - MCP-created tasks default `autoApplyCheckpoints` to `true` when the field is omitted.
 - MCP callers can explicitly pass `autoApplyCheckpoints: false` to keep manual checkpoint review.
-- `agentswarm_update_draft` can update `autoApplyCheckpoints` before a draft starts.
-- `agentswarm_list_checkpoints` lists bounded checkpoint summaries for an accessible task, with optional status filtering and limit clamping.
-- `agentswarm_get_checkpoint` returns bounded checkpoint metadata and optionally a truncated diff when explicitly requested.
-- `agentswarm_apply_checkpoint` applies a specific checkpoint by id with an optional commit message and returns updated compact task/checkpoint state.
-- `agentswarm_reject_checkpoint` rejects a specific checkpoint by id and returns updated compact task/checkpoint state.
+- `verft_update_draft` can update `autoApplyCheckpoints` before a draft starts.
+- `verft_list_checkpoints` lists bounded checkpoint summaries for an accessible task, with optional status filtering and limit clamping.
+- `verft_get_checkpoint` returns bounded checkpoint metadata and optionally a truncated diff when explicitly requested.
+- `verft_apply_checkpoint` applies a specific checkpoint by id with an optional commit message and returns updated compact task/checkpoint state.
+- `verft_reject_checkpoint` rejects a specific checkpoint by id and returns updated compact task/checkpoint state.
 - MCP checkpoint mutation tools enforce `task:edit`, existing task access rules, archived-task read-only behavior, pending/running mutation safety, and existing checkpoint transition rules.
 - MCP checkpoint tools reuse existing server lifecycle logic instead of duplicating apply/reject/recovery behavior.
 - Follow-up queue continuation after checkpoint apply/reject behaves the same for MCP and web/API calls.
@@ -51,14 +51,14 @@
 - `packages/shared-types/src/index.ts`
 - `apps/web/src/api/client.ts` if shared types/API client need schema alignment
 - `README.md`
-- `docs/exec-plans/drafts/agentswarm-mcp-server.md`
+- `docs/exec-plans/drafts/verft-mcp-server.md`
 
 ## Step-by-Step Plan
 1. Confirm existing checkpoint lifecycle behavior and identify route-only helpers that MCP must share.
 2. Add shared compact checkpoint detail formatting with bounded/truncated diff support.
 3. Extend MCP create/update draft schemas to include `autoApplyCheckpoints`, defaulting MCP-created tasks to `true` only when omitted.
-4. Implement read tools: `agentswarm_list_checkpoints` and `agentswarm_get_checkpoint`.
-5. Implement mutation tools: `agentswarm_apply_checkpoint` and `agentswarm_reject_checkpoint`, reusing existing `SpawnerService` and checkpoint transition behavior.
+4. Implement read tools: `verft_list_checkpoints` and `verft_get_checkpoint`.
+5. Implement mutation tools: `verft_apply_checkpoint` and `verft_reject_checkpoint`, reusing existing `SpawnerService` and checkpoint transition behavior.
 6. Add focused tests for MCP schema defaults, task access, checkpoint list/detail, apply, reject, archived tasks, missing scopes, and response truncation.
 7. Update README and MCP draft docs.
 8. Run focused verification, self-review, and final checks.
@@ -82,8 +82,8 @@
 ## Validation Commands
 - `node --import tsx --test apps/server/src/mcp/tools.test.ts`
 - `node --import tsx --test apps/server/src/lib/task-start-orchestrator.test.ts apps/server/src/services/scheduler.test.ts apps/server/src/services/task-store.test.ts`
-- `npm run lint -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
+- `npm run lint -w @verft/server`
+- `npm run lint -w @verft/web`
 - `git diff --check`
 - `./scripts/harness/check-human-gated-flow.sh`
 - `./scripts/harness/check.sh`

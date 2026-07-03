@@ -16,7 +16,7 @@ Scale:
 | `apps/web` | 3 | 3 | 4 | 3 | 2 | 3 | 4 |
 | `packages/shared-types` | 1 | 2 | 4 | 3 | unknown | 3 | 3 |
 | Runtime (`agent-runtime*`, `tools/codex-web-terminal`) | 1 | 2 | 3 | 2 | 1 | unknown | 2 |
-| Deployment (`docker-compose.yml`, `deploy/`, `agentswarm.sh`) | 2 | 3 | 4 | 4 | 3 | 2 | 4 |
+| Deployment (`docker-compose.yml`, `deploy/`, `verft.sh`) | 2 | 3 | 4 | 4 | 3 | 2 | 4 |
 | CI (`.github/workflows`) | 3 | 4 | 3 | 3 | 3 | 3 | 4 |
 
 ## Evidence Notes
@@ -42,7 +42,7 @@ Scale:
 - Security is `unknown` due to limited direct hardening evidence in repo docs/tests.
 
 ### Deployment domain
-- Local orchestration is documented and scripted (`docker-compose.yml`, `agentswarm.sh`, harness setup/start/doctor).
+- Local orchestration is documented and scripted (`docker-compose.yml`, `verft.sh`, harness setup/start/doctor).
 - Reliability is improved by health checks and doctor checks.
 - Security remains low for production use because current repo evidence is mainly local/dev setup.
 

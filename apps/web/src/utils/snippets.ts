@@ -1,4 +1,4 @@
-import type { SnippetVariable } from "@agentswarm/shared-types";
+import type { SnippetVariable } from "@verft/shared-types";
 
 const SNIPPET_PLACEHOLDER_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
 

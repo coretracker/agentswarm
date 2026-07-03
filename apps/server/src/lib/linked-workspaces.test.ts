@@ -9,7 +9,7 @@ describe("linked workspaces", () => {
   let root: string;
 
   before(async () => {
-    root = await mkdtemp(path.join(tmpdir(), "agentswarm-linked-workspaces-"));
+    root = await mkdtemp(path.join(tmpdir(), "verft-linked-workspaces-"));
   });
 
   after(async () => {
@@ -57,7 +57,7 @@ describe("linked workspaces", () => {
       rootWorkspacePath,
       containerWorkspacePath: "/workspace",
       taskWorkspaceRoot,
-      taskWorkspaceDockerSource: "agentswarm_task_workspaces",
+      taskWorkspaceDockerSource: "verft_task_workspaces",
       linkedWorkspaces: [
         {
           taskId: "linked-task",
@@ -72,7 +72,7 @@ describe("linked workspaces", () => {
 
     assert.deepEqual(plan.mountArgs, [
       "--mount",
-      "type=volume,src=agentswarm_task_workspaces,dst=/workspace/.linked-workspace/linked-task,volume-subpath=linked-task,readonly"
+      "type=volume,src=verft_task_workspaces,dst=/workspace/.linked-workspace/linked-task,volume-subpath=linked-task,readonly"
     ]);
   });
 

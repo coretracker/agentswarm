@@ -96,7 +96,7 @@
 - User Approval To Start: YES
 - Baseline Checks Run: PARTIAL (`./scripts/harness/check-human-gated-flow.sh` passed; `./scripts/harness/doctor.sh` is blocked here because Docker daemon is not reachable)
 - Visible Task List Updated: YES
-- Task-Level Tests/Lint/Build: YES (`node --import tsx --test apps/server/src/lib/task-interactive-terminal.test.ts`, `node --import tsx --test apps/server/src/lib/task-git-identity.test.ts`, `node --check agent-runtime-codex/run-task.mjs`, `node --check agent-runtime-claude/run-task.mjs`, `npm run build -w @agentswarm/server`, `npm run build -w @agentswarm/web`, `TEST_SCOPE=unit ./scripts/harness/test.sh`)
+- Task-Level Tests/Lint/Build: YES (`node --import tsx --test apps/server/src/lib/task-interactive-terminal.test.ts`, `node --import tsx --test apps/server/src/lib/task-git-identity.test.ts`, `node --check agent-runtime-codex/run-task.mjs`, `node --check agent-runtime-claude/run-task.mjs`, `npm run build -w @verft/server`, `npm run build -w @verft/web`, `TEST_SCOPE=unit ./scripts/harness/test.sh`)
 - Self Review Complete: YES
 - Code Review Complete: NO (pending maintainer review)
 - Final Verification Complete: PARTIAL (`./scripts/harness/test.sh` unit phase passed; `./scripts/harness/check.sh` still fails on pre-existing docs link issues in `docs/repomix.md`, and `doctor.sh` needs a reachable Docker daemon)
@@ -106,14 +106,14 @@
 ## Validation Commands
 - `./scripts/harness/doctor.sh`
 - `./scripts/harness/check-human-gated-flow.sh`
-- `npm run test -w @agentswarm/server -- git-env`
-- `npm run test -w @agentswarm/server -- task-git-identity`
-- `npm run test -w @agentswarm/server -- task-interactive-terminal`
-- `npm run test -w @agentswarm/server -- spawner`
-- `npm run lint -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
-- `npm run build -w @agentswarm/server`
-- `npm run build -w @agentswarm/web`
+- `npm run test -w @verft/server -- git-env`
+- `npm run test -w @verft/server -- task-git-identity`
+- `npm run test -w @verft/server -- task-interactive-terminal`
+- `npm run test -w @verft/server -- spawner`
+- `npm run lint -w @verft/server`
+- `npm run lint -w @verft/web`
+- `npm run build -w @verft/server`
+- `npm run build -w @verft/web`
 - `./scripts/harness/check.sh`
 - `TEST_SCOPE=unit ./scripts/harness/test.sh`
 - `./scripts/harness/test.sh`

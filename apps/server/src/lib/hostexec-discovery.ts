@@ -1,4 +1,4 @@
-import type { HostexecSettings } from "@agentswarm/shared-types";
+import type { HostexecSettings } from "@verft/shared-types";
 import {
   normalizeHostexecCapabilities,
   normalizeHostexecSettings,

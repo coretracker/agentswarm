@@ -4,7 +4,7 @@ import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import * as Sentry from "@sentry/node";
 import { Server as SocketIOServer } from "socket.io";
-import type { RealtimeEvent } from "@agentswarm/shared-types";
+import type { RealtimeEvent } from "@verft/shared-types";
 import { AUTO_RUN_POSTGRES_MIGRATIONS, env } from "./config/env.js";
 import { createAuthService } from "./lib/auth.js";
 import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
@@ -55,7 +55,7 @@ const bootstrap = async (): Promise<void> => {
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
-      base: { service: "agentswarm-server" }
+      base: { service: "verft-server" }
     },
     disableRequestLogging: true,
     requestIdHeader: "x-request-id",

@@ -1,4 +1,4 @@
-import type { AgentProvider, ProviderProfile, Repository, SystemSettings, User } from "@agentswarm/shared-types";
+import type { AgentProvider, ProviderProfile, Repository, SystemSettings, User } from "@verft/shared-types";
 import { normalizeProvider } from "./provider-config.js";
 
 type CreateTaskProviderDefaultsInput = {

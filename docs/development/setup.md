@@ -32,7 +32,7 @@ HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
 What it does:
 - Creates `.env` from `.env.example` if missing.
 - Ensures the runtime workspace folder exists (`task-workspaces`).
-- Runs `./agentswarm.sh init` (builds the unified agent toolbox runtime image and starts required containers).
+- Runs `./verft.sh init` (builds the unified agent toolbox runtime image and starts required containers).
 - Installs npm dependencies (because `HARNESS_INSTALL_NPM_DEPS=1` is set above).
 
 If you only need Docker services and do not plan to run local checks/tests:
@@ -63,7 +63,7 @@ If `.env` is missing, setup creates it automatically.
 
 Important values in template:
 - `PUBLIC_PORT` (default `3217`)
-- `AGENT_RUNTIME_IMAGE` (default `agentswarm-agent-toolbox:latest`)
+- `AGENT_RUNTIME_IMAGE` (default `verft-agent-toolbox:latest`)
 - `DEFAULT_ADMIN_EMAIL`
 - `DEFAULT_ADMIN_PASSWORD`
 - `DATABASE_URL`

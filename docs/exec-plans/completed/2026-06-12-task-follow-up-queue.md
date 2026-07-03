@@ -130,7 +130,7 @@
 - 2026-06-12 00:00 UTC: Produced decision-complete implementation plan.
 - 2026-06-12 09:45 UTC: Implemented message-backed queue metadata, prompt-to-run linkage, queue-aware scheduler entries, queue pause/resume routes, and task-detail queue controls.
 - 2026-06-12 10:05 UTC: Added targeted tests for task-store pending messages, task-history prompt linkage, and scheduler queued-prompt consumption/auto-advance.
-- 2026-06-12 10:15 UTC: Verified `@agentswarm/server` TypeScript build/lint, verified `@agentswarm/web` production build, and re-ran focused server/web tests. Known unrelated failures remain in docs checks and the sandboxed `spawner.workspace-provisioning` test.
+- 2026-06-12 10:15 UTC: Verified `@verft/server` TypeScript build/lint, verified `@verft/web` production build, and re-ran focused server/web tests. Known unrelated failures remain in docs checks and the sandboxed `spawner.workspace-provisioning` test.
 
 ## Decisions
 - 2026-06-12: Queue scope is per task, not global.

@@ -31,7 +31,7 @@ import {
   type TaskChangeProposalStatus,
   type TaskInteractiveTerminalTranscript,
   type TaskTerminalSessionMode
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { EventBus } from "../lib/events.js";
 import {
   normalizeModelOverride,
@@ -50,20 +50,20 @@ function resolveTaskTitleForCreate(input: CreateTaskInput): string {
   return (input.title ?? "").trim();
 }
 
-const TASK_KEY_PREFIX = "agentswarm:task:";
-const TASK_LOG_KEY_PREFIX = "agentswarm:task_logs:";
-const TASK_MESSAGE_KEY_PREFIX = "agentswarm:task_messages:";
-const TASK_RUN_KEY_PREFIX = "agentswarm:task_run:";
-const TASK_RUN_LOG_KEY_PREFIX = "agentswarm:task_run_logs:";
-const TASK_RUN_IDS_KEY_PREFIX = "agentswarm:task_run_ids:";
-const TASK_GIT_OPERATION_KEY_PREFIX = "agentswarm:task_git_operation:";
-const TASK_GIT_OPERATION_IDS_KEY_PREFIX = "agentswarm:task_git_operation_ids:";
-const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_change_proposal:";
-const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "agentswarm:task_change_proposal_ids:";
-const TASK_PENDING_CHANGE_PROPOSAL_KEY_PREFIX = "agentswarm:task_pending_change_proposal:";
-const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "agentswarm:task_active_interactive_session:";
-const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "agentswarm:task_interactive_terminal_transcript:";
-const TASK_IDS_KEY = "agentswarm:task_ids";
+const TASK_KEY_PREFIX = "verft:task:";
+const TASK_LOG_KEY_PREFIX = "verft:task_logs:";
+const TASK_MESSAGE_KEY_PREFIX = "verft:task_messages:";
+const TASK_RUN_KEY_PREFIX = "verft:task_run:";
+const TASK_RUN_LOG_KEY_PREFIX = "verft:task_run_logs:";
+const TASK_RUN_IDS_KEY_PREFIX = "verft:task_run_ids:";
+const TASK_GIT_OPERATION_KEY_PREFIX = "verft:task_git_operation:";
+const TASK_GIT_OPERATION_IDS_KEY_PREFIX = "verft:task_git_operation_ids:";
+const TASK_CHANGE_PROPOSAL_KEY_PREFIX = "verft:task_change_proposal:";
+const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "verft:task_change_proposal_ids:";
+const TASK_PENDING_CHANGE_PROPOSAL_KEY_PREFIX = "verft:task_pending_change_proposal:";
+const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "verft:task_active_interactive_session:";
+const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "verft:task_interactive_terminal_transcript:";
+const TASK_IDS_KEY = "verft:task_ids";
 const MAX_LOG_LINES = 400;
 const MAX_MESSAGES = 200;
 const DEFAULT_HISTORY_PAGE_LIMIT = 25;

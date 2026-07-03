@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ProviderProfile } from "@agentswarm/shared-types";
+import type { ProviderProfile } from "@verft/shared-types";
 import { AGENT_RUNTIME_IMAGE, env } from "../config/env.js";
 import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
 import type { SettingsRuntimeCredentials } from "./settings-store.js";

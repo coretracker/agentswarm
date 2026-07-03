@@ -1,4 +1,4 @@
-import type { AgentProvider } from "@agentswarm/shared-types";
+import type { AgentProvider } from "@verft/shared-types";
 import { DEPLOYMENT_ENVIRONMENT_LABEL, env } from "../config/env.js";
 
 export type DockerSocketAccessDeniedReason = "feature_disabled" | "invalid_socket_path";

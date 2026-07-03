@@ -87,8 +87,8 @@
 ## Validation Commands
 - `./scripts/harness/check.sh`
 - `./scripts/harness/test.sh`
-- `npm run lint -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
+- `npm run lint -w @verft/server`
+- `npm run lint -w @verft/web`
 - Targeted tests for scheduler/task-store/routes/sequence execution.
 
 ## Risks
@@ -107,10 +107,10 @@
 - 2026-05-27 17:48 UTC: Captured task-entry inventory snapshot for create/import/webhook/manual actions and git/checkpoint mutation endpoints.
 - 2026-05-27 17:53 UTC: Started Step 3 incrementally by introducing shared mutation guard reason codes in `apps/server/src/lib/task-mutation-guards.ts` and wiring `/tasks` mutation/action endpoints to return `{ message, reasonCode }` for blocked mutations.
 - 2026-05-27 17:54 UTC: Added guard coverage in `apps/server/src/lib/task-mutation-guards.test.ts` for blocker code priority (`pending_checkpoint` over `active_terminal_session`).
-- 2026-05-27 17:56 UTC: `npm run test -w @agentswarm/server` completed with one existing environment-sensitive failure in `spawner.workspace-provisioning.test.ts` (ask workspace path assertion), unrelated to changed files.
+- 2026-05-27 17:56 UTC: `npm run test -w @verft/server` completed with one existing environment-sensitive failure in `spawner.workspace-provisioning.test.ts` (ask workspace path assertion), unrelated to changed files.
 - 2026-05-27 18:02 UTC: Step 2 started. Added shared start orchestrator in `apps/server/src/lib/task-start-orchestrator.ts` and baseline tests in `apps/server/src/lib/task-start-orchestrator.test.ts`.
 - 2026-05-27 18:03 UTC: Refactored task start entry points to use orchestrator: `POST /tasks`, import routes, and webhook-created task starts.
-- 2026-05-27 18:04 UTC: `npm run lint -w @agentswarm/server` and targeted orchestrator/start/guard tests passed; full server test run still has the same existing `spawner.workspace-provisioning.test.ts` environment-sensitive failure.
+- 2026-05-27 18:04 UTC: `npm run lint -w @verft/server` and targeted orchestrator/start/guard tests passed; full server test run still has the same existing `spawner.workspace-provisioning.test.ts` environment-sensitive failure.
 - 2026-05-27 18:08 UTC: Began Step 4 consolidation by introducing a shared checkpoint transition helper in `apps/server/src/routes/tasks.ts` so apply/reject/revert/revert-file now all follow one continuation path (resume-check + refreshed response).
 - 2026-05-27 18:09 UTC: Re-ran server lint and full server tests; lint passed and full test run still only fails at the same known environment-sensitive `spawner.workspace-provisioning.test.ts` assertion.
 - 2026-05-27 18:17 UTC: Completed Step 5 by adding shared Git mutation handling helpers in `apps/server/src/routes/tasks.ts` (`ensureGitMutationAllowed`, `runGitCommand`) and applying them to pull/push/merge routes with consistent error responses.
@@ -119,7 +119,7 @@
 - 2026-05-27 18:24 UTC: Extended shared start orchestration coverage for explicit task action triggers via `orchestrateTaskActionStart` in `apps/server/src/lib/task-start-orchestrator.ts`, applied in `/tasks/:id/actions`.
 - 2026-05-27 18:25 UTC: Added `orchestrateTaskActionStart` tests in `apps/server/src/lib/task-start-orchestrator.test.ts`.
 - 2026-05-27 18:27 UTC: Fixed `spawner.workspace-provisioning.test.ts` host-path assertion setup to match current workspace host path resolution and restored full server test pass.
-- 2026-05-27 18:29 UTC: Hardening run complete: `./scripts/harness/check.sh` passed; `TEST_SCOPE=integration ./scripts/harness/test.sh` passed; `npm run test -w @agentswarm/server` passed; `npm run test -w @agentswarm/web` passed.
+- 2026-05-27 18:29 UTC: Hardening run complete: `./scripts/harness/check.sh` passed; `TEST_SCOPE=integration ./scripts/harness/test.sh` passed; `npm run test -w @verft/server` passed; `npm run test -w @verft/web` passed.
 
 ## Decisions
 - 2026-05-27: Use incremental refactor with contract-preserving route APIs first, then internal consolidation.

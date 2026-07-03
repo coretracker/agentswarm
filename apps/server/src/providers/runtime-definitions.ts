@@ -1,6 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AgentProvider, McpServerConfig, ProviderProfile } from "@agentswarm/shared-types";
+import type { AgentProvider, McpServerConfig, ProviderProfile } from "@verft/shared-types";
 import {
   claudeModelSupportsThinkingBudget,
   claudeThinkingBudgetTokensForProfile,

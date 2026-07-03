@@ -1,4 +1,4 @@
-import type { AgentProvider, ProviderProfile, TaskReasoningEffort } from "@agentswarm/shared-types";
+import type { AgentProvider, ProviderProfile, TaskReasoningEffort } from "@verft/shared-types";
 
 export const DEFAULT_PROVIDER: AgentProvider = "codex";
 export const DEFAULT_PROVIDER_PROFILE: ProviderProfile = "high";

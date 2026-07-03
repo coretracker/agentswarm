@@ -1,6 +1,6 @@
 import { access, chmod, chown, constants, copyFile, mkdir, readdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AgentProvider } from "@agentswarm/shared-types";
+import type { AgentProvider } from "@verft/shared-types";
 import { env } from "../config/env.js";
 
 const TASK_PROVIDER_STATE_ROOT = ".task-state";

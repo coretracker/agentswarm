@@ -97,7 +97,7 @@ export const registerMcpRoutes = (
         ok(id, {
           protocolVersion: "2025-03-26",
           serverInfo: {
-            name: "agentswarm",
+            name: "verft",
             version: "0.1.0"
           },
           capabilities: {

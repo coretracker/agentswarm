@@ -4,7 +4,7 @@ import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import type { Task } from "@agentswarm/shared-types";
+import type { Task } from "@verft/shared-types";
 import { env } from "../config/env.js";
 import { SpawnerService } from "./spawner.js";
 
@@ -58,7 +58,7 @@ const createSpawner = (): SpawnerService =>
   new SpawnerService(
     {} as never,
     {
-      getSettings: async () => ({ workspaceProvisioningMode: "clone_only", branchPrefix: "agentswarm" })
+      getSettings: async () => ({ workspaceProvisioningMode: "clone_only", branchPrefix: "verft" })
     } as never,
     {} as never,
     {} as never
@@ -113,7 +113,7 @@ describe("SpawnerService workspace provisioning", () => {
     );
   });
 
-  it("injects AgentSwarm MCP into task runtime config", async () => {
+  it("injects Verft MCP into task runtime config", async () => {
     const createdTokens: unknown[] = [];
     const spawner = new SpawnerService(
       {} as never,
@@ -136,7 +136,7 @@ describe("SpawnerService workspace provisioning", () => {
       createTask({ ownerUserId: "user-1" }),
       [
         {
-          name: "agentswarm",
+          name: "verft",
           transport: "http",
           url: "https://manual.example.com/mcp",
           bearerTokenEnvVar: "MANUAL_TOKEN",
@@ -152,17 +152,17 @@ describe("SpawnerService workspace provisioning", () => {
       "run-1"
     );
 
-    assert.equal(runtimeMcp.injectedAgentSwarmMcp, true);
-    assert.equal(runtimeMcp.env.AGENTSWARM_MCP_TOKEN, "runtime-token");
+    assert.equal(runtimeMcp.injectedVerftMcp, true);
+    assert.equal(runtimeMcp.env.VERFT_MCP_TOKEN, "runtime-token");
     assert.equal(createdTokens.length, 1);
     assert.equal(runtimeMcp.servers.length, 2);
     assert.deepEqual(
       runtimeMcp.servers.map((server: { name: string }) => server.name),
-      ["github", "agentswarm"]
+      ["github", "verft"]
     );
     assert.equal(runtimeMcp.servers[1].transport, "stdio");
     assert.equal(runtimeMcp.servers[1].command, "node");
-    assert.deepEqual(runtimeMcp.servers[1].args, ["/usr/local/bin/agentswarm-mcp-bridge.mjs"]);
+    assert.deepEqual(runtimeMcp.servers[1].args, ["/usr/local/bin/verft-mcp-bridge.mjs"]);
     const expectedEndpoints = existsSync("/.dockerenv")
       ? [
           `http://127.0.0.1:${env.PORT}/mcp`,
@@ -171,12 +171,12 @@ describe("SpawnerService workspace provisioning", () => {
         ]
       : [`http://host.docker.internal:${env.PORT}/mcp`, `http://172.17.0.1:${env.PORT}/mcp`];
     const expectedEndpoint = expectedEndpoints[0] ?? "";
-    assert.equal(runtimeMcp.env.AGENTSWARM_MCP_ENDPOINT, expectedEndpoint);
-    assert.equal(runtimeMcp.env.AGENTSWARM_MCP_ENDPOINTS, expectedEndpoints.join(","));
+    assert.equal(runtimeMcp.env.VERFT_MCP_ENDPOINT, expectedEndpoint);
+    assert.equal(runtimeMcp.env.VERFT_MCP_ENDPOINTS, expectedEndpoints.join(","));
     assert.deepEqual(runtimeMcp.servers[1].env, {
-      AGENTSWARM_MCP_ENDPOINT: expectedEndpoint,
-      AGENTSWARM_MCP_ENDPOINTS: expectedEndpoints.join(","),
-      AGENTSWARM_MCP_TOKEN: "runtime-token"
+      VERFT_MCP_ENDPOINT: expectedEndpoint,
+      VERFT_MCP_ENDPOINTS: expectedEndpoints.join(","),
+      VERFT_MCP_TOKEN: "runtime-token"
     });
   });
 
@@ -204,7 +204,7 @@ describe("SpawnerService workspace provisioning", () => {
 
     const runtimeMcp = await spawner.buildRuntimeMcpConfigForTask(createTask({ repoId: "repo-7" }), "run-1");
 
-    assert.equal(runtimeMcp.injectedAgentSwarmMcp, false);
+    assert.equal(runtimeMcp.injectedVerftMcp, false);
     assert.deepEqual(
       runtimeMcp.servers.map((server) => server.name),
       ["repo-7-github"]
@@ -242,7 +242,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("writes and removes runtime harness files based on repository harness content", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-runtime-harness-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-runtime-harness-"));
     const workspacePath = path.join(root, "workspace");
     await mkdir(workspacePath, { recursive: true });
 
@@ -254,7 +254,7 @@ describe("SpawnerService workspace provisioning", () => {
       harnessEvidenceExpectations: "Share test command output."
     });
     const harnessPath = await spawnerAny.syncWorkspaceRuntimeHarnessFile(workspacePath, markdown);
-    assert.equal(harnessPath, path.join(workspacePath, ".agentswarm-runtime", "harness.md"));
+    assert.equal(harnessPath, path.join(workspacePath, ".verft-runtime", "harness.md"));
     const written = await readFile(harnessPath, "utf8");
     assert.match(written, /## What exists\?/);
     assert.match(written, /## What is allowed\?/);
@@ -303,7 +303,7 @@ describe("SpawnerService workspace provisioning", () => {
   });
 
   it("marks provider-created local commit checkpoints as already applied", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-provider-commit-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-provider-commit-"));
     let createdStatus: string | null = null;
     const logs: string[] = [];
     const spawner = new SpawnerService(
@@ -354,7 +354,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("ignores incomplete trailing raw JSON events during live timeline parsing", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-raw-events-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-raw-events-"));
     const rawEventsPath = path.join(root, "events.jsonl");
     await writeFile(
       rawEventsPath,
@@ -381,7 +381,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("prepares build workspace via clone model", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-clone-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-clone-"));
     const workspacePath = path.join(root, "task");
     const task = createTask();
 
@@ -460,7 +460,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("reuses the existing task workspace for ask runs", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-ask-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-ask-"));
     const taskWorkspacePath = path.join(root, "task-workspace");
     const task = createTask();
     await mkdir(taskWorkspacePath, { recursive: true });
@@ -500,7 +500,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("rebuilds ask workspace when the folder exists but is not a git repo", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-ask-rebuild-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-ask-rebuild-"));
     const taskWorkspacePath = path.join(root, "task-workspace");
     const task = createTask();
     await mkdir(taskWorkspacePath, { recursive: true });
@@ -531,7 +531,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("cleans up ephemeral clone workspace directory", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-cleanup-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-cleanup-"));
     const workspacePath = path.join(root, "workspace");
     await mkdir(workspacePath, { recursive: true });
     await writeFile(path.join(workspacePath, "file.txt"), "x", "utf8");
@@ -555,7 +555,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("uses clone workspace metadata for manual postflight runs", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-postflight-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-postflight-"));
     const workspacePath = path.join(root, "workspace");
     const originalRuntimePayloadRoot = env.RUNTIME_PAYLOAD_ROOT;
     env.RUNTIME_PAYLOAD_ROOT = path.join(root, "runtime-payloads");
@@ -592,7 +592,7 @@ describe("SpawnerService workspace provisioning", () => {
       defaultProvider: "codex"
     };
     spawnerAny.settingsStore = {
-      getSettings: async () => ({ branchPrefix: "agentswarm" }),
+      getSettings: async () => ({ branchPrefix: "verft" }),
       getRuntimeCredentials: async () => runtimeCredentials
     };
     spawnerAny.taskStore = {

@@ -1,5 +1,5 @@
 import type Redis from "ioredis";
-import type { RealtimeEvent } from "@agentswarm/shared-types";
+import type { RealtimeEvent } from "@verft/shared-types";
 
 export class EventBus {
   constructor(

@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import Fastify from "fastify";
-import type { User } from "@agentswarm/shared-types";
+import type { User } from "@verft/shared-types";
 import { registerSlackEventRoutes } from "./slack-events.js";
 import type { SlackAssistantRuntime } from "../services/slack-assistant-service.js";
 import type {
@@ -294,7 +294,7 @@ test("Slack event route replies with busy message when a conversation is already
   await store.updateActiveRuntime(conversation.id, {
     provider: "claude",
     status: "active",
-    containerName: "agentswarm-slack-active",
+    containerName: "verft-slack-active",
     startedAt: new Date().toISOString(),
     lastUserMessageAt: new Date().toISOString(),
     stoppedAt: null,
@@ -367,7 +367,7 @@ test("Slack event route stops an active run on exact /stop command", async () =>
   await store.updateActiveRuntime(conversation.id, {
     provider: "claude",
     status: "active",
-    containerName: "agentswarm-slack-active",
+    containerName: "verft-slack-active",
     startedAt: new Date().toISOString(),
     lastUserMessageAt: new Date().toISOString(),
     stoppedAt: null,
@@ -463,7 +463,7 @@ test("Slack event route replies with setup message when no active profile matche
   });
 
   assert.equal(response.statusCode, 200);
-  assert.deepEqual(posts, [{ channel: "D1", text: "I could not find an active AgentSwarm profile with this Slack username." }]);
+  assert.deepEqual(posts, [{ channel: "D1", text: "I could not find an active Verft profile with this Slack username." }]);
   assert.equal(slackEvents.at(-1)?.status, "ignored");
   assert.equal(slackEvents.at(-1)?.errorMessage, "unmatched_user");
   assert.equal(store.conversations.size, 0);
