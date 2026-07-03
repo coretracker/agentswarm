@@ -5,7 +5,8 @@ import type { SlackAssistantStore } from "../services/slack-assistant-store.js";
 import {
   SlackAssistantRunStoppedError,
   SlackAssistantService,
-  type SlackAssistantRuntime
+  type SlackAssistantRuntime,
+  type SlackFileAttachment
 } from "../services/slack-assistant-service.js";
 import { FetchSlackClient, type SlackClient } from "../services/slack-client.js";
 import type { SettingsStore } from "../services/settings-store.js";
@@ -18,6 +19,22 @@ const SLACK_ASSISTANT_BUSY_MESSAGE =
 const SLACK_ASSISTANT_STOPPED_MESSAGE = "Stopped the current Slack assistant run. You can send a new question now.";
 const SLACK_ASSISTANT_NOT_RUNNING_MESSAGE = "There is no active Slack assistant run to stop.";
 const SLACK_ASSISTANT_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const SLACK_ATTACHMENT_MAX_FILE_BYTES = 1024 * 1024; // 1 MB — skip files larger than this
+const SLACK_ATTACHMENT_MAX_FILES = 5; // max files to download per message
+
+const TEXT_MIMETYPES = new Set([
+  "application/json",
+  "application/xml",
+  "application/x-yaml",
+  "application/yaml",
+  "application/javascript",
+  "application/typescript"
+]);
+
+const isTextMimetype = (mimetype: string): boolean => {
+  const base = mimetype.split(";")[0]?.trim() ?? "";
+  return base.startsWith("text/") || TEXT_MIMETYPES.has(base);
+};
 
 const readHeader = (value: string | string[] | undefined): string | null => {
   if (typeof value === "string") {
@@ -124,11 +141,12 @@ export const registerSlackEventRoutes = (
     }
 
     const event = body.event;
+    const eventSubtype = stringValue(event, "subtype");
     if (
       event.type !== "message" ||
       stringValue(event, "channel_type") !== "im" ||
       stringValue(event, "bot_id") ||
-      stringValue(event, "subtype")
+      (eventSubtype !== null && eventSubtype !== "file_share")
     ) {
       await recordSlackEvent("ignored", stringValue(event, "type") ?? "unknown_event", "unsupported_event");
       return reply.send({ ok: true, ignored: "unsupported_event" });
@@ -139,7 +157,12 @@ export const registerSlackEventRoutes = (
     const text = stringValue(event, "text");
     const slackMessageTs = stringValue(event, "ts");
     const slackTeamId = stringValue(body, "team_id") ?? "unknown-team";
-    if (!slackUserId || !slackChannelId || !text) {
+    const rawFiles = Array.isArray(event.files) ? (event.files as unknown[]) : [];
+    const candidateFiles = rawFiles
+      .filter((f): f is Record<string, unknown> => isRecord(f))
+      .filter((f) => isTextMimetype(stringValue(f, "mimetype") ?? ""))
+      .slice(0, SLACK_ATTACHMENT_MAX_FILES);
+    if (!slackUserId || !slackChannelId || (!text && candidateFiles.length === 0)) {
       await recordSlackEvent("ignored", "message.im", "missing_message_fields");
       return reply.send({ ok: true, ignored: "missing_message_fields" });
     }
@@ -195,7 +218,7 @@ export const registerSlackEventRoutes = (
       throw error;
     }
 
-    if (isSlackAssistantStopCommand(text)) {
+    if (text && isSlackAssistantStopCommand(text)) {
       let stopped = false;
       try {
         stopped = await (deps.runtime?.stop?.(conversation) ?? Promise.resolve(false));
@@ -221,11 +244,32 @@ export const registerSlackEventRoutes = (
     await recordSlackEvent("received", "message.im");
     void (async () => {
       try {
+        const fileAttachments: SlackFileAttachment[] = [];
+        for (const file of candidateFiles) {
+          const fileUrl = stringValue(file, "url_private_download") ?? stringValue(file, "url_private");
+          const fileSize = typeof file.size === "number" ? file.size : 0;
+          if (!fileUrl || fileSize > SLACK_ATTACHMENT_MAX_FILE_BYTES) {
+            continue;
+          }
+          try {
+            const { content, truncated } = await slackClient.fetchFileContent(integration.botToken, fileUrl);
+            fileAttachments.push({
+              name: stringValue(file, "name") ?? "attachment",
+              mimetype: stringValue(file, "mimetype") ?? "text/plain",
+              size: fileSize,
+              content,
+              truncated
+            });
+          } catch (fileError) {
+            request.log.warn({ err: fileError }, "slack.file.fetch_failed");
+          }
+        }
         const responseText = await assistantService.handleMessage({
           user,
           conversation,
-          text,
-          mcpScopes: authSessionUser.scopes
+          text: text ?? "",
+          mcpScopes: authSessionUser.scopes,
+          fileAttachments: fileAttachments.length > 0 ? fileAttachments : undefined
         });
         await slackClient.postMessage(integration.botToken, slackChannelId, responseText);
       } catch (error) {

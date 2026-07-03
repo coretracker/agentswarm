@@ -151,7 +151,8 @@ const createApp = (runtime: SlackAssistantRuntime = {
       },
       addReaction: async (_botToken, channel, timestamp, name) => {
         reactions.push({ channel, timestamp, name });
-      }
+      },
+      fetchFileContent: async () => ({ content: "", truncated: false })
     },
     runtime
   });
@@ -215,7 +216,8 @@ const createAppWithUsers = (users: User[]) => {
       },
       addReaction: async (_botToken, channel, timestamp, name) => {
         reactions.push({ channel, timestamp, name });
-      }
+      },
+      fetchFileContent: async () => ({ content: "", truncated: false })
     },
     runtime: {
       respond: async () => "Reply by id"
@@ -548,5 +550,278 @@ test("Slack event route returns timestamp_skew when timestamp is too old", async
   assert.equal(response.statusCode, 401);
   assert.equal(slackEvents.at(-1)?.status, "failed");
   assert.equal(slackEvents.at(-1)?.errorMessage, "timestamp_skew");
+  await app.close();
+});
+
+test("Slack event route downloads text file attachment and passes content to the runtime", async () => {
+  const capturedInputs: Array<{ text: string; fileAttachments?: Array<{ name: string; content: string }> }> = [];
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+  const posts: Array<{ channel: string; text: string }> = [];
+  const store = new MemorySlackAssistantStore();
+  registerSlackEventRoutes(app, {
+    settingsStore: {
+      getSlackIntegration: async () => ({
+        botToken: "xoxb-token",
+        signingSecret,
+        slackAgentMcpServers: [],
+        slackAssistantProvider: "claude",
+        slackAssistantModel: "claude-sonnet-4-6",
+        slackHarnessWhatExists: null,
+        slackHarnessAllowedActions: null,
+        slackHarnessHowToWork: null,
+        slackHarnessDefinitionOfDone: null,
+        slackHarnessEvidenceExpectations: null
+      }),
+      recordSlackEventResult: async () => {}
+    } as never,
+    userStore: {
+      listUsers: async () => [user],
+      getAuthSessionUser: async (userId: string) =>
+        userId === user.id
+          ? ({
+              ...user,
+              scopes: ["repo:list"],
+              allowedProviders: [],
+              allowedModels: [],
+              allowedEfforts: []
+            } as never)
+          : null
+    } as never,
+    slackAssistantStore: store,
+    slackClient: {
+      getUserProfile: async () => ({ id: "U1", name: "Alice" }),
+      postMessage: async (_botToken, channel, text) => { posts.push({ channel, text }); },
+      addReaction: async () => {},
+      fetchFileContent: async (_botToken, fileUrl) => {
+        assert.equal(fileUrl, "https://files.slack.com/files-pri/T1/F1/log.txt");
+        return { content: "error: something went wrong\n", truncated: false };
+      }
+    },
+    runtime: {
+      respond: async (input) => {
+        capturedInputs.push({ text: input.text, fileAttachments: input.fileAttachments });
+        return "Got your file";
+      }
+    }
+  });
+
+  const payload = JSON.stringify({
+    type: "event_callback",
+    team_id: "T1",
+    event: {
+      type: "message",
+      channel_type: "im",
+      user: "U1",
+      channel: "D1",
+      ts: "1710000000.000200",
+      text: "check this log",
+      files: [
+        {
+          id: "F1",
+          name: "log.txt",
+          mimetype: "text/plain",
+          size: 26,
+          url_private: "https://files.slack.com/files-pri/T1/F1/log.txt",
+          url_private_download: "https://files.slack.com/files-pri/T1/F1/log.txt"
+        }
+      ]
+    }
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/slack/events",
+    headers: { "content-type": "application/json", ...sign(payload) },
+    payload
+  });
+
+  assert.equal(response.statusCode, 200);
+  await waitForBackgroundWork();
+  assert.deepEqual(posts, [{ channel: "D1", text: "Got your file" }]);
+  assert.equal(capturedInputs.length, 1);
+  assert.equal(capturedInputs[0]?.text, "check this log");
+  assert.equal(capturedInputs[0]?.fileAttachments?.length, 1);
+  assert.equal(capturedInputs[0]?.fileAttachments?.[0]?.name, "log.txt");
+  assert.equal(capturedInputs[0]?.fileAttachments?.[0]?.content, "error: something went wrong\n");
+  await app.close();
+});
+
+test("Slack event route processes a file-only message with no text", async () => {
+  const capturedInputs: Array<{ text: string; fileAttachments?: Array<{ name: string }> }> = [];
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+  const posts: Array<{ channel: string; text: string }> = [];
+  const store = new MemorySlackAssistantStore();
+  registerSlackEventRoutes(app, {
+    settingsStore: {
+      getSlackIntegration: async () => ({
+        botToken: "xoxb-token",
+        signingSecret,
+        slackAgentMcpServers: [],
+        slackAssistantProvider: "claude",
+        slackAssistantModel: "claude-sonnet-4-6",
+        slackHarnessWhatExists: null,
+        slackHarnessAllowedActions: null,
+        slackHarnessHowToWork: null,
+        slackHarnessDefinitionOfDone: null,
+        slackHarnessEvidenceExpectations: null
+      }),
+      recordSlackEventResult: async () => {}
+    } as never,
+    userStore: {
+      listUsers: async () => [user],
+      getAuthSessionUser: async (userId: string) =>
+        userId === user.id
+          ? ({
+              ...user,
+              scopes: ["repo:list"],
+              allowedProviders: [],
+              allowedModels: [],
+              allowedEfforts: []
+            } as never)
+          : null
+    } as never,
+    slackAssistantStore: store,
+    slackClient: {
+      getUserProfile: async () => ({ id: "U1", name: "Alice" }),
+      postMessage: async (_botToken, channel, text) => { posts.push({ channel, text }); },
+      addReaction: async () => {},
+      fetchFileContent: async () => ({ content: "config: value\n", truncated: false })
+    },
+    runtime: {
+      respond: async (input) => {
+        capturedInputs.push({ text: input.text, fileAttachments: input.fileAttachments });
+        return "Processed file";
+      }
+    }
+  });
+
+  const payload = JSON.stringify({
+    type: "event_callback",
+    team_id: "T1",
+    event: {
+      type: "message",
+      channel_type: "im",
+      user: "U1",
+      channel: "D1",
+      ts: "1710000000.000300",
+      files: [
+        {
+          id: "F2",
+          name: "config.json",
+          mimetype: "application/json",
+          size: 14,
+          url_private_download: "https://files.slack.com/files-pri/T1/F2/config.json"
+        }
+      ]
+    }
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/slack/events",
+    headers: { "content-type": "application/json", ...sign(payload) },
+    payload
+  });
+
+  assert.equal(response.statusCode, 200);
+  await waitForBackgroundWork();
+  assert.deepEqual(posts, [{ channel: "D1", text: "Processed file" }]);
+  assert.equal(capturedInputs.length, 1);
+  assert.equal(capturedInputs[0]?.text, "");
+  assert.equal(capturedInputs[0]?.fileAttachments?.length, 1);
+  assert.equal(capturedInputs[0]?.fileAttachments?.[0]?.name, "config.json");
+  await app.close();
+});
+
+test("Slack event route skips binary files and oversized text files", async () => {
+  let fetchCalls = 0;
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+  const posts: Array<{ channel: string; text: string }> = [];
+  const store = new MemorySlackAssistantStore();
+  const capturedAttachmentCounts: number[] = [];
+  registerSlackEventRoutes(app, {
+    settingsStore: {
+      getSlackIntegration: async () => ({
+        botToken: "xoxb-token",
+        signingSecret,
+        slackAgentMcpServers: [],
+        slackAssistantProvider: "claude",
+        slackAssistantModel: "claude-sonnet-4-6",
+        slackHarnessWhatExists: null,
+        slackHarnessAllowedActions: null,
+        slackHarnessHowToWork: null,
+        slackHarnessDefinitionOfDone: null,
+        slackHarnessEvidenceExpectations: null
+      }),
+      recordSlackEventResult: async () => {}
+    } as never,
+    userStore: {
+      listUsers: async () => [user],
+      getAuthSessionUser: async (userId: string) =>
+        userId === user.id
+          ? ({
+              ...user,
+              scopes: ["repo:list"],
+              allowedProviders: [],
+              allowedModels: [],
+              allowedEfforts: []
+            } as never)
+          : null
+    } as never,
+    slackAssistantStore: store,
+    slackClient: {
+      getUserProfile: async () => ({ id: "U1", name: "Alice" }),
+      postMessage: async (_botToken, channel, text) => { posts.push({ channel, text }); },
+      addReaction: async () => {},
+      fetchFileContent: async () => { fetchCalls += 1; return { content: "x", truncated: false }; }
+    },
+    runtime: {
+      respond: async (input) => {
+        capturedAttachmentCounts.push(input.fileAttachments?.length ?? 0);
+        return "ok";
+      }
+    }
+  });
+
+  const payload = JSON.stringify({
+    type: "event_callback",
+    team_id: "T1",
+    event: {
+      type: "message",
+      channel_type: "im",
+      user: "U1",
+      channel: "D1",
+      text: "here",
+      files: [
+        { id: "F3", name: "photo.png", mimetype: "image/png", size: 500, url_private_download: "https://example.com/photo.png" },
+        { id: "F4", name: "big.txt", mimetype: "text/plain", size: 2 * 1024 * 1024, url_private_download: "https://example.com/big.txt" },
+        { id: "F5", name: "small.txt", mimetype: "text/plain", size: 100, url_private_download: "https://example.com/small.txt" }
+      ]
+    }
+  });
+  const response = await app.inject({
+    method: "POST",
+    url: "/slack/events",
+    headers: { "content-type": "application/json", ...sign(payload) },
+    payload
+  });
+
+  assert.equal(response.statusCode, 200);
+  await waitForBackgroundWork();
+  assert.equal(fetchCalls, 1, "only the small text file should be fetched");
+  assert.equal(capturedAttachmentCounts[0], 1);
   await app.close();
 });

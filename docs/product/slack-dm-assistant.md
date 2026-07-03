@@ -23,7 +23,7 @@ In the first implementation slice:
 
 Slack credentials are never returned by settings read APIs. The UI only shows whether the bot token and signing secret are configured.
 
-The Slack bot needs `chat:write`, `users:read`, `im:history`, and `reactions:write` bot token scopes. Reinstall the Slack app after changing scopes.
+The Slack bot needs `chat:write`, `users:read`, `im:history`, `reactions:write`, and `files:read` bot token scopes. Reinstall the Slack app after changing scopes.
 
 Settings -> Integrations shows the latest signed Slack event result, including received, ignored, and failed events.
 
@@ -39,8 +39,21 @@ The first runtime slice starts a provider invocation per user message instead of
 
 If a conversation has no user message for 5 minutes, AgentSwarm marks the active Slack assistant runtime state as stopped for idle timeout. The next user message starts a fresh provider invocation against the same persisted conversation context.
 
+## File Attachments
+
+Users can upload files directly in a Slack DM and the assistant will read them as context.
+
+**Supported file types:** any `text/*` MIME type plus `application/json`, `application/xml`, `application/x-yaml`, `application/yaml`, `application/javascript`, and `application/typescript`. Binary files (images, PDFs, archives) are ignored.
+
+**Size limits:** files larger than 1 MB are skipped. Files up to 512 KB are read in full; content is truncated at 512 KB. At most 5 files are downloaded per message.
+
+**Trigger:** any text-type attachment in a DM directed at the bot is automatically read and passed as context to the assistant.
+
+**Required scope:** the Slack app must have the `files:read` bot token scope. Add the scope in the Slack app configuration and reinstall the app.
+
 ## Current Limits
 - Repository/channel mapping is not part of v1.
 - Slack channel workflows are not part of v1.
 - Slack assistant execution is one provider run per message with persisted state, not a resident interactive container.
 - Matching is by Slack username. Storing Slack workspace and user IDs after first contact is a future hardening step.
+- Images and PDFs are not read inline; a future enhancement could surface them via vision-capable models.

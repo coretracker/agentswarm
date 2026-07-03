@@ -9,6 +9,7 @@ export interface SlackClient {
   getUserProfile(botToken: string, slackUserId: string): Promise<SlackUserProfile | null>;
   postMessage(botToken: string, channel: string, text: string): Promise<void>;
   addReaction(botToken: string, channel: string, timestamp: string, name: string): Promise<void>;
+  fetchFileContent(botToken: string, fileUrl: string, maxBytes?: number): Promise<{ content: string; truncated: boolean }>;
 }
 
 const slackApiFetch = async (path: string, botToken: string, init: RequestInit = {}): Promise<Record<string, unknown>> => {
@@ -64,5 +65,19 @@ export class FetchSlackClient implements SlackClient {
       method: "POST",
       body: JSON.stringify({ channel, timestamp, name })
     });
+  }
+
+  async fetchFileContent(botToken: string, fileUrl: string, maxBytes = 512 * 1024): Promise<{ content: string; truncated: boolean }> {
+    const response = await fetch(fileUrl, {
+      headers: { Authorization: `Bearer ${botToken}` }
+    });
+    if (!response.ok) {
+      throw new Error(`Slack file download failed with ${response.status}.`);
+    }
+    const buffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    const truncated = bytes.length > maxBytes;
+    const sliced = truncated ? bytes.slice(0, maxBytes) : bytes;
+    return { content: new TextDecoder("utf-8", { fatal: false }).decode(sliced), truncated };
   }
 }
