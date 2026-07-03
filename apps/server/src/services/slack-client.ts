@@ -9,7 +9,7 @@ export interface SlackClient {
   getUserProfile(botToken: string, slackUserId: string): Promise<SlackUserProfile | null>;
   postMessage(botToken: string, channel: string, text: string): Promise<void>;
   addReaction(botToken: string, channel: string, timestamp: string, name: string): Promise<void>;
-  fetchFileContent(botToken: string, fileUrl: string, maxBytes?: number): Promise<{ content: string; truncated: boolean }>;
+  downloadFile(botToken: string, fileUrl: string, maxBytes?: number): Promise<Buffer>;
 }
 
 const slackApiFetch = async (path: string, botToken: string, init: RequestInit = {}): Promise<Record<string, unknown>> => {
@@ -67,17 +67,21 @@ export class FetchSlackClient implements SlackClient {
     });
   }
 
-  async fetchFileContent(botToken: string, fileUrl: string, maxBytes = 512 * 1024): Promise<{ content: string; truncated: boolean }> {
+  async downloadFile(botToken: string, fileUrl: string, maxBytes = 100 * 1024 * 1024): Promise<Buffer> {
     const response = await fetch(fileUrl, {
       headers: { Authorization: `Bearer ${botToken}` }
     });
     if (!response.ok) {
       throw new Error(`Slack file download failed with ${response.status}.`);
     }
+    const contentLength = response.headers.get("content-length");
+    if (contentLength && Number(contentLength) > maxBytes) {
+      throw new Error(`Slack file size ${contentLength} bytes exceeds the ${maxBytes} byte download limit.`);
+    }
     const buffer = await response.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-    const truncated = bytes.length > maxBytes;
-    const sliced = truncated ? bytes.slice(0, maxBytes) : bytes;
-    return { content: new TextDecoder("utf-8", { fatal: false }).decode(sliced), truncated };
+    if (buffer.byteLength > maxBytes) {
+      throw new Error(`Slack file size ${buffer.byteLength} bytes exceeds the ${maxBytes} byte download limit.`);
+    }
+    return Buffer.from(buffer);
   }
 }
