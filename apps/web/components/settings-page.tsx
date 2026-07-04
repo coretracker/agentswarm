@@ -17,7 +17,8 @@ import type {
   RepositorySlackEventStatus,
   ResponsePreferencePreset,
   Role,
-  SystemSettings
+  SystemSettings,
+  UpdateSettingsInput
 } from "@verft/shared-types";
 import {
   PERMISSION_SCOPE_GROUPS,
@@ -162,6 +163,10 @@ const normalizeMcpServerName = (value: string | undefined): string =>
     .replace(/-+/g, "-")
     .replace(/^-+|-+$/g, "");
 const trimFormString = (value: string | null | undefined): string => (value ?? "").trim();
+const optionalTrimFormString = (value: string | null | undefined): string | undefined => {
+  const trimmed = trimFormString(value);
+  return trimmed.length > 0 ? trimmed : undefined;
+};
 const normalizeProviderModelOptions = (models: ProviderModelOption[] | undefined, fallback: ProviderModelOption[]): ProviderModelOption[] => {
   const normalized: ProviderModelOption[] = [];
   const seen = new Set<string>();
@@ -607,7 +612,7 @@ export function SettingsPage() {
   const saveGeneralSettings = async (values: GeneralSettingsForm): Promise<void> => {
     setSavingGeneral(true);
     try {
-      const nextSettings = await api.updateSettings({
+      const payload: UpdateSettingsInput = {
         defaultProvider: values.defaultProvider,
         maxAgents: values.maxAgents,
         branchPrefix: values.branchPrefix,
@@ -630,7 +635,7 @@ export function SettingsPage() {
         claudeModels: values.claudeModels,
         claudeDefaultEffort: values.claudeDefaultEffort,
         slackAssistantProvider: values.slackAssistantProvider,
-        slackAssistantModel: trimFormString(values.slackAssistantModel),
+        slackAssistantModel: optionalTrimFormString(values.slackAssistantModel),
         slackHarnessWhatExists: trimFormString(values.slackHarnessWhatExists) || null,
         slackHarnessAllowedActions: trimFormString(values.slackHarnessAllowedActions) || null,
         slackHarnessHowToWork: trimFormString(values.slackHarnessHowToWork) || null,
@@ -662,7 +667,8 @@ export function SettingsPage() {
         ...(values.clearSlackBotToken ? { clearSlackBotToken: true } : {}),
         ...(trimFormString(values.slackSigningSecret).length > 0 ? { slackSigningSecret: trimFormString(values.slackSigningSecret) } : {}),
         ...(values.clearSlackSigningSecret ? { clearSlackSigningSecret: true } : {})
-      });
+      };
+      const nextSettings = await api.updateSettings(payload);
       setSettings(nextSettings);
       setGeneralDirty(false);
       setGeneralDirtyTabs([]);

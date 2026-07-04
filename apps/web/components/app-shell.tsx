@@ -316,12 +316,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   onClick={() => setMobileSidebarOpen(true)}
                 />
               ) : null}
-              <AppLogo width={28} height={40} />
-              <Flex vertical gap={0}>
-                <Typography.Title level={4} style={{ margin: 0, color: token.colorText }}>
-                  Verft
-                </Typography.Title>
-              </Flex>
+              <AppLogo width={100} height={26} />
             </Flex>
             <Menu
               mode="horizontal"

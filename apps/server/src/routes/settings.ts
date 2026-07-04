@@ -162,7 +162,7 @@ const updateSettingsSchema = z.object({
   claudeDefaultEffort: providerProfileEnum.optional(),
   slackAgentMcpServers: mcpServersSchema.optional(),
   slackAssistantProvider: z.enum(["codex", "claude"]).optional(),
-  slackAssistantModel: z.string().trim().min(1).max(120).optional(),
+  slackAssistantModel: z.string().trim().max(120).optional(),
   slackHarnessWhatExists: z.string().trim().max(8000).nullable().optional(),
   slackHarnessAllowedActions: z.string().trim().max(8000).nullable().optional(),
   slackHarnessHowToWork: z.string().trim().max(8000).nullable().optional(),

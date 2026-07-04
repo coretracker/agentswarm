@@ -110,17 +110,11 @@ export function LoginPage() {
           }}
         >
           <Flex vertical gap={8} style={{ marginBottom: 24 }}>
-            <Flex align="center" gap={12} style={{ marginBottom: 8 }}>
-              <AppLogo width={22} height={32} />
-              <Typography.Title level={3} style={{ margin: 0 }}>
-                Verft
-              </Typography.Title>
+            <Flex align="center" justify="center" gap={12} style={{ marginBottom: 8 }}>
+              <AppLogo width={100} height={26} />
             </Flex>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              Sign in
-            </Typography.Title>
             <Typography.Text type="secondary">
-              Use the seeded admin account on first boot, then rotate the password and create real users and roles.
+              Enter your email and password to access your Verft workspace.
             </Typography.Text>
           </Flex>
 
