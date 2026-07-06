@@ -227,14 +227,11 @@ const createRepositorySchema = z.object({
   envVars: repositoryEnvVarsSchema.optional(),
   envSecrets: repositoryEnvSecretsSchema.optional(),
   mcpServers: mcpServersSchema.optional(),
-  slackAgentMcpServers: mcpServersSchema.optional(),
   hostCommands: hostCommandsSchema.optional(),
   webhookUrl: z.string().trim().url().nullable().optional(),
   webhookEnabled: z.boolean().optional(),
   webhookSecret: z.string().trim().min(1).optional(),
   githubPrWebhookSecret: z.string().trim().min(1).optional(),
-  slackBotToken: z.string().trim().min(1).optional(),
-  slackSigningSecret: z.string().trim().min(1).optional(),
   githubIntegrationBotLogin: z.string().trim().max(255).nullable().optional(),
   githubPrAllowedUsers: githubAllowedUsersSchema.optional(),
   githubPrRequireBotMention: z.boolean().optional(),
@@ -253,9 +250,7 @@ const createRepositorySchema = z.object({
 
 const updateRepositorySchema = createRepositorySchema.partial().extend({
   clearWebhookSecret: z.boolean().optional(),
-  clearGithubPrWebhookSecret: z.boolean().optional(),
-  clearSlackBotToken: z.boolean().optional(),
-  clearSlackSigningSecret: z.boolean().optional()
+  clearGithubPrWebhookSecret: z.boolean().optional()
 });
 
 type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;

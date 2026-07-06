@@ -317,7 +317,6 @@ export interface User {
   name: string;
   email: string;
   githubUsername: string | null;
-  slackUsername: string | null;
   defaultProvider: AgentProvider | null;
   defaultModel: string | null;
   defaultProviderProfile: ProviderProfile | null;
@@ -346,7 +345,6 @@ export interface AuthProfile {
   name: string;
   email: string;
   githubUsername: string | null;
-  slackUsername: string | null;
   defaultProvider: AgentProvider | null;
   defaultModel: string | null;
   defaultProviderProfile: ProviderProfile | null;
@@ -396,7 +394,6 @@ export interface CreateUserInput {
   email: string;
   password: string;
   githubUsername?: string | null;
-  slackUsername?: string | null;
   defaultProvider?: AgentProvider | null;
   defaultModel?: string | null;
   defaultProviderProfile?: ProviderProfile | null;
@@ -411,7 +408,6 @@ export interface UpdateUserInput {
   email?: string;
   password?: string;
   githubUsername?: string | null;
-  slackUsername?: string | null;
   defaultProvider?: AgentProvider | null;
   defaultModel?: string | null;
   defaultProviderProfile?: ProviderProfile | null;
@@ -472,8 +468,6 @@ export interface RepositoryEnvSecretInputFile {
 }
 
 export type RepositoryEnvSecretInput = RepositoryEnvSecretInputText | RepositoryEnvSecretInputFile;
-export type RepositorySlackEventStatus = "received" | "ignored" | "failed";
-
 export interface Repository {
   id: string;
   name: string;
@@ -485,14 +479,11 @@ export interface Repository {
   envVars: RepositoryEnvVarValue[];
   envSecrets?: RepositoryEnvSecret[];
   mcpServers: McpServerConfig[];
-  slackAgentMcpServers?: McpServerConfig[];
   hostCommands: string[];
   webhookUrl: string | null;
   webhookEnabled: boolean;
   webhookSecretConfigured: boolean;
   githubPrWebhookSecretConfigured?: boolean;
-  slackBotTokenConfigured?: boolean;
-  slackSigningSecretConfigured?: boolean;
   githubIntegrationBotLogin?: string | null;
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
@@ -510,10 +501,6 @@ export interface Repository {
   webhookLastAttemptAt: string | null;
   webhookLastStatus: "success" | "failed" | null;
   webhookLastError: string | null;
-  slackLastEventAt?: string | null;
-  slackLastEventStatus?: RepositorySlackEventStatus | null;
-  slackLastEventType?: string | null;
-  slackLastEventError?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -939,20 +926,6 @@ export interface SystemSettings {
   claudeDefaultModel: string;
   claudeModels: ProviderModelOption[];
   claudeDefaultEffort: ProviderProfile;
-  slackAgentMcpServers: McpServerConfig[];
-  slackAssistantProvider: AgentProvider;
-  slackAssistantModel: string;
-  slackHarnessWhatExists: string | null;
-  slackHarnessAllowedActions: string | null;
-  slackHarnessHowToWork: string | null;
-  slackHarnessDefinitionOfDone: string | null;
-  slackHarnessEvidenceExpectations: string | null;
-  slackBotTokenConfigured: boolean;
-  slackSigningSecretConfigured: boolean;
-  slackLastEventAt: string | null;
-  slackLastEventStatus: RepositorySlackEventStatus | null;
-  slackLastEventType: string | null;
-  slackLastEventError: string | null;
   responsePreferencePresets: ResponsePreferencePreset[];
   dataStores?: SystemDataStores;
 }
@@ -972,14 +945,11 @@ export interface CreateRepositoryInput {
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   mcpServers?: McpServerConfig[];
-  slackAgentMcpServers?: McpServerConfig[];
   hostCommands?: string[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
   githubPrWebhookSecret?: string;
-  slackBotToken?: string;
-  slackSigningSecret?: string;
   githubIntegrationBotLogin?: string | null;
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
@@ -1006,7 +976,6 @@ export interface UpdateRepositoryInput {
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
   mcpServers?: McpServerConfig[];
-  slackAgentMcpServers?: McpServerConfig[];
   hostCommands?: string[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
@@ -1014,10 +983,6 @@ export interface UpdateRepositoryInput {
   clearWebhookSecret?: boolean;
   githubPrWebhookSecret?: string;
   clearGithubPrWebhookSecret?: boolean;
-  slackBotToken?: string;
-  clearSlackBotToken?: boolean;
-  slackSigningSecret?: string;
-  clearSlackSigningSecret?: boolean;
   githubIntegrationBotLogin?: string | null;
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
@@ -1435,18 +1400,6 @@ export interface UpdateSettingsInput {
   claudeDefaultModel?: string;
   claudeModels?: ProviderModelOption[];
   claudeDefaultEffort?: ProviderProfile;
-  slackAgentMcpServers?: McpServerConfig[];
-  slackAssistantProvider?: AgentProvider;
-  slackAssistantModel?: string;
-  slackHarnessWhatExists?: string | null;
-  slackHarnessAllowedActions?: string | null;
-  slackHarnessHowToWork?: string | null;
-  slackHarnessDefinitionOfDone?: string | null;
-  slackHarnessEvidenceExpectations?: string | null;
-  slackBotToken?: string;
-  clearSlackBotToken?: boolean;
-  slackSigningSecret?: string;
-  clearSlackSigningSecret?: boolean;
   responsePreferencePresets?: ResponsePreferencePresetInput[];
 }
 
@@ -1464,7 +1417,6 @@ export interface UpdateCredentialSettingsInput {
 export interface UpdateAuthProfileInput {
   name?: string;
   githubUsername?: string | null;
-  slackUsername?: string | null;
   defaultProvider?: AgentProvider | null;
   defaultModel?: string | null;
   defaultProviderProfile?: ProviderProfile | null;

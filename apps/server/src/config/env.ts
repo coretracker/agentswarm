@@ -12,6 +12,7 @@ const envSchema = z.object({
   EVENT_CHANNEL: z.string().default("verft:events"),
   REPO_CACHE_ROOT: z.string().default("/repo-cache"),
   REPO_CACHE_VOLUME: z.string().default("verft_repo_cache"),
+  VERFT_BASE_VOLUME: z.string().default("verft_base"),
   RUNTIME_PAYLOAD_ROOT: z.string().default("/runtime-payloads"),
   RUNTIME_PAYLOAD_VOLUME: z.string().default("verft_runtime_payloads"),
   REPOSITORY_ENV_FILE_STORE_ROOT: z.string().default("/secrets/repository-env-files"),

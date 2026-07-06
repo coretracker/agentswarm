@@ -8,7 +8,6 @@ const user: AuthSessionUser = {
   name: "User",
   email: "user@example.com",
   githubUsername: null,
-  slackUsername: null,
   defaultProvider: null,
   defaultModel: null,
   defaultProviderProfile: null,
@@ -123,7 +122,7 @@ describe("PostgresPersonalAccessTokenStore", () => {
     assert.deepEqual(authenticated?.user.scopes, ["task:terminal"]);
   });
 
-  it("stores Slack assistant runtime context for token authentication only", async () => {
+  it("does not expose or authenticate removed runtime context", async () => {
     const pool = new FakePool();
     const store = new PostgresPersonalAccessTokenStore(pool as never, {
       getAuthSessionUser: async () => ({ ...user, scopes: ["task:ask"] })
@@ -131,23 +130,18 @@ describe("PostgresPersonalAccessTokenStore", () => {
 
     const created = await store.createToken({
       userId: user.id,
-      name: "Slack runtime",
+      name: "Runtime token",
       scopes: ["task:ask"],
       runtimeContext: {
-        kind: "slack_assistant",
-        conversationId: "conversation-1",
-        slackChannelId: "D123"
-      }
+        kind: "removed_context",
+        contextId: "context-1"
+      } as never
     });
 
     const listed = await store.listTokens(user.id);
     assert.equal("runtimeContext" in listed[0]!, false);
 
     const authenticated = await store.authenticateToken(created.token);
-    assert.deepEqual(authenticated?.runtimeContext, {
-      kind: "slack_assistant",
-      conversationId: "conversation-1",
-      slackChannelId: "D123"
-    });
+    assert.equal(authenticated?.runtimeContext, null);
   });
 });

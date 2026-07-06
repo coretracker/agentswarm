@@ -160,18 +160,6 @@ const updateSettingsSchema = z.object({
   claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
   claudeModels: z.array(providerModelSchema).max(500).optional(),
   claudeDefaultEffort: providerProfileEnum.optional(),
-  slackAgentMcpServers: mcpServersSchema.optional(),
-  slackAssistantProvider: z.enum(["codex", "claude"]).optional(),
-  slackAssistantModel: z.string().trim().max(120).optional(),
-  slackHarnessWhatExists: z.string().trim().max(8000).nullable().optional(),
-  slackHarnessAllowedActions: z.string().trim().max(8000).nullable().optional(),
-  slackHarnessHowToWork: z.string().trim().max(8000).nullable().optional(),
-  slackHarnessDefinitionOfDone: z.string().trim().max(8000).nullable().optional(),
-  slackHarnessEvidenceExpectations: z.string().trim().max(8000).nullable().optional(),
-  slackBotToken: z.string().trim().min(1).optional(),
-  clearSlackBotToken: z.boolean().optional(),
-  slackSigningSecret: z.string().trim().min(1).optional(),
-  clearSlackSigningSecret: z.boolean().optional(),
   responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
 });
 

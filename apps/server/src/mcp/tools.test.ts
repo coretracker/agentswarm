@@ -8,7 +8,6 @@ const user: AuthSessionUser = {
   name: "User",
   email: "user@example.com",
   githubUsername: null,
-  slackUsername: null,
   defaultProvider: null,
   defaultModel: null,
   defaultProviderProfile: null,
@@ -96,57 +95,6 @@ const toolByName = (name: string) => {
 };
 
 describe("MCP Phase 1 tools", () => {
-  it("posts Slack progress updates only with Slack assistant runtime context", async () => {
-    const tool = toolByName("verft_slack_post_update");
-    const posts: unknown[] = [];
-
-    await assert.rejects(
-      () =>
-        tool.handler(
-          { text: "Working on it" },
-          {
-            user,
-            deps: {
-              settingsStore: {} as never,
-              slackClient: {
-                postMessage: async () => {
-                  throw new Error("unexpected post");
-                }
-              }
-            } as never
-          }
-        ),
-      /Slack update tool is only available/
-    );
-
-    const result = await tool.handler(
-      { text: "Working on it" },
-      {
-        user,
-        runtimeContext: {
-          kind: "slack_assistant",
-          conversationId: "conversation-1",
-          slackChannelId: "D123"
-        },
-        deps: {
-          settingsStore: {
-            getSlackIntegration: async () => ({
-              botToken: "xoxb-test"
-            })
-          },
-          slackClient: {
-            postMessage: async (botToken: string, channel: string, text: string) => {
-              posts.push({ botToken, channel, text });
-            }
-          }
-        } as never
-      }
-    );
-
-    assert.deepEqual(posts, [{ botToken: "xoxb-test", channel: "D123", text: "Working on it" }]);
-    assert.deepEqual(result, { ok: true, conversationId: "conversation-1" });
-  });
-
   it("lists only repositories accessible to the user", async () => {
     const tool = toolByName("verft_list_repositories");
     const result = await tool.handler(

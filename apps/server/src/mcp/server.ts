@@ -3,7 +3,6 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { AuthService } from "../lib/auth.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SettingsStore } from "../services/settings-store.js";
-import type { SlackClient } from "../services/slack-client.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
@@ -70,7 +69,6 @@ export const registerMcpRoutes = (
     taskQueueStore: TaskQueueStore;
     scheduler: SchedulerService;
     spawner: SpawnerService;
-    slackClient?: SlackClient;
   }
 ): void => {
   const tools = createMcpTools();
@@ -81,8 +79,7 @@ export const registerMcpRoutes = (
     taskStore: deps.taskStore,
     taskQueueStore: deps.taskQueueStore,
     scheduler: deps.scheduler,
-    spawner: deps.spawner,
-    slackClient: deps.slackClient
+    spawner: deps.spawner
   };
 
   app.post("/mcp", async (request, reply) => {

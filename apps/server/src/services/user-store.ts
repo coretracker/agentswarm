@@ -44,7 +44,6 @@ export interface StoredUserRecord {
   gitAuthorName: string | null;
   gitAuthorEmail: string | null;
   githubUsername: string | null;
-  slackUsername: string | null;
   defaultProvider: AgentProvider | null;
   defaultModel: string | null;
   defaultProviderProfile: ProviderProfile | null;
@@ -71,10 +70,6 @@ const normalizeOptionalGitAuthorEmail = (value: string | null | undefined): stri
 };
 const normalizeGithubUsername = (value: string | null | undefined): string | null => {
   const normalized = (value ?? "").trim().replace(/^@+/, "").toLowerCase();
-  return normalized || null;
-};
-const normalizeSlackUsername = (value: string | null | undefined): string | null => {
-  const normalized = (value ?? "").trim().replace(/^@+/, "").replace(/\s+/g, " ");
   return normalized || null;
 };
 const normalizeDefaultProvider = (value: AgentProvider | string | null | undefined): AgentProvider | null =>
@@ -209,7 +204,6 @@ export class RedisUserStore implements UserStore {
       gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
       gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
       githubUsername: normalizeGithubUsername(user.githubUsername),
-      slackUsername: normalizeSlackUsername(user.slackUsername),
       defaultProvider: normalizeDefaultProvider(user.defaultProvider),
       defaultModel: normalizeDefaultModel(user.defaultModel),
       defaultProviderProfile: normalizeDefaultProviderProfile(user.defaultProviderProfile),
@@ -297,7 +291,6 @@ export class RedisUserStore implements UserStore {
       name: user.name,
       email: user.email,
       githubUsername: user.githubUsername,
-      slackUsername: user.slackUsername,
       defaultProvider: user.defaultProvider,
       defaultModel: user.defaultModel,
       defaultProviderProfile: user.defaultProviderProfile,
@@ -519,7 +512,6 @@ export class RedisUserStore implements UserStore {
       gitAuthorName: null,
       gitAuthorEmail: null,
       githubUsername: normalizeGithubUsername(input.githubUsername),
-      slackUsername: normalizeSlackUsername(input.slackUsername),
       defaultProvider: normalizeDefaultProvider(input.defaultProvider),
       defaultModel: normalizeDefaultModel(input.defaultModel),
       defaultProviderProfile: normalizeDefaultProviderProfile(input.defaultProviderProfile),
@@ -586,7 +578,6 @@ export class RedisUserStore implements UserStore {
       name: nextName,
       email: nextEmail,
       githubUsername: input.githubUsername === undefined ? current.githubUsername : normalizeGithubUsername(input.githubUsername),
-      slackUsername: input.slackUsername === undefined ? current.slackUsername : normalizeSlackUsername(input.slackUsername),
       defaultProvider: input.defaultProvider === undefined ? current.defaultProvider : normalizeDefaultProvider(input.defaultProvider),
       defaultModel: input.defaultModel === undefined ? current.defaultModel : normalizeDefaultModel(input.defaultModel),
       defaultProviderProfile:
@@ -660,7 +651,6 @@ export class PostgresUserStore implements UserStore {
       gitAuthorName: typeof row.git_author_name === "string" ? row.git_author_name : null,
       gitAuthorEmail: typeof row.git_author_email === "string" ? row.git_author_email : null,
       githubUsername: typeof row.github_username === "string" ? row.github_username : null,
-      slackUsername: typeof row.slack_username === "string" ? row.slack_username : null,
       defaultProvider: normalizeDefaultProvider(row.default_provider as AgentProvider | string | null | undefined),
       defaultModel: typeof row.default_model === "string" ? row.default_model : null,
       defaultProviderProfile: normalizeDefaultProviderProfile(row.default_provider_profile as ProviderProfile | string | null | undefined),
@@ -688,7 +678,6 @@ export class PostgresUserStore implements UserStore {
       gitAuthorName: normalizeOptionalGitAuthorName(user.gitAuthorName),
       gitAuthorEmail: normalizeOptionalGitAuthorEmail(user.gitAuthorEmail),
       githubUsername: normalizeGithubUsername(user.githubUsername),
-      slackUsername: normalizeSlackUsername(user.slackUsername),
       defaultProvider: normalizeDefaultProvider(user.defaultProvider),
       defaultModel: normalizeDefaultModel(user.defaultModel),
       defaultProviderProfile: normalizeDefaultProviderProfile(user.defaultProviderProfile),
@@ -812,7 +801,6 @@ export class PostgresUserStore implements UserStore {
       name: user.name,
       email: user.email,
       githubUsername: user.githubUsername,
-      slackUsername: user.slackUsername,
       defaultProvider: user.defaultProvider,
       defaultModel: user.defaultModel,
       defaultProviderProfile: user.defaultProviderProfile,
@@ -872,7 +860,6 @@ export class PostgresUserStore implements UserStore {
           git_author_name,
           git_author_email,
           github_username,
-          slack_username,
           default_provider,
           default_model,
           default_provider_profile,
@@ -884,7 +871,7 @@ export class PostgresUserStore implements UserStore {
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15, $16)
         ON CONFLICT (id) DO UPDATE
         SET
           name = EXCLUDED.name,
@@ -892,7 +879,6 @@ export class PostgresUserStore implements UserStore {
           git_author_name = EXCLUDED.git_author_name,
           git_author_email = EXCLUDED.git_author_email,
           github_username = EXCLUDED.github_username,
-          slack_username = EXCLUDED.slack_username,
           default_provider = EXCLUDED.default_provider,
           default_model = EXCLUDED.default_model,
           default_provider_profile = EXCLUDED.default_provider_profile,
@@ -911,7 +897,6 @@ export class PostgresUserStore implements UserStore {
         nextUser.gitAuthorName,
         nextUser.gitAuthorEmail,
         nextUser.githubUsername,
-        nextUser.slackUsername,
         nextUser.defaultProvider,
         nextUser.defaultModel,
         nextUser.defaultProviderProfile,
@@ -1145,7 +1130,6 @@ export class PostgresUserStore implements UserStore {
       gitAuthorName: null,
       gitAuthorEmail: null,
       githubUsername: normalizeGithubUsername(input.githubUsername),
-      slackUsername: normalizeSlackUsername(input.slackUsername),
       defaultProvider: normalizeDefaultProvider(input.defaultProvider),
       defaultModel: normalizeDefaultModel(input.defaultModel),
       defaultProviderProfile: normalizeDefaultProviderProfile(input.defaultProviderProfile),
@@ -1215,7 +1199,6 @@ export class PostgresUserStore implements UserStore {
       name: nextName,
       email: nextEmail,
       githubUsername: input.githubUsername === undefined ? current.githubUsername : normalizeGithubUsername(input.githubUsername),
-      slackUsername: input.slackUsername === undefined ? current.slackUsername : normalizeSlackUsername(input.slackUsername),
       defaultProvider: input.defaultProvider === undefined ? current.defaultProvider : normalizeDefaultProvider(input.defaultProvider),
       defaultModel: input.defaultModel === undefined ? current.defaultModel : normalizeDefaultModel(input.defaultModel),
       defaultProviderProfile:

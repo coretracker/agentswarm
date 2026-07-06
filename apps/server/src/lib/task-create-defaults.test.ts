@@ -26,20 +26,6 @@ const settings: SystemSettings = {
   claudeDefaultModel: "claude-opus-4-8",
   claudeModels: [],
   claudeDefaultEffort: "high",
-  slackAgentMcpServers: [],
-  slackAssistantProvider: "codex",
-  slackAssistantModel: "gpt-5.5",
-  slackHarnessWhatExists: null,
-  slackHarnessAllowedActions: null,
-  slackHarnessHowToWork: null,
-  slackHarnessDefinitionOfDone: null,
-  slackHarnessEvidenceExpectations: null,
-  slackBotTokenConfigured: false,
-  slackSigningSecretConfigured: false,
-  slackLastEventAt: null,
-  slackLastEventStatus: null,
-  slackLastEventType: null,
-  slackLastEventError: null,
   responsePreferencePresets: []
 };
 

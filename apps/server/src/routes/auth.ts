@@ -28,7 +28,6 @@ const nullableDefaultProviderProfileSchema = z.enum(["low", "medium", "high", "m
 const updateProfileSchema = z.object({
   name: z.string().trim().min(1).optional(),
   githubUsername: z.string().trim().max(80).nullable().optional(),
-  slackUsername: z.string().trim().max(80).nullable().optional(),
   defaultProvider: nullableDefaultProviderSchema,
   defaultModel: z.string().trim().max(200).nullable().optional(),
   defaultProviderProfile: nullableDefaultProviderProfileSchema,
@@ -80,7 +79,6 @@ export const registerAuthRoutes = (
       name: authUser.name,
       email: authUser.email,
       githubUsername: authUser.githubUsername,
-      slackUsername: authUser.slackUsername,
       defaultProvider: authUser.defaultProvider,
       defaultModel: authUser.defaultModel,
       defaultProviderProfile: authUser.defaultProviderProfile,
@@ -130,7 +128,6 @@ export const registerAuthRoutes = (
     if (
       parsed.data.name !== undefined ||
       parsed.data.githubUsername !== undefined ||
-      parsed.data.slackUsername !== undefined ||
       parsed.data.defaultProvider !== undefined ||
       parsed.data.defaultModel !== undefined ||
       parsed.data.defaultProviderProfile !== undefined ||
@@ -139,7 +136,6 @@ export const registerAuthRoutes = (
       const updated = await deps.userStore.updateUser(userId, {
         ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
         ...(parsed.data.githubUsername !== undefined ? { githubUsername: parsed.data.githubUsername } : {}),
-        ...(parsed.data.slackUsername !== undefined ? { slackUsername: parsed.data.slackUsername } : {}),
         ...(parsed.data.defaultProvider !== undefined ? { defaultProvider: parsed.data.defaultProvider } : {}),
         ...(parsed.data.defaultModel !== undefined ? { defaultModel: parsed.data.defaultModel } : {}),
         ...(parsed.data.defaultProviderProfile !== undefined ? { defaultProviderProfile: parsed.data.defaultProviderProfile } : {}),
@@ -159,7 +155,6 @@ export const registerAuthRoutes = (
       name: refreshedUser.name,
       email: refreshedUser.email,
       githubUsername: refreshedUser.githubUsername,
-      slackUsername: refreshedUser.slackUsername,
       defaultProvider: refreshedUser.defaultProvider,
       defaultModel: refreshedUser.defaultModel,
       defaultProviderProfile: refreshedUser.defaultProviderProfile,

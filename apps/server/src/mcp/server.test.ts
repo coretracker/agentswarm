@@ -26,7 +26,6 @@ const user: AuthSessionUser = {
   name: "User",
   email: "user@example.com",
   githubUsername: null,
-  slackUsername: null,
   defaultProvider: null,
   defaultModel: null,
   defaultProviderProfile: null,
@@ -79,7 +78,7 @@ describe("MCP server route", () => {
     assert.equal(authCalls, 0);
   });
 
-  it("lists Slack update tool only for Slack assistant runtime tokens", async () => {
+  it("lists MCP tools for an authenticated request", async () => {
     const normalApp = createTestApp({
       authenticateBearerToken: async () => authContext()
     });
@@ -95,34 +94,6 @@ describe("MCP server route", () => {
     });
     assert.equal(normalResponse.statusCode, 200);
     const normalPayload = normalResponse.json();
-    assert.equal(
-      normalPayload.result.tools.some((tool: { name: string }) => tool.name === "verft_slack_post_update"),
-      false
-    );
-
-    const slackApp = createTestApp({
-      authenticateBearerToken: async () =>
-        authContext({
-          kind: "slack_assistant",
-          conversationId: "conversation-1",
-          slackChannelId: "D123"
-        })
-    });
-    const slackResponse = await slackApp.inject({
-      method: "POST",
-      url: "/mcp",
-      headers: { authorization: "Bearer token" },
-      payload: {
-        jsonrpc: "2.0",
-        id: 1,
-        method: "tools/list"
-      }
-    });
-    assert.equal(slackResponse.statusCode, 200);
-    const slackPayload = slackResponse.json();
-    assert.equal(
-      slackPayload.result.tools.some((tool: { name: string }) => tool.name === "verft_slack_post_update"),
-      true
-    );
+    assert.ok(Array.isArray(normalPayload.result.tools));
   });
 });

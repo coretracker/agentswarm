@@ -48,7 +48,6 @@ export function ProfilePage() {
   const [form] = Form.useForm<{
     name: string;
     githubUsername?: string;
-    slackUsername?: string;
     defaultProvider?: AgentProvider;
     defaultModel?: string;
     defaultProviderProfile?: ProviderProfile;
@@ -74,7 +73,6 @@ export function ProfilePage() {
         form.setFieldsValue({
           name: profile.name,
           githubUsername: profile.githubUsername ?? "",
-          slackUsername: profile.slackUsername ?? "",
           defaultProvider: profile.defaultProvider ?? undefined,
           defaultModel: profile.defaultModel ?? undefined,
           defaultProviderProfile: profile.defaultProviderProfile ?? undefined,
@@ -104,7 +102,6 @@ export function ProfilePage() {
       const next = await api.updateProfile({
         name: values.name,
         githubUsername: values.githubUsername?.trim() || null,
-        slackUsername: values.slackUsername?.trim() || null,
         defaultProvider: values.defaultProvider ?? null,
         defaultModel: values.defaultModel?.trim() || null,
         defaultProviderProfile: values.defaultProviderProfile ?? null,
@@ -121,7 +118,6 @@ export function ProfilePage() {
       setSessionUser({
         name: next.name,
         githubUsername: next.githubUsername,
-        slackUsername: next.slackUsername,
         defaultProvider: next.defaultProvider,
         defaultModel: next.defaultModel,
         defaultProviderProfile: next.defaultProviderProfile,
@@ -183,7 +179,6 @@ export function ProfilePage() {
           initialValues={{
             name: session?.user.name,
             githubUsername: session?.user.githubUsername ?? "",
-            slackUsername: session?.user.slackUsername ?? "",
             defaultProvider: session?.user.defaultProvider ?? undefined,
             defaultModel: session?.user.defaultModel ?? undefined,
             defaultProviderProfile: session?.user.defaultProviderProfile ?? undefined,
@@ -205,14 +200,6 @@ export function ProfilePage() {
             rules={[{ max: 80, message: "GitHub username must be 80 characters or fewer." }]}
           >
             <Input autoComplete="off" placeholder="octocat" />
-          </Form.Item>
-          <Form.Item
-            name="slackUsername"
-            label="Slack User ID or Name"
-            extra="Use the Slack user ID, for example U06HSV9LHCH, or the name shown in Slack."
-            rules={[{ max: 80, message: "Slack username must be 80 characters or fewer." }]}
-          >
-            <Input autoComplete="off" placeholder="U06HSV9LHCH or @Andreas Ehrlich-Gruber" />
           </Form.Item>
           <Divider orientation="left" plain>
             Default Agent

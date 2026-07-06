@@ -18,13 +18,7 @@ const TOKEN_PREFIX_CHARS = 18;
 const nowIso = (): string => new Date().toISOString();
 const validScopes = new Set<PermissionScope>(ALL_PERMISSION_SCOPES);
 
-export interface SlackAssistantPersonalAccessTokenContext {
-  kind: "slack_assistant";
-  conversationId: string;
-  slackChannelId: string;
-}
-
-export type PersonalAccessTokenRuntimeContext = SlackAssistantPersonalAccessTokenContext;
+export type PersonalAccessTokenRuntimeContext = null;
 
 export interface CreatePersonalAccessTokenInput {
   userId: string;
@@ -73,25 +67,7 @@ const normalizeExpiresAt = (expiresAt: string | null | undefined): string | null
   return new Date(timestamp).toISOString();
 };
 
-const normalizeRuntimeContext = (value: unknown): PersonalAccessTokenRuntimeContext | null => {
-  if (!value || typeof value !== "object") {
-    return null;
-  }
-  const record = value as Record<string, unknown>;
-  if (record.kind !== "slack_assistant") {
-    return null;
-  }
-  const conversationId = typeof record.conversationId === "string" ? record.conversationId.trim() : "";
-  const slackChannelId = typeof record.slackChannelId === "string" ? record.slackChannelId.trim() : "";
-  if (!conversationId || !slackChannelId) {
-    return null;
-  }
-  return {
-    kind: "slack_assistant",
-    conversationId,
-    slackChannelId
-  };
-};
+const normalizeRuntimeContext = (_value: unknown): PersonalAccessTokenRuntimeContext => null;
 
 export class PostgresPersonalAccessTokenStore implements PersonalAccessTokenStore {
   constructor(

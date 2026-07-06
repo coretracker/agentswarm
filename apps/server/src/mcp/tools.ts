@@ -16,7 +16,6 @@ import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
-import type { SlackClient } from "../services/slack-client.js";
 import type { PersonalAccessTokenRuntimeContext } from "../services/personal-access-token-store.js";
 import { resolveCreateTaskProviderConfig } from "../lib/task-create-defaults.js";
 import { clampLimit, compactCheckpoint, compactMessage, compactRepository, compactRun, compactTask, detailTask } from "./format.js";
@@ -43,7 +42,6 @@ export interface McpToolDeps {
   taskQueueStore: TaskQueueStore;
   scheduler: SchedulerService;
   spawner: SpawnerService;
-  slackClient?: SlackClient;
 }
 
 export class McpToolError extends Error {
@@ -121,12 +119,6 @@ const updateTaskConfigSchema = z.object({
   taskId: z.string().trim().min(1),
   autoApplyCheckpoints: z.boolean()
 });
-
-const slackPostUpdateSchema = z
-  .object({
-    text: z.string().trim().min(1).max(2000)
-  })
-  .strict();
 
 const schemaToJson = (schema: z.ZodTypeAny): Record<string, unknown> => zodToJsonSchema(schema);
 
@@ -236,33 +228,6 @@ const startTask = async (context: McpToolContext, task: Task, action?: TaskActio
 };
 
 export const createMcpTools = (): McpToolDefinition[] => [
-  {
-    name: "verft_slack_post_update",
-    description: "Post a concise progress update to the Slack DM that started this assistant run.",
-    inputSchema: schemaToJson(slackPostUpdateSchema),
-    scopes: ["task:ask"],
-    available: (context) => context.runtimeContext?.kind === "slack_assistant",
-    async handler(rawInput, context) {
-      const input = slackPostUpdateSchema.parse(rawInput ?? {});
-      const runtimeContext = context.runtimeContext;
-      if (runtimeContext?.kind !== "slack_assistant") {
-        throw new McpToolError(403, "Slack update tool is only available inside Slack assistant runs.", "slack_context_required");
-      }
-      if (!context.deps.slackClient) {
-        throw new McpToolError(503, "Slack client is not available.", "slack_client_unavailable");
-      }
-      const integration = await context.deps.settingsStore.getSlackIntegration();
-      if (!integration?.botToken) {
-        throw new McpToolError(409, "Slack integration is not configured.", "slack_not_configured");
-      }
-
-      await context.deps.slackClient.postMessage(integration.botToken, runtimeContext.slackChannelId, input.text);
-      return {
-        ok: true,
-        conversationId: runtimeContext.conversationId
-      };
-    }
-  },
   {
     name: "verft_list_repositories",
     description: "List repositories accessible to the authenticated user.",
