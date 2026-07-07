@@ -4,6 +4,12 @@ import Link from "next/link";
 import { Flex, Typography, theme as antTheme } from "antd";
 import { TaskInteractiveTerminalView } from "../../../components/task-interactive-terminal-view";
 
+function closeWindowAfterSuccessfulLogin(event: { code: number; reason: string }): void {
+  if (event.code === 1000 && event.reason === "terminal exited 0") {
+    window.setTimeout(() => window.close(), 750);
+  }
+}
+
 export default function ClaudeLoginTerminalPage() {
   const { token } = antTheme.useToken();
 
@@ -36,6 +42,8 @@ export default function ClaudeLoginTerminalPage() {
         <TaskInteractiveTerminalView
           webSocketPath="/settings/providers/claude-login/terminal"
           disconnectHint="Claude login complete. You may close this window."
+          showDisconnectHintOnCleanClose
+          onDisconnected={closeWindowAfterSuccessfulLogin}
         />
       </div>
     </Flex>

@@ -4,6 +4,12 @@ import Link from "next/link";
 import { Flex, Typography, theme as antTheme } from "antd";
 import { TaskInteractiveTerminalView } from "../../../components/task-interactive-terminal-view";
 
+function closeWindowAfterSuccessfulLogin(event: { code: number; reason: string }): void {
+  if (event.code === 1000 && event.reason === "terminal exited 0") {
+    window.setTimeout(() => window.close(), 750);
+  }
+}
+
 export default function CodexLoginTerminalPage() {
   const { token } = antTheme.useToken();
 
@@ -36,6 +42,8 @@ export default function CodexLoginTerminalPage() {
         <TaskInteractiveTerminalView
           webSocketPath="/settings/providers/codex-login/terminal"
           disconnectHint="Codex login complete. You may close this window."
+          showDisconnectHintOnCleanClose
+          onDisconnected={closeWindowAfterSuccessfulLogin}
         />
       </div>
     </Flex>
