@@ -13,9 +13,9 @@ import type { AuthService } from "./auth.js";
 import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "./verft-base-mounts.js";
 import type { SettingsStore } from "../services/settings-store.js";
 
-type SettingsProviderTerminalScope = AgentProvider | "setup";
+type SettingsProviderTerminalScope = AgentProvider | "setup" | "codex-login" | "claude-login";
 
-const WS_PATH_RE = /^\/settings\/providers\/(codex|claude|setup)\/terminal$/;
+const WS_PATH_RE = /^\/settings\/providers\/(codex|claude|setup|codex-login|claude-login)\/terminal$/;
 const AGENT_HOME = "/home/agent";
 let activeSettingsTerminalSession: { sessionName: string } | null = null;
 
@@ -44,13 +44,27 @@ function dockerImageExists(image: string): Promise<boolean> {
 }
 
 export function buildProviderTerminalScript(scope: SettingsProviderTerminalScope): string {
-  const includeCodex = scope === "setup" || scope === "codex";
-  const includeClaude = scope === "setup" || scope === "claude";
-  const startHint = scope === "setup"
-    ? "Provider setup terminal. Run codex login, claude /login, or configure provider plugins here. Saved files are reused by new tasks."
-    : scope === "claude"
-      ? "Claude base terminal. Run claude /login or configure plugins here."
-      : "Codex base terminal. Run codex login or configure plugins here.";
+  const includeCodex = scope === "setup" || scope === "codex" || scope === "codex-login";
+  const includeClaude = scope === "setup" || scope === "claude" || scope === "claude-login";
+
+  let startHint: string;
+  let shellCommand: string;
+  if (scope === "codex-login") {
+    startHint = "Running: codex login. Terminal will close when done.";
+    shellCommand = "su-exec agent:agent codex login; STATUS=$?";
+  } else if (scope === "claude-login") {
+    startHint = "Running: claude auth login. Terminal will close when done.";
+    shellCommand = "su-exec agent:agent claude auth login; STATUS=$?";
+  } else if (scope === "claude") {
+    startHint = "Claude base terminal. Run claude /login or configure plugins here.";
+    shellCommand = "if command -v bash >/dev/null 2>&1; then su-exec agent:agent bash -i; STATUS=$?; else su-exec agent:agent sh -i; STATUS=$?; fi";
+  } else if (scope === "setup") {
+    startHint = "Provider setup terminal. Run codex login, claude /login, or configure provider plugins here. Saved files are reused by new tasks.";
+    shellCommand = "if command -v bash >/dev/null 2>&1; then su-exec agent:agent bash -i; STATUS=$?; else su-exec agent:agent sh -i; STATUS=$?; fi";
+  } else {
+    startHint = "Codex base terminal. Run codex login or configure plugins here.";
+    shellCommand = "if command -v bash >/dev/null 2>&1; then su-exec agent:agent bash -i; STATUS=$?; else su-exec agent:agent sh -i; STATUS=$?; fi";
+  }
 
   return [
     `export HOME="${AGENT_HOME}"`,
@@ -67,7 +81,7 @@ export function buildProviderTerminalScript(scope: SettingsProviderTerminalScope
     "}",
     "trap sync_base_state EXIT HUP INT TERM",
     `chown -R agent:agent "$HOME" "$BASE_ROOT" 2>/dev/null || true`,
-    "if command -v bash >/dev/null 2>&1; then su-exec agent:agent bash -i; STATUS=$?; else su-exec agent:agent sh -i; STATUS=$?; fi",
+    shellCommand,
     "sync_base_state",
     "exit $STATUS"
   ].join("\n");
