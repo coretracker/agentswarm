@@ -41,6 +41,7 @@ import type { UserStore } from "../services/user-store.js";
 import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
 import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
+import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "./verft-base-mounts.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/terminal$/;
 const INTERACTIVE_WORKSPACE_PATH = "/workspace";
@@ -94,12 +95,6 @@ function resolveGitTerminalRuntimeConfig(
 
   addCredentialEnv("OPENAI_API_KEY", credentials.openaiApiKey);
   addCredentialEnv("OPENAI_BASE_URL", credentials.openaiBaseUrl);
-  addCredentialEnv(
-    "CODEX_AUTH_JSON_B64",
-    credentials.codexAuthJson?.trim()
-      ? Buffer.from(credentials.codexAuthJson.trim(), "utf8").toString("base64")
-      : null
-  );
   addCredentialEnv("ANTHROPIC_API_KEY", credentials.anthropicApiKey);
   addCredentialEnv("ANTHROPIC_BASE_URL", credentials.anthropicBaseUrl);
 
@@ -498,17 +493,14 @@ async function initializeTaskInteractiveTerminalWebSocket(
       ...linkedWorkspaceMountPlan.mountArgs,
       ...gitRuntimeMounts,
       ...hostexecRuntime.mountArgs,
+      ...buildVerftBaseVolumeMountArgs(),
       ...buildTaskWorkspaceMountArgs(
-        path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, codexProviderStatePaths.hostPath),
-        "/root/.codex",
-        "rw"
-      ),
-      ...buildTaskWorkspaceMountArgs(
-        path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, claudeProviderStatePaths.hostPath),
-        "/root/.claude",
+        path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, codexProviderStatePaths.homeHostPath),
+        "/home/agent",
         "rw"
       ),
       ...dockerEnv,
+      ...buildVerftBaseEnvArgs(),
       runtime.image,
       "sh",
       "-lc",

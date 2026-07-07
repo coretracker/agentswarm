@@ -1,8 +1,11 @@
 import { createWriteStream } from "node:fs";
-import { access, chmod, constants, copyFile, mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, constants, copyFile, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { hasVerftBaseLogin, importVerftBaseState } from "./verft-base-state.mjs";
 
+const AGENT_IDENTITY = "agent:agent";
+const AGENT_HOME = "/home/agent";
 const manifestPath = process.env.TASK_MANIFEST_FILE;
 const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
 const anthropicApiKey = process.env.ANTHROPIC_API_KEY ?? "";
@@ -15,8 +18,8 @@ if (!providerConfigPath) {
   console.error("PROVIDER_CONFIG_FILE is required");
   process.exit(1);
 }
-if (!anthropicApiKey) {
-  console.error("ANTHROPIC_API_KEY is required");
+if (!anthropicApiKey && !(await hasVerftBaseLogin("claude"))) {
+  console.error("ANTHROPIC_API_KEY or Claude base login is required");
   process.exit(1);
 }
 
@@ -26,7 +29,11 @@ const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && ma
   ? manifest.rawEventsJsonlPath.trim()
   : path.join(path.dirname(manifest.resultJsonPath), "raw-events.jsonl");
 await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
-process.env.ANTHROPIC_API_KEY = anthropicApiKey;
+if (anthropicApiKey) {
+  process.env.ANTHROPIC_API_KEY = anthropicApiKey;
+} else {
+  delete process.env.ANTHROPIC_API_KEY;
+}
 process.env.GIT_OPTIONAL_LOCKS = "0";
 const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
 const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
@@ -276,16 +283,14 @@ if (manifest.resolvedModel) {
   args.push("--model", manifest.resolvedModel);
 }
 
-const workspaceStats = await stat(manifest.workspacePath);
-const runtimeIdentity = workspaceStats.uid > 0 && workspaceStats.gid > 0 ? `${workspaceStats.uid}:${workspaceStats.gid}` : "agent:agent";
-const runtimeHome = configuredHomeDir && configuredHomeDir.length > 0
-  ? configuredHomeDir
-  : path.join("/runtime", `claude-home-${runtimeIdentity.replace(/[:/]/g, "-")}`);
+const runtimeIdentity = AGENT_IDENTITY;
+const runtimeHome = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : AGENT_HOME;
 const providerStatePath = configuredStatePath && configuredStatePath.length > 0
   ? configuredStatePath
   : path.join(runtimeHome, ".claude");
 await mkdir(runtimeHome, { recursive: true });
 await mkdir(providerStatePath, { recursive: true });
+await importVerftBaseState({ provider: "claude", homeDir: runtimeHome });
 await restoreClaudeProjectConfig(runtimeHome, providerStatePath);
 preserveHostexecPath();
 await ensureGitAskPass(runtimeHome);
@@ -300,7 +305,7 @@ console.log(
   `[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""} session=${persistedSessionId ?? "new"}`
 );
 console.log(`[runtime] claude thinking_budget_tokens=${manifest.resolvedThinkingBudgetTokens ?? "default"}`);
-await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath)]);
+await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
 if (!isAsk) {
   await runCommand("chown", ["-R", runtimeIdentity, manifest.workspacePath]).catch(() => undefined);
 }

@@ -2,15 +2,18 @@ import { createWriteStream } from "node:fs";
 import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { importVerftBaseState } from "./verft-base-state.mjs";
 
+const AGENT_IDENTITY = "agent:agent";
+const AGENT_HOME = "/home/agent";
 const manifestPath = process.env.TASK_MANIFEST_FILE;
 const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
 const openAiApiKey = process.env.OPENAI_API_KEY ?? "";
 const openAiBaseUrl = process.env.OPENAI_BASE_URL ?? "";
-const codexAuthJsonB64 = process.env.CODEX_AUTH_JSON_B64 ?? "";
-const codexAuthJson = codexAuthJsonB64.trim()
-  ? Buffer.from(codexAuthJsonB64, "base64").toString("utf8").trim()
-  : "";
+const verftBaseRoot = process.env.VERFT_BASE_ROOT?.trim() || "/verft-base";
+const verftBaseCodexAuthPath = path.join(verftBaseRoot, "codex", "auth.json");
+
+const fileExists = async (targetPath) => Boolean((await stat(targetPath).catch(() => null))?.isFile());
 
 if (!manifestPath) {
   console.error("TASK_MANIFEST_FILE is required");
@@ -20,8 +23,8 @@ if (!providerConfigPath) {
   console.error("PROVIDER_CONFIG_FILE is required");
   process.exit(1);
 }
-if (!openAiApiKey && !codexAuthJson) {
-  console.error("OPENAI_API_KEY or CODEX_AUTH_JSON_B64 is required");
+if (!openAiApiKey && !(await fileExists(verftBaseCodexAuthPath))) {
+  console.error(`OPENAI_API_KEY or ${verftBaseCodexAuthPath} is required`);
   process.exit(1);
 }
 
@@ -29,8 +32,8 @@ const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 const providerConfig = await readFile(providerConfigPath, "utf8").catch(() => "");
 const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
 const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
-const codexDir = configuredStatePath && configuredStatePath.length > 0 ? configuredStatePath : path.join("/root", ".codex");
-const homeDir = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : path.dirname(codexDir);
+const homeDir = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : AGENT_HOME;
+const codexDir = configuredStatePath && configuredStatePath.length > 0 ? configuredStatePath : path.join(homeDir, ".codex");
 const lastMessageFile = path.join(path.dirname(manifest.resultJsonPath), "codex-last-message.txt");
 const sessionIdFile = path.join(codexDir, "verft-session-id.txt");
 const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
@@ -180,15 +183,37 @@ esac
   process.env.GIT_ASKPASS = askPassPath;
 };
 
+const runCommand = (command, args, options = {}) =>
+  new Promise((resolve, reject) => {
+    const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], ...options });
+    let stderr = "";
+
+    proc.stdout.on("data", (chunk) => process.stdout.write(chunk));
+    proc.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+      process.stderr.write(chunk);
+    });
+    proc.on("error", reject);
+    proc.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(stderr || `${command} exited with code ${code ?? "unknown"}`));
+    });
+  });
+
 await mkdir(homeDir, { recursive: true });
 await mkdir(codexDir, { recursive: true });
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
 await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
-await writeFile(path.join(codexDir, "config.toml"), providerConfig, "utf8");
-if (codexAuthJson) {
-  await writeFile(path.join(codexDir, "auth.json"), codexAuthJson, "utf8");
-}
+await importVerftBaseState({ provider: "codex", homeDir, generatedConfig: providerConfig });
+process.env.CODEX_HOME = codexDir;
 console.log("[runtime] wrote Codex config");
+console.log(
+  `[runtime] codex auth base=${(await fileExists(verftBaseCodexAuthPath)) ? "present" : "missing"} home=${(await fileExists(path.join(codexDir, "auth.json"))) ? "present" : "missing"}`
+);
 
 if (openAiBaseUrl) {
   process.env.OPENAI_BASE_URL = openAiBaseUrl;
@@ -286,9 +311,16 @@ const buildPrompt = () => {
   return promptSections.join("\n");
 };
 
-if (!codexAuthJson) {
+const isAsk = manifest.action === "ask";
+await runCommand("chown", ["-R", AGENT_IDENTITY, homeDir, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
+if (!isAsk) {
+  await runCommand("chown", ["-R", AGENT_IDENTITY, manifest.workspacePath]).catch(() => undefined);
+}
+console.log(`[runtime] prepared codex runtime user=${AGENT_IDENTITY}`);
+
+if (!(await fileExists(path.join(codexDir, "auth.json")))) {
   await new Promise((resolve, reject) => {
-    const proc = spawn("codex", ["login", "--with-api-key"], {
+    const proc = spawn("su-exec", [AGENT_IDENTITY, "codex", "login", "--with-api-key"], {
       env: process.env,
       cwd: manifest.workspacePath,
       stdio: ["pipe", "pipe", "pipe"]
@@ -310,7 +342,6 @@ if (!codexAuthJson) {
 }
 
 const prompt = buildPrompt();
-const isAsk = manifest.action === "ask";
 const persistedSessionId = await readPersistedSessionId();
 let resolvedSessionId = persistedSessionId;
 
@@ -352,7 +383,11 @@ if (persistedSessionId) {
   args.push("--", prompt);
 }
 
-const execProc = spawn("codex", args, { env: process.env, cwd: manifest.workspacePath, stdio: ["ignore", "pipe", "pipe"] });
+const execProc = spawn("su-exec", [AGENT_IDENTITY, "codex", ...args], {
+  env: process.env,
+  cwd: manifest.workspacePath,
+  stdio: ["ignore", "pipe", "pipe"]
+});
 let stdoutBuffer = "";
 let stderrBuffer = "";
 const rawEventsStream = createWriteStream(rawEventsJsonlPath, { flags: "a" });

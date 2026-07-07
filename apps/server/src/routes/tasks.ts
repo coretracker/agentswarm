@@ -24,7 +24,8 @@ import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } 
 import { beginTaskStart, getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
 import { buildDiffAssistPromptContext, executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.js";
 import { executeTaskPromptMagic } from "../services/openai-task-prompt-magic-service.js";
-import { CodexUtilityError, CodexUtilityUnavailableError, executeCodexUtility } from "../services/codex-utility-service.js";
+import { executeCodexUtility } from "../services/codex-utility-service.js";
+import { executeClaudeUtility } from "../services/claude-utility-service.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
@@ -1075,62 +1076,36 @@ export const registerTaskRoutes = (
         deps.settingsStore.getSettings(),
         deps.settingsStore.getRuntimeCredentials(null, "auto")
       ]);
-      if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
-        return reply.status(400).send({ message: "Codex auth.json or OpenAI API key is not configured." });
-      }
-
       try {
-        if (credentials.codexAuthJson) {
-          try {
-            const context = await buildDiffAssistPromptContext({
+        const result = credentials.openaiApiKey
+          ? await executeOpenAiDiffAssist({
               taskId: task.id,
-              userPrompt: parsed.data.userPrompt,
-              filePath: parsed.data.filePath,
-              selectedSnippet: parsed.data.selectedSnippet
-            });
-            const text = await executeCodexUtility({
-              prompt: [
-                "You are a careful code assistant. Answer using the provided context. Be concise and accurate.",
-                "",
-                context,
-                "",
-                "Return only the requested answer. Do not include unrelated commentary."
-              ].join("\n"),
               model: parsed.data.model,
               providerProfile: parsed.data.providerProfile,
-              credentials
-            });
-            return reply.send({ text });
-          } catch (error) {
-            if (!credentials.openaiApiKey || !(error instanceof CodexUtilityUnavailableError)) {
-              throw error;
-            }
-          }
-        }
-
-        if (!credentials.openaiApiKey) {
-          return reply.status(400).send({ message: "OpenAI API key is not configured and Codex utility runner is unavailable." });
-        }
-
-        const result = await executeOpenAiDiffAssist({
-          taskId: task.id,
-          model: parsed.data.model,
-          providerProfile: parsed.data.providerProfile,
-          userPrompt: parsed.data.userPrompt,
-          filePath: parsed.data.filePath,
-          selectedSnippet: parsed.data.selectedSnippet,
-          openaiApiKey: credentials.openaiApiKey,
-          openaiBaseUrl: settings.openaiBaseUrl
-        });
+              userPrompt: parsed.data.userPrompt,
+              filePath: parsed.data.filePath,
+              selectedSnippet: parsed.data.selectedSnippet,
+              openaiApiKey: credentials.openaiApiKey,
+              openaiBaseUrl: settings.openaiBaseUrl
+            })
+          : {
+              text:
+                task.provider === "claude"
+                  ? await executeClaudeUtility({
+                      prompt: await buildDiffAssistPromptContext({ taskId: task.id, ...parsed.data }),
+                      model: task.modelOverride ?? settings.claudeDefaultModel,
+                      credentials
+                    })
+                  : await executeCodexUtility({
+                      prompt: await buildDiffAssistPromptContext({ taskId: task.id, ...parsed.data }),
+                      model: task.modelOverride ?? settings.codexDefaultModel,
+                      providerProfile: task.providerProfile,
+                      credentials
+                    })
+            };
 
         return reply.send(result);
       } catch (error: unknown) {
-        if (error instanceof CodexUtilityUnavailableError) {
-          return reply.status(400).send({ message: error.message });
-        }
-        if (error instanceof CodexUtilityError) {
-          return reply.status(error.statusCode).send({ message: error.message });
-        }
         if (
           error &&
           typeof error === "object" &&
@@ -1138,6 +1113,16 @@ export const registerTaskRoutes = (
           typeof (error as { status: unknown }).status === "number"
         ) {
           const status = (error as { status: number }).status;
+          const message = error instanceof Error ? error.message : "Request failed";
+          return reply.status(status).send({ message });
+        }
+        if (
+          error &&
+          typeof error === "object" &&
+          "statusCode" in error &&
+          typeof (error as { statusCode: unknown }).statusCode === "number"
+        ) {
+          const status = (error as { statusCode: number }).statusCode;
           const message = error instanceof Error ? error.message : "Request failed";
           return reply.status(status).send({ message });
         }
@@ -1159,35 +1144,11 @@ export const registerTaskRoutes = (
         deps.settingsStore.getSettings(),
         deps.settingsStore.getRuntimeCredentials(null, "auto")
       ]);
-      if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
-        return reply.status(400).send({ message: "Codex auth.json or OpenAI API key is not configured." });
+      if (!credentials.openaiApiKey) {
+        return reply.status(400).send({ message: "OpenAI API key is not configured." });
       }
 
       try {
-        if (credentials.codexAuthJson) {
-          try {
-            const prompt = await executeCodexUtility({
-              prompt: [
-                settings.taskPromptMagicTemplate.replaceAll("{{user_request}}", parsed.data.prompt.trim()),
-                "",
-                "Return only the rewritten prompt text. Do not include markdown fences, commentary, labels, or explanation."
-              ].join("\n"),
-              model: settings.taskPromptMagicModel,
-              providerProfile: settings.codexDefaultEffort,
-              credentials
-            });
-            return reply.send({ prompt });
-          } catch (error) {
-            if (!credentials.openaiApiKey || !(error instanceof CodexUtilityUnavailableError)) {
-              throw error;
-            }
-          }
-        }
-
-        if (!credentials.openaiApiKey) {
-          return reply.status(400).send({ message: "OpenAI API key is not configured and Codex utility runner is unavailable." });
-        }
-
         const result = await executeTaskPromptMagic({
           prompt: parsed.data.prompt,
           model: settings.taskPromptMagicModel,
@@ -1197,12 +1158,6 @@ export const registerTaskRoutes = (
         });
         return reply.send(result);
       } catch (error: unknown) {
-        if (error instanceof CodexUtilityUnavailableError) {
-          return reply.status(400).send({ message: error.message });
-        }
-        if (error instanceof CodexUtilityError) {
-          return reply.status(error.statusCode).send({ message: error.message });
-        }
         if (
           error &&
           typeof error === "object" &&

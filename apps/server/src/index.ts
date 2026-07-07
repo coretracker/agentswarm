@@ -23,6 +23,7 @@ import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerGitHubPrWebhookRoutes } from "./routes/github-pr-webhooks.js";
 import { registerSnippetRoutes } from "./routes/snippets.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
+import { attachSettingsProviderTerminalUpgrade } from "./lib/settings-provider-terminal.js";
 import { registerMcpRoutes } from "./mcp/server.js";
 
 const readHeaderValue = (value: string | string[] | undefined): string | null => {
@@ -233,6 +234,7 @@ const bootstrap = async (): Promise<void> => {
     userStore,
     repositoryStore
   });
+  attachSettingsProviderTerminalUpgrade(app.server, { auth, settingsStore });
 
   const io = new SocketIOServer(app.server, {
     cors: {

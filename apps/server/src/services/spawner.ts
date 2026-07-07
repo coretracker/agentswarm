@@ -73,10 +73,12 @@ import { buildDockerWorkspaceMountArgs } from "../lib/docker-workspace-mounts.js
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { buildHostexecRuntimeConfig } from "../lib/hostexec-runtime.js";
 import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
+import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "../lib/verft-base-mounts.js";
 import { AGENT_RUNTIME_IMAGE, DEFAULT_GIT_COMMIT_IDENTITY, env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
-import { executeCodexUtility, CodexUtilityUnavailableError } from "./codex-utility-service.js";
-import { buildDiffAssistPromptContext, executeOpenAiDiffAssist } from "./openai-diff-assist-service.js";
+import { executeOpenAiDiffAssist } from "./openai-diff-assist-service.js";
+import { executeCodexUtility } from "./codex-utility-service.js";
+import { executeClaudeUtility } from "./claude-utility-service.js";
 import type { TaskStore } from "./task-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import type { UserStore } from "./user-store.js";
@@ -93,7 +95,7 @@ const AUTO_APPLY_COMMIT_MESSAGE_PROFILE = "low";
 const VERFT_RUNTIME_MCP_SERVER_NAME = "verft";
 const VERFT_RUNTIME_MCP_ENDPOINT_ENV = "VERFT_MCP_ENDPOINT";
 const VERFT_RUNTIME_MCP_ENDPOINTS_ENV = "VERFT_MCP_ENDPOINTS";
-const VERFT_RUNTIME_MCP_TOKEN_ENV = "VERFT_MCP_TOKEN";
+const VERFT_RUNTIME_MCP_TOKEN_ENV = "VERFT_MCP_OAUTH_TOKEN";
 const VERFT_RUNTIME_MCP_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const VERFT_RUNTIME_DIRNAME = ".verft-runtime";
 const VERFT_RUNTIME_HARNESS_FILE_NAME = "harness.md";
@@ -1313,7 +1315,15 @@ export class SpawnerService {
       return;
     }
 
-    await this.runCommand("docker", ["build", "-t", definition.image, definition.context]);
+    try {
+      await this.runCommand("docker", ["build", "-t", definition.image, definition.context]);
+    } catch (error) {
+      const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+      if (!message.includes("parent snapshot") && !message.includes("does not exist: not found")) {
+        throw error;
+      }
+      await this.runCommand("docker", ["build", "--no-cache", "-t", definition.image, definition.context]);
+    }
     this.runtimeReady.add(definition.image);
   }
 
@@ -1818,11 +1828,11 @@ export class SpawnerService {
   }
 
   private resolveProviderStateContainerPath(provider: AgentProvider): string {
-    return provider === "claude" ? "/home/agent/.claude" : "/root/.codex";
+    return provider === "claude" ? "/home/agent/.claude" : "/home/agent/.codex";
   }
 
-  private resolveProviderHomeContainerPath(provider: AgentProvider): string {
-    return provider === "claude" ? "/home/agent" : "/root";
+  private resolveProviderHomeContainerPath(_provider: AgentProvider): string {
+    return "/home/agent";
   }
 
   private resolveProviderStateMountSourceRelativePath(
@@ -1830,7 +1840,7 @@ export class SpawnerService {
     provider: AgentProvider,
     providerStatePaths: Awaited<ReturnType<typeof ensureTaskProviderStatePaths>>
   ): string {
-    const mountHostPath = provider === "claude" ? providerStatePaths.homeHostPath : providerStatePaths.hostPath;
+    const mountHostPath = providerStatePaths.homeHostPath;
     if (!mountHostPath) {
       throw new Error(`Provider state mount path is not available for ${provider}.`);
     }
@@ -1845,6 +1855,8 @@ export class SpawnerService {
     if (
       normalizedSource === ".claude" ||
       normalizedSource.endsWith("/.claude") ||
+      normalizedSource === ".codex" ||
+      normalizedSource.endsWith("/.codex") ||
       !normalizedSource.startsWith(expectedPrefix)
     ) {
       throw new Error(`Refusing to mount unsafe provider state path for ${provider}: ${normalizedSource}`);
@@ -3189,10 +3201,9 @@ export class SpawnerService {
         ...baseServers,
         {
           name: VERFT_RUNTIME_MCP_SERVER_NAME,
-          transport: "stdio",
-          command: "node",
-          args: ["/usr/local/bin/verft-mcp-bridge.mjs"],
-          env: verftMcpEnv,
+          transport: "http",
+          url: verftMcpEnv[VERFT_RUNTIME_MCP_ENDPOINT_ENV],
+          bearerTokenEnvVar: VERFT_RUNTIME_MCP_TOKEN_ENV,
           enabled: true
         }
       ],
@@ -3240,52 +3251,42 @@ export class SpawnerService {
     ]);
 
     try {
-      if (credentials.codexAuthJson) {
-        try {
-          const context = await buildDiffAssistPromptContext({
-            taskId: task.id,
-            userPrompt: AUTO_APPLY_COMMIT_MESSAGE_PROMPT,
-            filePath,
-            selectedSnippet: diffSnippet
-          });
-          const text = await executeCodexUtility({
-            prompt: [
-              "You write concise git commit subjects.",
-              "",
-              context,
-              "",
-              "Return only the requested commit subject line."
-            ].join("\n"),
-            model: AUTO_APPLY_COMMIT_MESSAGE_MODEL,
-            providerProfile: AUTO_APPLY_COMMIT_MESSAGE_PROFILE,
-            credentials
-          });
-          const candidate = normalizeGeneratedCommitSubject(text);
-          if (candidate) {
-            return this.toCommitSubject(candidate);
-          }
-        } catch (error) {
-          if (!credentials.openaiApiKey || !(error instanceof CodexUtilityUnavailableError)) {
-            throw error;
-          }
-        }
-      }
-
-      if (!credentials.openaiApiKey) {
-        return fallback;
-      }
-
-      const result = await executeOpenAiDiffAssist({
-        taskId: task.id,
-        model: AUTO_APPLY_COMMIT_MESSAGE_MODEL,
-        providerProfile: AUTO_APPLY_COMMIT_MESSAGE_PROFILE,
-        userPrompt: AUTO_APPLY_COMMIT_MESSAGE_PROMPT,
-        filePath,
-        selectedSnippet: diffSnippet,
-        openaiApiKey: credentials.openaiApiKey,
-        openaiBaseUrl: settings.openaiBaseUrl
-      });
-      const candidate = normalizeGeneratedCommitSubject(result.text);
+      const prompt = [
+        AUTO_APPLY_COMMIT_MESSAGE_PROMPT,
+        "",
+        `File: ${filePath}`,
+        "",
+        "Diff:",
+        "```diff",
+        diffSnippet,
+        "```"
+      ].join("\n");
+      const text = credentials.openaiApiKey
+        ? (
+            await executeOpenAiDiffAssist({
+              taskId: task.id,
+              model: AUTO_APPLY_COMMIT_MESSAGE_MODEL,
+              providerProfile: AUTO_APPLY_COMMIT_MESSAGE_PROFILE,
+              userPrompt: AUTO_APPLY_COMMIT_MESSAGE_PROMPT,
+              filePath,
+              selectedSnippet: diffSnippet,
+              openaiApiKey: credentials.openaiApiKey,
+              openaiBaseUrl: settings.openaiBaseUrl
+            })
+          ).text
+        : task.provider === "claude"
+          ? await executeClaudeUtility({
+              prompt,
+              model: task.modelOverride ?? settings.claudeDefaultModel,
+              credentials
+            })
+          : await executeCodexUtility({
+              prompt,
+              model: task.modelOverride ?? settings.codexDefaultModel,
+              providerProfile: task.providerProfile,
+              credentials
+            });
+      const candidate = normalizeGeneratedCommitSubject(text);
       return candidate ? this.toCommitSubject(candidate) : fallback;
     } catch (error) {
       await this.taskStore.appendLog(
@@ -5642,7 +5643,7 @@ export class SpawnerService {
       });
       const providerStateContainerPath = this.resolveProviderStateContainerPath(task.provider);
       const providerHomeContainerPath = this.resolveProviderHomeContainerPath(task.provider);
-      const providerStateMountContainerPath = task.provider === "claude" ? providerHomeContainerPath : providerStateContainerPath;
+      const providerStateMountContainerPath = providerHomeContainerPath;
       const providerStatePaths = await ensureTaskProviderStatePaths(task.id, task.provider);
       const providerStateMountSourceRelativePath = this.resolveProviderStateMountSourceRelativePath(
         task.id,
@@ -5700,6 +5701,7 @@ export class SpawnerService {
         ...linkedWorkspaceMountPlan.mountArgs,
         ...gitRuntimeMounts,
         ...hostexecRuntime.mountArgs,
+        ...buildVerftBaseVolumeMountArgs(),
         ...this.buildTaskWorkspaceMountArgs(
           providerStateMountSourceRelativePath,
           providerStateMountContainerPath,
@@ -5717,7 +5719,8 @@ export class SpawnerService {
         "-e",
         `TASK_PROVIDER_STATE_PATH=${providerStateContainerPath}`,
         "-e",
-        `TASK_PROVIDER_HOME=${providerHomeContainerPath}`
+        `TASK_PROVIDER_HOME=${providerHomeContainerPath}`,
+        ...buildVerftBaseEnvArgs()
       ];
 
       const addRuntimeEnv = (name: string, value: string): void => {

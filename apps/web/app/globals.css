@@ -2,6 +2,7 @@
 
 :root {
   color-scheme: light;
+  --app-monospace-font: "Fire Code", "Fira Code", "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace;
   --app-body-bg: #f4f8f5;
   --app-body-text: #5a675d;
   --diff-background-color: #fcfefd;
@@ -382,6 +383,7 @@ html,
 body {
   margin: 0;
   min-height: 100%;
+  font-family: var(--app-monospace-font);
 }
 
 body {
@@ -401,7 +403,7 @@ pre {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: "SFMono-Regular", "Consolas", monospace;
+  font-family: var(--app-monospace-font);
 }
 
 .xterm .xterm-screen {
@@ -412,6 +414,10 @@ pre {
 .diff {
   background: var(--diff-background-color);
   color: var(--diff-text-color);
+}
+
+.task-timeline-diff .diff > ol {
+  padding-top: 4px;
 }
 
 .diff-hunk + .diff-hunk .diff-line:first-child td,

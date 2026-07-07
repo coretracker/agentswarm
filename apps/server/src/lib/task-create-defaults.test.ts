@@ -18,7 +18,6 @@ const settings: SystemSettings = {
   taskPromptMagicTemplate: "",
   githubTokenConfigured: false,
   openaiApiKeyConfigured: true,
-  codexAuthJsonConfigured: false,
   anthropicApiKeyConfigured: true,
   codexDefaultModel: "gpt-5.5",
   codexModels: [],

@@ -269,7 +269,7 @@ export function TaskDiffOpenAiPanel({
     return (
       <Card size="small">
         <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "\"SFMono-Regular\", Consolas, monospace" }}
+          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "var(--app-monospace-font)" }}
         >
           {emptyMessage}
         </Typography.Paragraph>
@@ -287,7 +287,7 @@ export function TaskDiffOpenAiPanel({
     return (
       <Card size="small">
         <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "\"SFMono-Regular\", Consolas, monospace" }}
+          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "var(--app-monospace-font)" }}
         >
           {normalizeDiffForRendering(diffText) || diffText}
         </Typography.Paragraph>

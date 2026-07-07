@@ -33,7 +33,7 @@ import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
   isPublicPathname,
-  isTaskTerminalFullscreenPath,
+  isTerminalFullscreenPath,
   navigationRoutes,
   resolveDefaultPath
 } from "../src/auth/access";
@@ -264,7 +264,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     return <Spin fullscreen tip="Loading session" />;
   }
 
-  if (isTaskTerminalFullscreenPath(pathname)) {
+  if (isTerminalFullscreenPath(pathname)) {
     return (
       <App>
         {hasRouteAccess ? (

@@ -37,13 +37,9 @@ export const providerRuntimeDefinitions: Record<AgentProvider, ProviderRuntimeDe
     context: path.join(repoRoot, "agent-runtime"),
     command: ["node", "/usr/local/bin/run-task-codex.mjs"],
     configFileName: "codex-config.toml",
-    getMissingCredentialMessage: (credentials) =>
-      credentials.openaiApiKey || credentials.codexAuthJson ? null : "OpenAI API key or Codex auth.json is not configured.",
+    getMissingCredentialMessage: () => null,
     getRuntimeEnv: (credentials) => ({
       OPENAI_API_KEY: credentials.openaiApiKey ?? undefined,
-      CODEX_AUTH_JSON_B64: credentials.codexAuthJson
-        ? Buffer.from(credentials.codexAuthJson, "utf8").toString("base64")
-        : undefined,
       OPENAI_BASE_URL: credentials.openaiBaseUrl ?? undefined
     }),
     getProviderConfig: serializeCodexMcpConfig,
@@ -58,8 +54,7 @@ export const providerRuntimeDefinitions: Record<AgentProvider, ProviderRuntimeDe
     context: path.join(repoRoot, "agent-runtime"),
     command: ["node", "/usr/local/bin/run-task-claude.mjs"],
     configFileName: "claude-mcp.json",
-    getMissingCredentialMessage: (credentials) =>
-      credentials.anthropicApiKey ? null : "Anthropic API key is not configured in Settings.",
+    getMissingCredentialMessage: () => null,
     getRuntimeEnv: (credentials) => ({
       ANTHROPIC_API_KEY: credentials.anthropicApiKey ?? undefined,
       ANTHROPIC_BASE_URL: credentials.anthropicBaseUrl ?? undefined

@@ -411,7 +411,7 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: Pars
     return (
       <Card size="small">
         <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "\"SFMono-Regular\", Consolas, monospace" }}
+          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "var(--app-monospace-font)" }}
         >
           {emptyMessage}
         </Typography.Paragraph>
@@ -504,7 +504,7 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: Pars
     return (
       <Card size="small">
         <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "\"SFMono-Regular\", Consolas, monospace" }}
+          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "var(--app-monospace-font)" }}
         >
           {normalizeDiffForRendering(diffText) || diffText}
         </Typography.Paragraph>
@@ -1180,7 +1180,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const codeTextStyle: CSSProperties = {
     marginBottom: 0,
     whiteSpace: "pre-wrap",
-    fontFamily: "\"SFMono-Regular\", Consolas, monospace"
+    fontFamily: "var(--app-monospace-font)"
   };
   const syncExecutionConfigInputs = (nextTask: Task): void => {
     setProviderInput(nextTask.provider ?? "codex");
@@ -2020,7 +2020,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       const codeValue = (Array.isArray(children) ? children.join("") : String(children ?? "")).replace(/\n$/, "");
 
       if (language === "diff" || codeValue.startsWith("diff --git")) {
-        return renderParsedDiff(codeValue, "No diff preview available.");
+        return <div className="task-timeline-diff">{renderParsedDiff(codeValue, "No diff preview available.")}</div>;
       }
 
       if (language === "mermaid") {
@@ -4170,7 +4170,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const chatComposer = (
     <Flex vertical gap={12}>
       <Flex gap={8} align="center" wrap="wrap">
-        <Button onClick={() => setAiSettingsModalOpen(true)}>AI Settings</Button>
+        <Button onClick={() => setAiSettingsModalOpen(true)}>Settings</Button>
         <Select
           showSearch
           value={modelInput}
@@ -4330,7 +4330,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             </Button>
             <Popconfirm
               title="Clear composer?"
-              description="This will clear the message input, selected reference images, and reset the AI settings to this task's defaults."
+              description="This will clear the message input, selected reference images, and reset the settings to this task's defaults."
               okText="Clear"
               cancelText="Cancel"
               okButtonProps={{ danger: true }}
@@ -5749,7 +5749,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
       />
       <Modal
-        title="AI Settings"
+        title="Settings"
         open={aiSettingsModalOpen}
         onCancel={() => setAiSettingsModalOpen(false)}
         destroyOnClose

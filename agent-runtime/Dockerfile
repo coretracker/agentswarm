@@ -47,13 +47,13 @@ RUN apt-get update \
 
 RUN ln -sf "$CLAUDE_INSTALL_ROOT/.local/bin/claude" /usr/local/bin/claude
 
-ENV HOME=/root \
+ENV HOME=/home/agent \
   PATH=/runtime/home/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 WORKDIR /runtime
 COPY run-task-codex.mjs /usr/local/bin/run-task-codex.mjs
 COPY run-task-claude.mjs /usr/local/bin/run-task-claude.mjs
-COPY verft-mcp-bridge.mjs /usr/local/bin/verft-mcp-bridge.mjs
+COPY verft-base-state.mjs /usr/local/bin/verft-base-state.mjs
 COPY hostexec-proxy.mjs /usr/local/bin/hostexec-proxy.mjs
 
 CMD ["bash"]

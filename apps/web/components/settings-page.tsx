@@ -46,6 +46,7 @@ import {
   Typography
 } from "antd";
 import { api } from "../src/api/client";
+import type { ProviderBaseStateStatus } from "../src/api/client";
 import { useSettings } from "../src/hooks/useSettings";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useAuth } from "./auth-provider";
@@ -76,7 +77,6 @@ interface GeneralSettingsForm {
 interface CredentialForm {
   githubToken?: string;
   openaiApiKey?: string;
-  codexAuthJson?: string;
   anthropicApiKey?: string;
 }
 
@@ -101,8 +101,8 @@ interface ResponsePreferencePresetFormValues {
   extraInstructions?: string;
 }
 
-type ClearCredentialTarget = "github" | "openai" | "codexAuthJson" | "anthropic";
-type SettingsTabKey = "general" | "git" | "hostexec" | "codex" | "claude";
+type ClearCredentialTarget = "github" | "openai" | "anthropic";
+type SettingsTabKey = "general" | "git" | "hostexec" | "credentials" | "codex" | "claude";
 type DirtyGeneralTabKey = SettingsTabKey;
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
@@ -175,6 +175,8 @@ export function SettingsPage() {
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [checkingHostexec, setCheckingHostexec] = useState(false);
   const [hostexecAvailability, setHostexecAvailability] = useState<HostexecAvailability | null>(null);
+  const [providerBaseStateStatus, setProviderBaseStateStatus] = useState<ProviderBaseStateStatus | null>(null);
+  const [providerBaseStateLoading, setProviderBaseStateLoading] = useState(false);
   const [autoFillingProvider, setAutoFillingProvider] = useState<AgentProvider | null>(null);
   const [savingRole, setSavingRole] = useState(false);
   const [savingResponsePreferencePreset, setSavingResponsePreferencePreset] = useState(false);
@@ -293,14 +295,6 @@ export function SettingsPage() {
         return;
       }
 
-      if (target === "codexAuthJson") {
-        const nextSettings = await api.updateCredentials({ clearCodexAuthJson: true });
-        setSettings(nextSettings);
-        credentialForm.resetFields(["codexAuthJson"]);
-        message.success("Codex auth.json cleared");
-        return;
-      }
-
       const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
       setSettings(nextSettings);
       credentialForm.resetFields(["anthropicApiKey"]);
@@ -313,11 +307,6 @@ export function SettingsPage() {
 
       if (target === "openai") {
         message.error(error instanceof Error ? error.message : "Failed to clear OpenAI API key");
-        return;
-      }
-
-      if (target === "codexAuthJson") {
-        message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
         return;
       }
 
@@ -441,7 +430,6 @@ export function SettingsPage() {
       const nextSettings = await api.updateCredentials({
         githubToken: values.githubToken?.trim() || undefined,
         openaiApiKey: values.openaiApiKey?.trim() || undefined,
-        codexAuthJson: values.codexAuthJson?.trim() || undefined,
         anthropicApiKey: values.anthropicApiKey?.trim() || undefined
       });
       credentialForm.resetFields();
@@ -489,12 +477,26 @@ export function SettingsPage() {
     }
   }, [generalForm, message]);
 
+  const loadProviderBaseStateStatus = useCallback(async (options: { silent?: boolean } = {}) => {
+    setProviderBaseStateLoading(true);
+    try {
+      setProviderBaseStateStatus(await api.getProviderBaseStateStatus());
+    } catch (error) {
+      if (!options.silent) {
+        message.error(error instanceof Error ? error.message : "Failed to load provider base state");
+      }
+    } finally {
+      setProviderBaseStateLoading(false);
+    }
+  }, [message]);
+
   useEffect(() => {
     if (!settings) {
       return;
     }
     void checkHostexec({ silent: true });
-  }, [checkHostexec, settings]);
+    void loadProviderBaseStateStatus({ silent: true });
+  }, [checkHostexec, loadProviderBaseStateStatus, settings]);
 
   const confirmLeave = (): boolean => {
     if (!hasUnsavedChanges || typeof window === "undefined") {
@@ -511,6 +513,24 @@ export function SettingsPage() {
       return;
     }
     setActiveTab(nextTab);
+  };
+
+  const openProviderSetupTerminalWindow = (): void => {
+    const url = `${window.location.origin}/settings/provider-setup-terminal`;
+    const w = Math.min(1280, window.screen.availWidth - 48);
+    const h = Math.min(840, window.screen.availHeight - 48);
+    const features = [
+      "popup=yes",
+      `width=${w}`,
+      `height=${h}`,
+      "menubar=no",
+      "toolbar=no",
+      "location=yes",
+      "status=no",
+      "resizable=yes",
+      "scrollbars=yes"
+    ].join(",");
+    window.open(url, "_blank", `${features},noopener,noreferrer`);
   };
 
   const renderSaveBar = (options: { dirty: boolean; label: string; loading: boolean; statusText?: string }) => (
@@ -549,12 +569,16 @@ export function SettingsPage() {
       label: <span>{generalDirtyTabs.includes("hostexec") ? "Hostexec *" : "Hostexec"}</span>
     },
     {
+      key: "credentials",
+      label: <span>{credentialDirtyTabs.includes("credentials") ? "Credentials *" : "Credentials"}</span>
+    },
+    {
       key: "codex",
-      label: <span>{generalDirtyTabs.includes("codex") || credentialDirtyTabs.includes("codex") ? "Codex *" : "Codex"}</span>
+      label: <span>{generalDirtyTabs.includes("codex") ? "Codex *" : "Codex"}</span>
     },
     {
       key: "claude",
-      label: <span>{generalDirtyTabs.includes("claude") || credentialDirtyTabs.includes("claude") ? "Claude Code *" : "Claude Code"}</span>
+      label: <span>{generalDirtyTabs.includes("claude") ? "Claude Code *" : "Claude Code"}</span>
     }
   ];
 
@@ -895,19 +919,19 @@ export function SettingsPage() {
           </Form>
         ) : null}
 
-        {activeTab === "codex" ? (
+        {activeTab === "credentials" ? (
           <Card
             bordered={false}
             loading={loading}
-            title="Codex Credentials"
+            title="Provider Credentials"
             extra={
               settings ? (
                 <Space wrap>
                   <Tag color={settings.openaiApiKeyConfigured ? "green" : "default"}>
-                    API Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
+                    OpenAI Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
                   </Tag>
-                  <Tag color={settings.codexAuthJsonConfigured ? "green" : "default"}>
-                    auth.json {settings.codexAuthJsonConfigured ? "Configured" : "Missing"}
+                  <Tag color={settings.anthropicApiKeyConfigured ? "green" : "default"}>
+                    Anthropic Key {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
                   </Tag>
                 </Space>
               ) : null
@@ -917,38 +941,59 @@ export function SettingsPage() {
               type="info"
               showIcon
               style={{ marginBottom: 16 }}
-              message="Credentials are write-only"
-              description="Tokens are encrypted on the server and never returned by the API."
+              message="Shared provider setup"
+              description="API keys are encrypted in Verft settings. The setup terminal stores Codex and Claude login and plugin files in the shared base volume so new tasks can reuse them."
             />
+            <Flex vertical gap={8} style={{ marginBottom: 16 }}>
+              <Flex align="center" justify="space-between" gap={12} wrap="wrap">
+                <Typography.Text strong>Shared base files</Typography.Text>
+                <Button
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  loading={providerBaseStateLoading}
+                  onClick={() => void loadProviderBaseStateStatus()}
+                >
+                  Refresh
+                </Button>
+              </Flex>
+              <Space wrap>
+                {Object.entries(providerBaseStateStatus?.files ?? {}).map(([file, exists]) => (
+                  <Tag key={file} color={exists ? "green" : "default"}>
+                    {file} {exists ? "Present" : "Missing"}
+                  </Tag>
+                ))}
+                {!providerBaseStateStatus && !providerBaseStateLoading ? (
+                  <Typography.Text type="secondary">Base file status not loaded.</Typography.Text>
+                ) : null}
+              </Space>
+              {providerBaseStateStatus ? (
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  Volume: {providerBaseStateStatus.volume}
+                </Typography.Text>
+              ) : null}
+            </Flex>
             <Form
               form={credentialForm}
               layout="vertical"
               disabled={!canEditSettings}
-              onValuesChange={() => markCredentialTabDirty("codex")}
+              onValuesChange={() => markCredentialTabDirty("credentials")}
               onFinish={saveCredentials}
             >
-              <Form.Item name="openaiApiKey" label="API Key">
+              <Form.Item name="openaiApiKey" label="OpenAI API Key">
                 <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
               </Form.Item>
-              <Form.Item
-                name="codexAuthJson"
-                label="auth.json"
-                extra="Used as the Global Codex credential source and as the Auto fallback after profile auth.json."
-              >
-                <Input.TextArea
-                  autoSize={{ minRows: 4, maxRows: 10 }}
-                  placeholder={settings?.codexAuthJsonConfigured ? "Configured. Paste a new auth.json to replace it." : "{ ... }"}
-                />
+              <Form.Item name="anthropicApiKey" label="Anthropic API Key">
+                <Input.Password placeholder={settings?.anthropicApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-ant-..."} />
               </Form.Item>
               {renderSaveBar({
                 dirty: credentialsDirty,
-                label: "Save Codex Credentials",
+                label: "Save Credentials",
                 loading: savingCredentials,
-                statusText: credentialsDirty ? "Unsaved Codex credential changes" : "No pending Codex credential changes"
+                statusText: credentialsDirty ? "Unsaved credential changes" : "No pending credential changes"
               })}
               <Space wrap>
                 <Popconfirm
-                  title="Clear Codex API key?"
+                  title="Clear OpenAI API key?"
                   description="This removes the stored OpenAI API key from settings."
                   okText="Clear"
                   cancelText="Cancel"
@@ -958,82 +1003,27 @@ export function SettingsPage() {
                   onConfirm={() => handleClearCredential("openai")}
                 >
                   <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                    Clear API Key
+                    Clear OpenAI Key
                   </Button>
                 </Popconfirm>
                 <Popconfirm
-                  title="Clear Codex auth.json?"
-                  description="This removes the stored global Codex auth.json from settings."
+                  title="Clear Anthropic API key?"
+                  description="This removes the stored Anthropic API key from settings."
                   okText="Clear"
                   cancelText="Cancel"
                   okButtonProps={{ danger: true, loading: savingCredentials }}
                   placement="top"
                   disabled={!canEditSettings}
-                  onConfirm={() => handleClearCredential("codexAuthJson")}
+                  onConfirm={() => handleClearCredential("anthropic")}
                 >
                   <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                    Clear auth.json
+                    Clear Anthropic Key
                   </Button>
                 </Popconfirm>
-              </Space>
-            </Form>
-          </Card>
-        ) : null}
-
-        {activeTab === "claude" ? (
-          <Card
-            bordered={false}
-            loading={loading}
-            title="Claude Code Credentials"
-            extra={
-              settings ? (
-                <Tag color={settings.anthropicApiKeyConfigured ? "green" : "default"}>
-                  API Key {settings.anthropicApiKeyConfigured ? "Configured" : "Missing"}
-                </Tag>
-              ) : null
-            }
-          >
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message="Credentials are write-only"
-              description="Tokens are encrypted on the server and never returned by the API."
-            />
-            <Form
-              form={credentialForm}
-              layout="vertical"
-              disabled={!canEditSettings}
-              onValuesChange={() => markCredentialTabDirty("claude")}
-              onFinish={saveCredentials}
-            >
-              <Form.Item
-                name="anthropicApiKey"
-                label="API Key"
-                extra="Used for Claude Code (experimental) runs only."
-              >
-                <Input.Password placeholder={settings?.anthropicApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-ant-..."} />
-              </Form.Item>
-              {renderSaveBar({
-                dirty: credentialsDirty,
-                label: "Save Claude Code Credentials",
-                loading: savingCredentials,
-                statusText: credentialsDirty ? "Unsaved Claude Code credential changes" : "No pending Claude Code credential changes"
-              })}
-              <Popconfirm
-                title="Clear Claude Code API key?"
-                description="This removes the stored Anthropic API key from settings."
-                okText="Clear"
-                cancelText="Cancel"
-                okButtonProps={{ danger: true, loading: savingCredentials }}
-                placement="top"
-                disabled={!canEditSettings}
-                onConfirm={() => handleClearCredential("anthropic")}
-              >
-                <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                  Clear API Key
+                <Button disabled={!canEditSettings} onClick={openProviderSetupTerminalWindow}>
+                  Open Provider Setup Terminal
                 </Button>
-              </Popconfirm>
+              </Space>
             </Form>
           </Card>
         ) : null}

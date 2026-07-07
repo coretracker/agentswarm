@@ -12,7 +12,6 @@ const nowIso = (): string => new Date().toISOString();
 interface StoredCredentials {
   githubToken: string | null;
   openaiApiKey: string | null;
-  codexAuthJson: string | null;
   anthropicApiKey: string | null;
 }
 
@@ -27,13 +26,11 @@ export interface RuntimeCredentials {
   githubToken: string | null;
   openaiApiKey: string | null;
   anthropicApiKey: string | null;
-  codexAuthJson?: string | null;
 }
 
 export interface CredentialStatus {
   githubTokenConfigured: boolean;
   openaiApiKeyConfigured: boolean;
-  codexAuthJsonConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
 }
 
@@ -107,7 +104,6 @@ export class RedisCredentialStore implements CredentialStore {
       return {
         githubToken: null,
         openaiApiKey: null,
-        codexAuthJson: null,
         anthropicApiKey: null
       };
     }
@@ -118,21 +114,19 @@ export class RedisCredentialStore implements CredentialStore {
       return {
         githubToken: parsed.githubToken?.trim() || null,
         openaiApiKey: parsed.openaiApiKey?.trim() || null,
-        codexAuthJson: parsed.codexAuthJson?.trim() || null,
         anthropicApiKey: parsed.anthropicApiKey?.trim() || null
       };
     } catch {
       return {
         githubToken: null,
         openaiApiKey: null,
-        codexAuthJson: null,
         anthropicApiKey: null
       };
     }
   }
 
   private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
-    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey) {
+    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey) {
       await this.redis.del(CREDENTIALS_KEY);
       return;
     }
@@ -146,8 +140,7 @@ export class RedisCredentialStore implements CredentialStore {
     return {
       githubToken: current.githubToken,
       openaiApiKey: current.openaiApiKey,
-      anthropicApiKey: current.anthropicApiKey,
-      codexAuthJson: current.codexAuthJson
+      anthropicApiKey: current.anthropicApiKey
     };
   }
 
@@ -156,7 +149,6 @@ export class RedisCredentialStore implements CredentialStore {
     return {
       githubTokenConfigured: Boolean(credentials.githubToken),
       openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
-      codexAuthJsonConfigured: Boolean(credentials.codexAuthJson),
       anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
     };
   }
@@ -174,11 +166,6 @@ export class RedisCredentialStore implements CredentialStore {
         : input.openaiApiKey?.trim()
           ? input.openaiApiKey.trim()
           : current.openaiApiKey,
-      codexAuthJson: input.clearCodexAuthJson
-        ? null
-        : input.codexAuthJson?.trim()
-          ? input.codexAuthJson.trim()
-          : current.codexAuthJson,
       anthropicApiKey: input.clearAnthropicApiKey
         ? null
         : input.anthropicApiKey?.trim()
@@ -259,7 +246,6 @@ export class PostgresCredentialStore implements CredentialStore {
       return {
         githubToken: null,
         openaiApiKey: null,
-        codexAuthJson: null,
         anthropicApiKey: null
       };
     }
@@ -270,21 +256,19 @@ export class PostgresCredentialStore implements CredentialStore {
       return {
         githubToken: parsed.githubToken?.trim() || null,
         openaiApiKey: parsed.openaiApiKey?.trim() || null,
-        codexAuthJson: parsed.codexAuthJson?.trim() || null,
         anthropicApiKey: parsed.anthropicApiKey?.trim() || null
       };
     } catch {
       return {
         githubToken: null,
         openaiApiKey: null,
-        codexAuthJson: null,
         anthropicApiKey: null
       };
     }
   }
 
   private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
-    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey) {
+    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey) {
       await this.pool.query("DELETE FROM credentials WHERE singleton_id = 1");
       return;
     }
@@ -312,8 +296,7 @@ export class PostgresCredentialStore implements CredentialStore {
     return {
       githubToken: current.githubToken,
       openaiApiKey: current.openaiApiKey,
-      anthropicApiKey: current.anthropicApiKey,
-      codexAuthJson: current.codexAuthJson
+      anthropicApiKey: current.anthropicApiKey
     };
   }
 
@@ -322,7 +305,6 @@ export class PostgresCredentialStore implements CredentialStore {
     return {
       githubTokenConfigured: Boolean(credentials.githubToken),
       openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
-      codexAuthJsonConfigured: Boolean(credentials.codexAuthJson),
       anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
     };
   }
@@ -340,11 +322,6 @@ export class PostgresCredentialStore implements CredentialStore {
         : input.openaiApiKey?.trim()
           ? input.openaiApiKey.trim()
           : current.openaiApiKey,
-      codexAuthJson: input.clearCodexAuthJson
-        ? null
-        : input.codexAuthJson?.trim()
-          ? input.codexAuthJson.trim()
-          : current.codexAuthJson,
       anthropicApiKey: input.clearAnthropicApiKey
         ? null
         : input.anthropicApiKey?.trim()

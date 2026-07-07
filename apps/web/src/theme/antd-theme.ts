@@ -1,5 +1,7 @@
 import { theme as antTheme, type ThemeConfig } from "antd";
 
+export const appMonospaceFontFamily = '"Fire Code", "Fira Code", "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace';
+
 export type AppThemeMode =
   | "light"
   | "dark"
@@ -1754,34 +1756,57 @@ export const isDarkAppTheme = (mode: AppThemeMode): boolean =>
   mode === "graphite-dark";
 
 export const getAppAntdTheme = (mode: AppThemeMode): ThemeConfig => {
+  let theme: ThemeConfig;
   switch (mode) {
     case "dark":
-      return darkAntdTheme;
+      theme = darkAntdTheme;
+      break;
     case "forge":
-      return forgeAntdTheme;
+      theme = forgeAntdTheme;
+      break;
     case "forge-light":
-      return forgeLightAntdTheme;
+      theme = forgeLightAntdTheme;
+      break;
     case "github":
-      return githubAntdTheme;
+      theme = githubAntdTheme;
+      break;
     case "github-light":
-      return githubLightAntdTheme;
+      theme = githubLightAntdTheme;
+      break;
     case "verft-light":
-      return verftLightAntdTheme;
+      theme = verftLightAntdTheme;
+      break;
     case "verft-dark":
-      return verftDarkAntdTheme;
+      theme = verftDarkAntdTheme;
+      break;
     case "ember-light":
-      return emberLightAntdTheme;
+      theme = emberLightAntdTheme;
+      break;
     case "ember-dark":
-      return emberDarkAntdTheme;
+      theme = emberDarkAntdTheme;
+      break;
     case "moss-light":
-      return mossLightAntdTheme;
+      theme = mossLightAntdTheme;
+      break;
     case "moss-dark":
-      return mossDarkAntdTheme;
+      theme = mossDarkAntdTheme;
+      break;
     case "graphite-light":
-      return graphiteLightAntdTheme;
+      theme = graphiteLightAntdTheme;
+      break;
     case "graphite-dark":
-      return graphiteDarkAntdTheme;
+      theme = graphiteDarkAntdTheme;
+      break;
     default:
-      return lightAntdTheme;
+      theme = lightAntdTheme;
   }
+
+  return {
+    ...theme,
+    token: {
+      ...theme.token,
+      fontFamily: appMonospaceFontFamily,
+      fontFamilyCode: appMonospaceFontFamily
+    }
+  };
 };

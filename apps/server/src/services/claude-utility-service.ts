@@ -2,69 +2,50 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ProviderProfile } from "@verft/shared-types";
 import { AGENT_RUNTIME_IMAGE, env } from "../config/env.js";
-import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
 import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "../lib/verft-base-mounts.js";
 import type { SettingsRuntimeCredentials } from "./settings-store.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_OUTPUT_MAX_CHARS = 12_000;
-const CODEX_UTILITY_DIR_NAME = "codex-utility";
+const CLAUDE_UTILITY_DIR_NAME = "claude-utility";
 
-export class CodexUtilityUnavailableError extends Error {
+export class ClaudeUtilityUnavailableError extends Error {
   readonly statusCode = 400;
 
   constructor(message: string) {
     super(message);
-    this.name = "CodexUtilityUnavailableError";
+    this.name = "ClaudeUtilityUnavailableError";
   }
 }
 
-export class CodexUtilityError extends Error {
+export class ClaudeUtilityError extends Error {
   constructor(
     message: string,
     readonly statusCode = 502
   ) {
     super(message);
-    this.name = "CodexUtilityError";
+    this.name = "ClaudeUtilityError";
   }
 }
 
-const codexUtilityScript = `
+const claudeUtilityScript = `
 set -eu
-mkdir -p "$HOME/.codex"
-[ -f "\${VERFT_BASE_ROOT:-/verft-base}/codex/auth.json" ] && cp "\${VERFT_BASE_ROOT:-/verft-base}/codex/auth.json" "$HOME/.codex/auth.json"
-cat > "$HOME/.codex/config.toml" <<'EOF'
-sandbox_mode = "read-only"
-approval_policy = "never"
-
-[notice]
-hide_rate_limit_model_nudge = true
-hide_gpt5_1_migration_prompt = true
-"hide_gpt-5.1-codex-max_migration_prompt" = true
-EOF
-if [ -n "\${OPENAI_API_KEY:-}" ]; then
-  chown -R agent:agent "$HOME" "$CODEX_UTILITY_WORKDIR" 2>/dev/null || true
-  printf %s "$OPENAI_API_KEY" | su-exec agent:agent codex login --with-api-key -c cli_auth_credentials_store=file
-elif [ ! -f "$HOME/.codex/auth.json" ]; then
-  echo "OpenAI API key or Codex auth.json is not configured." >&2
+mkdir -p "$HOME/.claude"
+[ -f "\${VERFT_BASE_ROOT:-/verft-base}/claude/.credentials.json" ] && cp "\${VERFT_BASE_ROOT:-/verft-base}/claude/.credentials.json" "$HOME/.claude/.credentials.json"
+[ -f "\${VERFT_BASE_ROOT:-/verft-base}/claude/settings.json" ] && cp "\${VERFT_BASE_ROOT:-/verft-base}/claude/settings.json" "$HOME/.claude/settings.json"
+[ -f "\${VERFT_BASE_ROOT:-/verft-base}/claude/.claude.json" ] && cp "\${VERFT_BASE_ROOT:-/verft-base}/claude/.claude.json" "$HOME/.claude.json"
+if [ -z "\${ANTHROPIC_API_KEY:-}" ] && [ ! -f "$HOME/.claude/.credentials.json" ]; then
+  echo "Anthropic API key or Claude credentials.json is not configured." >&2
   exit 64
-else
-  :
 fi
-chown -R agent:agent "$HOME" "$CODEX_UTILITY_WORKDIR" 2>/dev/null || true
-su-exec agent:agent codex exec \\
-  --ephemeral \\
-  --skip-git-repo-check \\
-  --ignore-rules \\
-  --sandbox read-only \\
-  -C "$CODEX_UTILITY_WORKDIR" \\
-  -m "$CODEX_MODEL" \\
-  -c cli_auth_credentials_store=file \\
-  -c "model_reasoning_effort=\\"$CODEX_REASONING_EFFORT\\"" \\
-  -o "$CODEX_UTILITY_WORKDIR/output.txt" \\
-  - < "$CODEX_UTILITY_WORKDIR/prompt.txt"
+chown -R agent:agent "$HOME" "$CLAUDE_UTILITY_WORKDIR" 2>/dev/null || true
+CLAUDE_REAL="$(command -v claude)"
+su-exec agent:agent "$CLAUDE_REAL" \\
+  -p "$(cat "$CLAUDE_UTILITY_WORKDIR/prompt.txt")" \\
+  --output-format text \\
+  --model "$CLAUDE_MODEL" \\
+  > "$CLAUDE_UTILITY_WORKDIR/output.txt"
 `;
 
 const trimProcessOutput = (value: string, maxChars = 4000): string => {
@@ -84,17 +65,14 @@ const isDockerRunnerUnavailable = (code: number | null, output: string): boolean
   );
 };
 
-export async function executeCodexUtility(input: {
+export async function executeClaudeUtility(input: {
   prompt: string;
   model: string;
-  providerProfile: ProviderProfile;
   credentials: SettingsRuntimeCredentials;
   timeoutMs?: number;
   outputMaxChars?: number;
 }): Promise<string> {
-  const image = AGENT_RUNTIME_IMAGE;
-
-  const tempDir = path.join(env.RUNTIME_PAYLOAD_ROOT, CODEX_UTILITY_DIR_NAME, randomUUID());
+  const tempDir = path.join(env.RUNTIME_PAYLOAD_ROOT, CLAUDE_UTILITY_DIR_NAME, randomUUID());
   await mkdir(tempDir, { recursive: true });
   await writeFile(path.join(tempDir, "prompt.txt"), input.prompt, "utf8");
 
@@ -104,23 +82,21 @@ export async function executeCodexUtility(input: {
     "-e",
     "HOME=/home/agent",
     "-e",
-    `CODEX_MODEL=${input.model}`,
+    `CLAUDE_MODEL=${input.model}`,
     "-e",
-    `CODEX_REASONING_EFFORT=${codexReasoningEffortForProfile(input.providerProfile)}`,
-    "-e",
-    `CODEX_UTILITY_WORKDIR=${tempDir}`,
-    ...(input.credentials.openaiApiKey ? ["-e", `OPENAI_API_KEY=${input.credentials.openaiApiKey}`] : []),
-    ...(input.credentials.openaiBaseUrl ? ["-e", `OPENAI_BASE_URL=${input.credentials.openaiBaseUrl}`] : []),
+    `CLAUDE_UTILITY_WORKDIR=${tempDir}`,
+    ...(input.credentials.anthropicApiKey ? ["-e", `ANTHROPIC_API_KEY=${input.credentials.anthropicApiKey}`] : []),
+    ...(input.credentials.anthropicBaseUrl ? ["-e", `ANTHROPIC_BASE_URL=${input.credentials.anthropicBaseUrl}`] : []),
     ...buildVerftBaseEnvArgs(),
     "-v",
     `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
     ...buildVerftBaseVolumeMountArgs(),
     "-w",
     tempDir,
-    image,
+    AGENT_RUNTIME_IMAGE,
     "sh",
     "-lc",
-    codexUtilityScript
+    claudeUtilityScript
   ];
 
   try {
@@ -132,7 +108,7 @@ export async function executeCodexUtility(input: {
       const timeout = setTimeout(() => {
         settled = true;
         child.kill("SIGKILL");
-        reject(new CodexUtilityError("Codex utility run timed out.", 504));
+        reject(new ClaudeUtilityError("Claude utility run timed out.", 504));
       }, input.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 
       child.stdout.setEncoding("utf8");
@@ -149,7 +125,7 @@ export async function executeCodexUtility(input: {
         }
         settled = true;
         clearTimeout(timeout);
-        reject(new CodexUtilityUnavailableError(`Failed to start Codex utility runner: ${error.message}`));
+        reject(new ClaudeUtilityUnavailableError(`Failed to start Claude utility runner: ${error.message}`));
       });
       child.on("close", (code) => {
         if (settled) {
@@ -163,16 +139,16 @@ export async function executeCodexUtility(input: {
         }
         const details = trimProcessOutput(stderr || stdout);
         if (isDockerRunnerUnavailable(code, details)) {
-          reject(new CodexUtilityUnavailableError(details || "Codex utility runner Docker image is unavailable."));
+          reject(new ClaudeUtilityUnavailableError(details || "Claude utility runner Docker image is unavailable."));
           return;
         }
-        reject(new CodexUtilityError(details || `Codex utility run failed with exit code ${code ?? "unknown"}.`));
+        reject(new ClaudeUtilityError(details || `Claude utility run failed with exit code ${code ?? "unknown"}.`));
       });
     });
 
     const output = (await readFile(path.join(tempDir, "output.txt"), "utf8")).trim();
     if (!output) {
-      throw new CodexUtilityError("Codex utility run returned empty output.");
+      throw new ClaudeUtilityError("Claude utility run returned empty output.");
     }
     return output.slice(0, input.outputMaxChars ?? DEFAULT_OUTPUT_MAX_CHARS);
   } finally {

@@ -85,18 +85,20 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
   });
 
-  it("mounts Claude provider state from a task-scoped home path", () => {
+  it("mounts provider state from a task-scoped agent home path", () => {
     const spawner = createSpawner() as any;
     const paths = {
-      hostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/Task-AbC/claude-home/.claude"),
-      homeHostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/Task-AbC/claude-home")
+      hostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/Task-AbC/agent-home/.claude"),
+      homeHostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/Task-AbC/agent-home")
     };
 
     assert.equal(
       spawner.resolveProviderStateMountSourceRelativePath("Task AbC", "claude", paths),
-      ".task-state/Task-AbC/claude-home"
+      ".task-state/Task-AbC/agent-home"
     );
+    assert.equal(spawner.resolveProviderStateContainerPath("codex"), "/home/agent/.codex");
     assert.equal(spawner.resolveProviderStateContainerPath("claude"), "/home/agent/.claude");
+    assert.equal(spawner.resolveProviderHomeContainerPath("codex"), "/home/agent");
     assert.equal(spawner.resolveProviderHomeContainerPath("claude"), "/home/agent");
   });
 
@@ -153,16 +155,14 @@ describe("SpawnerService workspace provisioning", () => {
     );
 
     assert.equal(runtimeMcp.injectedVerftMcp, true);
-    assert.equal(runtimeMcp.env.VERFT_MCP_TOKEN, "runtime-token");
+    assert.equal(runtimeMcp.env.VERFT_MCP_OAUTH_TOKEN, "runtime-token");
     assert.equal(createdTokens.length, 1);
     assert.equal(runtimeMcp.servers.length, 2);
     assert.deepEqual(
       runtimeMcp.servers.map((server: { name: string }) => server.name),
       ["github", "verft"]
     );
-    assert.equal(runtimeMcp.servers[1].transport, "stdio");
-    assert.equal(runtimeMcp.servers[1].command, "node");
-    assert.deepEqual(runtimeMcp.servers[1].args, ["/usr/local/bin/verft-mcp-bridge.mjs"]);
+    assert.equal(runtimeMcp.servers[1].transport, "http");
     const expectedEndpoints = existsSync("/.dockerenv")
       ? [
           `http://127.0.0.1:${env.PORT}/mcp`,
@@ -173,11 +173,8 @@ describe("SpawnerService workspace provisioning", () => {
     const expectedEndpoint = expectedEndpoints[0] ?? "";
     assert.equal(runtimeMcp.env.VERFT_MCP_ENDPOINT, expectedEndpoint);
     assert.equal(runtimeMcp.env.VERFT_MCP_ENDPOINTS, expectedEndpoints.join(","));
-    assert.deepEqual(runtimeMcp.servers[1].env, {
-      VERFT_MCP_ENDPOINT: expectedEndpoint,
-      VERFT_MCP_ENDPOINTS: expectedEndpoints.join(","),
-      VERFT_MCP_TOKEN: "runtime-token"
-    });
+    assert.equal(runtimeMcp.servers[1].url, expectedEndpoint);
+    assert.equal(runtimeMcp.servers[1].bearerTokenEnvVar, "VERFT_MCP_OAUTH_TOKEN");
   });
 
   it("resolves task runtime MCP servers from the task repository", async () => {
@@ -586,7 +583,6 @@ describe("SpawnerService workspace provisioning", () => {
       gitUsername: "x-access-token",
       openaiApiKey: null,
       anthropicApiKey: null,
-      codexAuthJson: null,
       openaiBaseUrl: null,
       anthropicBaseUrl: null,
       defaultProvider: "codex"

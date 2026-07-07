@@ -918,7 +918,6 @@ export interface SystemSettings {
   taskPromptMagicTemplate: string;
   githubTokenConfigured: boolean;
   openaiApiKeyConfigured: boolean;
-  codexAuthJsonConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
   codexDefaultModel: string;
   codexModels: ProviderModelOption[];
@@ -1406,11 +1405,9 @@ export interface UpdateSettingsInput {
 export interface UpdateCredentialSettingsInput {
   githubToken?: string;
   openaiApiKey?: string;
-  codexAuthJson?: string;
   anthropicApiKey?: string;
   clearGithubToken?: boolean;
   clearOpenAiApiKey?: boolean;
-  clearCodexAuthJson?: boolean;
   clearAnthropicApiKey?: boolean;
 }
 

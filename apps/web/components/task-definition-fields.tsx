@@ -24,6 +24,7 @@ import {
 } from "@verft/shared-types";
 import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Typography, message } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
+import type { ProviderBaseStateStatus } from "../src/api/client";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
@@ -60,17 +61,14 @@ export interface TaskDefinitionFieldsProps {
 
 type SnippetVariableFormValues = Record<string, string>;
 
-const providerOptions = (
-  hasOpenAi: boolean,
-  hasAnthropic: boolean
-): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
-  { label: "Codex (OpenAI)", value: "codex", disabled: !hasOpenAi },
-  { label: getAgentProviderLabel("claude"), value: "claude", disabled: !hasAnthropic }
+const providerOptions = (hasClaudeCredentials: boolean): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
+  { label: "Codex (OpenAI)", value: "codex" },
+  { label: getAgentProviderLabel("claude"), value: "claude", disabled: !hasClaudeCredentials }
 ];
 
 const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
   { label: "Auto (System credentials)", value: "auto" },
-  { label: "Global OpenAI key or auth.json", value: "global" }
+  { label: "Global OpenAI key", value: "global" }
 ];
 
 const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSettings | null): string =>
@@ -85,6 +83,11 @@ const getProviderConfiguredModels = (provider: AgentProvider, settings?: SystemS
   const models = provider === "claude" ? settings?.claudeModels : settings?.codexModels;
   return models && models.length > 0 ? models : getModelsForProvider(provider);
 };
+
+export const hasClaudeTaskCredentials = (
+  settings?: Pick<SystemSettings, "anthropicApiKeyConfigured"> | null,
+  providerBaseState?: Pick<ProviderBaseStateStatus, "files"> | null
+): boolean => Boolean(settings?.anthropicApiKeyConfigured || providerBaseState?.files["claude/.credentials.json"]);
 
 const getResolvedProviderForDefaults = (
   repository?: Repository | null,
@@ -181,6 +184,7 @@ export function TaskDefinitionFields({
   const { can, session } = useAuth();
   const { repositories } = useRepositories();
   const { settings } = useSettings();
+  const [providerBaseState, setProviderBaseState] = useState<ProviderBaseStateStatus | null>(null);
   const [magicPromptLoading, setMagicPromptLoading] = useState(false);
   const [selectedSnippetToInsertId, setSelectedSnippetToInsertId] = useState<string | null>(null);
   const [pendingSnippetForInsert, setPendingSnippetForInsert] = useState<Snippet | null>(null);
@@ -201,19 +205,13 @@ export function TaskDefinitionFields({
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
   const effectiveTaskType = selectedTaskType;
   const isImplementationTask = effectiveTaskType === "build";
-  const hasGlobalCodexCredentials = Boolean(settings?.openaiApiKeyConfigured || settings?.codexAuthJsonConfigured);
-  const hasAnyCodexCredentials = hasGlobalCodexCredentials;
+  const hasClaudeCredentials = hasClaudeTaskCredentials(settings, providerBaseState);
   const providerMissingCredentials =
-    selectedProvider === "codex"
-      ? !hasAnyCodexCredentials
-      : !settings?.anthropicApiKeyConfigured;
+    selectedProvider === "codex" ? false : !hasClaudeCredentials;
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
   const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
-  const providerSelectOptions = providerOptions(
-    hasAnyCodexCredentials,
-    Boolean(settings?.anthropicApiKeyConfigured)
-  ).map(
+  const providerSelectOptions = providerOptions(hasClaudeCredentials).map(
     (option) => ({
       ...option,
       disabled: Boolean(option.disabled || (roleAllowedProviders.length > 0 && !roleAllowedProviders.includes(option.value)))
@@ -229,6 +227,26 @@ export function TaskDefinitionFields({
     ...(canBuildTasks ? [{ label: "Build", value: "build" as const }] : []),
     ...(canAskTasks ? [{ label: "Ask", value: "ask" as const }] : [])
   ];
+
+  useEffect(() => {
+    let active = true;
+    void api
+      .getProviderBaseStateStatus()
+      .then((status) => {
+        if (active) {
+          setProviderBaseState(status);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setProviderBaseState(null);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     if (!settings || !syncSettingsDefaults) {
@@ -597,7 +615,7 @@ export function TaskDefinitionFields({
                 message={`${selectedProvider === "codex" ? "Codex" : "Anthropic"} credentials are missing`}
                 description={
                 selectedProvider === "codex"
-                  ? "Configure Codex auth.json in your Profile or Settings, or set an OpenAI API key in Settings before running this task."
+                  ? "Configure a Codex login terminal or set an OpenAI API key in Settings before running this task."
                   : "Configure the provider credential in Settings before running this task."
                 }
               />

@@ -5,7 +5,8 @@ import { env } from "../config/env.js";
 
 const TASK_PROVIDER_STATE_ROOT = ".task-state";
 const LEGACY_INTERACTIVE_STATE_ROOT = ".interactive-homes";
-const CLAUDE_HOME_DIRNAME = "claude-home";
+const AGENT_HOME_DIRNAME = "agent-home";
+const LEGACY_CLAUDE_HOME_DIRNAME = "claude-home";
 
 function sanitizeTaskStateSegment(value: string): string {
   const normalized = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-");
@@ -46,8 +47,8 @@ async function findLatestClaudeConfigBackup(claudeStateDir: string): Promise<str
 export function resolveTaskProviderStatePaths(taskId: string, provider: AgentProvider): {
   serverPath: string;
   hostPath: string;
-  homeServerPath: string | null;
-  homeHostPath: string | null;
+  homeServerPath: string;
+  homeHostPath: string;
   legacyServerPath: string;
   legacyHostPath: string;
   configServerPath: string | null;
@@ -55,23 +56,20 @@ export function resolveTaskProviderStatePaths(taskId: string, provider: AgentPro
 } {
   const taskSegment = sanitizeTaskStateSegment(taskId);
   const stateRootRelativePath = path.join(TASK_PROVIDER_STATE_ROOT, taskSegment);
-  const claudeHomeRelativePath = path.join(stateRootRelativePath, CLAUDE_HOME_DIRNAME);
-  const relativePath =
-    provider === "claude"
-      ? path.join(claudeHomeRelativePath, providerStateDirName(provider))
-      : path.join(stateRootRelativePath, providerStateDirName(provider));
+  const agentHomeRelativePath = path.join(stateRootRelativePath, AGENT_HOME_DIRNAME);
+  const relativePath = path.join(agentHomeRelativePath, providerStateDirName(provider));
   const legacyRelativePath = path.join(LEGACY_INTERACTIVE_STATE_ROOT, provider, taskSegment);
   const hasSidecarConfig = provider === "claude";
 
   return {
     serverPath: path.join(env.TASK_WORKSPACE_ROOT, relativePath),
     hostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, relativePath),
-    homeServerPath: provider === "claude" ? path.join(env.TASK_WORKSPACE_ROOT, claudeHomeRelativePath) : null,
-    homeHostPath: provider === "claude" ? path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, claudeHomeRelativePath) : null,
+    homeServerPath: path.join(env.TASK_WORKSPACE_ROOT, agentHomeRelativePath),
+    homeHostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, agentHomeRelativePath),
     legacyServerPath: path.join(env.TASK_WORKSPACE_ROOT, legacyRelativePath),
     legacyHostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, legacyRelativePath),
-    configServerPath: hasSidecarConfig ? path.join(env.TASK_WORKSPACE_ROOT, claudeHomeRelativePath, ".claude.json") : null,
-    configHostPath: hasSidecarConfig ? path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, claudeHomeRelativePath, ".claude.json") : null
+    configServerPath: hasSidecarConfig ? path.join(env.TASK_WORKSPACE_ROOT, agentHomeRelativePath, ".claude.json") : null,
+    configHostPath: hasSidecarConfig ? path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, agentHomeRelativePath, ".claude.json") : null
   };
 }
 
@@ -91,27 +89,33 @@ export async function ensureTaskProviderStatePaths(
 ): Promise<ReturnType<typeof resolveTaskProviderStatePaths>> {
   const paths = resolveTaskProviderStatePaths(taskId, provider);
   const taskStateRootPaths = resolveTaskStateRootPaths(taskId);
-  const legacyClaudeStateServerPath =
-    provider === "claude" ? path.join(taskStateRootPaths.serverPath, providerStateDirName(provider)) : null;
+  const legacyRootProviderStateServerPath = path.join(taskStateRootPaths.serverPath, providerStateDirName(provider));
+  const legacyClaudeHomeServerPath = path.join(taskStateRootPaths.serverPath, LEGACY_CLAUDE_HOME_DIRNAME);
+  const legacyClaudeHomeStateServerPath =
+    provider === "claude" ? path.join(legacyClaudeHomeServerPath, providerStateDirName(provider)) : null;
+  const legacyClaudeHomeConfigServerPath = provider === "claude" ? path.join(legacyClaudeHomeServerPath, ".claude.json") : null;
   const legacyClaudeConfigServerPath = provider === "claude" ? path.join(taskStateRootPaths.serverPath, ".claude.json") : null;
 
-  if (paths.homeServerPath) {
-    await mkdir(paths.homeServerPath, { recursive: true });
-  } else {
-    await mkdir(path.dirname(paths.serverPath), { recursive: true });
-  }
+  await mkdir(paths.homeServerPath, { recursive: true });
 
   if (!(await pathExists(paths.serverPath)) && (await pathExists(paths.legacyServerPath))) {
     await rename(paths.legacyServerPath, paths.serverPath).catch(() => undefined);
   }
   if (
-    provider === "claude" &&
-    legacyClaudeStateServerPath &&
-    legacyClaudeStateServerPath !== paths.serverPath &&
+    legacyRootProviderStateServerPath !== paths.serverPath &&
     !(await pathExists(paths.serverPath)) &&
-    (await pathExists(legacyClaudeStateServerPath))
+    (await pathExists(legacyRootProviderStateServerPath))
   ) {
-    await rename(legacyClaudeStateServerPath, paths.serverPath).catch(() => undefined);
+    await rename(legacyRootProviderStateServerPath, paths.serverPath).catch(() => undefined);
+  }
+  if (
+    provider === "claude" &&
+    legacyClaudeHomeStateServerPath &&
+    legacyClaudeHomeStateServerPath !== paths.serverPath &&
+    !(await pathExists(paths.serverPath)) &&
+    (await pathExists(legacyClaudeHomeStateServerPath))
+  ) {
+    await rename(legacyClaudeHomeStateServerPath, paths.serverPath).catch(() => undefined);
   }
   if (
     provider === "claude" &&
@@ -122,6 +126,16 @@ export async function ensureTaskProviderStatePaths(
     (await pathExists(legacyClaudeConfigServerPath))
   ) {
     await rename(legacyClaudeConfigServerPath, paths.configServerPath).catch(() => undefined);
+  }
+  if (
+    provider === "claude" &&
+    legacyClaudeHomeConfigServerPath &&
+    paths.configServerPath &&
+    legacyClaudeHomeConfigServerPath !== paths.configServerPath &&
+    !(await pathExists(paths.configServerPath)) &&
+    (await pathExists(legacyClaudeHomeConfigServerPath))
+  ) {
+    await rename(legacyClaudeHomeConfigServerPath, paths.configServerPath).catch(() => undefined);
   }
 
   await mkdir(paths.serverPath, { recursive: true });

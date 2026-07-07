@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { spawn as spawnChild } from "node:child_process";
 import type { FastifyInstance } from "fastify";
 import type { AgentProvider, HostexecAvailability, HostexecSettings } from "@verft/shared-types";
 import { CODEX_MODELS, CLAUDE_MODELS } from "@verft/shared-types";
@@ -6,6 +7,7 @@ import type { AuthService } from "../lib/auth.js";
 import { discoverHostexecEndpoint } from "../lib/hostexec-discovery.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
+import { AGENT_RUNTIME_IMAGE, env } from "../config/env.js";
 
 interface ProviderModelEntry {
   label: string;
@@ -166,17 +168,64 @@ const updateSettingsSchema = z.object({
 const updateCredentialsSchema = z.object({
   githubToken: z.string().trim().min(1).optional(),
   openaiApiKey: z.string().trim().min(1).optional(),
-  codexAuthJson: z.string().trim().min(1).optional(),
   anthropicApiKey: z.string().trim().min(1).optional(),
   clearGithubToken: z.boolean().optional(),
   clearOpenAiApiKey: z.boolean().optional(),
-  clearCodexAuthJson: z.boolean().optional(),
   clearAnthropicApiKey: z.boolean().optional()
 });
 
 const updateUserNotesSchema = z.object({
   notes: z.string().max(200_000)
 });
+
+async function getProviderBaseStateStatus(): Promise<{ volume: string; files: Record<string, boolean> }> {
+  const files = [
+    "codex/auth.json",
+    "codex/config.toml",
+    "codex/plugins",
+    "codex/skills",
+    "claude/.credentials.json",
+    "claude/.claude.json",
+    "claude/settings.json",
+    "claude/plugins"
+  ];
+  const script = [
+    "set -eu",
+    "printf '{'",
+    files
+      .map((file, index) =>
+        `[ -e "/verft-base/${file}" ] && v=true || v=false; printf '${index === 0 ? "" : ","}"${file}":%s' "$v"`
+      )
+      .join("\n"),
+    "printf '}'"
+  ].join("\n");
+
+  return new Promise((resolve) => {
+    const child = spawnChild(
+      "docker",
+      ["run", "--rm", "-v", `${env.VERFT_BASE_VOLUME}:/verft-base:ro`, AGENT_RUNTIME_IMAGE, "sh", "-lc", script],
+      { stdio: ["ignore", "pipe", "ignore"] }
+    );
+    let stdout = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.on("error", () => {
+      resolve({ volume: env.VERFT_BASE_VOLUME, files: Object.fromEntries(files.map((file) => [file, false])) });
+    });
+    child.on("close", (code) => {
+      if (code !== 0) {
+        resolve({ volume: env.VERFT_BASE_VOLUME, files: Object.fromEntries(files.map((file) => [file, false])) });
+        return;
+      }
+      try {
+        resolve({ volume: env.VERFT_BASE_VOLUME, files: JSON.parse(stdout) as Record<string, boolean> });
+      } catch {
+        resolve({ volume: env.VERFT_BASE_VOLUME, files: Object.fromEntries(files.map((file) => [file, false])) });
+      }
+    });
+  });
+}
 
 async function checkHostexecAvailability(settings: HostexecSettings): Promise<HostexecAvailability> {
   const discovery = await discoverHostexecEndpoint(settings);
@@ -218,6 +267,10 @@ export const registerSettingsRoutes = (
   }
 ): void => {
   app.get("/settings", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => deps.settingsStore.getSettings());
+
+  app.get("/settings/provider-base-state", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () =>
+    getProviderBaseStateStatus()
+  );
 
   app.get("/settings/hostexec/check", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => {
     const settings = await deps.settingsStore.getSettings();
@@ -273,17 +326,6 @@ export const registerSettingsRoutes = (
     const parsed = updateCredentialsSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    if (parsed.data.codexAuthJson !== undefined && !parsed.data.clearCodexAuthJson) {
-      try {
-        const parsedJson = JSON.parse(parsed.data.codexAuthJson) as unknown;
-        if (!parsedJson || typeof parsedJson !== "object" || Array.isArray(parsedJson)) {
-          return reply.status(400).send({ message: "Codex auth.json must be a JSON object" });
-        }
-      } catch {
-        return reply.status(400).send({ message: "Codex auth.json must be valid JSON" });
-      }
     }
 
     const settings = await deps.settingsStore.updateCredentials(parsed.data);

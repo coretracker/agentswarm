@@ -28,7 +28,6 @@ const createCredentialStore = (credentials: RuntimeCredentials): CredentialStore
     return {
       githubTokenConfigured: Boolean(credentials.githubToken),
       openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
-      codexAuthJsonConfigured: Boolean(credentials.codexAuthJson),
       anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
     };
   },
@@ -38,23 +37,22 @@ const createCredentialStore = (credentials: RuntimeCredentials): CredentialStore
 });
 
 describe("RedisSettingsStore runtime credentials", () => {
-  it("uses global Codex credentials regardless of user id or legacy profile source", async () => {
+  it("uses global API credentials regardless of user id or legacy profile source", async () => {
     const settingsStore = new RedisSettingsStore(
       new FakeRedis() as never,
       { publish: async () => undefined } as never,
       createCredentialStore({
         githubToken: null,
-        openaiApiKey: null,
-        anthropicApiKey: null,
-        codexAuthJson: "{\"system\":true}"
+        openaiApiKey: "sk-system",
+        anthropicApiKey: "anthropic-system"
       })
     );
 
     const userOneCredentials = await settingsStore.getRuntimeCredentials("user-1", "auto");
     const userTwoCredentials = await settingsStore.getRuntimeCredentials("user-2", "profile");
 
-    assert.equal(userOneCredentials.codexAuthJson, "{\"system\":true}");
-    assert.equal(userTwoCredentials.codexAuthJson, "{\"system\":true}");
+    assert.equal(userOneCredentials.openaiApiKey, "sk-system");
+    assert.equal(userTwoCredentials.anthropicApiKey, "anthropic-system");
   });
 
   it("returns system git author settings with runtime credentials", async () => {
@@ -64,8 +62,7 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null,
-        codexAuthJson: null
+        anthropicApiKey: null
       })
     );
 
@@ -87,8 +84,7 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null,
-        codexAuthJson: null
+        anthropicApiKey: null
       })
     );
 
@@ -110,8 +106,7 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null,
-        codexAuthJson: null
+        anthropicApiKey: null
       })
     );
 
@@ -160,8 +155,7 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null,
-        codexAuthJson: null
+        anthropicApiKey: null
       })
     );
 

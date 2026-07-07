@@ -62,7 +62,7 @@ export function buildTerminalEnvEntries(options: {
 }): Array<[string, string]> {
   return [
     ["TERM", "xterm-256color"],
-    ["HOME", "/root"],
+    ["HOME", "/home/agent"],
     ["TASK_INTERACTIVE_WORKSPACE", options.workspacePath],
     ...buildTaskRuntimeGitEnvEntries(options)
   ];

@@ -813,7 +813,7 @@ export function WorkspaceFilePreviewModal({
           <div
             style={{
               minWidth: "100%",
-              fontFamily: "SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace",
+              fontFamily: "var(--app-monospace-font)",
               fontSize: 13,
               lineHeight: 1.65
             }}

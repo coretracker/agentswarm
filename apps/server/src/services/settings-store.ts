@@ -73,7 +73,6 @@ const defaultSettings: SystemSettings = {
     "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
   githubTokenConfigured: false,
   openaiApiKeyConfigured: false,
-  codexAuthJsonConfigured: false,
   anthropicApiKeyConfigured: false,
   codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.5",
   codexModels: CODEX_MODELS,
@@ -413,7 +412,6 @@ export class RedisSettingsStore implements SettingsStore {
 
     return {
       ...credentials,
-      codexAuthJson: credentials.codexAuthJson ?? null,
       gitUsername: settings.gitUsername,
       gitAuthorName: settings.gitAuthorName,
       gitAuthorEmail: settings.gitAuthorEmail,
@@ -746,7 +744,6 @@ export class PostgresSettingsStore implements SettingsStore {
 
     return {
       ...credentials,
-      codexAuthJson: credentials.codexAuthJson ?? null,
       gitUsername: settings.gitUsername,
       gitAuthorName: settings.gitAuthorName,
       gitAuthorEmail: settings.gitAuthorEmail,

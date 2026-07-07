@@ -8,10 +8,10 @@ import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTas
 describe("task-provider-state", () => {
   it("builds task-scoped provider state paths", () => {
     const paths = resolveTaskProviderStatePaths("task 123", "codex");
-    assert.equal(paths.serverPath, "/task-workspaces/.task-state/task-123/.codex");
-    assert.equal(paths.hostPath, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/.codex"));
-    assert.equal(paths.homeServerPath, null);
-    assert.equal(paths.homeHostPath, null);
+    assert.equal(paths.serverPath, "/task-workspaces/.task-state/task-123/agent-home/.codex");
+    assert.equal(paths.hostPath, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/agent-home/.codex"));
+    assert.equal(paths.homeServerPath, "/task-workspaces/.task-state/task-123/agent-home");
+    assert.equal(paths.homeHostPath, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/agent-home"));
     assert.equal(paths.legacyServerPath, "/task-workspaces/.interactive-homes/codex/task-123");
     assert.equal(paths.configServerPath, null);
     assert.equal(paths.configHostPath, null);
@@ -19,13 +19,13 @@ describe("task-provider-state", () => {
 
   it("builds Claude task-scoped home paths", () => {
     const paths = resolveTaskProviderStatePaths("task 123", "claude");
-    assert.equal(paths.serverPath, "/task-workspaces/.task-state/task-123/claude-home/.claude");
-    assert.equal(paths.hostPath, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/claude-home/.claude"));
-    assert.equal(paths.homeServerPath, "/task-workspaces/.task-state/task-123/claude-home");
-    assert.equal(paths.homeHostPath, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/claude-home"));
+    assert.equal(paths.serverPath, "/task-workspaces/.task-state/task-123/agent-home/.claude");
+    assert.equal(paths.hostPath, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/agent-home/.claude"));
+    assert.equal(paths.homeServerPath, "/task-workspaces/.task-state/task-123/agent-home");
+    assert.equal(paths.homeHostPath, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/agent-home"));
     assert.equal(paths.legacyServerPath, "/task-workspaces/.interactive-homes/claude/task-123");
-    assert.equal(paths.configServerPath, "/task-workspaces/.task-state/task-123/claude-home/.claude.json");
-    assert.equal(paths.configHostPath, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/claude-home/.claude.json"));
+    assert.equal(paths.configServerPath, "/task-workspaces/.task-state/task-123/agent-home/.claude.json");
+    assert.equal(paths.configHostPath, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/agent-home/.claude.json"));
   });
 
   it("builds the task state root path", () => {

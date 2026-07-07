@@ -21,16 +21,17 @@ describe("buildTerminalStartScript", () => {
     assert.doesNotMatch(script, /then;\s/);
     assert.match(script, /Full toolbox shell available/);
     assert.match(script, /mkdir -p "\$HOME\/\.codex" "\$HOME\/\.claude"/);
-    assert.match(script, /CODEX_AUTH_JSON_B64/);
-    assert.match(script, /base64 -d > "\$HOME\/\.codex\/auth\.json"/);
-    assert.match(script, /chmod 600 "\$HOME\/\.codex\/auth\.json"/);
+    assert.match(script, /\$\{VERFT_BASE_ROOT:-\/verft-base\}\/codex\/auth\.json/);
+    assert.match(script, /chown -R agent:agent "\$HOME" "\$TASK_INTERACTIVE_WORKSPACE"/);
     assert.match(script, /\$HOME\/\.claude\/mcp-config\.json/);
     assert.match(script, /\/tmp\/verft-bin\/claude/);
+    assert.match(script, /chown -R agent:agent \/tmp\/verft-bin/);
+    assert.match(script, /chmod 755 \/tmp\/verft-bin \/tmp\/verft-bin\/claude/);
     assert.match(script, /HOSTEXEC_BIN_PATH/);
     assert.match(script, /export PATH="\$\{HOSTEXEC_BIN_PATH\}:\$PATH"/);
-    assert.match(script, /exec bash -lc/);
+    assert.match(script, /su-exec agent:agent bash -lc/);
     assert.match(script, /exec bash -i/);
-    assert.match(script, /exec sh -lc/);
+    assert.match(script, /su-exec agent:agent sh -lc/);
     assert.match(script, /exec sh -i'$/);
   });
 
@@ -46,7 +47,7 @@ describe("buildTerminalStartScript", () => {
     assert.doesNotMatch(dockerfile, /\bdocker\.io\b/);
     assert.match(dockerfile, /COPY run-task-codex\.mjs/);
     assert.match(dockerfile, /COPY run-task-claude\.mjs/);
-    assert.match(dockerfile, /COPY verft-mcp-bridge\.mjs/);
+    assert.match(dockerfile, /COPY verft-base-state\.mjs/);
     assert.match(dockerfile, /COPY hostexec-proxy\.mjs/);
   });
 });
@@ -104,6 +105,7 @@ describe("buildTerminalEnvEntries", () => {
     assert.equal(env.GIT_AUTHOR_EMAIL, "ada@example.com");
     assert.equal(env.GIT_COMMITTER_NAME, "Ada Lovelace");
     assert.equal(env.GIT_COMMITTER_EMAIL, "ada@example.com");
+    assert.equal(env.HOME, "/home/agent");
   });
 
   it("keeps token auth and safe.directory when identity is unavailable", () => {

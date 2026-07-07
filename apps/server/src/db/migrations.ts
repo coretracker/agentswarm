@@ -669,5 +669,43 @@ Feedback:
       ADD COLUMN IF NOT EXISTS default_model text NULL,
       ADD COLUMN IF NOT EXISTS default_provider_profile text NULL;
     `
+  },
+  {
+    id: "20260706_01_remove_slack_assistant_schema",
+    sql: `
+      DROP INDEX IF EXISTS users_slack_username_idx;
+      DROP INDEX IF EXISTS slack_assistant_conversations_user_idx;
+      DROP INDEX IF EXISTS slack_assistant_conversations_slack_context_idx;
+
+      DROP TABLE IF EXISTS slack_assistant_conversations;
+
+      ALTER TABLE users
+      DROP COLUMN IF EXISTS slack_username;
+
+      ALTER TABLE repositories
+      DROP COLUMN IF EXISTS slack_bot_token,
+      DROP COLUMN IF EXISTS slack_signing_secret,
+      DROP COLUMN IF EXISTS slack_agent_mcp_servers,
+      DROP COLUMN IF EXISTS slack_last_event_at,
+      DROP COLUMN IF EXISTS slack_last_event_status,
+      DROP COLUMN IF EXISTS slack_last_event_type,
+      DROP COLUMN IF EXISTS slack_last_event_error;
+
+      ALTER TABLE system_settings
+      DROP COLUMN IF EXISTS slack_bot_token,
+      DROP COLUMN IF EXISTS slack_signing_secret,
+      DROP COLUMN IF EXISTS slack_agent_mcp_servers,
+      DROP COLUMN IF EXISTS slack_last_event_at,
+      DROP COLUMN IF EXISTS slack_last_event_status,
+      DROP COLUMN IF EXISTS slack_last_event_type,
+      DROP COLUMN IF EXISTS slack_last_event_error,
+      DROP COLUMN IF EXISTS slack_assistant_provider,
+      DROP COLUMN IF EXISTS slack_assistant_model,
+      DROP COLUMN IF EXISTS slack_harness_what_exists,
+      DROP COLUMN IF EXISTS slack_harness_allowed_actions,
+      DROP COLUMN IF EXISTS slack_harness_how_to_work,
+      DROP COLUMN IF EXISTS slack_harness_definition_of_done,
+      DROP COLUMN IF EXISTS slack_harness_evidence_expectations;
+    `
   }
 ];

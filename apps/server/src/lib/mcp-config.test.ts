@@ -46,6 +46,23 @@ describe("serializeCodexMcpConfig", () => {
     assert.match(config, /bearer_token_env_var = "MCP_TOKEN"/);
     assert.doesNotMatch(config, /disabled/);
   });
+
+  it("serializes Verft MCP as an HTTP server for Codex", () => {
+    const config = serializeCodexMcpConfig([
+      {
+        name: "verft",
+        enabled: true,
+        transport: "http",
+        url: "http://host.docker.internal:4000/mcp",
+        bearerTokenEnvVar: "VERFT_MCP_OAUTH_TOKEN"
+      }
+    ]);
+
+    assert.match(config, /\[mcp_servers\.verft\]/);
+    assert.match(config, /url = "http:\/\/host\.docker\.internal:4000\/mcp"/);
+    assert.match(config, /bearer_token_env_var = "VERFT_MCP_OAUTH_TOKEN"/);
+    assert.doesNotMatch(config, /verft-mcp-bridge/);
+  });
 });
 
 describe("serializeClaudeMcpConfig", () => {
@@ -88,6 +105,37 @@ describe("serializeClaudeMcpConfig", () => {
               url: "https://example.com/mcp",
               headers: {
                 Authorization: "Bearer ${MCP_TOKEN}"
+              }
+            }
+          }
+        },
+        null,
+        2
+      )
+    );
+  });
+
+  it("serializes Verft MCP as an HTTP server for Claude", () => {
+    const config = serializeClaudeMcpConfig([
+      {
+        name: "verft",
+        enabled: true,
+        transport: "http",
+        url: "http://host.docker.internal:4000/mcp",
+        bearerTokenEnvVar: "VERFT_MCP_OAUTH_TOKEN"
+      }
+    ]);
+
+    assert.equal(
+      config,
+      JSON.stringify(
+        {
+          mcpServers: {
+            verft: {
+              type: "http",
+              url: "http://host.docker.internal:4000/mcp",
+              headers: {
+                Authorization: "Bearer ${VERFT_MCP_OAUTH_TOKEN}"
               }
             }
           }
