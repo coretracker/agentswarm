@@ -3,10 +3,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import {
   DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS,
   DEFAULT_SLACK_INITIAL_INSTRUCTIONS,
-  DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
-  type Repository,
-  type Task,
-  type TaskMessage
+  DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE
 } from "@verft/shared-types";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
 import { resolveCreateTaskProviderConfig } from "../lib/task-create-defaults.js";
@@ -33,16 +30,6 @@ interface SlackFeedback {
 }
 
 type SlackPromptKind = "initial" | "feedback";
-type SlackCommandAction = "help" | "status" | "cancel" | "queue" | "config" | "link";
-
-interface SlackCommand {
-  command: string;
-  teamId: string;
-  channelId: string;
-  userId: string;
-  text: string;
-  threadTs: string | null;
-}
 
 const SLACK_API_BASE_URL = "https://slack.com/api";
 
@@ -63,15 +50,6 @@ const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(v
 const stringValue = (record: Record<string, unknown>, key: string): string | null => {
   const value = record[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-};
-
-const parseFormBody = (rawBody: string): Record<string, string> => {
-  const params = new URLSearchParams(rawBody);
-  const parsed: Record<string, string> = {};
-  for (const [key, value] of params.entries()) {
-    parsed[key] = value;
-  }
-  return parsed;
 };
 
 const verifySlackSignature = (rawBody: string, timestamp: string | null, signature: string | null, secret: string): boolean => {
@@ -137,36 +115,6 @@ const normalizeSlackFeedback = (payload: unknown): SlackFeedback | null => {
   };
 };
 
-const normalizeSlackCommand = (payload: unknown): SlackCommand | null => {
-  if (!isRecord(payload)) {
-    return null;
-  }
-  const command = stringValue(payload, "command");
-  const teamId = stringValue(payload, "team_id");
-  const channelId = stringValue(payload, "channel_id");
-  const userId = stringValue(payload, "user_id");
-  if (!command || !teamId || !channelId || !userId) {
-    return null;
-  }
-  return {
-    command,
-    teamId,
-    channelId,
-    userId,
-    text: stringValue(payload, "text") ?? "",
-    threadTs: stringValue(payload, "thread_ts")
-  };
-};
-
-const parseSlackCommandText = (text: string): { action: SlackCommandAction; taskId: string | null } => {
-  const [rawAction, rawTaskId] = text.trim().split(/\s+/, 2);
-  const normalized = rawAction?.toLowerCase();
-  if (normalized === "status" || normalized === "cancel" || normalized === "queue" || normalized === "config" || normalized === "link") {
-    return { action: normalized, taskId: rawTaskId?.trim() || null };
-  }
-  return { action: "help", taskId: normalized && normalized !== "help" ? normalized : null };
-};
-
 const replaceTemplateMarkers = (template: string, markers: Record<string, string>): string => {
   let rendered = template;
   for (const [marker, value] of Object.entries(markers)) {
@@ -210,85 +158,6 @@ const formatNewTaskTitle = (feedback: SlackFeedback): string => {
 };
 
 const buildTaskUrl = (taskId: string): string => `${env.CORS_ORIGIN.replace(/\/+$/, "")}/tasks/${encodeURIComponent(taskId)}`;
-
-const renderSlackCommandHelp = (repositoryId: string): string =>
-  [
-    "*Verft commands*",
-    "`/verft status <task-id>` - show task state and what to do next.",
-    "`/verft cancel <task-id>` - request cancellation for a queued or running task.",
-    "`/verft queue <task-id>` - show queued Slack/thread feedback waiting for the task.",
-    "`/verft config` - show the Slack integration wiring for this repository.",
-    "`/verft link <task-id>` - link a task to the current Slack thread when Slack provides thread context.",
-    "",
-    `This slash command is wired to repository \`${repositoryId}\`. Slack slash commands usually do not include thread context, so pass a task id when in doubt.`
-  ].join("\n");
-
-const summarizePendingMessage = (message: TaskMessage): string => {
-  const firstLine = message.content.trim().split(/\r?\n/, 1)[0]?.trim() || "(empty message)";
-  return `- ${message.queueSource ?? "user"} ${message.externalId ? `\`${message.externalId}\`` : ""}: ${firstLine.slice(0, 120)}`;
-};
-
-const describeNextStep = (task: Task, pendingMessages: TaskMessage[]): string => {
-  if (task.status === "archived") {
-    return "What to do: this task is archived. Mention Verft in Slack to create a new task, or reopen/create a task in Verft.";
-  }
-  if (task.hasPendingCheckpoint) {
-    return `What to do: review the pending checkpoint in Verft first: ${buildTaskUrl(task.id)}`;
-  }
-  if (isTaskCurrentlyWorking(task.executionStatus)) {
-    return `What to do: wait for the current run to finish, or use \`/verft cancel ${task.id}\` if it is working on the wrong thing. New Slack thread replies will be queued.`;
-  }
-  if (task.executionStatus === "failed") {
-    return `What to do: open the task logs, fix the cause or add corrected instructions in the linked Slack thread, then retry from Verft: ${buildTaskUrl(task.id)}`;
-  }
-  if (task.executionStatus === "cancelled") {
-    return `What to do: add the corrected request in the linked Slack thread or restart the task from Verft: ${buildTaskUrl(task.id)}`;
-  }
-  if (pendingMessages.length > 0) {
-    return "What to do: queued feedback is waiting. It should run next automatically; add more context in the Slack thread only if needed.";
-  }
-  return "What to do: add your next instruction in the linked Slack thread, or mention Verft in the repository channel to create a new task.";
-};
-
-const renderTaskStatus = (task: Task, pendingMessages: TaskMessage[]): string =>
-  [
-    `*Task* <${buildTaskUrl(task.id)}|${task.id}>`,
-    `Status: \`${task.status}\` / \`${task.executionStatus}\`${task.executionAction ? ` (${task.executionAction})` : ""}`,
-    `Provider: \`${task.provider}\` / profile \`${task.providerProfile}\` / model \`${task.modelOverride ?? "default"}\``,
-    `Queued feedback: ${pendingMessages.length}`,
-    task.slackChannelId && task.slackThreadTs
-      ? `Slack thread: \`${task.slackChannelId}\` / \`${task.slackThreadTs}\``
-      : "Slack thread: not linked",
-    describeNextStep(task, pendingMessages)
-  ].join("\n");
-
-const renderQueueStatus = (task: Task, pendingMessages: TaskMessage[]): string => {
-  if (pendingMessages.length === 0) {
-    return [`No queued feedback for task <${buildTaskUrl(task.id)}|${task.id}>.`, describeNextStep(task, pendingMessages)].join("\n");
-  }
-  const visibleMessages = pendingMessages.slice(0, 5).map(summarizePendingMessage);
-  const remainder = pendingMessages.length > visibleMessages.length ? [`- ...and ${pendingMessages.length - visibleMessages.length} more.`] : [];
-  return [`Queued feedback for <${buildTaskUrl(task.id)}|${task.id}>:`, ...visibleMessages, ...remainder, describeNextStep(task, pendingMessages)].join("\n");
-};
-
-const renderSlackConfig = (repository: Repository, hasSigningSecret: boolean, hasBotToken: boolean): string =>
-  [
-    `*Slack config for ${repository.name}*`,
-    `Channel ID: \`${repository.slackChannelId ?? "not configured"}\``,
-    `Signing secret: ${hasSigningSecret ? "configured" : "missing"}`,
-    `Bot token: ${hasBotToken ? "configured" : "missing"}`,
-    `Task owner for new Slack tasks: \`${repository.slackTaskOwnerUserId ?? "not configured"}\``,
-    "",
-    !repository.slackChannelId
-      ? "What to do: set the Slack Channel ID in the repository settings."
-      : !hasSigningSecret
-        ? "What to do: paste the Slack app signing secret into the repository settings."
-        : !hasBotToken
-          ? "What to do: paste a bot token with chat write access into the repository settings."
-          : !repository.slackTaskOwnerUserId
-            ? "What to do: set a Slack-created task owner so root thread mentions can create Verft tasks."
-            : "What to do: configure Slack with the repository event and slash command URLs shown in Verft."
-  ].join("\n");
 
 const renderSlackTaskCreatedReply = (template: string | null | undefined, input: { feedback: SlackFeedback; taskId: string }): string => {
   const replacements: Record<string, string> = {
@@ -367,141 +236,6 @@ export const registerSlackWebhookRoutes = (
     spawner: SpawnerService;
   }
 ): void => {
-  if (!app.hasContentTypeParser("application/x-www-form-urlencoded")) {
-    app.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string" }, (request, body, done) => {
-      const rawBody = typeof body === "string" ? body : body.toString("utf8");
-      (request as RawBodyRequest).rawBody = rawBody;
-      done(null, parseFormBody(rawBody));
-    });
-  }
-
-  const resolveSlackCommandTask = async (
-    repository: Repository,
-    command: SlackCommand,
-    taskId: string | null
-  ): Promise<{ task: Task | null; error: string | null }> => {
-    const task = taskId
-      ? await deps.taskStore.getTask(taskId)
-      : command.threadTs
-        ? await deps.taskStore.findTaskBySlackThread(repository.id, command.channelId, command.threadTs)
-        : null;
-    if (!task) {
-      return {
-        task: null,
-        error: taskId
-          ? `Task \`${taskId}\` was not found. What to do: check the task id or open Verft and copy it from the task URL.`
-          : "I could not infer a task from this slash command. What to do: pass a task id, for example `/verft status task-123`."
-      };
-    }
-    if (task.repoId !== repository.id) {
-      return {
-        task: null,
-        error: `Task \`${task.id}\` belongs to a different repository. What to do: use the slash command URL for that repository or choose a task from this repository.`
-      };
-    }
-    return { task, error: null };
-  };
-
-  app.post<{ Params: { repositoryId: string } }>("/slack/commands/:repositoryId", async (request, reply) => {
-    const repository = await deps.repositoryStore.getRepository(request.params.repositoryId);
-    if (!repository) {
-      return reply.status(404).send({ response_type: "ephemeral", text: "Repository not found." });
-    }
-
-    const secrets = await deps.repositoryStore.getRepositorySlackSecrets(repository.id);
-    if (!secrets.signingSecret) {
-      return reply.status(409).send({
-        response_type: "ephemeral",
-        text: "Slack signing secret is not configured. What to do: add it in this repository's Slack integration settings."
-      });
-    }
-
-    const rawBody = (request as RawBodyRequest).rawBody ?? "";
-    if (
-      !verifySlackSignature(
-        rawBody,
-        readHeader(request.headers["x-slack-request-timestamp"]),
-        readHeader(request.headers["x-slack-signature"]),
-        secrets.signingSecret
-      )
-    ) {
-      return reply.status(401).send({ response_type: "ephemeral", text: "Invalid Slack command signature." });
-    }
-
-    const command = normalizeSlackCommand(request.body);
-    if (!command) {
-      return reply.status(400).send({ response_type: "ephemeral", text: "Invalid Slack command payload." });
-    }
-    if (repository.slackChannelId && command.channelId !== repository.slackChannelId) {
-      return reply.send({
-        response_type: "ephemeral",
-        text: `This repository listens to channel \`${repository.slackChannelId}\`, not \`${command.channelId}\`. What to do: run the command from the configured repository channel.`
-      });
-    }
-    if (!repository.slackChannelId) {
-      return reply.send({
-        response_type: "ephemeral",
-        text: "Slack Channel ID is not configured. What to do: set it in this repository's Slack integration settings."
-      });
-    }
-
-    const parsed = parseSlackCommandText(command.text);
-    if (parsed.action === "help") {
-      return reply.send({ response_type: "ephemeral", text: renderSlackCommandHelp(repository.id) });
-    }
-    if (parsed.action === "config") {
-      return reply.send({
-        response_type: "ephemeral",
-        text: renderSlackConfig(repository, Boolean(secrets.signingSecret), Boolean(secrets.botToken))
-      });
-    }
-
-    const { task, error } = await resolveSlackCommandTask(repository, command, parsed.taskId);
-    if (!task) {
-      return reply.send({ response_type: "ephemeral", text: error ?? "Task not found." });
-    }
-
-    if (parsed.action === "link") {
-      if (!command.threadTs) {
-        return reply.send({
-          response_type: "ephemeral",
-          text: `Slack did not include thread context for this slash command. What to do: mention Verft in the thread, or use \`/verft status ${task.id}\` and \`/verft cancel ${task.id}\` with the task id.`
-        });
-      }
-      await deps.taskStore.patchTask(task.id, { slackChannelId: command.channelId, slackThreadTs: command.threadTs });
-      return reply.send({
-        response_type: "ephemeral",
-        text: `Linked task <${buildTaskUrl(task.id)}|${task.id}> to this Slack thread. What to do: continue by replying in the thread.`
-      });
-    }
-
-    const pendingMessages = await deps.taskStore.listPendingActionMessages(task.id);
-
-    if (parsed.action === "status") {
-      return reply.send({ response_type: "ephemeral", text: renderTaskStatus(task, pendingMessages) });
-    }
-    if (parsed.action === "queue") {
-      return reply.send({ response_type: "ephemeral", text: renderQueueStatus(task, pendingMessages) });
-    }
-    if (parsed.action === "cancel") {
-      if (task.status === "archived") {
-        return reply.send({
-          response_type: "ephemeral",
-          text: `Task <${buildTaskUrl(task.id)}|${task.id}> is archived and cannot be cancelled. What to do: create a new task or reopen work in Verft.`
-        });
-      }
-      const accepted = await deps.scheduler.cancelTask(task.id);
-      return reply.send({
-        response_type: "ephemeral",
-        text: accepted
-          ? `Cancellation requested for task <${buildTaskUrl(task.id)}|${task.id}>. What to do: wait for the run to stop, then add corrected instructions in the Slack thread or Verft.`
-          : `Task <${buildTaskUrl(task.id)}|${task.id}> cannot be cancelled in its current state. ${describeNextStep(task, pendingMessages)}`
-      });
-    }
-
-    return reply.send({ response_type: "ephemeral", text: renderSlackCommandHelp(repository.id) });
-  });
-
   app.post<{ Params: { repositoryId: string } }>("/slack/events/:repositoryId", async (request, reply) => {
     const repository = await deps.repositoryStore.getRepository(request.params.repositoryId);
     if (!repository) {
