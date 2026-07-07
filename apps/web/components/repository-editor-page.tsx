@@ -1139,6 +1139,24 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                       }
                     />
                   </Form.Item>
+                  <Form.Item label="Slash Command URL">
+                    <Input
+                      readOnly
+                      value={buildApiUrl(`/slack/commands/${editingRepository.id}`)}
+                      addonAfter={
+                        <Button
+                          type="link"
+                          size="small"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(buildApiUrl(`/slack/commands/${editingRepository.id}`));
+                            messageApi.success("Slack command URL copied");
+                          }}
+                        >
+                          Copy
+                        </Button>
+                      }
+                    />
+                  </Form.Item>
                   <Form.Item
                     name="slackChannelId"
                     label="Slack Channel ID"
@@ -1244,7 +1262,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     type="info"
                     showIcon
                     message="Thread flow"
-                    description="In Slack, subscribe the app to app_mention and message events. Verft creates tasks from root mentions in the configured channel and queues linked thread replies as follow-up feedback."
+                    description="In Slack, subscribe the app to app_mention and message events, and configure /verft with the slash command URL. Verft creates tasks from root mentions in the configured channel and queues linked thread replies as follow-up feedback."
                   />
                 </>
               ) : (
