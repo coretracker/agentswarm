@@ -1,220 +1,31 @@
 @import "@mdxeditor/editor/style.css";
 
 :root {
-  color-scheme: light;
+  color-scheme: dark;
   --app-monospace-font: "Fire Code", "Fira Code", "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace;
-  --app-body-bg: #f4f8f5;
-  --app-body-text: #5a675d;
-  --diff-background-color: #fcfefd;
-  --diff-text-color: #415046;
-  --diff-selection-background-color: rgba(28, 128, 87, 0.12);
-  --diff-selection-text-color: var(--diff-text-color);
-  --diff-gutter-insert-background-color: #dff5e4;
-  --diff-gutter-insert-text-color: #2e6a48;
-  --diff-gutter-delete-background-color: #f5dde0;
-  --diff-gutter-delete-text-color: #8d4a53;
-  --diff-gutter-selected-background-color: #efe7c8;
-  --diff-gutter-selected-text-color: #5b5538;
-  --diff-code-insert-background-color: #ebf9ee;
-  --diff-code-insert-text-color: #274b35;
-  --diff-code-delete-background-color: #faecee;
-  --diff-code-delete-text-color: #6d3c43;
-  --diff-code-insert-edit-background-color: #c8e8d1;
-  --diff-code-insert-edit-text-color: #1f402c;
-  --diff-code-delete-edit-background-color: #efc0c7;
-  --diff-code-delete-edit-text-color: #5e2f36;
-  --diff-code-selected-background-color: #f3edcf;
-  --diff-code-selected-text-color: #4e4731;
-  --diff-omit-gutter-line-color: #c95c5c;
-}
-
-html[data-theme="dark"] {
-  color-scheme: dark;
-  --app-body-bg: #0e1411;
-  --app-body-text: #d8e2d9;
-  --diff-background-color: #141c18;
-  --diff-text-color: #d7e3d8;
-  --diff-selection-background-color: rgba(103, 196, 150, 0.18);
-  --diff-selection-text-color: #f4f8f5;
-  --diff-gutter-insert-background-color: #173624;
-  --diff-gutter-insert-text-color: #8fd9ae;
-  --diff-gutter-delete-background-color: #3a1f25;
-  --diff-gutter-delete-text-color: #e2a2ab;
-  --diff-gutter-selected-background-color: #3a3723;
-  --diff-gutter-selected-text-color: #efe2a0;
-  --diff-code-insert-background-color: #10251a;
-  --diff-code-insert-text-color: #cfeedd;
-  --diff-code-delete-background-color: #2c171c;
-  --diff-code-delete-text-color: #f2c4ca;
-  --diff-code-insert-edit-background-color: #27543e;
-  --diff-code-insert-edit-text-color: #e8fff1;
-  --diff-code-delete-edit-background-color: #7a3a47;
-  --diff-code-delete-edit-text-color: #fff0f2;
-  --diff-code-selected-background-color: #33311f;
-  --diff-code-selected-text-color: #f2e8b7;
-  --diff-omit-gutter-line-color: #d46c6c;
-}
-
-html[data-theme="forge"] {
-  color-scheme: dark;
-  --app-body-bg: #0d1117;
-  --app-body-text: rgba(201, 209, 217, 0.88);
-  --diff-background-color: #161b22;
-  --diff-text-color: #c9d1d9;
-  --diff-selection-background-color: rgba(255, 107, 53, 0.16);
-  --diff-selection-text-color: #f6f8fa;
-  --diff-gutter-insert-background-color: #0f302e;
-  --diff-gutter-insert-text-color: #59e1ce;
-  --diff-gutter-delete-background-color: #34191d;
-  --diff-gutter-delete-text-color: #ff9b9b;
-  --diff-gutter-selected-background-color: #3a2c16;
-  --diff-gutter-selected-text-color: #ffbf66;
-  --diff-code-insert-background-color: #0d2625;
-  --diff-code-insert-text-color: #d3fff8;
-  --diff-code-delete-background-color: #281316;
-  --diff-code-delete-text-color: #ffd7d7;
-  --diff-code-insert-edit-background-color: #13524d;
-  --diff-code-insert-edit-text-color: #effffb;
-  --diff-code-delete-edit-background-color: #7b2b31;
-  --diff-code-delete-edit-text-color: #fff1f1;
-  --diff-code-selected-background-color: #352915;
-  --diff-code-selected-text-color: #ffdca0;
-  --diff-omit-gutter-line-color: #ff5252;
-}
-
-html[data-theme="forge-light"] {
-  color-scheme: light;
-  --app-body-bg: #fff3eb;
-  --app-body-text: rgba(51, 40, 33, 0.92);
-  --diff-background-color: #ffffff;
-  --diff-text-color: #332821;
-  --diff-selection-background-color: rgba(255, 107, 53, 0.12);
-  --diff-selection-text-color: #332821;
-  --diff-gutter-insert-background-color: #e3f7f2;
-  --diff-gutter-insert-text-color: #0b7c69;
-  --diff-gutter-delete-background-color: #fff0ef;
-  --diff-gutter-delete-text-color: #dc2626;
-  --diff-gutter-selected-background-color: #fff0d8;
-  --diff-gutter-selected-text-color: #b96b00;
-  --diff-code-insert-background-color: #f0fffb;
-  --diff-code-insert-text-color: #0a5c4e;
-  --diff-code-delete-background-color: #fff5f4;
-  --diff-code-delete-text-color: #b91c1c;
-  --diff-code-insert-edit-background-color: #c7efe5;
-  --diff-code-insert-edit-text-color: #09483e;
-  --diff-code-delete-edit-background-color: #ffd6d1;
-  --diff-code-delete-edit-text-color: #991b1b;
-  --diff-code-selected-background-color: #ffe7c2;
-  --diff-code-selected-text-color: #9a5600;
-  --diff-omit-gutter-line-color: #dc2626;
-}
-
-html[data-theme="github"] {
-  color-scheme: dark;
-  --app-body-bg: #0d1117;
-  --app-body-text: #c9d1d9;
-  --diff-background-color: #161b22;
-  --diff-text-color: #c9d1d9;
-  --diff-selection-background-color: rgba(31, 111, 235, 0.18);
-  --diff-selection-text-color: #f0f6fc;
-  --diff-gutter-insert-background-color: #0f2419;
-  --diff-gutter-insert-text-color: #56d364;
-  --diff-gutter-delete-background-color: #2d1517;
-  --diff-gutter-delete-text-color: #ff7b72;
-  --diff-gutter-selected-background-color: #2b2415;
-  --diff-gutter-selected-text-color: #ffa657;
-  --diff-code-insert-background-color: #0d1f14;
-  --diff-code-insert-text-color: #aff5b4;
-  --diff-code-delete-background-color: #231417;
-  --diff-code-delete-text-color: #ffdcd7;
-  --diff-code-insert-edit-background-color: #1a3a24;
-  --diff-code-insert-edit-text-color: #d2ffd8;
-  --diff-code-delete-edit-background-color: #5d2023;
-  --diff-code-delete-edit-text-color: #fff1ee;
-  --diff-code-selected-background-color: #2b2415;
-  --diff-code-selected-text-color: #ffddb0;
-  --diff-omit-gutter-line-color: #f85149;
-}
-
-html[data-theme="github-light"] {
-  color-scheme: light;
-  --app-body-bg: #f6f8fa;
-  --app-body-text: #1f2328;
-  --diff-background-color: #ffffff;
-  --diff-text-color: #1f2328;
-  --diff-selection-background-color: rgba(9, 105, 218, 0.12);
-  --diff-selection-text-color: #1f2328;
-  --diff-gutter-insert-background-color: #dafbe1;
-  --diff-gutter-insert-text-color: #1a7f37;
-  --diff-gutter-delete-background-color: #ffebe9;
-  --diff-gutter-delete-text-color: #cf222e;
-  --diff-gutter-selected-background-color: #fff8c5;
-  --diff-gutter-selected-text-color: #9a6700;
-  --diff-code-insert-background-color: #ebfff0;
-  --diff-code-insert-text-color: #116329;
-  --diff-code-delete-background-color: #fff1f0;
-  --diff-code-delete-text-color: #a40e26;
-  --diff-code-insert-edit-background-color: #aceebb;
-  --diff-code-insert-edit-text-color: #0f5323;
-  --diff-code-delete-edit-background-color: #ffcecb;
-  --diff-code-delete-edit-text-color: #82071e;
-  --diff-code-selected-background-color: #fff1b8;
-  --diff-code-selected-text-color: #7d4e00;
-  --diff-omit-gutter-line-color: #cf222e;
-}
-
-html[data-theme="verft-light"] {
-  color-scheme: light;
-  --app-body-bg: #EEF6F8;
-  --app-body-text: #2C4258;
-  --diff-background-color: #FFFFFF;
-  --diff-text-color: #1C2E40;
-  --diff-selection-background-color: rgba(26, 122, 155, 0.12);
-  --diff-selection-text-color: #1C2E40;
-  --diff-gutter-insert-background-color: #D4EED8;
-  --diff-gutter-insert-text-color: #1D5F3A;
-  --diff-gutter-delete-background-color: #F4D8D5;
-  --diff-gutter-delete-text-color: #8C2A1D;
-  --diff-gutter-selected-background-color: #F2EAC8;
-  --diff-gutter-selected-text-color: #6A5020;
-  --diff-code-insert-background-color: #E8F8EC;
-  --diff-code-insert-text-color: #1A4F2C;
-  --diff-code-delete-background-color: #FBF0EE;
-  --diff-code-delete-text-color: #7A2418;
-  --diff-code-insert-edit-background-color: #B8E0C4;
-  --diff-code-insert-edit-text-color: #123C21;
-  --diff-code-delete-edit-background-color: #F0C0BA;
-  --diff-code-delete-edit-text-color: #671E14;
-  --diff-code-selected-background-color: #F5EBCA;
-  --diff-code-selected-text-color: #5A4218;
-  --diff-omit-gutter-line-color: #C0392B;
-}
-
-html[data-theme="verft-dark"] {
-  color-scheme: dark;
-  --app-body-bg: #0A1520;
-  --app-body-text: #D8EEF4;
-  --diff-background-color: #121E2A;
-  --diff-text-color: #C8E4F0;
-  --diff-selection-background-color: rgba(212, 168, 75, 0.16);
-  --diff-selection-text-color: #E8F4F8;
-  --diff-gutter-insert-background-color: #0E2A1A;
-  --diff-gutter-insert-text-color: #72CC90;
-  --diff-gutter-delete-background-color: #2C1412;
-  --diff-gutter-delete-text-color: #E89090;
-  --diff-gutter-selected-background-color: #2A2010;
-  --diff-gutter-selected-text-color: #F4D890;
-  --diff-code-insert-background-color: #0A1E12;
-  --diff-code-insert-text-color: #A8E0BC;
-  --diff-code-delete-background-color: #240E10;
-  --diff-code-delete-text-color: #F4C0C0;
-  --diff-code-insert-edit-background-color: #194D2A;
-  --diff-code-insert-edit-text-color: #D0F0DC;
-  --diff-code-delete-edit-background-color: #5A1E20;
-  --diff-code-delete-edit-text-color: #FFE8E8;
-  --diff-code-selected-background-color: #2E2410;
-  --diff-code-selected-text-color: #F8E4A0;
-  --diff-omit-gutter-line-color: #D46060;
+  --app-body-bg: #0c140e;
+  --app-body-text: #d4e8d0;
+  --diff-background-color: #17231a;
+  --diff-text-color: #d4e8d0;
+  --diff-selection-background-color: rgba(93, 163, 95, 0.16);
+  --diff-selection-text-color: #e4eee2;
+  --diff-gutter-insert-background-color: #132018;
+  --diff-gutter-insert-text-color: #6cbe74;
+  --diff-gutter-delete-background-color: #281414;
+  --diff-gutter-delete-text-color: #e09090;
+  --diff-gutter-selected-background-color: #22200a;
+  --diff-gutter-selected-text-color: #e0cc80;
+  --diff-code-insert-background-color: #0c1a10;
+  --diff-code-insert-text-color: #b8e4bc;
+  --diff-code-delete-background-color: #200e0e;
+  --diff-code-delete-text-color: #f0c0c0;
+  --diff-code-insert-edit-background-color: #224830;
+  --diff-code-insert-edit-text-color: #d8f4da;
+  --diff-code-delete-edit-background-color: #582828;
+  --diff-code-delete-edit-text-color: #ffeeee;
+  --diff-code-selected-background-color: #2e2c0e;
+  --diff-code-selected-text-color: #f0dc90;
+  --diff-omit-gutter-line-color: #c85a55;
 }
 
 html[data-theme="ember-light"] {
@@ -447,18 +258,6 @@ pre {
   background: rgba(0, 0, 0, 0.025);
 }
 
-html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="forge"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="github"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="github"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="github"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
-html[data-theme="verft-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="verft-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="verft-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
 html[data-theme="ember-dark"] .diff-hunk + .diff-hunk .diff-line:first-child td,
 html[data-theme="ember-dark"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
 html[data-theme="ember-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-child td,
@@ -471,10 +270,6 @@ html[data-theme="graphite-dark"] .diff-hunk + .diff-hunk .diff-decoration:first-
   border-top-color: rgba(255, 255, 255, 0.06);
 }
 
-html[data-theme="dark"] .diff-gutter,
-html[data-theme="forge"] .diff-gutter,
-html[data-theme="github"] .diff-gutter,
-html[data-theme="verft-dark"] .diff-gutter,
 html[data-theme="ember-dark"] .diff-gutter,
 html[data-theme="moss-dark"] .diff-gutter,
 html[data-theme="graphite-dark"] .diff-gutter {
@@ -483,24 +278,12 @@ html[data-theme="graphite-dark"] .diff-gutter {
   border-right-color: rgba(255, 255, 255, 0.06);
 }
 
-html[data-theme="dark"] .diff-code-normal,
-html[data-theme="forge"] .diff-code-normal,
-html[data-theme="github"] .diff-code-normal,
-html[data-theme="verft-dark"] .diff-code-normal,
 html[data-theme="ember-dark"] .diff-code-normal,
 html[data-theme="moss-dark"] .diff-code-normal,
 html[data-theme="graphite-dark"] .diff-code-normal {
   background: rgba(255, 255, 255, 0.01);
 }
 
-html[data-theme="dark"] .diff-decoration-content,
-html[data-theme="dark"] .diff-widget-content,
-html[data-theme="forge"] .diff-decoration-content,
-html[data-theme="forge"] .diff-widget-content,
-html[data-theme="github"] .diff-decoration-content,
-html[data-theme="github"] .diff-widget-content,
-html[data-theme="verft-dark"] .diff-decoration-content,
-html[data-theme="verft-dark"] .diff-widget-content,
 html[data-theme="ember-dark"] .diff-decoration-content,
 html[data-theme="ember-dark"] .diff-widget-content,
 html[data-theme="moss-dark"] .diff-decoration-content,
@@ -509,39 +292,6 @@ html[data-theme="graphite-dark"] .diff-decoration-content,
 html[data-theme="graphite-dark"] .diff-widget-content {
   background: rgba(255, 255, 255, 0.03);
   color: #9fb3a5;
-}
-
-html[data-theme="forge"] .diff-gutter {
-  color: rgba(201, 209, 217, 0.62);
-  background: rgba(255, 255, 255, 0.02);
-  border-right-color: rgba(201, 209, 217, 0.07);
-}
-
-html[data-theme="forge"] .diff-decoration-content,
-html[data-theme="forge"] .diff-widget-content {
-  color: rgba(201, 209, 217, 0.72);
-}
-
-html[data-theme="github"] .diff-gutter {
-  color: #8b949e;
-  background: rgba(255, 255, 255, 0.02);
-  border-right-color: rgba(201, 209, 217, 0.08);
-}
-
-html[data-theme="github"] .diff-decoration-content,
-html[data-theme="github"] .diff-widget-content {
-  color: #8b949e;
-}
-
-html[data-theme="verft-dark"] .diff-gutter {
-  color: #6A8EA6;
-  background: rgba(255, 255, 255, 0.02);
-  border-right-color: rgba(30, 52, 72, 0.8);
-}
-
-html[data-theme="verft-dark"] .diff-decoration-content,
-html[data-theme="verft-dark"] .diff-widget-content {
-  color: #88AABF;
 }
 
 html[data-theme="ember-dark"] .diff-gutter {
@@ -575,72 +325,6 @@ html[data-theme="graphite-dark"] .diff-gutter {
 html[data-theme="graphite-dark"] .diff-decoration-content,
 html[data-theme="graphite-dark"] .diff-widget-content {
   color: #9aa2ab;
-}
-
-html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="github-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(208, 215, 222, 0.7);
-}
-
-html[data-theme="github-light"] .diff-gutter {
-  color: #57606a;
-  background: rgba(246, 248, 250, 0.9);
-  border-right-color: rgba(208, 215, 222, 0.9);
-}
-
-html[data-theme="github-light"] .diff-code-normal {
-  background: rgba(246, 248, 250, 0.65);
-}
-
-html[data-theme="github-light"] .diff-decoration-content,
-html[data-theme="github-light"] .diff-widget-content {
-  background: rgba(246, 248, 250, 0.85);
-  color: #57606a;
-}
-
-html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="forge-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(231, 216, 205, 0.9);
-}
-
-html[data-theme="forge-light"] .diff-gutter {
-  color: #6d584b;
-  background: rgba(255, 250, 246, 0.92);
-  border-right-color: rgba(231, 216, 205, 0.96);
-}
-
-html[data-theme="forge-light"] .diff-code-normal {
-  background: rgba(255, 252, 249, 0.82);
-}
-
-html[data-theme="forge-light"] .diff-decoration-content,
-html[data-theme="forge-light"] .diff-widget-content {
-  background: rgba(255, 252, 249, 0.94);
-  color: #6d584b;
-}
-
-html[data-theme="verft-light"] .diff-hunk + .diff-hunk .diff-line:first-child td,
-html[data-theme="verft-light"] .diff-hunk + .diff-hunk .diff-widget:first-child td,
-html[data-theme="verft-light"] .diff-hunk + .diff-hunk .diff-decoration:first-child td {
-  border-top-color: rgba(200, 219, 229, 0.8);
-}
-
-html[data-theme="verft-light"] .diff-gutter {
-  color: #5A7A96;
-  background: rgba(238, 246, 248, 0.9);
-  border-right-color: rgba(200, 219, 229, 0.95);
-}
-
-html[data-theme="verft-light"] .diff-code-normal {
-  background: rgba(245, 250, 251, 0.75);
-}
-
-html[data-theme="verft-light"] .diff-decoration-content,
-html[data-theme="verft-light"] .diff-widget-content {
-  background: rgba(245, 250, 251, 0.88);
-  color: #5A7A96;
 }
 
 .task-notes-mdx-editor {
