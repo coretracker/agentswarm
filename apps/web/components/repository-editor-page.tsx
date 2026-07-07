@@ -23,7 +23,7 @@ import {
   getAgentProviderLabel,
   getEffortOptionsForProvider
 } from "@verft/shared-types";
-import { Alert, Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Typography, Upload, message } from "antd";
+import { Alert, Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Tabs, Typography, Upload, message } from "antd";
 import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { ApiError, api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -303,6 +303,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const { settings } = useSettings();
   const [form] = Form.useForm<RepositoryFormValues>();
   const [messageApi, contextHolder] = message.useMessage();
+  const [activeTab, setActiveTab] = useState<"general" | "ai" | "github" | "slack" | "webhooks">("general");
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(mode === "edit");
   const [notFound, setNotFound] = useState(false);
@@ -880,61 +881,85 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             </Space>
           </Flex>
 
-          <Card bordered={false} title="General">
-            <Form.Item name="name" label="Name" rules={[{ required: true }]}>
-              <Input />
-            </Form.Item>
-            <Form.Item name="url" label="URL" rules={[{ required: true }]}>
-              <Input />
-            </Form.Item>
-            <Form.Item name="defaultBranch" label="Default Branch" rules={[{ required: true }]}>
-              <Input />
-            </Form.Item>
-          </Card>
-          <Card bordered={false} title="Default Agent">
-            <Typography.Text type="secondary">
-              Optional repository-level defaults for new tasks. Leave any field empty to fall back to the system setting.
-            </Typography.Text>
-            <Form.Item name="defaultProvider" label="Provider" style={{ marginTop: 16 }}>
-              <Select
-                allowClear
-                placeholder="System default"
-                options={repositoryDefaultProviderOptions}
-                onChange={(value: AgentProvider | undefined) => {
-                  if (!value) {
-                    form.setFieldValue("defaultModel", undefined);
-                    form.setFieldValue("defaultProviderProfile", undefined);
-                    return;
+          <Tabs
+            activeKey={activeTab}
+            onChange={(key) => setActiveTab(key as typeof activeTab)}
+            items={[
+              { key: "general", label: "General" },
+              { key: "ai", label: "AI" },
+              { key: "github", label: "Github" },
+              { key: "slack", label: "Slack" },
+              { key: "webhooks", label: "Webhooks" }
+            ]}
+          />
+
+          {activeTab === "general" ? (
+            <Card bordered={false} title="General">
+              <Form.Item name="name" label="Name" rules={[{ required: true }]}>
+                <Input />
+              </Form.Item>
+              <Form.Item name="url" label="URL" rules={[{ required: true }]}>
+                <Input />
+              </Form.Item>
+              <Form.Item name="defaultBranch" label="Default Branch" rules={[{ required: true }]}>
+                <Input />
+              </Form.Item>
+            </Card>
+          ) : null}
+
+          {activeTab === "ai" ? (
+            <Flex vertical gap={16}>
+              <Card bordered={false} title="Default Agent">
+                <Typography.Text type="secondary">
+                  Optional repository-level defaults for new tasks. Leave any field empty to fall back to the system setting.
+                </Typography.Text>
+                <Form.Item name="defaultProvider" label="Provider" style={{ marginTop: 16 }}>
+                  <Select
+                    allowClear
+                    placeholder="System default"
+                    options={repositoryDefaultProviderOptions}
+                    onChange={(value: AgentProvider | undefined) => {
+                      if (!value) {
+                        form.setFieldValue("defaultModel", undefined);
+                        form.setFieldValue("defaultProviderProfile", undefined);
+                        return;
+                      }
+                      const nextEffortOptions = getEffortOptionsForProvider(value);
+                      if (!nextEffortOptions.some((option) => option.value === form.getFieldValue("defaultProviderProfile"))) {
+                        form.setFieldValue("defaultProviderProfile", undefined);
+                      }
+                    }}
+                  />
+                </Form.Item>
+                <Form.Item
+                  name="defaultModel"
+                  label="Model"
+                  extra={
+                    defaultProviderModelsSource === "api"
+                      ? "Model suggestions were refreshed from the provider."
+                      : "Model choices come from the model list in Settings."
                   }
-                  const nextEffortOptions = getEffortOptionsForProvider(value);
-                  if (!nextEffortOptions.some((option) => option.value === form.getFieldValue("defaultProviderProfile"))) {
-                    form.setFieldValue("defaultProviderProfile", undefined);
-                  }
-                }}
-              />
-            </Form.Item>
-            <Form.Item
-              name="defaultModel"
-              label="Model"
-              extra={
-                defaultProviderModelsSource === "api"
-                  ? "Model suggestions were refreshed from the provider."
-                  : "Model choices come from the model list in Settings."
-              }
-            >
-              <Select
-                allowClear
-                showSearch
-                options={defaultProviderModels}
-                loading={defaultProviderModelsLoading}
-                optionFilterProp="label"
-                placeholder="System default"
-              />
-            </Form.Item>
-            <Form.Item name="defaultProviderProfile" label="Effort">
-              <Select allowClear options={allowedDefaultEffortOptions} placeholder="System default" />
-            </Form.Item>
-          </Card>
+                >
+                  <Select
+                    allowClear
+                    showSearch
+                    options={defaultProviderModels}
+                    loading={defaultProviderModelsLoading}
+                    optionFilterProp="label"
+                    placeholder="System default"
+                  />
+                </Form.Item>
+                <Form.Item name="defaultProviderProfile" label="Effort">
+                  <Select allowClear options={allowedDefaultEffortOptions} placeholder="System default" />
+                </Form.Item>
+              </Card>
+              <Card bordered={false} title="MCP">
+                {renderMcpServerList("mcpServers", "MCP Servers", "Add MCP server")}
+              </Card>
+            </Flex>
+          ) : null}
+
+          {activeTab === "github" ? (
           <Card bordered={false} title="Github Integration">
             <Flex vertical gap={12}>
               {mode === "edit" && editingRepository ? (
@@ -1117,6 +1142,9 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               )}
             </Flex>
           </Card>
+          ) : null}
+
+          {activeTab === "slack" ? (
           <Card bordered={false} title="Slack Integration">
             <Flex vertical gap={12}>
               {mode === "edit" && editingRepository ? (
@@ -1257,431 +1285,437 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               )}
             </Flex>
           </Card>
-          <Card bordered={false} title="Environment">
-            <Form.List
-              name="envVars"
-              rules={[
-                {
-                  validator: async (_, value: RepositoryFormValues["envVars"]) => {
-                    const seen = new Set<string>();
-                    for (const entry of value ?? []) {
-                      const key = typeof entry?.key === "string" ? entry.key.trim() : "";
-                      if (!key) {
-                        continue;
-                      }
-                      if (seen.has(key)) {
-                        throw new Error(`Duplicate variable name: ${key}`);
-                      }
-                      seen.add(key);
-                    }
-                  }
-                }
-              ]}
-            >
-              {(fields, { add, remove }, { errors }) => (
-                <Flex vertical gap={8} style={{ marginBottom: 16 }}>
-                  <Typography.Text strong>Environment Variables</Typography.Text>
-                  <Typography.Text type="secondary">
-                    Applies to both Codex and Claude runs for this repository. Choose Text for normal values, or File to upload files up to{" "}
-                    {REPOSITORY_ENV_FILE_MAX_BYTES} bytes.
-                  </Typography.Text>
-                  {fields.map((field) => {
-                    const keyName = String(form.getFieldValue(["envVars", field.name, "key"]) ?? "").trim();
-                    const entryType = form.getFieldValue(["envVars", field.name, "type"]) === "file" ? "file" : "text";
-                    const hasUploadedFile =
-                      String(form.getFieldValue(["envVars", field.name, "fileContentBase64"]) ?? "").trim().length > 0;
-                    const existingFileConfigured = (editingRepository?.envVars ?? []).some(
-                      (entry) => entry.key === keyName && entry.type === "file" && entry.configured === true
-                    );
-                    const fileStatus = hasUploadedFile
-                      ? "File ready"
-                      : existingFileConfigured
-                        ? "File set"
-                        : "No file uploaded";
-                    return (
-                      <Flex key={field.key} gap={8} align="flex-start" wrap="wrap">
-                        <Form.Item
-                          {...field}
-                          name={[field.name, "key"]}
-                          style={{ flex: 1, marginBottom: 0, minWidth: 220 }}
-                          rules={[
-                            { required: true, whitespace: true, message: "Name is required." },
-                            { max: 128, message: "Name must be 128 characters or fewer." },
-                            {
-                              pattern: /^[A-Za-z_][A-Za-z0-9_]*$/,
-                              message: "Name must match /^[A-Za-z_][A-Za-z0-9_]*$/."
-                            }
-                          ]}
-                        >
-                          <Input placeholder="NAME" autoComplete="off" />
-                        </Form.Item>
-                        <Form.Item
-                          {...field}
-                          name={[field.name, "type"]}
-                          style={{ width: 120, marginBottom: 0 }}
-                          initialValue="text"
-                        >
-                          <Select
-                            options={[
-                              { label: "Text", value: "text" },
-                              { label: "File", value: "file" }
-                            ]}
-                          />
-                        </Form.Item>
-                        {entryType === "text" ? (
-                          <Form.Item
-                            {...field}
-                            name={[field.name, "value"]}
-                            style={{ flex: 2, marginBottom: 0, minWidth: 220 }}
-                            rules={[{ max: 8192, message: "Value must be 8192 characters or fewer." }]}
-                          >
-                            <Input.TextArea autoSize={{ minRows: 1, maxRows: 4 }} placeholder="value" autoComplete="off" />
-                          </Form.Item>
-                        ) : (
-                          <Flex vertical style={{ minWidth: 260 }}>
-                            <Space wrap>
-                              <Upload
-                                accept={ENV_VALUE_FILE_ACCEPT}
-                                showUploadList={false}
-                                maxCount={1}
-                                beforeUpload={(file) => {
-                                  void importFileValue(["envVars", field.name], file, "variable");
-                                  return false;
-                                }}
-                              >
-                                <Button>Upload file</Button>
-                              </Upload>
-                              <Button
-                                onClick={() => {
-                                  form.setFieldValue(["envVars", field.name, "fileName"], "");
-                                  form.setFieldValue(["envVars", field.name, "fileContentBase64"], "");
-                                }}
-                              >
-                                Clear file
-                              </Button>
-                            </Space>
-                            <Typography.Text type="secondary">{fileStatus}</Typography.Text>
-                            <Form.Item {...field} name={[field.name, "fileName"]} style={{ display: "none", marginBottom: 0 }}>
-                              <Input />
-                            </Form.Item>
-                            <Form.Item {...field} name={[field.name, "fileContentBase64"]} style={{ display: "none", marginBottom: 0 }}>
-                              <Input />
-                            </Form.Item>
-                          </Flex>
-                        )}
-                        <Button danger onClick={() => remove(field.name)}>
-                          Remove
-                        </Button>
-                      </Flex>
-                    );
-                  })}
-                  <Button onClick={() => add({ key: "", type: "text", value: "", fileName: "", fileContentBase64: "" })}>Add variable</Button>
-                  <Form.ErrorList errors={errors} />
-                </Flex>
-              )}
-            </Form.List>
-            <Form.List
-              name="envSecrets"
-              rules={[
-                {
-                  validator: async (_, value: RepositoryFormValues["envSecrets"]) => {
-                    const seen = new Set<string>();
-                    for (const entry of value ?? []) {
-                      const key = typeof entry?.key === "string" ? entry.key.trim() : "";
-                      if (!key) {
-                        continue;
-                      }
-                      if (seen.has(key)) {
-                        throw new Error(`Duplicate secret name: ${key}`);
-                      }
-                      seen.add(key);
-                    }
-                  }
-                }
-              ]}
-            >
-              {(fields, { add, remove }, { errors }) => (
-                <Flex vertical gap={8} style={{ marginBottom: 16 }}>
-                  <Typography.Text strong>Environment Secrets</Typography.Text>
-                  <Typography.Text type="secondary">
-                    Applies to both Codex and Claude runs for this repository. Secret values are write-only after save. Existing values are never shown.
-                    Choose Text or File. Leave Text blank to keep an existing text secret, or keep File mode without a new upload to keep an existing file
-                    secret.
-                  </Typography.Text>
-                  {fields.map((field) => {
-                    const keyName = String(form.getFieldValue(["envSecrets", field.name, "key"]) ?? "").trim();
-                    const entryType = form.getFieldValue(["envSecrets", field.name, "type"]) === "file" ? "file" : "text";
-                    const configuredTextSecret = (editingRepository?.envSecrets ?? []).some(
-                      (entry) => entry.key === keyName && entry.configured === true && (entry.type ?? "text") === "text"
-                    );
-                    const configuredFileSecret = (editingRepository?.envSecrets ?? []).some(
-                      (entry) => entry.key === keyName && entry.configured === true && entry.type === "file"
-                    );
-                    const hasUploadedFile =
-                      String(form.getFieldValue(["envSecrets", field.name, "fileContentBase64"]) ?? "").trim().length > 0;
-                    return (
-                      <Flex key={field.key} gap={8} align="flex-start" wrap="wrap">
-                        <Form.Item
-                          {...field}
-                          name={[field.name, "key"]}
-                          style={{ flex: 1, marginBottom: 0, minWidth: 220 }}
-                          rules={[
-                            { required: true, whitespace: true, message: "Name is required." },
-                            { max: 128, message: "Name must be 128 characters or fewer." },
-                            {
-                              pattern: /^[A-Za-z_][A-Za-z0-9_]*$/,
-                              message: "Name must match /^[A-Za-z_][A-Za-z0-9_]*$/."
-                            }
-                          ]}
-                        >
-                          <Input placeholder="SECRET_NAME" autoComplete="off" />
-                        </Form.Item>
-                        <Form.Item
-                          {...field}
-                          name={[field.name, "type"]}
-                          style={{ width: 120, marginBottom: 0 }}
-                          initialValue="text"
-                        >
-                          <Select
-                            options={[
-                              { label: "Text", value: "text" },
-                              { label: "File", value: "file" }
-                            ]}
-                          />
-                        </Form.Item>
-                        {entryType === "text" ? (
-                          <Form.Item
-                            {...field}
-                            name={[field.name, "value"]}
-                            style={{ flex: 2, marginBottom: 0, minWidth: 220 }}
-                            rules={[{ max: 8192, message: "Value must be 8192 characters or fewer." }]}
-                          >
-                            <Input.TextArea
-                              autoSize={{ minRows: 1, maxRows: 4 }}
-                              placeholder={configuredTextSecret ? "Secret is set. Enter a value to replace it." : "secret value"}
-                              autoComplete="new-password"
-                            />
-                          </Form.Item>
-                        ) : (
-                          <Flex vertical style={{ minWidth: 260 }}>
-                            <Space wrap>
-                              <Upload
-                                accept={ENV_VALUE_FILE_ACCEPT}
-                                showUploadList={false}
-                                maxCount={1}
-                                beforeUpload={(file) => {
-                                  void importFileValue(["envSecrets", field.name], file, "secret");
-                                  return false;
-                                }}
-                              >
-                                <Button>Upload file</Button>
-                              </Upload>
-                              <Button
-                                onClick={() => {
-                                  form.setFieldValue(["envSecrets", field.name, "fileName"], "");
-                                  form.setFieldValue(["envSecrets", field.name, "fileContentBase64"], "");
-                                }}
-                              >
-                                Clear file
-                              </Button>
-                            </Space>
-                            <Typography.Text type="secondary">
-                              {hasUploadedFile ? "File ready" : configuredFileSecret ? "File set" : "No file uploaded"}
-                            </Typography.Text>
-                            <Form.Item {...field} name={[field.name, "fileName"]} style={{ display: "none", marginBottom: 0 }}>
-                              <Input />
-                            </Form.Item>
-                            <Form.Item {...field} name={[field.name, "fileContentBase64"]} style={{ display: "none", marginBottom: 0 }}>
-                              <Input />
-                            </Form.Item>
-                          </Flex>
-                        )}
-                        <Button danger onClick={() => remove(field.name)}>
-                          Remove
-                        </Button>
-                        {entryType === "text" && configuredTextSecret ? <Typography.Text type="secondary">Secret set</Typography.Text> : null}
-                        {entryType === "file" && configuredFileSecret ? <Typography.Text type="secondary">Secret file set</Typography.Text> : null}
-                      </Flex>
-                    );
-                  })}
-                  <Button onClick={() => add({ key: "", type: "text", value: "", fileName: "", fileContentBase64: "" })}>Add secret</Button>
-                  <Form.ErrorList errors={errors} />
-                </Flex>
-              )}
-            </Form.List>
-          </Card>
-          <Card bordered={false} title="Host Commands">
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message="Hostexec bridge commands"
-              description="These simple command names are mounted as read-only shims for this repository when hostexec is enabled in Settings. Existing runtime binaries are not overwritten."
-            />
-            <Form.List
-              name="hostCommands"
-              rules={[
-                {
-                  validator: async (_, value: RepositoryFormValues["hostCommands"]) => {
-                    const seen = new Set<string>();
-                    for (const entry of value ?? []) {
-                      const name = normalizeHostCommandName(entry?.name);
-                      if (!name) {
-                        continue;
-                      }
-                      if (!HOST_COMMAND_PATTERN.test(name)) {
-                        throw new Error(`Invalid host command name: ${name}`);
-                      }
-                      const comparable = name.toLowerCase();
-                      if (seen.has(comparable)) {
-                        throw new Error(`Duplicate host command: ${name}`);
-                      }
-                      seen.add(comparable);
-                    }
-                  }
-                }
-              ]}
-            >
-              {(fields, { add, remove }, { errors }) => (
-                <Flex vertical gap={8} style={{ marginBottom: 16 }}>
-                  <Typography.Text strong>Mounted Commands</Typography.Text>
-                  {fields.map((field) => (
-                    <Flex key={field.key} gap={8} align="start" wrap="wrap">
-                      <Form.Item
-                        {...field}
-                        name={[field.name, "name"]}
-                        rules={[
-                          { required: true, whitespace: true },
-                          {
-                            pattern: HOST_COMMAND_PATTERN,
-                            message: "Use a simple command name without slashes."
+          ) : null}
+
+          {activeTab === "general" ? (
+            <Flex vertical gap={16}>
+              <Card bordered={false} title="Environment">
+                <Form.List
+                  name="envVars"
+                  rules={[
+                    {
+                      validator: async (_, value: RepositoryFormValues["envVars"]) => {
+                        const seen = new Set<string>();
+                        for (const entry of value ?? []) {
+                          const key = typeof entry?.key === "string" ? entry.key.trim() : "";
+                          if (!key) {
+                            continue;
                           }
-                        ]}
-                        style={{ flex: "1 1 260px", marginBottom: 0 }}
-                      >
-                        <Input placeholder="xcodebuild" />
-                      </Form.Item>
-                      <Button danger onClick={() => remove(field.name)}>
-                        Remove
-                      </Button>
-                    </Flex>
-                  ))}
-                  <Button onClick={() => add({ name: "" })}>Add command</Button>
-                  <Form.ErrorList errors={errors} />
-                </Flex>
-              )}
-            </Form.List>
-          </Card>
-          <Card bordered={false} title="MCP">
-            {renderMcpServerList("mcpServers", "MCP Servers", "Add MCP server")}
-          </Card>
-          <Card bordered={false} title="Webhooks">
-            <Form.Item name="webhookEnabled" label="Enable Webhooks" valuePropName="checked">
-              <Switch />
-            </Form.Item>
-            <Form.Item
-              name="webhookUrl"
-              label="Webhook URL"
-              dependencies={["webhookEnabled"]}
-              rules={[
-                ({ getFieldValue }) => ({
-                  validator(_, value) {
-                    if (!getFieldValue("webhookEnabled")) {
-                      return Promise.resolve();
-                    }
-                    if (typeof value === "string" && value.trim().length > 0) {
-                      try {
-                        new URL(value.trim());
-                        return Promise.resolve();
-                      } catch {
-                        return Promise.reject(new Error("Webhook URL must be a valid absolute URL."));
+                          if (seen.has(key)) {
+                            throw new Error(`Duplicate variable name: ${key}`);
+                          }
+                          seen.add(key);
+                        }
                       }
                     }
-                    return Promise.reject(new Error("Webhook URL is required when webhooks are enabled."));
-                  }
-                })
-              ]}
-            >
-              <Input placeholder="https://example.com/webhooks/verft" />
-            </Form.Item>
-            <Form.Item
-              name="webhookSecret"
-              label={editingRepository?.webhookSecretConfigured ? "Webhook Secret (leave blank to keep existing)" : "Webhook Secret"}
-              dependencies={["webhookEnabled", "clearWebhookSecret"]}
-              rules={[
-                ({ getFieldValue }) => ({
-                  validator(_, value) {
-                    if (!getFieldValue("webhookEnabled")) {
-                      return Promise.resolve();
+                  ]}
+                >
+                  {(fields, { add, remove }, { errors }) => (
+                    <Flex vertical gap={8} style={{ marginBottom: 16 }}>
+                      <Typography.Text strong>Environment Variables</Typography.Text>
+                      <Typography.Text type="secondary">
+                        Applies to both Codex and Claude runs for this repository. Choose Text for normal values, or File to upload files up to{" "}
+                        {REPOSITORY_ENV_FILE_MAX_BYTES} bytes.
+                      </Typography.Text>
+                      {fields.map((field) => {
+                        const keyName = String(form.getFieldValue(["envVars", field.name, "key"]) ?? "").trim();
+                        const entryType = form.getFieldValue(["envVars", field.name, "type"]) === "file" ? "file" : "text";
+                        const hasUploadedFile =
+                          String(form.getFieldValue(["envVars", field.name, "fileContentBase64"]) ?? "").trim().length > 0;
+                        const existingFileConfigured = (editingRepository?.envVars ?? []).some(
+                          (entry) => entry.key === keyName && entry.type === "file" && entry.configured === true
+                        );
+                        const fileStatus = hasUploadedFile
+                          ? "File ready"
+                          : existingFileConfigured
+                            ? "File set"
+                            : "No file uploaded";
+                        return (
+                          <Flex key={field.key} gap={8} align="flex-start" wrap="wrap">
+                            <Form.Item
+                              {...field}
+                              name={[field.name, "key"]}
+                              style={{ flex: 1, marginBottom: 0, minWidth: 220 }}
+                              rules={[
+                                { required: true, whitespace: true, message: "Name is required." },
+                                { max: 128, message: "Name must be 128 characters or fewer." },
+                                {
+                                  pattern: /^[A-Za-z_][A-Za-z0-9_]*$/,
+                                  message: "Name must match /^[A-Za-z_][A-Za-z0-9_]*$/."
+                                }
+                              ]}
+                            >
+                              <Input placeholder="NAME" autoComplete="off" />
+                            </Form.Item>
+                            <Form.Item
+                              {...field}
+                              name={[field.name, "type"]}
+                              style={{ width: 120, marginBottom: 0 }}
+                              initialValue="text"
+                            >
+                              <Select
+                                options={[
+                                  { label: "Text", value: "text" },
+                                  { label: "File", value: "file" }
+                                ]}
+                              />
+                            </Form.Item>
+                            {entryType === "text" ? (
+                              <Form.Item
+                                {...field}
+                                name={[field.name, "value"]}
+                                style={{ flex: 2, marginBottom: 0, minWidth: 220 }}
+                                rules={[{ max: 8192, message: "Value must be 8192 characters or fewer." }]}
+                              >
+                                <Input.TextArea autoSize={{ minRows: 1, maxRows: 4 }} placeholder="value" autoComplete="off" />
+                              </Form.Item>
+                            ) : (
+                              <Flex vertical style={{ minWidth: 260 }}>
+                                <Space wrap>
+                                  <Upload
+                                    accept={ENV_VALUE_FILE_ACCEPT}
+                                    showUploadList={false}
+                                    maxCount={1}
+                                    beforeUpload={(file) => {
+                                      void importFileValue(["envVars", field.name], file, "variable");
+                                      return false;
+                                    }}
+                                  >
+                                    <Button>Upload file</Button>
+                                  </Upload>
+                                  <Button
+                                    onClick={() => {
+                                      form.setFieldValue(["envVars", field.name, "fileName"], "");
+                                      form.setFieldValue(["envVars", field.name, "fileContentBase64"], "");
+                                    }}
+                                  >
+                                    Clear file
+                                  </Button>
+                                </Space>
+                                <Typography.Text type="secondary">{fileStatus}</Typography.Text>
+                                <Form.Item {...field} name={[field.name, "fileName"]} style={{ display: "none", marginBottom: 0 }}>
+                                  <Input />
+                                </Form.Item>
+                                <Form.Item {...field} name={[field.name, "fileContentBase64"]} style={{ display: "none", marginBottom: 0 }}>
+                                  <Input />
+                                </Form.Item>
+                              </Flex>
+                            )}
+                            <Button danger onClick={() => remove(field.name)}>
+                              Remove
+                            </Button>
+                          </Flex>
+                        );
+                      })}
+                      <Button onClick={() => add({ key: "", type: "text", value: "", fileName: "", fileContentBase64: "" })}>Add variable</Button>
+                      <Form.ErrorList errors={errors} />
+                    </Flex>
+                  )}
+                </Form.List>
+                <Form.List
+                  name="envSecrets"
+                  rules={[
+                    {
+                      validator: async (_, value: RepositoryFormValues["envSecrets"]) => {
+                        const seen = new Set<string>();
+                        for (const entry of value ?? []) {
+                          const key = typeof entry?.key === "string" ? entry.key.trim() : "";
+                          if (!key) {
+                            continue;
+                          }
+                          if (seen.has(key)) {
+                            throw new Error(`Duplicate secret name: ${key}`);
+                          }
+                          seen.add(key);
+                        }
+                      }
                     }
-                    const normalized = typeof value === "string" ? value.trim() : "";
-                    const clearSecret = getFieldValue("clearWebhookSecret") === true;
-                    if (normalized.length > 0) {
-                      return Promise.resolve();
+                  ]}
+                >
+                  {(fields, { add, remove }, { errors }) => (
+                    <Flex vertical gap={8} style={{ marginBottom: 16 }}>
+                      <Typography.Text strong>Environment Secrets</Typography.Text>
+                      <Typography.Text type="secondary">
+                        Applies to both Codex and Claude runs for this repository. Secret values are write-only after save. Existing values are never shown.
+                        Choose Text or File. Leave Text blank to keep an existing text secret, or keep File mode without a new upload to keep an existing file
+                        secret.
+                      </Typography.Text>
+                      {fields.map((field) => {
+                        const keyName = String(form.getFieldValue(["envSecrets", field.name, "key"]) ?? "").trim();
+                        const entryType = form.getFieldValue(["envSecrets", field.name, "type"]) === "file" ? "file" : "text";
+                        const configuredTextSecret = (editingRepository?.envSecrets ?? []).some(
+                          (entry) => entry.key === keyName && entry.configured === true && (entry.type ?? "text") === "text"
+                        );
+                        const configuredFileSecret = (editingRepository?.envSecrets ?? []).some(
+                          (entry) => entry.key === keyName && entry.configured === true && entry.type === "file"
+                        );
+                        const hasUploadedFile =
+                          String(form.getFieldValue(["envSecrets", field.name, "fileContentBase64"]) ?? "").trim().length > 0;
+                        return (
+                          <Flex key={field.key} gap={8} align="flex-start" wrap="wrap">
+                            <Form.Item
+                              {...field}
+                              name={[field.name, "key"]}
+                              style={{ flex: 1, marginBottom: 0, minWidth: 220 }}
+                              rules={[
+                                { required: true, whitespace: true, message: "Name is required." },
+                                { max: 128, message: "Name must be 128 characters or fewer." },
+                                {
+                                  pattern: /^[A-Za-z_][A-Za-z0-9_]*$/,
+                                  message: "Name must match /^[A-Za-z_][A-Za-z0-9_]*$/."
+                                }
+                              ]}
+                            >
+                              <Input placeholder="SECRET_NAME" autoComplete="off" />
+                            </Form.Item>
+                            <Form.Item
+                              {...field}
+                              name={[field.name, "type"]}
+                              style={{ width: 120, marginBottom: 0 }}
+                              initialValue="text"
+                            >
+                              <Select
+                                options={[
+                                  { label: "Text", value: "text" },
+                                  { label: "File", value: "file" }
+                                ]}
+                              />
+                            </Form.Item>
+                            {entryType === "text" ? (
+                              <Form.Item
+                                {...field}
+                                name={[field.name, "value"]}
+                                style={{ flex: 2, marginBottom: 0, minWidth: 220 }}
+                                rules={[{ max: 8192, message: "Value must be 8192 characters or fewer." }]}
+                              >
+                                <Input.TextArea
+                                  autoSize={{ minRows: 1, maxRows: 4 }}
+                                  placeholder={configuredTextSecret ? "Secret is set. Enter a value to replace it." : "secret value"}
+                                  autoComplete="new-password"
+                                />
+                              </Form.Item>
+                            ) : (
+                              <Flex vertical style={{ minWidth: 260 }}>
+                                <Space wrap>
+                                  <Upload
+                                    accept={ENV_VALUE_FILE_ACCEPT}
+                                    showUploadList={false}
+                                    maxCount={1}
+                                    beforeUpload={(file) => {
+                                      void importFileValue(["envSecrets", field.name], file, "secret");
+                                      return false;
+                                    }}
+                                  >
+                                    <Button>Upload file</Button>
+                                  </Upload>
+                                  <Button
+                                    onClick={() => {
+                                      form.setFieldValue(["envSecrets", field.name, "fileName"], "");
+                                      form.setFieldValue(["envSecrets", field.name, "fileContentBase64"], "");
+                                    }}
+                                  >
+                                    Clear file
+                                  </Button>
+                                </Space>
+                                <Typography.Text type="secondary">
+                                  {hasUploadedFile ? "File ready" : configuredFileSecret ? "File set" : "No file uploaded"}
+                                </Typography.Text>
+                                <Form.Item {...field} name={[field.name, "fileName"]} style={{ display: "none", marginBottom: 0 }}>
+                                  <Input />
+                                </Form.Item>
+                                <Form.Item {...field} name={[field.name, "fileContentBase64"]} style={{ display: "none", marginBottom: 0 }}>
+                                  <Input />
+                                </Form.Item>
+                              </Flex>
+                            )}
+                            <Button danger onClick={() => remove(field.name)}>
+                              Remove
+                            </Button>
+                            {entryType === "text" && configuredTextSecret ? <Typography.Text type="secondary">Secret set</Typography.Text> : null}
+                            {entryType === "file" && configuredFileSecret ? <Typography.Text type="secondary">Secret file set</Typography.Text> : null}
+                          </Flex>
+                        );
+                      })}
+                      <Button onClick={() => add({ key: "", type: "text", value: "", fileName: "", fileContentBase64: "" })}>Add secret</Button>
+                      <Form.ErrorList errors={errors} />
+                    </Flex>
+                  )}
+                </Form.List>
+              </Card>
+              <Card bordered={false} title="Host Commands">
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginBottom: 16 }}
+                  message="Hostexec bridge commands"
+                  description="These simple command names are mounted as read-only shims for this repository when hostexec is enabled in Settings. Existing runtime binaries are not overwritten."
+                />
+                <Form.List
+                  name="hostCommands"
+                  rules={[
+                    {
+                      validator: async (_, value: RepositoryFormValues["hostCommands"]) => {
+                        const seen = new Set<string>();
+                        for (const entry of value ?? []) {
+                          const name = normalizeHostCommandName(entry?.name);
+                          if (!name) {
+                            continue;
+                          }
+                          if (!HOST_COMMAND_PATTERN.test(name)) {
+                            throw new Error(`Invalid host command name: ${name}`);
+                          }
+                          const comparable = name.toLowerCase();
+                          if (seen.has(comparable)) {
+                            throw new Error(`Duplicate host command: ${name}`);
+                          }
+                          seen.add(comparable);
+                        }
+                      }
                     }
-                    if (editingRepository?.webhookSecretConfigured && !clearSecret) {
-                      return Promise.resolve();
-                    }
-                    return Promise.reject(new Error("Webhook secret is required when webhooks are enabled."));
-                  }
-                })
-              ]}
-            >
-              <Input.Password />
-            </Form.Item>
-            {editingRepository?.webhookSecretConfigured ? (
-              <Form.Item name="clearWebhookSecret" valuePropName="checked">
-                <Checkbox>Clear stored webhook secret</Checkbox>
-              </Form.Item>
-            ) : null}
-          </Card>
-          <Card bordered={false} title="Harness">
-            <Flex vertical gap={12}>
-              <Typography.Text type="secondary">
-                Write standing repository guidance for agents. These fields are optional and are used to guide task runs for this repository.
-              </Typography.Text>
-              <Form.Item
-                name="harnessWhatExists"
-                label="1. What exists?"
-                extra="Repository understanding: apps, packages, docs, important folders, generated files, and runtime services."
-                rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
-              >
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
-              </Form.Item>
-              <Form.Item
-                name="harnessAllowedActions"
-                label="2. What is allowed?"
-                extra="Constraints and policies: what agents may edit, what is protected, secret handling, network/Docker limits, and PR rules."
-                rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
-              >
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
-              </Form.Item>
-              <Form.Item
-                name="harnessHowToWork"
-                label="3. How should you work?"
-                extra="Process and decision-making: planning expectations, approval points, branch flow, preferred commands, and when to ask questions."
-                rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
-              >
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
-              </Form.Item>
-              <Form.Item
-                name="harnessDefinitionOfDone"
-                label="4. How do you know you are done?"
-                extra="Validation and quality gates: required checks, tests, builds, and review criteria."
-                rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
-              >
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
-              </Form.Item>
-              <Form.Item
-                name="harnessEvidenceExpectations"
-                label="5. How do you prove it?"
-                extra="Expected proof: command outcomes, links, screenshots, changed docs, and skipped-check explanations."
-                rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
-              >
-                <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
-              </Form.Item>
+                  ]}
+                >
+                  {(fields, { add, remove }, { errors }) => (
+                    <Flex vertical gap={8} style={{ marginBottom: 16 }}>
+                      <Typography.Text strong>Mounted Commands</Typography.Text>
+                      {fields.map((field) => (
+                        <Flex key={field.key} gap={8} align="start" wrap="wrap">
+                          <Form.Item
+                            {...field}
+                            name={[field.name, "name"]}
+                            rules={[
+                              { required: true, whitespace: true },
+                              {
+                                pattern: HOST_COMMAND_PATTERN,
+                                message: "Use a simple command name without slashes."
+                              }
+                            ]}
+                            style={{ flex: "1 1 260px", marginBottom: 0 }}
+                          >
+                            <Input placeholder="xcodebuild" />
+                          </Form.Item>
+                          <Button danger onClick={() => remove(field.name)}>
+                            Remove
+                          </Button>
+                        </Flex>
+                      ))}
+                      <Button onClick={() => add({ name: "" })}>Add command</Button>
+                      <Form.ErrorList errors={errors} />
+                    </Flex>
+                  )}
+                </Form.List>
+              </Card>
+              <Card bordered={false} title="Harness">
+                <Flex vertical gap={12}>
+                  <Typography.Text type="secondary">
+                    Write standing repository guidance for agents. These fields are optional and are used to guide task runs for this repository.
+                  </Typography.Text>
+                  <Form.Item
+                    name="harnessWhatExists"
+                    label="1. What exists?"
+                    extra="Repository understanding: apps, packages, docs, important folders, generated files, and runtime services."
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="harnessAllowedActions"
+                    label="2. What is allowed?"
+                    extra="Constraints and policies: what agents may edit, what is protected, secret handling, network/Docker limits, and PR rules."
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="harnessHowToWork"
+                    label="3. How should you work?"
+                    extra="Process and decision-making: planning expectations, approval points, branch flow, preferred commands, and when to ask questions."
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="harnessDefinitionOfDone"
+                    label="4. How do you know you are done?"
+                    extra="Validation and quality gates: required checks, tests, builds, and review criteria."
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                  </Form.Item>
+                  <Form.Item
+                    name="harnessEvidenceExpectations"
+                    label="5. How do you prove it?"
+                    extra="Expected proof: command outcomes, links, screenshots, changed docs, and skipped-check explanations."
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                  </Form.Item>
+                </Flex>
+              </Card>
             </Flex>
-          </Card>
+          ) : null}
+
+          {activeTab === "webhooks" ? (
+            <Card bordered={false} title="Webhooks">
+              <Form.Item name="webhookEnabled" label="Enable Webhooks" valuePropName="checked">
+                <Switch />
+              </Form.Item>
+              <Form.Item
+                name="webhookUrl"
+                label="Webhook URL"
+                dependencies={["webhookEnabled"]}
+                rules={[
+                  ({ getFieldValue }) => ({
+                    validator(_, value) {
+                      if (!getFieldValue("webhookEnabled")) {
+                        return Promise.resolve();
+                      }
+                      if (typeof value === "string" && value.trim().length > 0) {
+                        try {
+                          new URL(value.trim());
+                          return Promise.resolve();
+                        } catch {
+                          return Promise.reject(new Error("Webhook URL must be a valid absolute URL."));
+                        }
+                      }
+                      return Promise.reject(new Error("Webhook URL is required when webhooks are enabled."));
+                    }
+                  })
+                ]}
+              >
+                <Input placeholder="https://example.com/webhooks/verft" />
+              </Form.Item>
+              <Form.Item
+                name="webhookSecret"
+                label={editingRepository?.webhookSecretConfigured ? "Webhook Secret (leave blank to keep existing)" : "Webhook Secret"}
+                dependencies={["webhookEnabled", "clearWebhookSecret"]}
+                rules={[
+                  ({ getFieldValue }) => ({
+                    validator(_, value) {
+                      if (!getFieldValue("webhookEnabled")) {
+                        return Promise.resolve();
+                      }
+                      const normalized = typeof value === "string" ? value.trim() : "";
+                      const clearSecret = getFieldValue("clearWebhookSecret") === true;
+                      if (normalized.length > 0) {
+                        return Promise.resolve();
+                      }
+                      if (editingRepository?.webhookSecretConfigured && !clearSecret) {
+                        return Promise.resolve();
+                      }
+                      return Promise.reject(new Error("Webhook secret is required when webhooks are enabled."));
+                    }
+                  })
+                ]}
+              >
+                <Input.Password />
+              </Form.Item>
+              {editingRepository?.webhookSecretConfigured ? (
+                <Form.Item name="clearWebhookSecret" valuePropName="checked">
+                  <Checkbox>Clear stored webhook secret</Checkbox>
+                </Form.Item>
+              ) : null}
+            </Card>
+          ) : null}
         </Flex>
       </Form>
     </>
