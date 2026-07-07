@@ -251,6 +251,7 @@ const createRepositorySchema = z.object({
   slackTaskOwnerUserId: z.string().trim().min(1).nullable().optional(),
   harnessWhatExists: z.string().trim().max(8000).nullable().optional(),
   harnessAllowedActions: z.string().trim().max(8000).nullable().optional(),
+  harnessNotAllowedActions: z.string().trim().max(8000).nullable().optional(),
   harnessHowToWork: z.string().trim().max(8000).nullable().optional(),
   harnessDefinitionOfDone: z.string().trim().max(8000).nullable().optional(),
   harnessEvidenceExpectations: z.string().trim().max(8000).nullable().optional()

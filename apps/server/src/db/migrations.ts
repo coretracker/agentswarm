@@ -626,6 +626,13 @@ Feedback:
     `
   },
   {
+    id: "20260707_01_repository_harness_not_allowed_actions",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS harness_not_allowed_actions text NULL;
+    `
+  },
+  {
     id: "20260630_02_repository_github_task_created_comment_template",
     sql: `
       ALTER TABLE repositories

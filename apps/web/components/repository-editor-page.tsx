@@ -81,6 +81,7 @@ type RepositoryFormValues = {
   slackTaskOwnerUserId: string;
   harnessWhatExists: string;
   harnessAllowedActions: string;
+  harnessNotAllowedActions: string;
   harnessHowToWork: string;
   harnessDefinitionOfDone: string;
   harnessEvidenceExpectations: string;
@@ -123,6 +124,7 @@ const emptyValues = (): RepositoryFormValues => ({
   slackTaskOwnerUserId: "",
   harnessWhatExists: "",
   harnessAllowedActions: "",
+  harnessNotAllowedActions: "",
   harnessHowToWork: "",
   harnessDefinitionOfDone: "",
   harnessEvidenceExpectations: ""
@@ -210,6 +212,7 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   slackTaskOwnerUserId: typeof values?.slackTaskOwnerUserId === "string" ? values.slackTaskOwnerUserId : "",
   harnessWhatExists: typeof values?.harnessWhatExists === "string" ? values.harnessWhatExists : "",
   harnessAllowedActions: typeof values?.harnessAllowedActions === "string" ? values.harnessAllowedActions : "",
+  harnessNotAllowedActions: typeof values?.harnessNotAllowedActions === "string" ? values.harnessNotAllowedActions : "",
   harnessHowToWork: typeof values?.harnessHowToWork === "string" ? values.harnessHowToWork : "",
   harnessDefinitionOfDone: typeof values?.harnessDefinitionOfDone === "string" ? values.harnessDefinitionOfDone : "",
   harnessEvidenceExpectations: typeof values?.harnessEvidenceExpectations === "string" ? values.harnessEvidenceExpectations : ""
@@ -437,6 +440,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           slackTaskOwnerUserId: repository.slackTaskOwnerUserId ?? "",
           harnessWhatExists: repository.harnessWhatExists ?? "",
           harnessAllowedActions: repository.harnessAllowedActions ?? "",
+          harnessNotAllowedActions: repository.harnessNotAllowedActions ?? "",
           harnessHowToWork: repository.harnessHowToWork ?? "",
           harnessDefinitionOfDone: repository.harnessDefinitionOfDone ?? "",
           harnessEvidenceExpectations: repository.harnessEvidenceExpectations ?? ""
@@ -846,6 +850,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               slackTaskOwnerUserId: normalized.slackTaskOwnerUserId.trim() || null,
               harnessWhatExists: normalized.harnessWhatExists.trim() || null,
               harnessAllowedActions: normalized.harnessAllowedActions.trim() || null,
+              harnessNotAllowedActions: normalized.harnessNotAllowedActions.trim() || null,
               harnessHowToWork: normalized.harnessHowToWork.trim() || null,
               harnessDefinitionOfDone: normalized.harnessDefinitionOfDone.trim() || null,
               harnessEvidenceExpectations: normalized.harnessEvidenceExpectations.trim() || null
@@ -1626,8 +1631,16 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
                   </Form.Item>
                   <Form.Item
+                    name="harnessNotAllowedActions"
+                    label="3. What is not allowed?"
+                    extra="Restrictions and off-limits actions: what agents must never do, protected files or branches, forbidden commands, and hard constraints."
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                  </Form.Item>
+                  <Form.Item
                     name="harnessHowToWork"
-                    label="3. How should you work?"
+                    label="4. How should you work?"
                     extra="Process and decision-making: planning expectations, approval points, branch flow, preferred commands, and when to ask questions."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
@@ -1635,7 +1648,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   </Form.Item>
                   <Form.Item
                     name="harnessDefinitionOfDone"
-                    label="4. How do you know you are done?"
+                    label="5. How do you know you are done?"
                     extra="Validation and quality gates: required checks, tests, builds, and review criteria."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
@@ -1643,7 +1656,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   </Form.Item>
                   <Form.Item
                     name="harnessEvidenceExpectations"
-                    label="5. How do you prove it?"
+                    label="6. How do you prove it?"
                     extra="Expected proof: command outcomes, links, screenshots, changed docs, and skipped-check explanations."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
