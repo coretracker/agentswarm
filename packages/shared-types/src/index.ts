@@ -529,6 +529,7 @@ export interface Repository {
   slackTaskOwnerUserId?: string | null;
   harnessWhatExists?: string | null;
   harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
   harnessHowToWork?: string | null;
   harnessDefinitionOfDone?: string | null;
   harnessEvidenceExpectations?: string | null;
@@ -1003,6 +1004,7 @@ export interface CreateRepositoryInput {
   slackTaskOwnerUserId?: string | null;
   harnessWhatExists?: string | null;
   harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
   harnessHowToWork?: string | null;
   harnessDefinitionOfDone?: string | null;
   harnessEvidenceExpectations?: string | null;
@@ -1045,6 +1047,7 @@ export interface UpdateRepositoryInput {
   slackTaskOwnerUserId?: string | null;
   harnessWhatExists?: string | null;
   harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
   harnessHowToWork?: string | null;
   harnessDefinitionOfDone?: string | null;
   harnessEvidenceExpectations?: string | null;

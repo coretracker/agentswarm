@@ -751,6 +751,7 @@ export class RedisRepositoryStore implements RepositoryStore {
     const slackTaskOwnerUserId = normalizeUserId(repository.slackTaskOwnerUserId);
     const harnessWhatExists = normalizeRepositoryHarnessValue(repository.harnessWhatExists);
     const harnessAllowedActions = normalizeRepositoryHarnessValue(repository.harnessAllowedActions);
+    const harnessNotAllowedActions = normalizeRepositoryHarnessValue(repository.harnessNotAllowedActions);
     const harnessHowToWork = normalizeRepositoryHarnessValue(repository.harnessHowToWork);
     const harnessDefinitionOfDone = normalizeRepositoryHarnessValue(repository.harnessDefinitionOfDone);
     const harnessEvidenceExpectations = normalizeRepositoryHarnessValue(repository.harnessEvidenceExpectations);
@@ -797,6 +798,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       slackTaskOwnerUserId,
       harnessWhatExists,
       harnessAllowedActions,
+      harnessNotAllowedActions,
       harnessHowToWork,
       harnessDefinitionOfDone,
       harnessEvidenceExpectations,
@@ -845,6 +847,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       slackTaskOwnerUserId: normalized.slackTaskOwnerUserId ?? null,
       harnessWhatExists: normalized.harnessWhatExists ?? null,
       harnessAllowedActions: normalized.harnessAllowedActions ?? null,
+      harnessNotAllowedActions: normalized.harnessNotAllowedActions ?? null,
       harnessHowToWork: normalized.harnessHowToWork ?? null,
       harnessDefinitionOfDone: normalized.harnessDefinitionOfDone ?? null,
       harnessEvidenceExpectations: normalized.harnessEvidenceExpectations ?? null,
@@ -895,6 +898,7 @@ export class RedisRepositoryStore implements RepositoryStore {
     const slackTaskOwnerUserId = normalizeUserId(input.slackTaskOwnerUserId);
     const harnessWhatExists = normalizeRepositoryHarnessValue(input.harnessWhatExists);
     const harnessAllowedActions = normalizeRepositoryHarnessValue(input.harnessAllowedActions);
+    const harnessNotAllowedActions = normalizeRepositoryHarnessValue(input.harnessNotAllowedActions);
     const harnessHowToWork = normalizeRepositoryHarnessValue(input.harnessHowToWork);
     const harnessDefinitionOfDone = normalizeRepositoryHarnessValue(input.harnessDefinitionOfDone);
     const harnessEvidenceExpectations = normalizeRepositoryHarnessValue(input.harnessEvidenceExpectations);
@@ -946,6 +950,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       slackTaskOwnerUserId,
       harnessWhatExists,
       harnessAllowedActions,
+      harnessNotAllowedActions,
       harnessHowToWork,
       harnessDefinitionOfDone,
       harnessEvidenceExpectations,
@@ -1114,6 +1119,10 @@ export class RedisRepositoryStore implements RepositoryStore {
       input.harnessAllowedActions !== undefined
         ? normalizeRepositoryHarnessValue(input.harnessAllowedActions)
         : current.harnessAllowedActions ?? null;
+    const nextHarnessNotAllowedActions =
+      input.harnessNotAllowedActions !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessNotAllowedActions)
+        : current.harnessNotAllowedActions ?? null;
     const nextHarnessHowToWork =
       input.harnessHowToWork !== undefined ? normalizeRepositoryHarnessValue(input.harnessHowToWork) : current.harnessHowToWork ?? null;
     const nextHarnessDefinitionOfDone =
@@ -1185,6 +1194,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       slackTaskOwnerUserId: nextSlackTaskOwnerUserId,
       harnessWhatExists: nextHarnessWhatExists,
       harnessAllowedActions: nextHarnessAllowedActions,
+      harnessNotAllowedActions: nextHarnessNotAllowedActions,
       harnessHowToWork: nextHarnessHowToWork,
       harnessDefinitionOfDone: nextHarnessDefinitionOfDone,
       harnessEvidenceExpectations: nextHarnessEvidenceExpectations,
@@ -1389,6 +1399,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
         typeof row.harness_allowed_actions === "string" && row.harness_allowed_actions.trim().length > 0
           ? row.harness_allowed_actions.trim()
           : null,
+      harnessNotAllowedActions:
+        typeof row.harness_not_allowed_actions === "string" && row.harness_not_allowed_actions.trim().length > 0
+          ? row.harness_not_allowed_actions.trim()
+          : null,
       harnessHowToWork:
         typeof row.harness_how_to_work === "string" && row.harness_how_to_work.trim().length > 0
           ? row.harness_how_to_work.trim()
@@ -1446,6 +1460,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const slackTaskOwnerUserId = normalizeUserId(input.slackTaskOwnerUserId);
     const harnessWhatExists = normalizeRepositoryHarnessValue(input.harnessWhatExists);
     const harnessAllowedActions = normalizeRepositoryHarnessValue(input.harnessAllowedActions);
+    const harnessNotAllowedActions = normalizeRepositoryHarnessValue(input.harnessNotAllowedActions);
     const harnessHowToWork = normalizeRepositoryHarnessValue(input.harnessHowToWork);
     const harnessDefinitionOfDone = normalizeRepositoryHarnessValue(input.harnessDefinitionOfDone);
     const harnessEvidenceExpectations = normalizeRepositoryHarnessValue(input.harnessEvidenceExpectations);
@@ -1497,6 +1512,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       slackTaskOwnerUserId,
       harnessWhatExists,
       harnessAllowedActions,
+      harnessNotAllowedActions,
       harnessHowToWork,
       harnessDefinitionOfDone,
       harnessEvidenceExpectations,
@@ -1547,6 +1563,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             slack_task_owner_user_id,
             harness_what_exists,
             harness_allowed_actions,
+            harness_not_allowed_actions,
             harness_how_to_work,
             harness_definition_of_done,
             harness_evidence_expectations,
@@ -1556,7 +1573,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16, $17::jsonb, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16, $17::jsonb, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
         `,
         [
           repository.id,
@@ -1592,6 +1609,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           repository.slackTaskOwnerUserId,
           repository.harnessWhatExists,
           repository.harnessAllowedActions,
+          repository.harnessNotAllowedActions,
           repository.harnessHowToWork,
           repository.harnessDefinitionOfDone,
           repository.harnessEvidenceExpectations,
@@ -1754,6 +1772,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
       input.harnessAllowedActions !== undefined
         ? normalizeRepositoryHarnessValue(input.harnessAllowedActions)
         : current.harnessAllowedActions ?? null;
+    const nextHarnessNotAllowedActions =
+      input.harnessNotAllowedActions !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessNotAllowedActions)
+        : current.harnessNotAllowedActions ?? null;
     const nextHarnessHowToWork =
       input.harnessHowToWork !== undefined ? normalizeRepositoryHarnessValue(input.harnessHowToWork) : current.harnessHowToWork ?? null;
     const nextHarnessDefinitionOfDone =
@@ -1825,6 +1847,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       slackTaskOwnerUserId: nextSlackTaskOwnerUserId,
       harnessWhatExists: nextHarnessWhatExists,
       harnessAllowedActions: nextHarnessAllowedActions,
+      harnessNotAllowedActions: nextHarnessNotAllowedActions,
       harnessHowToWork: nextHarnessHowToWork,
       harnessDefinitionOfDone: nextHarnessDefinitionOfDone,
       harnessEvidenceExpectations: nextHarnessEvidenceExpectations,
@@ -1871,14 +1894,15 @@ export class PostgresRepositoryStore implements RepositoryStore {
             slack_task_owner_user_id = $31,
             harness_what_exists = $32,
             harness_allowed_actions = $33,
-            harness_how_to_work = $34,
-            harness_definition_of_done = $35,
-            harness_evidence_expectations = $36,
-            webhook_last_attempt_at = $37,
-            webhook_last_status = $38,
-            webhook_last_error = $39,
-            created_at = $40,
-            updated_at = $41
+            harness_not_allowed_actions = $34,
+            harness_how_to_work = $35,
+            harness_definition_of_done = $36,
+            harness_evidence_expectations = $37,
+            webhook_last_attempt_at = $38,
+            webhook_last_status = $39,
+            webhook_last_error = $40,
+            created_at = $41,
+            updated_at = $42
           WHERE id = $1
         `,
         [
@@ -1915,6 +1939,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
           next.slackTaskOwnerUserId,
           next.harnessWhatExists,
           next.harnessAllowedActions,
+          next.harnessNotAllowedActions,
           next.harnessHowToWork,
           next.harnessDefinitionOfDone,
           next.harnessEvidenceExpectations,

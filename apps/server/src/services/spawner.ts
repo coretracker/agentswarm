@@ -1345,6 +1345,7 @@ export class SpawnerService {
     const sections: Array<{ heading: string; content: string | null }> = [
       { heading: "What exists?", content: this.normalizeRepositoryHarnessSection(repository?.harnessWhatExists) },
       { heading: "What is allowed?", content: this.normalizeRepositoryHarnessSection(repository?.harnessAllowedActions) },
+      { heading: "What is not allowed?", content: this.normalizeRepositoryHarnessSection(repository?.harnessNotAllowedActions) },
       { heading: "How should you work?", content: this.normalizeRepositoryHarnessSection(repository?.harnessHowToWork) },
       {
         heading: "How do you know you are done?",
