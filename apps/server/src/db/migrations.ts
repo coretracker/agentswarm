@@ -707,5 +707,18 @@ Feedback:
       DROP COLUMN IF EXISTS slack_harness_definition_of_done,
       DROP COLUMN IF EXISTS slack_harness_evidence_expectations;
     `
+  },
+  {
+    id: "20260707_01_repository_slack_thread_integration",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS slack_signing_secret text NULL,
+      ADD COLUMN IF NOT EXISTS slack_bot_token text NULL,
+      ADD COLUMN IF NOT EXISTS slack_channel_id text NULL,
+      ADD COLUMN IF NOT EXISTS slack_initial_instructions text NULL,
+      ADD COLUMN IF NOT EXISTS slack_feedback_instructions text NULL,
+      ADD COLUMN IF NOT EXISTS slack_task_created_reply_template text NULL,
+      ADD COLUMN IF NOT EXISTS slack_task_owner_user_id text NULL;
+    `
   }
 ];

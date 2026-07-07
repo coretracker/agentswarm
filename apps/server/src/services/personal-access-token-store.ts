@@ -18,7 +18,7 @@ const TOKEN_PREFIX_CHARS = 18;
 const nowIso = (): string => new Date().toISOString();
 const validScopes = new Set<PermissionScope>(ALL_PERMISSION_SCOPES);
 
-export type PersonalAccessTokenRuntimeContext = null;
+export type PersonalAccessTokenRuntimeContext = { taskId: string } | null;
 
 export interface CreatePersonalAccessTokenInput {
   userId: string;
@@ -67,7 +67,13 @@ const normalizeExpiresAt = (expiresAt: string | null | undefined): string | null
   return new Date(timestamp).toISOString();
 };
 
-const normalizeRuntimeContext = (_value: unknown): PersonalAccessTokenRuntimeContext => null;
+const normalizeRuntimeContext = (value: unknown): PersonalAccessTokenRuntimeContext => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const taskId = (value as { taskId?: unknown }).taskId;
+  return typeof taskId === "string" && taskId.trim().length > 0 ? { taskId: taskId.trim() } : null;
+};
 
 export class PostgresPersonalAccessTokenStore implements PersonalAccessTokenStore {
   constructor(

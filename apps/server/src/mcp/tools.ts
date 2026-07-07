@@ -120,6 +120,10 @@ const updateTaskConfigSchema = z.object({
   autoApplyCheckpoints: z.boolean()
 });
 
+const replySlackThreadSchema = z.object({
+  text: z.string().trim().min(1).max(4000)
+});
+
 const schemaToJson = (schema: z.ZodTypeAny): Record<string, unknown> => zodToJsonSchema(schema);
 
 function zodToJsonSchema(schema: z.ZodTypeAny): Record<string, unknown> {
@@ -225,6 +229,37 @@ const startTask = async (context: McpToolContext, task: Task, action?: TaskActio
   }
 
   return result.task;
+};
+
+const postSlackThreadReply = async (input: {
+  botToken: string | null | undefined;
+  channelId: string;
+  threadTs: string;
+  text: string;
+}): Promise<void> => {
+  const botToken = input.botToken?.trim();
+  if (!botToken) {
+    throw new McpToolError(409, "Slack bot token is not configured for this repository.", "slack_bot_token_missing");
+  }
+  const response = await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${botToken}`,
+      "Content-Type": "application/json; charset=utf-8"
+    },
+    body: JSON.stringify({
+      channel: input.channelId,
+      thread_ts: input.threadTs,
+      text: input.text
+    })
+  });
+  if (!response.ok) {
+    throw new McpToolError(502, `Slack API returned HTTP ${response.status}`, "slack_api_error");
+  }
+  const body = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+  if (body?.ok !== true) {
+    throw new McpToolError(502, `Slack API rejected the reply${body?.error ? `: ${body.error}` : "."}`, "slack_api_error");
+  }
 };
 
 export const createMcpTools = (): McpToolDefinition[] => [
@@ -440,6 +475,38 @@ export const createMcpTools = (): McpToolDefinition[] => [
         githubIssueNumber: input.issueNumber
       });
       return { task: compactTask(updated ?? task), githubIssueNumber: input.issueNumber };
+    }
+  },
+  {
+    name: "verft_reply_slack_thread",
+    description: "Reply to the Slack thread linked to the current Verft task. This tool is only available inside a Slack-linked task run.",
+    inputSchema: schemaToJson(replySlackThreadSchema),
+    scopes: ["task:edit"],
+    available(context) {
+      return typeof context.runtimeContext?.taskId === "string" && context.runtimeContext.taskId.trim().length > 0;
+    },
+    async handler(rawInput, context) {
+      const input = replySlackThreadSchema.parse(rawInput ?? {});
+      const taskId = context.runtimeContext?.taskId?.trim();
+      if (!taskId) {
+        throw new McpToolError(404, "Slack reply tool is only available inside a task runtime.", "runtime_context_missing");
+      }
+      const task = await getAccessibleTask(context, taskId);
+      if (!task.slackChannelId || !task.slackThreadTs) {
+        throw new McpToolError(409, "This task is not linked to a Slack thread.", "slack_thread_not_linked");
+      }
+      const secrets = await context.deps.repositoryStore.getRepositorySlackSecrets(task.repoId);
+      await postSlackThreadReply({
+        botToken: secrets.botToken,
+        channelId: task.slackChannelId,
+        threadTs: task.slackThreadTs,
+        text: input.text
+      });
+      return {
+        ok: true,
+        channelId: task.slackChannelId,
+        threadTs: task.slackThreadTs
+      };
     }
   },
   {

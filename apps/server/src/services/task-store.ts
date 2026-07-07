@@ -169,6 +169,11 @@ const normalizeGitHubNumber = (value: unknown): number | null => {
   return value;
 };
 
+const normalizeSlackIdentifier = (value: unknown): string | null => {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized.length > 0 ? normalized : null;
+};
+
 const normalizeTaskMessageAction = (action: string | null | undefined): TaskMessage["action"] => {
   if (action === "build" || action === "ask" || action === "comment") {
     return action;
@@ -185,7 +190,12 @@ const normalizeTaskMessage = (message: TaskMessage): TaskMessage => {
   const sessionId = typeof message.sessionId === "string" && message.sessionId.trim().length > 0 ? message.sessionId : null;
   const queueState = message.queueState === "pending" ? "pending" : null;
   const queueSource =
-    message.queueSource === "user" || message.queueSource === "github_pr" || message.queueSource === "github_issue" ? message.queueSource : null;
+    message.queueSource === "user" ||
+    message.queueSource === "github_pr" ||
+    message.queueSource === "github_issue" ||
+    message.queueSource === "slack_thread"
+      ? message.queueSource
+      : null;
   const externalId = typeof message.externalId === "string" && message.externalId.trim().length > 0 ? message.externalId.trim() : null;
 
   return {
@@ -414,6 +424,7 @@ export interface TaskStore {
   getTask(taskId: string): Promise<Task | null>;
   findTaskByGitHubPrNumber(repositoryId: string, githubPrNumber: number): Promise<Task | null>;
   findTaskByGitHubIssueNumber(repositoryId: string, githubIssueNumber: number): Promise<Task | null>;
+  findTaskBySlackThread(repositoryId: string, slackChannelId: string, slackThreadTs: string): Promise<Task | null>;
   getTaskMetadata(taskId: string): Promise<TaskMetadata | null>;
   listTasks(options?: ListTasksOptions): Promise<Task[]>;
   patchTask(taskId: string, patch: Partial<Omit<Task, "id" | "createdAt">>): Promise<Task | null>;
@@ -517,6 +528,8 @@ export class RedisTaskStore implements TaskStore {
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
       githubPrNumber: normalizeGitHubNumber(legacyTask.githubPrNumber),
       githubIssueNumber: normalizeGitHubNumber(legacyTask.githubIssueNumber),
+      slackChannelId: normalizeSlackIdentifier(legacyTask.slackChannelId),
+      slackThreadTs: normalizeSlackIdentifier(legacyTask.slackThreadTs),
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
@@ -744,6 +757,8 @@ export class RedisTaskStore implements TaskStore {
       repoDefaultBranch: repository.defaultBranch,
       githubPrNumber: null,
       githubIssueNumber: null,
+      slackChannelId: null,
+      slackThreadTs: null,
       taskType,
       provider,
       providerProfile,
@@ -804,6 +819,15 @@ export class RedisTaskStore implements TaskStore {
   async findTaskByGitHubIssueNumber(repositoryId: string, githubIssueNumber: number): Promise<Task | null> {
     const tasks = await this.listTasks({ view: "active", limit: 1000 });
     return tasks.find((task) => task.repoId === repositoryId && task.githubIssueNumber === githubIssueNumber) ?? null;
+  }
+
+  async findTaskBySlackThread(repositoryId: string, slackChannelId: string, slackThreadTs: string): Promise<Task | null> {
+    const tasks = await this.listTasks({ view: "active", limit: 1000 });
+    return (
+      tasks.find(
+        (task) => task.repoId === repositoryId && task.slackChannelId === slackChannelId && task.slackThreadTs === slackThreadTs
+      ) ?? null
+    );
   }
 
   async getTaskMetadata(taskId: string): Promise<TaskMetadata | null> {
@@ -2266,6 +2290,24 @@ export class PostgresTaskStore implements TaskStore {
         LIMIT 1
       `,
       [repositoryId, String(githubIssueNumber)]
+    );
+    const row = result.rows[0];
+    return row ? this.withPendingCheckpointState({ ...this.mapTaskRow(row), logs: [] }) : null;
+  }
+
+  async findTaskBySlackThread(repositoryId: string, slackChannelId: string, slackThreadTs: string): Promise<Task | null> {
+    const result = await this.pool.query(
+      `
+        SELECT task_data
+        FROM tasks
+        WHERE task_data->>'repoId' = $1
+          AND task_data->>'slackChannelId' = $2
+          AND task_data->>'slackThreadTs' = $3
+          AND status <> 'archived'
+        ORDER BY created_at DESC
+        LIMIT 1
+      `,
+      [repositoryId, slackChannelId, slackThreadTs]
     );
     const row = result.rows[0];
     return row ? this.withPendingCheckpointState({ ...this.mapTaskRow(row), logs: [] }) : null;

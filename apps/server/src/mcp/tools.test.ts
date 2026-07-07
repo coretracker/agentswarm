@@ -416,4 +416,80 @@ describe("MCP Phase 1 tools", () => {
     assert.deepEqual(runNextCalls, [{ taskId: "task-1", reason: "manual" }]);
     assert.equal((result as { messageId: string }).messageId, "message-1");
   });
+
+  it("only exposes Slack replies inside a runtime task context", () => {
+    const tool = toolByName("verft_reply_slack_thread");
+
+    assert.equal(
+      tool.available?.({
+        user,
+        deps: {} as never,
+        runtimeContext: null
+      }),
+      false
+    );
+    assert.equal(
+      tool.available?.({
+        user,
+        deps: {} as never,
+        runtimeContext: { taskId: "task-1" }
+      }),
+      true
+    );
+  });
+
+  it("replies to the Slack thread linked to the runtime task", async () => {
+    const tool = toolByName("verft_reply_slack_thread");
+    const task = createTask({
+      slackChannelId: "C12345",
+      slackThreadTs: "1783406472.567799"
+    });
+    const fetchCalls: Array<{ url: string; init: RequestInit }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(url), init: init ?? {} });
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    try {
+      const result = await tool.handler(
+        {
+          text: "Handled this in Slack."
+        },
+        {
+          user,
+          runtimeContext: { taskId: task.id },
+          deps: {
+            repositoryStore: {
+              getRepositorySlackSecrets: async () => ({ signingSecret: "secret", botToken: "xoxb-token" })
+            },
+            settingsStore: {} as never,
+            taskStore: {
+              getTask: async () => task
+            },
+            taskQueueStore: {} as never,
+            scheduler: {} as never,
+            spawner: {} as never
+          } as never
+        }
+      );
+
+      assert.deepEqual(result, {
+        ok: true,
+        channelId: "C12345",
+        threadTs: "1783406472.567799"
+      });
+      assert.equal(fetchCalls[0]?.url, "https://slack.com/api/chat.postMessage");
+      assert.deepEqual(JSON.parse(String(fetchCalls[0]?.init.body)), {
+        channel: "C12345",
+        thread_ts: "1783406472.567799",
+        text: "Handled this in Slack."
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });

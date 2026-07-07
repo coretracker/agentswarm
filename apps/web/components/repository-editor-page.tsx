@@ -17,6 +17,9 @@ import {
   DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
   DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
   DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE,
+  DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS,
+  DEFAULT_SLACK_INITIAL_INSTRUCTIONS,
+  DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
   getAgentProviderLabel,
   getEffortOptionsForProvider
 } from "@verft/shared-types";
@@ -67,6 +70,15 @@ type RepositoryFormValues = {
   githubPrReviewInstructions: string;
   githubPrTaskCreatedCommentTemplate: string;
   githubPrTaskOwnerUserId: string;
+  slackSigningSecret: string;
+  clearSlackSigningSecret: boolean;
+  slackBotToken: string;
+  clearSlackBotToken: boolean;
+  slackChannelId: string;
+  slackInitialInstructions: string;
+  slackFeedbackInstructions: string;
+  slackTaskCreatedReplyTemplate: string;
+  slackTaskOwnerUserId: string;
   harnessWhatExists: string;
   harnessAllowedActions: string;
   harnessHowToWork: string;
@@ -100,6 +112,15 @@ const emptyValues = (): RepositoryFormValues => ({
   githubPrReviewInstructions: DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
   githubPrTaskCreatedCommentTemplate: DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE,
   githubPrTaskOwnerUserId: "",
+  slackSigningSecret: "",
+  clearSlackSigningSecret: false,
+  slackBotToken: "",
+  clearSlackBotToken: false,
+  slackChannelId: "",
+  slackInitialInstructions: DEFAULT_SLACK_INITIAL_INSTRUCTIONS,
+  slackFeedbackInstructions: DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS,
+  slackTaskCreatedReplyTemplate: DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
+  slackTaskOwnerUserId: "",
   harnessWhatExists: "",
   harnessAllowedActions: "",
   harnessHowToWork: "",
@@ -173,6 +194,20 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
       ? values.githubPrTaskCreatedCommentTemplate
       : DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE,
   githubPrTaskOwnerUserId: typeof values?.githubPrTaskOwnerUserId === "string" ? values.githubPrTaskOwnerUserId : "",
+  slackSigningSecret: typeof values?.slackSigningSecret === "string" ? values.slackSigningSecret : "",
+  clearSlackSigningSecret: values?.clearSlackSigningSecret === true,
+  slackBotToken: typeof values?.slackBotToken === "string" ? values.slackBotToken : "",
+  clearSlackBotToken: values?.clearSlackBotToken === true,
+  slackChannelId: typeof values?.slackChannelId === "string" ? values.slackChannelId : "",
+  slackInitialInstructions:
+    typeof values?.slackInitialInstructions === "string" ? values.slackInitialInstructions : DEFAULT_SLACK_INITIAL_INSTRUCTIONS,
+  slackFeedbackInstructions:
+    typeof values?.slackFeedbackInstructions === "string" ? values.slackFeedbackInstructions : DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS,
+  slackTaskCreatedReplyTemplate:
+    typeof values?.slackTaskCreatedReplyTemplate === "string"
+      ? values.slackTaskCreatedReplyTemplate
+      : DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
+  slackTaskOwnerUserId: typeof values?.slackTaskOwnerUserId === "string" ? values.slackTaskOwnerUserId : "",
   harnessWhatExists: typeof values?.harnessWhatExists === "string" ? values.harnessWhatExists : "",
   harnessAllowedActions: typeof values?.harnessAllowedActions === "string" ? values.harnessAllowedActions : "",
   harnessHowToWork: typeof values?.harnessHowToWork === "string" ? values.harnessHowToWork : "",
@@ -390,6 +425,15 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           githubPrTaskCreatedCommentTemplate:
             repository.githubPrTaskCreatedCommentTemplate ?? DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE,
           githubPrTaskOwnerUserId: repository.githubPrTaskOwnerUserId ?? "",
+          slackSigningSecret: "",
+          clearSlackSigningSecret: false,
+          slackBotToken: "",
+          clearSlackBotToken: false,
+          slackChannelId: repository.slackChannelId ?? "",
+          slackInitialInstructions: repository.slackInitialInstructions ?? DEFAULT_SLACK_INITIAL_INSTRUCTIONS,
+          slackFeedbackInstructions: repository.slackFeedbackInstructions ?? DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS,
+          slackTaskCreatedReplyTemplate: repository.slackTaskCreatedReplyTemplate ?? DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
+          slackTaskOwnerUserId: repository.slackTaskOwnerUserId ?? "",
           harnessWhatExists: repository.harnessWhatExists ?? "",
           harnessAllowedActions: repository.harnessAllowedActions ?? "",
           harnessHowToWork: repository.harnessHowToWork ?? "",
@@ -781,6 +825,24 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   ? null
                   : normalized.githubPrTaskCreatedCommentTemplate.trim() || null,
               githubPrTaskOwnerUserId: normalized.githubPrTaskOwnerUserId.trim() || null,
+              ...(normalized.slackSigningSecret.trim().length > 0 ? { slackSigningSecret: normalized.slackSigningSecret.trim() } : {}),
+              ...(editingRepository && normalized.clearSlackSigningSecret ? { clearSlackSigningSecret: true } : {}),
+              ...(normalized.slackBotToken.trim().length > 0 ? { slackBotToken: normalized.slackBotToken.trim() } : {}),
+              ...(editingRepository && normalized.clearSlackBotToken ? { clearSlackBotToken: true } : {}),
+              slackChannelId: normalized.slackChannelId.trim() || null,
+              slackInitialInstructions:
+                normalized.slackInitialInstructions.trim() === DEFAULT_SLACK_INITIAL_INSTRUCTIONS
+                  ? null
+                  : normalized.slackInitialInstructions.trim() || null,
+              slackFeedbackInstructions:
+                normalized.slackFeedbackInstructions.trim() === DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS
+                  ? null
+                  : normalized.slackFeedbackInstructions.trim() || null,
+              slackTaskCreatedReplyTemplate:
+                normalized.slackTaskCreatedReplyTemplate.trim() === DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE
+                  ? null
+                  : normalized.slackTaskCreatedReplyTemplate.trim() || null,
+              slackTaskOwnerUserId: normalized.slackTaskOwnerUserId.trim() || null,
               harnessWhatExists: normalized.harnessWhatExists.trim() || null,
               harnessAllowedActions: normalized.harnessAllowedActions.trim() || null,
               harnessHowToWork: normalized.harnessHowToWork.trim() || null,
@@ -1051,6 +1113,146 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   showIcon
                   message="Save the repository first"
                   description="After creation, Verft will show the repository-scoped Github webhook URL and webhook secret setup."
+                />
+              )}
+            </Flex>
+          </Card>
+          <Card bordered={false} title="Slack Integration">
+            <Flex vertical gap={12}>
+              {mode === "edit" && editingRepository ? (
+                <>
+                  <Form.Item label="Event URL">
+                    <Input
+                      readOnly
+                      value={buildApiUrl(`/slack/events/${editingRepository.id}`)}
+                      addonAfter={
+                        <Button
+                          type="link"
+                          size="small"
+                          onClick={() => {
+                            void navigator.clipboard.writeText(buildApiUrl(`/slack/events/${editingRepository.id}`));
+                            messageApi.success("Slack event URL copied");
+                          }}
+                        >
+                          Copy
+                        </Button>
+                      }
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    name="slackChannelId"
+                    label="Slack Channel ID"
+                    extra="Only messages from this Slack channel are processed for this repository."
+                    rules={[{ pattern: /^[CG][A-Z0-9]{2,}$/, message: "Use a Slack channel ID such as C0123456789 or G0123456789." }]}
+                  >
+                    <Input placeholder="C0123456789" autoComplete="off" />
+                  </Form.Item>
+                  <Form.Item
+                    name="slackSigningSecret"
+                    label={
+                      editingRepository.slackSigningSecretConfigured
+                        ? "Slack Signing Secret (leave blank to keep existing)"
+                        : "Slack Signing Secret"
+                    }
+                  >
+                    <Input.Password autoComplete="off" />
+                  </Form.Item>
+                  {editingRepository.slackSigningSecretConfigured ? (
+                    <Form.Item name="clearSlackSigningSecret" valuePropName="checked">
+                      <Checkbox>Clear stored Slack signing secret</Checkbox>
+                    </Form.Item>
+                  ) : null}
+                  <Form.Item
+                    name="slackBotToken"
+                    label={editingRepository.slackBotTokenConfigured ? "Slack Bot Token (leave blank to keep existing)" : "Slack Bot Token"}
+                  >
+                    <Input.Password autoComplete="off" />
+                  </Form.Item>
+                  {editingRepository.slackBotTokenConfigured ? (
+                    <Form.Item name="clearSlackBotToken" valuePropName="checked">
+                      <Checkbox>Clear stored Slack bot token</Checkbox>
+                    </Form.Item>
+                  ) : null}
+                  <Form.Item
+                    name="slackTaskOwnerUserId"
+                    label="Slack-Created Task Owner"
+                    extra={
+                      usersLoadError
+                        ? `Users could not be loaded: ${usersLoadError}`
+                        : "Required for creating a new task from an unlinked Slack thread."
+                    }
+                  >
+                    <Select
+                      allowClear
+                      showSearch
+                      disabled={Boolean(usersLoadError)}
+                      placeholder="Select task owner"
+                      optionFilterProp="label"
+                      options={users.map((user) => ({
+                        value: user.id,
+                        label: `${user.name} <${user.email}>${user.active ? "" : " (inactive)"}`,
+                        disabled: !user.active
+                      }))}
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    name="slackTaskCreatedReplyTemplate"
+                    label="Task Created Thread Reply"
+                    extra="Posted in Slack when Verft creates a new task. Supports {{task_url}}, {{task_id}}, {{author}}, {{channel_id}}, {{thread_ts}}, and {{message_ts}}."
+                    rules={[{ max: 8000, message: "Reply template must be 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 4, maxRows: 10 }} />
+                  </Form.Item>
+                  <Button
+                    onClick={() => {
+                      form.setFieldValue("slackTaskCreatedReplyTemplate", DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE);
+                    }}
+                  >
+                    Reset task created reply
+                  </Button>
+                  <Form.Item
+                    name="slackInitialInstructions"
+                    label="Initial Agent Instructions"
+                    extra="Used when Slack creates a new Verft task. Supports {{channel_id}}, {{thread_ts}}, {{message_ts}}, {{author}}, {{url_line}}, {{feedback_body}}, {{task_title}}, and {{repository_name}}."
+                    rules={[{ max: 8000, message: "Instructions must be 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 8, maxRows: 16 }} />
+                  </Form.Item>
+                  <Button
+                    onClick={() => {
+                      form.setFieldValue("slackInitialInstructions", DEFAULT_SLACK_INITIAL_INSTRUCTIONS);
+                    }}
+                  >
+                    Reset initial instructions
+                  </Button>
+                  <Form.Item
+                    name="slackFeedbackInstructions"
+                    label="Agent Feedback Instructions"
+                    extra="Used when Slack thread replies add feedback to an existing linked task. Supports {{channel_id}}, {{thread_ts}}, {{message_ts}}, {{author}}, {{url_line}}, {{feedback_body}}, {{task_title}}, and {{repository_name}}."
+                    rules={[{ max: 8000, message: "Instructions must be 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 8, maxRows: 16 }} />
+                  </Form.Item>
+                  <Button
+                    onClick={() => {
+                      form.setFieldValue("slackFeedbackInstructions", DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS);
+                    }}
+                  >
+                    Reset feedback instructions
+                  </Button>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="Thread flow"
+                    description="In Slack, subscribe the app to app_mention and message events. Verft creates tasks from root mentions in the configured channel and queues linked thread replies as follow-up feedback."
+                  />
+                </>
+              ) : (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Save the repository first"
+                  description="After creation, Verft will show the repository-scoped Slack event URL and Slack secret setup."
                 />
               )}
             </Flex>

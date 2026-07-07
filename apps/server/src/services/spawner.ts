@@ -3178,6 +3178,7 @@ export class SpawnerService {
         userId,
         name: `Verft runtime MCP ${task.id}/${executionId}`,
         scopes: VERFT_RUNTIME_MCP_SCOPES,
+        runtimeContext: { taskId: task.id },
         expiresAt: new Date(Date.now() + VERFT_RUNTIME_MCP_TOKEN_TTL_MS).toISOString()
       })
       .catch(() => null);

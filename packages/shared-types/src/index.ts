@@ -51,6 +51,33 @@ export const DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE = [
   "I’ll post progress updates here as work continues."
 ].join("\n");
 
+export const DEFAULT_SLACK_INITIAL_INSTRUCTIONS = [
+  "A new Slack task was created from a thread in {{channel_id}}.",
+  "",
+  "Author: <@{{author}}>",
+  "{{url_line}}",
+  "Request:",
+  "{{feedback_body}}",
+  "",
+  "After handling this, call the Verft MCP tool `verft_reply_slack_thread` with a brief status reply."
+].join("\n");
+
+export const DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS = [
+  "A new Slack thread reply was added to this task.",
+  "",
+  "Author: <@{{author}}>",
+  "{{url_line}}",
+  "Feedback:",
+  "{{feedback_body}}",
+  "",
+  "After handling this feedback, call the Verft MCP tool `verft_reply_slack_thread` with a brief status reply."
+].join("\n");
+
+export const DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE = [
+  "Created task: {{task_url}}",
+  "I’ll post updates here as work continues."
+].join("\n");
+
 /** Native effort values from providers. "max" is Claude-only. */
 export type ProviderProfile = "low" | "medium" | "high" | "max";
 
@@ -493,6 +520,13 @@ export interface Repository {
   githubPrReviewInstructions?: string | null;
   githubPrTaskCreatedCommentTemplate?: string | null;
   githubPrTaskOwnerUserId?: string | null;
+  slackSigningSecretConfigured?: boolean;
+  slackBotTokenConfigured?: boolean;
+  slackChannelId?: string | null;
+  slackInitialInstructions?: string | null;
+  slackFeedbackInstructions?: string | null;
+  slackTaskCreatedReplyTemplate?: string | null;
+  slackTaskOwnerUserId?: string | null;
   harnessWhatExists?: string | null;
   harnessAllowedActions?: string | null;
   harnessHowToWork?: string | null;
@@ -535,6 +569,8 @@ export interface Task {
   repoDefaultBranch: string;
   githubPrNumber?: number | null;
   githubIssueNumber?: number | null;
+  slackChannelId?: string | null;
+  slackThreadTs?: string | null;
   taskType: TaskType;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
@@ -711,7 +747,7 @@ export interface TaskMessage {
   content: string;
   action: TaskMessageAction | null;
   queueState?: "pending" | null;
-  queueSource?: "user" | "github_pr" | "github_issue" | null;
+  queueSource?: "user" | "github_pr" | "github_issue" | "slack_thread" | null;
   externalId?: string | null;
   /** Optional saved image attachments that were attached when the user submitted this message. */
   attachments?: TaskPromptAttachment[];
@@ -958,6 +994,13 @@ export interface CreateRepositoryInput {
   githubPrReviewInstructions?: string | null;
   githubPrTaskCreatedCommentTemplate?: string | null;
   githubPrTaskOwnerUserId?: string | null;
+  slackSigningSecret?: string;
+  slackBotToken?: string;
+  slackChannelId?: string | null;
+  slackInitialInstructions?: string | null;
+  slackFeedbackInstructions?: string | null;
+  slackTaskCreatedReplyTemplate?: string | null;
+  slackTaskOwnerUserId?: string | null;
   harnessWhatExists?: string | null;
   harnessAllowedActions?: string | null;
   harnessHowToWork?: string | null;
@@ -991,6 +1034,15 @@ export interface UpdateRepositoryInput {
   githubPrReviewInstructions?: string | null;
   githubPrTaskCreatedCommentTemplate?: string | null;
   githubPrTaskOwnerUserId?: string | null;
+  slackSigningSecret?: string;
+  clearSlackSigningSecret?: boolean;
+  slackBotToken?: string;
+  clearSlackBotToken?: boolean;
+  slackChannelId?: string | null;
+  slackInitialInstructions?: string | null;
+  slackFeedbackInstructions?: string | null;
+  slackTaskCreatedReplyTemplate?: string | null;
+  slackTaskOwnerUserId?: string | null;
   harnessWhatExists?: string | null;
   harnessAllowedActions?: string | null;
   harnessHowToWork?: string | null;

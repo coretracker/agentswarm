@@ -19,6 +19,7 @@ const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
 const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
 const GITHUB_ALLOWED_USERS_MAX_COUNT = 100;
 const GITHUB_LOGIN_PATTERN = /^@?[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const SLACK_CHANNEL_ID_PATTERN = /^[CG][A-Z0-9]{2,}$/;
 const HOST_COMMAND_MAX_COUNT = 80;
 const HOST_COMMAND_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 
@@ -241,6 +242,13 @@ const createRepositorySchema = z.object({
   githubPrReviewInstructions: z.string().trim().max(8000).nullable().optional(),
   githubPrTaskCreatedCommentTemplate: z.string().trim().max(8000).nullable().optional(),
   githubPrTaskOwnerUserId: z.string().trim().min(1).nullable().optional(),
+  slackSigningSecret: z.string().trim().min(1).optional(),
+  slackBotToken: z.string().trim().min(1).optional(),
+  slackChannelId: z.string().trim().regex(SLACK_CHANNEL_ID_PATTERN, "Slack channel ID must look like C... or G...").nullable().optional(),
+  slackInitialInstructions: z.string().trim().max(8000).nullable().optional(),
+  slackFeedbackInstructions: z.string().trim().max(8000).nullable().optional(),
+  slackTaskCreatedReplyTemplate: z.string().trim().max(8000).nullable().optional(),
+  slackTaskOwnerUserId: z.string().trim().min(1).nullable().optional(),
   harnessWhatExists: z.string().trim().max(8000).nullable().optional(),
   harnessAllowedActions: z.string().trim().max(8000).nullable().optional(),
   harnessHowToWork: z.string().trim().max(8000).nullable().optional(),
@@ -250,7 +258,9 @@ const createRepositorySchema = z.object({
 
 const updateRepositorySchema = createRepositorySchema.partial().extend({
   clearWebhookSecret: z.boolean().optional(),
-  clearGithubPrWebhookSecret: z.boolean().optional()
+  clearGithubPrWebhookSecret: z.boolean().optional(),
+  clearSlackSigningSecret: z.boolean().optional(),
+  clearSlackBotToken: z.boolean().optional()
 });
 
 type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;
@@ -289,9 +299,10 @@ export const registerRepositoryRoutes = (
     });
   };
 
-  const validateGithubPrTaskOwner = async (
+  const validateIntegrationTaskOwner = async (
     ownerUserId: string | null | undefined,
-    repositoryId: string | null
+    repositoryId: string | null,
+    label: string
   ): Promise<{ ok: true } | { ok: false; statusCode: 400 | 404; message: string }> => {
     const normalizedOwnerUserId = ownerUserId?.trim() || null;
     if (!normalizedOwnerUserId) {
@@ -300,31 +311,32 @@ export const registerRepositoryRoutes = (
 
     const owner = await deps.userStore.getUser(normalizedOwnerUserId);
     if (!owner) {
-      return { ok: false, statusCode: 400, message: "GitHub-created task owner was not found." };
+      return { ok: false, statusCode: 400, message: `${label} task owner was not found.` };
     }
     if (!owner.active) {
-      return { ok: false, statusCode: 400, message: "GitHub-created task owner must be active." };
+      return { ok: false, statusCode: 400, message: `${label} task owner must be active.` };
     }
     if (repositoryId && !canUserAccessRepository(owner, repositoryId)) {
-      return { ok: false, statusCode: 400, message: "GitHub-created task owner must have access to this repository." };
+      return { ok: false, statusCode: 400, message: `${label} task owner must have access to this repository.` };
     }
 
     return { ok: true };
   };
 
-  const validateGithubPrTaskOwnerForCreate = async (
+  const validateIntegrationTaskOwnerForCreate = async (
     ownerUserId: string | null | undefined,
-    authUser: AuthSessionUser | null | undefined
+    authUser: AuthSessionUser | null | undefined,
+    label: string
   ): Promise<{ ok: true } | { ok: false; statusCode: 400 | 404; message: string }> => {
     const normalizedOwnerUserId = ownerUserId?.trim() || null;
     if (!normalizedOwnerUserId) {
       return { ok: true };
     }
     if (!authUser || normalizedOwnerUserId !== authUser.id) {
-      return { ok: false, statusCode: 400, message: "GitHub-created task owner must have access to this repository." };
+      return { ok: false, statusCode: 400, message: `${label} task owner must have access to this repository.` };
     }
 
-    return validateGithubPrTaskOwner(normalizedOwnerUserId, null);
+    return validateIntegrationTaskOwner(normalizedOwnerUserId, null, label);
   };
 
   app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async (request) => {
@@ -349,9 +361,13 @@ export const registerRepositoryRoutes = (
 
     try {
       const authUser = request.auth?.user;
-      const ownerValidation = await validateGithubPrTaskOwnerForCreate(parsed.data.githubPrTaskOwnerUserId, authUser);
-      if (!ownerValidation.ok) {
-        return reply.status(ownerValidation.statusCode).send({ message: ownerValidation.message });
+      for (const ownerValidation of [
+        await validateIntegrationTaskOwnerForCreate(parsed.data.githubPrTaskOwnerUserId, authUser, "GitHub-created"),
+        await validateIntegrationTaskOwnerForCreate(parsed.data.slackTaskOwnerUserId, authUser, "Slack-created")
+      ]) {
+        if (!ownerValidation.ok) {
+          return reply.status(ownerValidation.statusCode).send({ message: ownerValidation.message });
+        }
       }
 
       const createInput: CreateRepositoryInput = toCreateRepositoryInput(parsed.data);
@@ -380,9 +396,13 @@ export const registerRepositoryRoutes = (
       if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
         return reply.status(404).send({ message: "Repository not found" });
       }
-      const ownerValidation = await validateGithubPrTaskOwner(parsed.data.githubPrTaskOwnerUserId, request.params.id);
-      if (!ownerValidation.ok) {
-        return reply.status(ownerValidation.statusCode).send({ message: ownerValidation.message });
+      for (const ownerValidation of [
+        await validateIntegrationTaskOwner(parsed.data.githubPrTaskOwnerUserId, request.params.id, "GitHub-created"),
+        await validateIntegrationTaskOwner(parsed.data.slackTaskOwnerUserId, request.params.id, "Slack-created")
+      ]) {
+        if (!ownerValidation.ok) {
+          return reply.status(ownerValidation.statusCode).send({ message: ownerValidation.message });
+        }
       }
 
       const updateInput: UpdateRepositoryInput = toUpdateRepositoryInput(parsed.data);
