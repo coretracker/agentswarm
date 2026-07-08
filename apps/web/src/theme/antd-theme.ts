@@ -1,6 +1,6 @@
 import { theme as antTheme, type ThemeConfig } from "antd";
 
-export const appMonospaceFontFamily = '"Fire Code", "Fira Code", "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace';
+export const appMonospaceFontFamily = '"SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace';
 
 export type AppThemeMode =
   | "ember-light"
@@ -807,7 +807,6 @@ export const getAppAntdTheme = (mode: AppThemeMode): ThemeConfig => {
     ...theme,
     token: {
       ...theme.token,
-      fontFamily: appMonospaceFontFamily,
       fontFamilyCode: appMonospaceFontFamily
     }
   };
