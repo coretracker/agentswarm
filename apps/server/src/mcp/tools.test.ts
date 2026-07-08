@@ -188,6 +188,8 @@ describe("MCP Phase 1 tools", () => {
       title: "Task",
       repoId: "repo-1",
       repoName: "Repo",
+      parentTaskId: null,
+      rootTaskId: null,
       taskType: "build",
       status: "draft",
       workflowStatus: "backlog",
@@ -273,6 +275,147 @@ describe("MCP Phase 1 tools", () => {
           }
         ),
       /Unrecognized key\(s\) in object: 'notes'/
+    );
+  });
+
+  it("creates runtime subtasks for the current task repository and links the parent", async () => {
+    const tool = toolByName("verft_create_subtask");
+    const parentTask = createTask({
+      id: "parent-task",
+      repoId: "repo-1",
+      rootTaskId: null,
+      parentTaskId: null
+    });
+    const childTask = createTask({
+      id: "child-task",
+      parentTaskId: "parent-task",
+      rootTaskId: "parent-task"
+    });
+    const messages: unknown[] = [];
+    let createdInput: unknown = null;
+
+    const result = await tool.handler(
+      {
+        title: "Child task",
+        repoId: "repo-1",
+        prompt: "Do focused work"
+      },
+      {
+        user,
+        runtimeContext: { taskId: parentTask.id },
+        deps: {
+          repositoryStore: {
+            getRepository: async () => repository
+          },
+          settingsStore: {
+            getSettings: async () => ({
+              defaultProvider: "codex",
+              codexDefaultEffort: "high",
+              claudeDefaultEffort: "high",
+              codexDefaultModel: "gpt-5.5",
+              claudeDefaultModel: "claude-opus-4-8"
+            })
+          },
+          taskStore: {
+            getTask: async (taskId: string) => (taskId === parentTask.id ? parentTask : childTask),
+            createTask: async (input: unknown) => {
+              createdInput = input;
+              return childTask;
+            },
+            appendMessage: async (_taskId: string, input: unknown) => {
+              messages.push(input);
+              return null;
+            }
+          },
+          taskQueueStore: {} as never,
+          scheduler: {} as never,
+          spawner: {} as never
+        } as never
+      }
+    );
+
+    assert.equal((createdInput as { parentTaskId?: string }).parentTaskId, "parent-task");
+    assert.equal((createdInput as { rootTaskId?: string }).rootTaskId, "parent-task");
+    assert.deepEqual(messages, [
+      {
+        role: "user",
+        action: "build",
+        content: "Do focused work"
+      }
+    ]);
+    assert.equal((result as { parentTaskId: string }).parentTaskId, "parent-task");
+    assert.equal((result as { rootTaskId: string }).rootTaskId, "parent-task");
+    assert.equal((result as { task: { id: string } }).task.id, "child-task");
+  });
+
+  it("rejects runtime subtasks for repositories outside the current task repository", async () => {
+    const tool = toolByName("verft_create_subtask");
+    const parentTask = createTask({ id: "parent-task", repoId: "repo-1" });
+    const otherRepository = {
+      ...repository,
+      id: "repo-2",
+      name: "Other"
+    };
+    const multiRepoUser = {
+      ...user,
+      repositoryIds: ["repo-1", "repo-2"]
+    };
+
+    await assert.rejects(
+      () =>
+        tool.handler(
+          {
+            title: "Child task",
+            repoId: "repo-2",
+            prompt: "Do other work"
+          },
+          {
+            user: multiRepoUser,
+            runtimeContext: { taskId: parentTask.id },
+            deps: {
+              repositoryStore: {
+                getRepository: async () => otherRepository
+              },
+              settingsStore: {
+                getSettings: async () => {
+                  throw new Error("settings should not be read");
+                }
+              },
+              taskStore: {
+                getTask: async () => parentTask,
+                createTask: async () => {
+                  throw new Error("subtask should not be created");
+                }
+              },
+              taskQueueStore: {} as never,
+              scheduler: {} as never,
+              spawner: {} as never
+            } as never
+          }
+        ),
+      /Repository not found/
+    );
+  });
+
+  it("exposes subtask creation only inside runtime task contexts", () => {
+    const tool = toolByName("verft_create_subtask");
+
+    assert.deepEqual(tool.scopes, ["task:create_subtask", "repo:list"]);
+    assert.equal(
+      tool.available?.({
+        user,
+        deps: {} as never,
+        runtimeContext: null
+      }),
+      false
+    );
+    assert.equal(
+      tool.available?.({
+        user,
+        deps: {} as never,
+        runtimeContext: { taskId: "task-1" }
+      }),
+      true
     );
   });
 

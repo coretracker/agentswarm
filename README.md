@@ -281,6 +281,7 @@ Phase 1 tools:
 - `verft_list_tasks`
 - `verft_get_task`
 - `verft_create_task`
+- `verft_create_subtask`
 - `verft_update_draft`
 - `verft_start_task`
 - `verft_add_task_message`
@@ -288,6 +289,8 @@ Phase 1 tools:
 - `verft_update_task_config`
 
 Task agents receive the Verft MCP server automatically at runtime through an internal stdio bridge and a short-lived run token.
+
+Runtime task agents can call `verft_create_subtask` to create child tasks for the repository of the currently running parent task. Runtime tokens receive the narrow `task:create_subtask` scope, not broad `task:create`; the tool is only listed when the token includes runtime task context. The server links created children with `parentTaskId` and `rootTaskId`, applies the same build/ask capability checks and task defaults as normal MCP task creation, and rejects target repositories that do not match the parent task repository.
 
 Repository-specific MCP servers are configured on each repository. Task runs and interactive terminals receive only the MCP servers configured for the task repository, plus the internal Verft MCP bridge. Legacy global MCP server settings are no longer used; recreate any previously global MCP server on each repository that should expose it.
 

@@ -212,6 +212,7 @@ export type McpServerTransport = "stdio" | "http";
 export type PermissionScope =
   | "task:list"
   | "task:create"
+  | "task:create_subtask"
   | "task:read"
   | "task:edit"
   | "task:build"
@@ -239,6 +240,7 @@ export type PermissionScope =
 export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "task:list",
   "task:create",
+  "task:create_subtask",
   "task:read",
   "task:edit",
   "task:build",
@@ -279,7 +281,7 @@ export interface PermissionScopeGroup {
 }
 
 export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
-  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:terminal", "task:delete"] },
+  { label: "Tasks", scopes: ["task:list", "task:create", "task:create_subtask", "task:read", "task:edit", "task:build", "task:ask", "task:terminal", "task:delete"] },
   { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
   { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
   { label: "Settings", scopes: ["settings:read", "settings:edit"] },
@@ -560,6 +562,8 @@ export interface Task {
   activeInteractiveSession?: boolean;
   activeTerminalSessionMode?: TaskTerminalSessionMode | null;
   linkedWorkspaces?: TaskLinkedWorkspace[];
+  parentTaskId?: string | null;
+  rootTaskId?: string | null;
   ownerUserId: string | null;
   creatorName?: string | null;
   repoId: string;
@@ -1062,6 +1066,8 @@ export interface CreateTaskInput {
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
   autoApplyCheckpoints?: boolean;
+  parentTaskId?: string | null;
+  rootTaskId?: string | null;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
 }
