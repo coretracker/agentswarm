@@ -579,7 +579,7 @@ export function SettingsPage() {
     },
     {
       key: "git",
-      label: <span>{generalDirtyTabs.includes("git") || credentialDirtyTabs.includes("git") ? "Git *" : "Git"}</span>
+      label: <span>{generalDirtyTabs.includes("git") ? "Git *" : "Git"}</span>
     },
     {
       key: "hostexec",
@@ -750,108 +750,46 @@ export function SettingsPage() {
         ) : null}
 
         {activeTab === "git" ? (
-          <Space direction="vertical" size={16} style={{ width: "100%" }}>
-            <Form
-              form={generalForm}
-              layout="vertical"
-              disabled={!canEditSettings}
-              onValuesChange={() => markGeneralTabDirty("git")}
-              onFinish={saveGeneralSettings}
-            >
-              <Card bordered={false} loading={loading} title="Git">
-                <Flex vertical gap={16} style={{ width: "100%" }}>
-                  <Form.Item
-                    name="gitUsername"
-                    label="Git Username"
-                    extra="Used for authenticated GitHub HTTPS access from server Git actions and Codex or Claude runtimes."
-                    rules={[{ required: true, whitespace: true }]}
-                  >
-                    <Input placeholder="x-access-token" />
-                  </Form.Item>
-                  <Form.Item
-                    name="gitAuthorName"
-                    label="Git Author Name"
-                    extra="Used for agent-created Git commits. Leave blank to use the system default."
-                    style={{ marginBottom: 0 }}
-                  >
-                    <Input placeholder="Verft" />
-                  </Form.Item>
-                  <Form.Item
-                    name="gitAuthorEmail"
-                    label="Git Author Email"
-                    extra="Used for agent-created Git commits. Leave blank to use the system default."
-                    rules={[{ type: "email", message: "Enter a valid email address" }]}
-                  >
-                    <Input placeholder="verft@example.com" />
-                  </Form.Item>
-                  <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
-                    <Input placeholder="verft" />
-                  </Form.Item>
-                </Flex>
-              </Card>
-              {renderSaveBar({ dirty: generalDirty, label: "Save Git Settings", loading: savingGeneral })}
-            </Form>
-
-            <Card
-              bordered={false}
-              loading={loading}
-              title="GitHub Token"
-              extra={
-                settings ? (
-                  <Space wrap>
-                    <Tag color={settings.githubTokenConfigured ? "green" : "default"}>
-                      GitHub Token {settings.githubTokenConfigured ? "Configured" : "Missing"}
-                    </Tag>
-                  </Space>
-                ) : null
-              }
-            >
-              <Alert
-                type="info"
-                showIcon
-                style={{ marginBottom: 16 }}
-                message="Credentials are write-only"
-                description="Tokens are encrypted on the server and never returned by the API."
-              />
-              <Form
-                form={credentialForm}
-                layout="vertical"
-                disabled={!canEditSettings}
-                onValuesChange={() => markCredentialTabDirty("git")}
-                onFinish={saveCredentials}
-              >
+          <Form
+            form={generalForm}
+            layout="vertical"
+            disabled={!canEditSettings}
+            onValuesChange={() => markGeneralTabDirty("git")}
+            onFinish={saveGeneralSettings}
+          >
+            <Card bordered={false} loading={loading} title="Git">
+              <Flex vertical gap={16} style={{ width: "100%" }}>
                 <Form.Item
-                  name="githubToken"
-                  label="GitHub Token"
-                  extra="Used for server pull/push/merge operations and for in-agent `git pull` / `git push` inside Codex and Claude task runtimes."
+                  name="gitUsername"
+                  label="Git Username"
+                  extra="Used with the GitHub token from Credentials for authenticated HTTPS access from server Git actions and Codex or Claude runtimes."
+                  rules={[{ required: true, whitespace: true }]}
                 >
-                  <Input.Password placeholder={settings?.githubTokenConfigured ? "Configured. Enter a new token to replace it." : "github_pat_..."} />
+                  <Input placeholder="x-access-token" />
                 </Form.Item>
-                {renderSaveBar({
-                  dirty: credentialsDirty,
-                  label: "Save GitHub Token",
-                  loading: savingCredentials,
-                  statusText: credentialsDirty ? "Unsaved GitHub token changes" : "No pending GitHub token changes"
-                })}
-                <Space wrap>
-                  <Popconfirm
-                    title="Clear GitHub token?"
-                    description="This removes the stored GitHub token from settings."
-                    okText="Clear"
-                    cancelText="Cancel"
-                    okButtonProps={{ danger: true, loading: savingCredentials }}
-                    placement="top"
-                    disabled={!canEditSettings}
-                    onConfirm={() => handleClearCredential("github")}
-                  >
-                    <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                      Clear GitHub Token
-                    </Button>
-                  </Popconfirm>
-                </Space>
-              </Form>
+                <Form.Item
+                  name="gitAuthorName"
+                  label="Git Author Name"
+                  extra="Used for agent-created Git commits. Leave blank to use the system default."
+                  style={{ marginBottom: 0 }}
+                >
+                  <Input placeholder="Verft" />
+                </Form.Item>
+                <Form.Item
+                  name="gitAuthorEmail"
+                  label="Git Author Email"
+                  extra="Used for agent-created Git commits. Leave blank to use the system default."
+                  rules={[{ type: "email", message: "Enter a valid email address" }]}
+                >
+                  <Input placeholder="verft@example.com" />
+                </Form.Item>
+                <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
+                  <Input placeholder="verft" />
+                </Form.Item>
+              </Flex>
             </Card>
-          </Space>
+            {renderSaveBar({ dirty: generalDirty, label: "Save Git Settings", loading: savingGeneral })}
+          </Form>
         ) : null}
 
         {activeTab === "hostexec" ? (
@@ -944,6 +882,9 @@ export function SettingsPage() {
             extra={
               settings ? (
                 <Space wrap>
+                  <Tag color={settings.githubTokenConfigured ? "green" : "default"}>
+                    GitHub Token {settings.githubTokenConfigured ? "Configured" : "Missing"}
+                  </Tag>
                   <Tag color={settings.openaiApiKeyConfigured ? "green" : "default"}>
                     OpenAI Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
                   </Tag>
@@ -958,8 +899,8 @@ export function SettingsPage() {
               type="info"
               showIcon
               style={{ marginBottom: 16 }}
-              message="Shared provider setup"
-              description="API keys are encrypted in Verft settings. The setup terminal stores Codex and Claude login and plugin files in the shared base volume so new tasks can reuse them."
+              message="Credentials are write-only"
+              description="GitHub tokens and provider API keys are encrypted in Verft settings and never returned by the API. The setup terminal stores Codex and Claude login and plugin files in the shared base volume so new tasks can reuse them."
             />
             <Flex vertical gap={8} style={{ marginBottom: 16 }}>
               <Flex align="center" justify="space-between" gap={12} wrap="wrap">
@@ -996,6 +937,13 @@ export function SettingsPage() {
               onValuesChange={() => markCredentialTabDirty("credentials")}
               onFinish={saveCredentials}
             >
+              <Form.Item
+                name="githubToken"
+                label="GitHub Token"
+                extra="Used for server pull/push/merge operations and for in-agent `git pull` / `git push` inside Codex and Claude task runtimes."
+              >
+                <Input.Password placeholder={settings?.githubTokenConfigured ? "Configured. Enter a new token to replace it." : "github_pat_..."} />
+              </Form.Item>
               <Form.Item name="openaiApiKey" label="OpenAI API Key">
                 <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
               </Form.Item>
@@ -1009,6 +957,20 @@ export function SettingsPage() {
                 statusText: credentialsDirty ? "Unsaved credential changes" : "No pending credential changes"
               })}
               <Space wrap>
+                <Popconfirm
+                  title="Clear GitHub token?"
+                  description="This removes the stored GitHub token from settings."
+                  okText="Clear"
+                  cancelText="Cancel"
+                  okButtonProps={{ danger: true, loading: savingCredentials }}
+                  placement="top"
+                  disabled={!canEditSettings}
+                  onConfirm={() => handleClearCredential("github")}
+                >
+                  <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                    Clear GitHub Token
+                  </Button>
+                </Popconfirm>
                 <Popconfirm
                   title="Clear OpenAI API key?"
                   description="This removes the stored OpenAI API key from settings."
