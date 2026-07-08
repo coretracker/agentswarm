@@ -42,6 +42,7 @@ import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js
 import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "./verft-base-mounts.js";
+import { resolveDockerSocketAccessPolicy, resolveDockerSocketRunArgs } from "./docker-socket-access.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/terminal$/;
 const INTERACTIVE_WORKSPACE_PATH = "/workspace";
@@ -469,6 +470,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       hostWorkspacePath: dockerBindSource,
       sharedNetworkWithCurrentContainer: runtimeMcpDockerArgs.includes("--network")
     });
+    const dockerSocketRunArgs = resolveDockerSocketRunArgs(resolveDockerSocketAccessPolicy("codex"));
     const dockerEnv: string[] = [];
     for (const [name, value] of buildTerminalDockerEnvEntries({
       runtimeEnvEntries: [...runtime.envEntries, ...Object.entries(runtimeMcp.env), ...hostexecRuntime.envEntries],
@@ -499,6 +501,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
         "/home/agent",
         "rw"
       ),
+      ...dockerSocketRunArgs,
       ...dockerEnv,
       ...buildVerftBaseEnvArgs(),
       runtime.image,

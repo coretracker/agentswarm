@@ -189,11 +189,11 @@ The toolbox image includes Codex CLI, Claude Code, Git, GitHub CLI (`gh`), Docke
 
 ### Docker Socket Access
 
-Docker socket access is disabled by default and should stay disabled unless a runtime must start nested containers.
+Docker socket access is enabled by default in the local Docker Compose setup so toolbox containers can run Docker-backed checks and nested containers. Set `DOCKER_SOCKET_ACCESS_ENABLED=false` to opt out.
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into Codex/Claude runtime containers. | `false` |
+| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into toolbox runtime containers. | `true` |
 | `DOCKER_SOCKET_HOST_PATH` | Host Docker socket path. | `/var/run/docker.sock` |
 | `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container socket path for Codex runtimes. | `/var/run/docker.sock` |
 | `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container socket path for Claude runtimes. | `/var/run/docker.sock` |
