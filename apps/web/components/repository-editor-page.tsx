@@ -1034,7 +1034,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   ) : null}
                   <Form.Item
                     name="githubIntegrationBotLogin"
-                    label="Ignored Github Bot User"
+                    label="GitHub Bot User"
                     tooltip="Comments from this GitHub login are ignored by the PR feedback webhook to prevent reply loops."
                     rules={[{ max: 255, message: "Login must be 255 characters or fewer." }]}
                   >
@@ -1051,7 +1051,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     name="githubPrRequireBotMention"
                     label="Only Process Bot Mentions"
                     valuePropName="checked"
-                    extra="When enabled and an ignored GitHub bot user is configured, issue and PR comments are ignored unless the body mentions that bot user."
+                    extra="When enabled and a GitHub bot user is configured, issue and PR comments are ignored unless the body mentions that bot user."
                   >
                     <Switch />
                   </Form.Item>
