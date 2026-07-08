@@ -25,7 +25,7 @@ services:
     environment:
       - PORT=4000
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:postgres@postgres:5432/verft}
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/verft
       - REPO_CACHE_ROOT=/repo-cache
       - REPO_CACHE_VOLUME=verft_repo_cache
       - RUNTIME_PAYLOAD_ROOT=/runtime-payloads

@@ -66,10 +66,9 @@ Important values in template:
 - `AGENT_RUNTIME_IMAGE` (default `verft-agent-toolbox:latest`)
 - `DEFAULT_ADMIN_EMAIL`
 - `DEFAULT_ADMIN_PASSWORD`
-- `DATABASE_URL` (defaults to the internal Docker Postgres service; use `localhost` only for host-local server runs)
 
 ## 3) Local Database Setup / Reset
-Default Docker flow starts Redis and Postgres from `docker-compose.yml`. They are available to other Compose services by service name and are not published to the host.
+Default Docker flow starts Redis and Postgres from `docker-compose.yml`. They are available to other Compose services by service name and are not published to the host. The Docker stack owns the server database connection string; it is not configured per user in `.env`.
 
 Reset data when needed:
 
