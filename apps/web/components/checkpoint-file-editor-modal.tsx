@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Button, Flex, Modal, Select, Space, Spin, Tag, Typography, message } from "antd";
 import type { TaskWorkspaceFilePreview } from "@verft/shared-types";
 import { api } from "../src/api/client";
-import { appMonospaceFontFamily, isDarkAppTheme } from "../src/theme/antd-theme";
+import { isDarkAppTheme } from "../src/theme/antd-theme";
 import { useThemeMode } from "./theme-provider";
 import { detectCodeLanguage, getCodeLanguageLabel } from "./workspace-file-preview-modal";
 
@@ -396,7 +396,6 @@ export function CheckpointFileEditorModal({
                 automaticLayout: true,
                 minimap: { enabled: false },
                 scrollBeyondLastLine: false,
-                fontFamily: appMonospaceFontFamily,
                 fontSize: 13,
                 wordWrap: "off"
               }}

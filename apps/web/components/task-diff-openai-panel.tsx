@@ -268,9 +268,7 @@ export function TaskDiffOpenAiPanel({
   if (!diffText.trim()) {
     return (
       <Card size="small">
-        <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "var(--app-monospace-font)" }}
-        >
+        <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}>
           {emptyMessage}
         </Typography.Paragraph>
       </Card>
@@ -286,9 +284,7 @@ export function TaskDiffOpenAiPanel({
   } catch {
     return (
       <Card size="small">
-        <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "var(--app-monospace-font)" }}
-        >
+        <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}>
           {normalizeDiffForRendering(diffText) || diffText}
         </Typography.Paragraph>
       </Card>

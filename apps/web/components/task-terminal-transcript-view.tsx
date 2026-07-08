@@ -4,7 +4,6 @@ import { useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { appMonospaceFontFamily } from "../src/theme/antd-theme";
 
 export interface TaskTerminalTranscriptViewProps {
   content: string;
@@ -29,7 +28,6 @@ export function TaskTerminalTranscriptView({
       disableStdin: true,
       cursorBlink: false,
       fontSize: 12,
-      fontFamily: appMonospaceFontFamily,
       scrollback: 10_000,
       theme: {
         background: "#0b0f14",

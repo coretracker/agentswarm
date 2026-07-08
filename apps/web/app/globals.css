@@ -2,7 +2,6 @@
 
 :root {
   color-scheme: dark;
-  --app-monospace-font: "Fire Code", "Fira Code", "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace;
   --app-body-bg: #0c140e;
   --app-body-text: #d4e8d0;
   --diff-background-color: #17231a;
@@ -194,7 +193,6 @@ html,
 body {
   margin: 0;
   min-height: 100%;
-  font-family: var(--app-monospace-font);
 }
 
 body {
@@ -214,7 +212,6 @@ pre {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: var(--app-monospace-font);
 }
 
 .xterm .xterm-screen {

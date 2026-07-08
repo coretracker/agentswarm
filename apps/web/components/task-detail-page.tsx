@@ -410,9 +410,7 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: Pars
   if (!diffText.trim()) {
     return (
       <Card size="small">
-        <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "var(--app-monospace-font)" }}
-        >
+        <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}>
           {emptyMessage}
         </Typography.Paragraph>
       </Card>
@@ -503,9 +501,7 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: Pars
   } catch {
     return (
       <Card size="small">
-        <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "var(--app-monospace-font)" }}
-        >
+        <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}>
           {normalizeDiffForRendering(diffText) || diffText}
         </Typography.Paragraph>
       </Card>
@@ -1179,8 +1175,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const codeTextStyle: CSSProperties = {
     marginBottom: 0,
-    whiteSpace: "pre-wrap",
-    fontFamily: "var(--app-monospace-font)"
+    whiteSpace: "pre-wrap"
   };
   const syncExecutionConfigInputs = (nextTask: Task): void => {
     setProviderInput(nextTask.provider ?? "codex");
