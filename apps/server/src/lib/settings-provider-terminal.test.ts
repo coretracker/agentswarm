@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import { buildProviderTerminalScript } from "./settings-provider-terminal.js";
 
 describe("buildProviderTerminalScript", () => {
-  for (const provider of ["codex", "claude", "setup"] as const) {
+  for (const provider of ["codex", "claude", "setup", "codex-login", "claude-login"] as const) {
     it(`generates shell syntax that parses for ${provider}`, () => {
       const script = buildProviderTerminalScript(provider);
       const result = spawnSync("sh", ["-n", "-c", script], { encoding: "utf8" });
@@ -21,7 +21,14 @@ describe("buildProviderTerminalScript", () => {
         assert.match(script, /ln -s "\$BASE_ROOT\/claude" "\$HOME\/\.claude"/);
         assert.match(script, /ln -s "\$BASE_ROOT\/claude\/\.claude\.json" "\$HOME\/\.claude\.json"/);
       } else {
-        assert.match(script, new RegExp(`\\$BASE_ROOT/${provider}`));
+        const providerRoot = provider.startsWith("claude") ? "claude" : "codex";
+        assert.match(script, new RegExp(`\\$BASE_ROOT/${providerRoot}`));
+      }
+      if (provider === "codex-login") {
+        assert.match(script, /codex login; STATUS=\$\?/);
+      }
+      if (provider === "claude-login") {
+        assert.match(script, /claude auth login; STATUS=\$\?/);
       }
     });
   }
