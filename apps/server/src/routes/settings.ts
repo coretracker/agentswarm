@@ -27,13 +27,29 @@ function providerModelsUrl(baseUrl: string | null, defaultBaseUrl: string): stri
   return `${base.endsWith("/v1") ? base : `${base}/v1`}/models`;
 }
 
+async function providerModelsError(provider: string, response: Response): Promise<Error> {
+  let detail = "";
+  const raw = await response.text().catch(() => "");
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as { error?: { message?: string }; message?: string };
+      detail = parsed.error?.message ?? parsed.message ?? raw;
+    } catch {
+      detail = raw;
+    }
+  }
+
+  const suffix = detail ? `: ${detail}` : "";
+  return new Error(`${provider} models API returned ${response.status}${suffix}`);
+}
+
 async function fetchOpenAiModels(apiKey: string, baseUrl: string | null): Promise<ProviderModelEntry[]> {
   const response = await fetch(providerModelsUrl(baseUrl, "https://api.openai.com"), {
     headers: { Authorization: `Bearer ${apiKey}` }
   });
 
   if (!response.ok) {
-    throw new Error(`OpenAI models API returned ${response.status}`);
+    throw await providerModelsError("OpenAI", response);
   }
 
   const data = await response.json() as { data: Array<{ id: string }> };
@@ -51,7 +67,7 @@ async function fetchAnthropicModels(apiKey: string, baseUrl: string | null): Pro
   });
 
   if (!response.ok) {
-    throw new Error(`Anthropic models API returned ${response.status}`);
+    throw await providerModelsError("Anthropic", response);
   }
 
   const data = await response.json() as { data: Array<{ id: string; display_name: string }> };
@@ -306,8 +322,9 @@ export const registerSettingsRoutes = (
       }
       const models = await fetchOpenAiModels(credentials.openaiApiKey, settings.openaiBaseUrl);
       return reply.send({ models, source: "api" });
-    } catch {
-      return reply.send({ models: configured.length > 0 ? configured : fallback, source: configured.length > 0 ? "cache" : "fallback" });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Failed to fetch provider models";
+      return reply.status(502).send({ message });
     }
   });
 
