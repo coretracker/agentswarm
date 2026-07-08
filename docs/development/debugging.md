@@ -50,7 +50,7 @@ Fix:
 Symptoms:
 - `start.sh` never reaches healthy state.
 - Browser cannot open `http://localhost:3217/login`.
-- Setup/start fails with a bind error for the web port.
+- Setup/start fails with a bind error for the proxy web port.
 
 Fix:
 - Change `PUBLIC_PORT` in `.env`.
@@ -96,6 +96,7 @@ Fix:
 ```
 
 - Confirm required services exist and are up: `server`, `web`, `proxy`, `redis`, `postgres`.
+- Redis and Postgres should not have host port bindings; only the proxy should publish `PUBLIC_PORT`.
 
 ### Login fails with expected default admin
 Symptoms:

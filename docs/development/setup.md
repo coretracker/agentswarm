@@ -20,7 +20,7 @@ Before running harness commands in that mode:
 - Ensure the remote image includes: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
 
 To run commands locally instead, set `REMOTE_BUILD=0`.
-If the web host port is already in use, set `PUBLIC_PORT`.
+If the web host port is already in use, set `PUBLIC_PORT`. The Docker stack publishes only the proxy port; Redis and Postgres remain on the internal Compose network.
 
 ## 1) Setup Command (Clean Checkout)
 Run from repository root:
@@ -66,10 +66,10 @@ Important values in template:
 - `AGENT_RUNTIME_IMAGE` (default `verft-agent-toolbox:latest`)
 - `DEFAULT_ADMIN_EMAIL`
 - `DEFAULT_ADMIN_PASSWORD`
-- `DATABASE_URL`
+- `DATABASE_URL` (defaults to the internal Docker Postgres service; use `localhost` only for host-local server runs)
 
 ## 3) Local Database Setup / Reset
-Default Docker flow starts Redis and Postgres from `docker-compose.yml`.
+Default Docker flow starts Redis and Postgres from `docker-compose.yml`. They are available to other Compose services by service name and are not published to the host.
 
 Reset data when needed:
 

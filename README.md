@@ -175,9 +175,9 @@ Most runtime configuration starts in `.env`. Provider API keys and GitHub creden
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `DATABASE_URL` | Postgres connection string. | see `.env.example` |
+| `DATABASE_URL` | Postgres connection string. The Docker default uses the internal `postgres` service name. | see `.env.example` |
 
-Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
+Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub. In the Docker stack, only the nginx proxy publishes a host port; Redis, Postgres, server, and web stay on the internal Compose network.
 
 ### Runtime Images
 
