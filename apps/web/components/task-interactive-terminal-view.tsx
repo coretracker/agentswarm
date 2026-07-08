@@ -9,7 +9,6 @@ import "@xterm/xterm/css/xterm.css";
 
 import { api } from "../src/api/client";
 import { buildWebSocketUrl } from "../src/lib/public-url";
-import { appMonospaceFontFamily } from "../src/theme/antd-theme";
 
 const FONT_SIZE_STORAGE_KEY = "verft-interactive-terminal-font-size";
 const FONT_MIN = 10;
@@ -113,7 +112,6 @@ export function TaskInteractiveTerminalView({
     const term = new Terminal({
       cursorBlink: true,
       fontSize: initialFont,
-      fontFamily: appMonospaceFontFamily,
       theme: {
         background: "#1e1e1e",
         foreground: "#d4d4d4"

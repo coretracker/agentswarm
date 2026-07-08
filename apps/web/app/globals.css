@@ -2,7 +2,6 @@
 
 :root {
   color-scheme: dark;
-  --app-monospace-font: "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace;
   --app-body-bg: #0c140e;
   --app-body-text: #d4e8d0;
   --diff-background-color: #17231a;
@@ -213,7 +212,6 @@ pre {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-  font-family: var(--app-monospace-font);
 }
 
 .xterm .xterm-screen {
