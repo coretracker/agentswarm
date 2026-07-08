@@ -13,6 +13,8 @@ interface StoredCredentials {
   githubToken: string | null;
   openaiApiKey: string | null;
   anthropicApiKey: string | null;
+  slackSigningSecret: string | null;
+  slackBotToken: string | null;
 }
 
 interface EncryptedPayload {
@@ -26,12 +28,16 @@ export interface RuntimeCredentials {
   githubToken: string | null;
   openaiApiKey: string | null;
   anthropicApiKey: string | null;
+  slackSigningSecret: string | null;
+  slackBotToken: string | null;
 }
 
 export interface CredentialStatus {
   githubTokenConfigured: boolean;
   openaiApiKeyConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
+  slackSigningSecretConfigured: boolean;
+  slackBotTokenConfigured: boolean;
 }
 
 export interface CredentialStore {
@@ -104,7 +110,9 @@ export class RedisCredentialStore implements CredentialStore {
       return {
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
       };
     }
 
@@ -114,19 +122,23 @@ export class RedisCredentialStore implements CredentialStore {
       return {
         githubToken: parsed.githubToken?.trim() || null,
         openaiApiKey: parsed.openaiApiKey?.trim() || null,
-        anthropicApiKey: parsed.anthropicApiKey?.trim() || null
+        anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
+        slackSigningSecret: parsed.slackSigningSecret?.trim() || null,
+        slackBotToken: parsed.slackBotToken?.trim() || null
       };
     } catch {
       return {
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
       };
     }
   }
 
   private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
-    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey) {
+    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey && !next.slackSigningSecret && !next.slackBotToken) {
       await this.redis.del(CREDENTIALS_KEY);
       return;
     }
@@ -140,7 +152,9 @@ export class RedisCredentialStore implements CredentialStore {
     return {
       githubToken: current.githubToken,
       openaiApiKey: current.openaiApiKey,
-      anthropicApiKey: current.anthropicApiKey
+      anthropicApiKey: current.anthropicApiKey,
+      slackSigningSecret: current.slackSigningSecret,
+      slackBotToken: current.slackBotToken
     };
   }
 
@@ -149,7 +163,9 @@ export class RedisCredentialStore implements CredentialStore {
     return {
       githubTokenConfigured: Boolean(credentials.githubToken),
       openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
-      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
+      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey),
+      slackSigningSecretConfigured: Boolean(credentials.slackSigningSecret),
+      slackBotTokenConfigured: Boolean(credentials.slackBotToken)
     };
   }
 
@@ -170,7 +186,17 @@ export class RedisCredentialStore implements CredentialStore {
         ? null
         : input.anthropicApiKey?.trim()
           ? input.anthropicApiKey.trim()
-          : current.anthropicApiKey
+          : current.anthropicApiKey,
+      slackSigningSecret: input.clearSlackSigningSecret
+        ? null
+        : input.slackSigningSecret?.trim()
+          ? input.slackSigningSecret.trim()
+          : current.slackSigningSecret,
+      slackBotToken: input.clearSlackBotToken
+        ? null
+        : input.slackBotToken?.trim()
+          ? input.slackBotToken.trim()
+          : current.slackBotToken
     };
     await this.writeStoredCredentials(next);
 
@@ -246,7 +272,9 @@ export class PostgresCredentialStore implements CredentialStore {
       return {
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
       };
     }
 
@@ -256,19 +284,23 @@ export class PostgresCredentialStore implements CredentialStore {
       return {
         githubToken: parsed.githubToken?.trim() || null,
         openaiApiKey: parsed.openaiApiKey?.trim() || null,
-        anthropicApiKey: parsed.anthropicApiKey?.trim() || null
+        anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
+        slackSigningSecret: parsed.slackSigningSecret?.trim() || null,
+        slackBotToken: parsed.slackBotToken?.trim() || null
       };
     } catch {
       return {
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
       };
     }
   }
 
   private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
-    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey) {
+    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey && !next.slackSigningSecret && !next.slackBotToken) {
       await this.pool.query("DELETE FROM credentials WHERE singleton_id = 1");
       return;
     }
@@ -296,7 +328,9 @@ export class PostgresCredentialStore implements CredentialStore {
     return {
       githubToken: current.githubToken,
       openaiApiKey: current.openaiApiKey,
-      anthropicApiKey: current.anthropicApiKey
+      anthropicApiKey: current.anthropicApiKey,
+      slackSigningSecret: current.slackSigningSecret,
+      slackBotToken: current.slackBotToken
     };
   }
 
@@ -305,7 +339,9 @@ export class PostgresCredentialStore implements CredentialStore {
     return {
       githubTokenConfigured: Boolean(credentials.githubToken),
       openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
-      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
+      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey),
+      slackSigningSecretConfigured: Boolean(credentials.slackSigningSecret),
+      slackBotTokenConfigured: Boolean(credentials.slackBotToken)
     };
   }
 
@@ -326,7 +362,17 @@ export class PostgresCredentialStore implements CredentialStore {
         ? null
         : input.anthropicApiKey?.trim()
           ? input.anthropicApiKey.trim()
-          : current.anthropicApiKey
+          : current.anthropicApiKey,
+      slackSigningSecret: input.clearSlackSigningSecret
+        ? null
+        : input.slackSigningSecret?.trim()
+          ? input.slackSigningSecret.trim()
+          : current.slackSigningSecret,
+      slackBotToken: input.clearSlackBotToken
+        ? null
+        : input.slackBotToken?.trim()
+          ? input.slackBotToken.trim()
+          : current.slackBotToken
     };
     await this.writeStoredCredentials(next);
 

@@ -463,10 +463,10 @@ describe("MCP Phase 1 tools", () => {
           user,
           runtimeContext: { taskId: task.id },
           deps: {
-            repositoryStore: {
-              getRepositorySlackSecrets: async () => ({ signingSecret: "secret", botToken: "xoxb-token" })
+            repositoryStore: {},
+            settingsStore: {
+              getRuntimeCredentials: async () => ({ slackBotToken: "xoxb-token" })
             },
-            settingsStore: {} as never,
             taskStore: {
               getTask: async () => task
             },

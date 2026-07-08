@@ -28,7 +28,9 @@ const createCredentialStore = (credentials: RuntimeCredentials): CredentialStore
     return {
       githubTokenConfigured: Boolean(credentials.githubToken),
       openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
-      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
+      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey),
+      slackSigningSecretConfigured: Boolean(credentials.slackSigningSecret),
+      slackBotTokenConfigured: Boolean(credentials.slackBotToken)
     };
   },
   async updateCredentials() {
@@ -44,7 +46,9 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: "sk-system",
-        anthropicApiKey: "anthropic-system"
+        anthropicApiKey: "anthropic-system",
+        slackSigningSecret: null,
+        slackBotToken: null
       })
     );
 
@@ -62,7 +66,9 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
       })
     );
 
@@ -84,7 +90,9 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
       })
     );
 
@@ -106,7 +114,9 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
       })
     );
 
@@ -155,7 +165,9 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
       })
     );
 
