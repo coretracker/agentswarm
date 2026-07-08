@@ -70,10 +70,6 @@ type RepositoryFormValues = {
   githubPrReviewInstructions: string;
   githubPrTaskCreatedCommentTemplate: string;
   githubPrTaskOwnerUserId: string;
-  slackSigningSecret: string;
-  clearSlackSigningSecret: boolean;
-  slackBotToken: string;
-  clearSlackBotToken: boolean;
   slackChannelId: string;
   slackInitialInstructions: string;
   slackFeedbackInstructions: string;
@@ -113,10 +109,6 @@ const emptyValues = (): RepositoryFormValues => ({
   githubPrReviewInstructions: DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
   githubPrTaskCreatedCommentTemplate: DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE,
   githubPrTaskOwnerUserId: "",
-  slackSigningSecret: "",
-  clearSlackSigningSecret: false,
-  slackBotToken: "",
-  clearSlackBotToken: false,
   slackChannelId: "",
   slackInitialInstructions: DEFAULT_SLACK_INITIAL_INSTRUCTIONS,
   slackFeedbackInstructions: DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS,
@@ -196,10 +188,6 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
       ? values.githubPrTaskCreatedCommentTemplate
       : DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE,
   githubPrTaskOwnerUserId: typeof values?.githubPrTaskOwnerUserId === "string" ? values.githubPrTaskOwnerUserId : "",
-  slackSigningSecret: typeof values?.slackSigningSecret === "string" ? values.slackSigningSecret : "",
-  clearSlackSigningSecret: values?.clearSlackSigningSecret === true,
-  slackBotToken: typeof values?.slackBotToken === "string" ? values.slackBotToken : "",
-  clearSlackBotToken: values?.clearSlackBotToken === true,
   slackChannelId: typeof values?.slackChannelId === "string" ? values.slackChannelId : "",
   slackInitialInstructions:
     typeof values?.slackInitialInstructions === "string" ? values.slackInitialInstructions : DEFAULT_SLACK_INITIAL_INSTRUCTIONS,
@@ -458,10 +446,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           githubPrTaskCreatedCommentTemplate:
             repository.githubPrTaskCreatedCommentTemplate ?? DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE,
           githubPrTaskOwnerUserId: repository.githubPrTaskOwnerUserId ?? "",
-          slackSigningSecret: "",
-          clearSlackSigningSecret: false,
-          slackBotToken: "",
-          clearSlackBotToken: false,
           slackChannelId: repository.slackChannelId ?? "",
           slackInitialInstructions: repository.slackInitialInstructions ?? DEFAULT_SLACK_INITIAL_INSTRUCTIONS,
           slackFeedbackInstructions: repository.slackFeedbackInstructions ?? DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS,
@@ -860,10 +844,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   ? null
                   : normalized.githubPrTaskCreatedCommentTemplate.trim() || null,
               githubPrTaskOwnerUserId: normalized.githubPrTaskOwnerUserId.trim() || null,
-              ...(normalized.slackSigningSecret.trim().length > 0 ? { slackSigningSecret: normalized.slackSigningSecret.trim() } : {}),
-              ...(editingRepository && normalized.clearSlackSigningSecret ? { clearSlackSigningSecret: true } : {}),
-              ...(normalized.slackBotToken.trim().length > 0 ? { slackBotToken: normalized.slackBotToken.trim() } : {}),
-              ...(editingRepository && normalized.clearSlackBotToken ? { clearSlackBotToken: true } : {}),
               slackChannelId: normalized.slackChannelId.trim() || null,
               slackInitialInstructions:
                 normalized.slackInitialInstructions.trim() === DEFAULT_SLACK_INITIAL_INSTRUCTIONS
@@ -1184,24 +1164,12 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             <Flex vertical gap={12}>
               {mode === "edit" && editingRepository ? (
                 <>
-                  <Form.Item label="Event URL">
-                    <Input
-                      readOnly
-                      value={buildApiUrl(`/slack/events/${editingRepository.id}`)}
-                      addonAfter={
-                        <Button
-                          type="link"
-                          size="small"
-                          onClick={() => {
-                            void navigator.clipboard.writeText(buildApiUrl(`/slack/events/${editingRepository.id}`));
-                            messageApi.success("Slack event URL copied");
-                          }}
-                        >
-                          Copy
-                        </Button>
-                      }
-                    />
-                  </Form.Item>
+                  <Alert
+                    type="info"
+                    showIcon
+                    message="Slack app credentials are configured in global Settings"
+                    description="Use Settings > Slack for the app Event URL, Signing Secret, and Bot Token. This repository only selects the Slack channel and task behavior."
+                  />
                   <Form.Item
                     name="slackChannelId"
                     label="Slack Channel ID"
@@ -1210,32 +1178,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   >
                     <Input placeholder="C0123456789" autoComplete="off" />
                   </Form.Item>
-                  <Form.Item
-                    name="slackSigningSecret"
-                    label={
-                      editingRepository.slackSigningSecretConfigured
-                        ? "Slack Signing Secret (leave blank to keep existing)"
-                        : "Slack Signing Secret"
-                    }
-                  >
-                    <Input.Password autoComplete="off" />
-                  </Form.Item>
-                  {editingRepository.slackSigningSecretConfigured ? (
-                    <Form.Item name="clearSlackSigningSecret" valuePropName="checked">
-                      <Checkbox>Clear stored Slack signing secret</Checkbox>
-                    </Form.Item>
-                  ) : null}
-                  <Form.Item
-                    name="slackBotToken"
-                    label={editingRepository.slackBotTokenConfigured ? "Slack Bot Token (leave blank to keep existing)" : "Slack Bot Token"}
-                  >
-                    <Input.Password autoComplete="off" />
-                  </Form.Item>
-                  {editingRepository.slackBotTokenConfigured ? (
-                    <Form.Item name="clearSlackBotToken" valuePropName="checked">
-                      <Checkbox>Clear stored Slack bot token</Checkbox>
-                    </Form.Item>
-                  ) : null}
                   <Form.Item
                     name="slackTaskOwnerUserId"
                     label="Slack-Created Task Owner"
@@ -1315,7 +1257,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   type="info"
                   showIcon
                   message="Save the repository first"
-                  description="After creation, Verft will show the repository-scoped Slack event URL and Slack secret setup."
+                  description="After creation, configure this repository's Slack Channel ID. The Slack app Event URL, Signing Secret, and Bot Token live in global Settings."
                 />
               )}
             </Flex>

@@ -74,6 +74,8 @@ const defaultSettings: SystemSettings = {
   githubTokenConfigured: false,
   openaiApiKeyConfigured: false,
   anthropicApiKeyConfigured: false,
+  slackSigningSecretConfigured: false,
+  slackBotTokenConfigured: false,
   codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.5",
   codexModels: CODEX_MODELS,
   codexDefaultEffort: DEFAULT_CODEX_EFFORT,

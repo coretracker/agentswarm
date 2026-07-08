@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS,
   DEFAULT_SLACK_INITIAL_INSTRUCTIONS,
@@ -226,6 +226,37 @@ const maybeStartQueuedSlackFeedback = async (
   }
 };
 
+const findRepositoryForSlackFeedback = async (
+  repositoryStore: RepositoryStore,
+  feedback: SlackFeedback,
+  repositoryId?: string
+) => {
+  const repositories = await repositoryStore.listRepositories();
+  const matches = repositories.filter((repository) => repository.slackChannelId === feedback.channelId);
+  if (repositoryId) {
+    const pathRepository = await repositoryStore.getRepository(repositoryId);
+    if (!pathRepository) {
+      return { repository: null, error: { statusCode: 404, body: { message: "Repository not found" } } };
+    }
+    if (matches.length === 0) {
+      return { repository: null, error: { statusCode: 202, body: { queued: false, reason: "wrong_slack_channel" } } };
+    }
+    const matchedPathRepository = matches.find((repository) => repository.id === repositoryId);
+    if (matchedPathRepository) {
+      return { repository: matchedPathRepository, error: null };
+    }
+    return { repository: null, error: { statusCode: 202, body: { queued: false, reason: "wrong_slack_channel" } } };
+  }
+
+  if (matches.length === 1) {
+    return { repository: matches[0]!, error: null };
+  }
+  if (matches.length > 1) {
+    return { repository: null, error: { statusCode: 409, body: { message: "Multiple repositories are configured for this Slack channel." } } };
+  }
+  return { repository: null, error: { statusCode: 202, body: { queued: false, reason: "unmapped_slack_channel" } } };
+};
+
 export const registerSlackWebhookRoutes = (
   app: FastifyInstance,
   deps: {
@@ -236,18 +267,10 @@ export const registerSlackWebhookRoutes = (
     spawner: SpawnerService;
   }
 ): void => {
-  app.post<{ Params: { repositoryId: string } }>("/slack/events/:repositoryId", async (request, reply) => {
-    const repository = await deps.repositoryStore.getRepository(request.params.repositoryId);
-    if (!repository) {
-      return reply.status(404).send({ message: "Repository not found" });
-    }
-
-    const secrets = await deps.repositoryStore.getRepositorySlackSecrets(repository.id);
-    if (!secrets.signingSecret) {
+  const handleSlackEvent = async (request: RawBodyRequest & { params?: { repositoryId?: string } }, reply: FastifyReply) => {
+    const credentials = await deps.settingsStore.getRuntimeCredentials();
+    if (!credentials.slackSigningSecret) {
       return reply.status(409).send({ message: "Slack signing secret is not configured." });
-    }
-    if (!secrets.botToken) {
-      return reply.status(409).send({ message: "Slack bot token is not configured." });
     }
 
     const rawBody = (request as RawBodyRequest).rawBody ?? "";
@@ -256,7 +279,7 @@ export const registerSlackWebhookRoutes = (
         rawBody,
         readHeader(request.headers["x-slack-request-timestamp"]),
         readHeader(request.headers["x-slack-signature"]),
-        secrets.signingSecret
+        credentials.slackSigningSecret
       )
     ) {
       return reply.status(401).send({ message: "Invalid Slack webhook signature." });
@@ -265,14 +288,19 @@ export const registerSlackWebhookRoutes = (
     if (isRecord(request.body) && stringValue(request.body, "type") === "url_verification") {
       return reply.send({ challenge: stringValue(request.body, "challenge") ?? "" });
     }
+    if (!credentials.slackBotToken) {
+      return reply.status(409).send({ message: "Slack bot token is not configured." });
+    }
 
     const feedback = normalizeSlackFeedback(request.body);
     if (!feedback) {
       return reply.status(202).send({ queued: false, reason: "ignored_event" });
     }
-    if (!repository.slackChannelId || feedback.channelId !== repository.slackChannelId) {
-      return reply.status(202).send({ queued: false, reason: "wrong_slack_channel" });
+    const repositoryResult = await findRepositoryForSlackFeedback(deps.repositoryStore, feedback, request.params?.repositoryId);
+    if (repositoryResult.error) {
+      return reply.status(repositoryResult.error.statusCode).send(repositoryResult.error.body);
     }
+    const repository = repositoryResult.repository!;
 
     const existingTask = await deps.taskStore.findTaskBySlackThread(repository.id, feedback.channelId, feedback.threadTs);
     if (!existingTask) {
@@ -282,7 +310,7 @@ export const registerSlackWebhookRoutes = (
       const ownerUserId = repository.slackTaskOwnerUserId?.trim() || null;
       if (!ownerUserId) {
         await postSlackThreadReply({
-          botToken: secrets.botToken,
+          botToken: credentials.slackBotToken,
           channelId: feedback.channelId,
           threadTs: feedback.threadTs,
           text: "I can create a Verft task from this thread after a Slack-created task owner is configured for this repository."
@@ -354,7 +382,7 @@ export const registerSlackWebhookRoutes = (
       }
 
       await postSlackThreadReply({
-        botToken: secrets.botToken,
+        botToken: credentials.slackBotToken,
         channelId: feedback.channelId,
         threadTs: feedback.threadTs,
         text: renderSlackTaskCreatedReply(repository.slackTaskCreatedReplyTemplate, { feedback, taskId: openedTask.id })
@@ -382,7 +410,7 @@ export const registerSlackWebhookRoutes = (
 
     await maybeStartQueuedSlackFeedback(deps, existingTask.id, existingTask.executionStatus, message);
     await postSlackThreadReply({
-      botToken: secrets.botToken,
+      botToken: credentials.slackBotToken,
       channelId: feedback.channelId,
       threadTs: feedback.threadTs,
       text: isTaskCurrentlyWorking(existingTask.executionStatus)
@@ -391,5 +419,10 @@ export const registerSlackWebhookRoutes = (
     }).catch(() => false);
 
     return reply.status(202).send({ queued: true, taskId: existingTask.id, messageId: message?.id ?? null });
-  });
+  };
+
+  app.post("/slack/events", async (request, reply) => handleSlackEvent(request as RawBodyRequest & { params?: { repositoryId?: string } }, reply));
+  app.post<{ Params: { repositoryId: string } }>("/slack/events/:repositoryId", async (request, reply) =>
+    handleSlackEvent(request as RawBodyRequest & { params: { repositoryId: string } }, reply)
+  );
 };

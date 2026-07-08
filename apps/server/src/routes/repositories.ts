@@ -242,8 +242,6 @@ const createRepositorySchema = z.object({
   githubPrReviewInstructions: z.string().trim().max(8000).nullable().optional(),
   githubPrTaskCreatedCommentTemplate: z.string().trim().max(8000).nullable().optional(),
   githubPrTaskOwnerUserId: z.string().trim().min(1).nullable().optional(),
-  slackSigningSecret: z.string().trim().min(1).optional(),
-  slackBotToken: z.string().trim().min(1).optional(),
   slackChannelId: z.string().trim().regex(SLACK_CHANNEL_ID_PATTERN, "Slack channel ID must look like C... or G...").nullable().optional(),
   slackInitialInstructions: z.string().trim().max(8000).nullable().optional(),
   slackFeedbackInstructions: z.string().trim().max(8000).nullable().optional(),
@@ -259,9 +257,7 @@ const createRepositorySchema = z.object({
 
 const updateRepositorySchema = createRepositorySchema.partial().extend({
   clearWebhookSecret: z.boolean().optional(),
-  clearGithubPrWebhookSecret: z.boolean().optional(),
-  clearSlackSigningSecret: z.boolean().optional(),
-  clearSlackBotToken: z.boolean().optional()
+  clearGithubPrWebhookSecret: z.boolean().optional()
 });
 
 type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;
