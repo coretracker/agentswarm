@@ -5,6 +5,7 @@ import { ConfigProvider } from "antd";
 import { getAppAntdTheme, isDarkAppTheme, type AppThemeMode } from "../src/theme/antd-theme";
 
 const THEME_STORAGE_KEY = "verft-theme-mode";
+const DEFAULT_THEME_MODE: AppThemeMode = "moss-dark";
 
 interface ThemeModeContextValue {
   mode: AppThemeMode;
@@ -16,19 +17,11 @@ const ThemeModeContext = createContext<ThemeModeContextValue | null>(null);
 
 function resolveInitialThemeMode(): AppThemeMode {
   if (typeof window === "undefined") {
-    return "light";
+    return DEFAULT_THEME_MODE;
   }
 
   const storedMode = window.localStorage.getItem(THEME_STORAGE_KEY);
   if (
-    storedMode === "light" ||
-    storedMode === "dark" ||
-    storedMode === "forge" ||
-    storedMode === "forge-light" ||
-    storedMode === "github" ||
-    storedMode === "github-light" ||
-    storedMode === "verft-light" ||
-    storedMode === "verft-dark" ||
     storedMode === "ember-light" ||
     storedMode === "ember-dark" ||
     storedMode === "moss-light" ||
@@ -39,11 +32,11 @@ function resolveInitialThemeMode(): AppThemeMode {
     return storedMode;
   }
 
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return DEFAULT_THEME_MODE;
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [mode, setMode] = useState<AppThemeMode>("light");
+  const [mode, setMode] = useState<AppThemeMode>(DEFAULT_THEME_MODE);
 
   useEffect(() => {
     setMode(resolveInitialThemeMode());
