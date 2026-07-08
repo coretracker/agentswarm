@@ -240,6 +240,35 @@ const normalizeMcpServerName = (value: string | undefined): string =>
 const normalizeHostCommandName = (value: string | undefined): string => (value ?? "").trim();
 const HOST_COMMAND_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 
+const requireRepositoryGeneralFields = (
+  form: ReturnType<typeof Form.useForm<RepositoryFormValues>>[0],
+  values: RepositoryFormValues,
+  showGeneralTab: () => void
+): { name: string; url: string; defaultBranch: string } => {
+  const requiredFields = [
+    { name: "name" as const, label: "Name", value: values.name.trim() },
+    { name: "url" as const, label: "URL", value: values.url.trim() },
+    { name: "defaultBranch" as const, label: "Default Branch", value: values.defaultBranch.trim() }
+  ];
+  const missingFields = requiredFields.filter((field) => field.value.length === 0);
+  if (missingFields.length > 0) {
+    showGeneralTab();
+    form.setFields(
+      missingFields.map((field) => ({
+        name: field.name,
+        errors: [`${field.label} is required.`]
+      }))
+    );
+    throw new Error("Repository name, URL, and default branch are required.");
+  }
+
+  return {
+    name: requiredFields[0].value,
+    url: requiredFields[1].value,
+    defaultBranch: requiredFields[2].value
+  };
+};
+
 const parseAllowedGitHubUsers = (value: string): string[] => {
   const seen = new Set<string>();
   const users: string[] = [];
@@ -706,10 +735,11 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
       <Form
         form={form}
         layout="vertical"
-        onFinish={async (values) => {
+        onFinish={async () => {
           setSubmitting(true);
           try {
-            const normalized = normalizeValues(values);
+            const normalized = normalizeValues(form.getFieldsValue(true) as Partial<RepositoryFormValues>);
+            const requiredGeneralFields = requireRepositoryGeneralFields(form, normalized, () => setActiveTab("general"));
             const envVars: RepositoryEnvVarInput[] = [];
             for (const entry of normalized.envVars) {
               const key = entry.key.trim();
@@ -774,9 +804,9 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               }
             }
             const payload: CreateRepositoryInput = {
-              name: normalized.name,
-              url: normalized.url,
-              defaultBranch: normalized.defaultBranch,
+              name: requiredGeneralFields.name,
+              url: requiredGeneralFields.url,
+              defaultBranch: requiredGeneralFields.defaultBranch,
               defaultProvider: normalized.defaultProvider ?? null,
               defaultModel: normalized.defaultModel?.trim() || null,
               defaultProviderProfile: normalized.defaultProviderProfile ?? null,
