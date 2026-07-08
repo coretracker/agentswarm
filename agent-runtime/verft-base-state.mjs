@@ -1,4 +1,4 @@
-import { access, cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const DEFAULT_BASE_ROOT = "/verft-base";
@@ -16,6 +16,21 @@ const copyIfExists = async (source, target) => {
   if (!(await pathExists(source))) {
     return;
   }
+  await mkdir(path.dirname(target), { recursive: true });
+  await cp(source, target, { recursive: true, force: true, dereference: false });
+};
+
+// Cleanly replace the destination before copying so stale files (and their
+// stale ownership/permissions from a previous task run on a persisted home)
+// cannot linger and break the provider. Mirrors the interactive terminal's
+// `rm -rf … && cp -a …` behaviour. Used for the plugins cache, which Claude
+// stores as git clones with read-only objects that must remain owned by and
+// writable to the agent user.
+const replaceDirIfExists = async (source, target) => {
+  if (!(await pathExists(source))) {
+    return;
+  }
+  await rm(target, { recursive: true, force: true });
   await mkdir(path.dirname(target), { recursive: true });
   await cp(source, target, { recursive: true, force: true, dereference: false });
 };
@@ -65,7 +80,7 @@ export async function importVerftBaseState({ provider, homeDir, generatedConfig 
     await copyIfExists(path.join(providerRoot, "auth.json"), path.join(providerDir, "auth.json"));
     await copyIfExists(path.join(providerRoot, "skills"), path.join(providerDir, "skills"));
     await copyIfExists(path.join(providerRoot, ".tmp"), path.join(providerDir, ".tmp"));
-    await copyIfExists(path.join(providerRoot, "plugins"), path.join(providerDir, "plugins"));
+    await replaceDirIfExists(path.join(providerRoot, "plugins"), path.join(providerDir, "plugins"));
     await copyIfExists(path.join(providerRoot, "config.toml"), path.join(providerDir, "config.toml"));
     await writeMergedCodexConfig(path.join(providerDir, "config.toml"), generatedConfig ?? "");
     return;
@@ -73,7 +88,7 @@ export async function importVerftBaseState({ provider, homeDir, generatedConfig 
 
   await copyIfExists(path.join(providerRoot, ".credentials.json"), path.join(providerDir, ".credentials.json"));
   await copyIfExists(path.join(providerRoot, "settings.json"), path.join(providerDir, "settings.json"));
-  await copyIfExists(path.join(providerRoot, "plugins"), path.join(providerDir, "plugins"));
+  await replaceDirIfExists(path.join(providerRoot, "plugins"), path.join(providerDir, "plugins"));
   await copyIfExists(path.join(providerRoot, ".claude.json"), path.join(homeDir, ".claude.json"));
   if (generatedConfig !== undefined) {
     await writeFile(path.join(providerDir, "mcp-config.json"), generatedConfig, "utf8");

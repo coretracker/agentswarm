@@ -119,6 +119,15 @@ const isExecutable = async (candidate) => {
   }
 };
 
+const pathExists = async (candidate) => {
+  try {
+    await access(candidate, constants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const resolveClaudeBinary = async (runtimeHome) => {
   const homeBinary = path.join(runtimeHome, ".local", "bin", "claude");
   if (await isExecutable(homeBinary)) {
@@ -308,6 +317,16 @@ console.log(`[runtime] claude thinking_budget_tokens=${manifest.resolvedThinking
 await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
 if (!isAsk) {
   await runCommand("chown", ["-R", runtimeIdentity, manifest.workspacePath]).catch(() => undefined);
+}
+// Claude stores installed plugins as git clones under <state>/plugins/cache.
+// The tree is copied from the shared base as root and its git objects are
+// read-only (mode 0444). Explicitly hand the whole plugins tree to the agent
+// user and make every directory traversable / file writable so Claude's
+// startup chmod of the plugin cache does not fail with EACCES/EPERM.
+const pluginsStateDir = path.join(providerStatePath, "plugins");
+if (await pathExists(pluginsStateDir)) {
+  await runCommand("chown", ["-R", runtimeIdentity, pluginsStateDir]).catch(() => undefined);
+  await runCommand("chmod", ["-R", "u+rwX", pluginsStateDir]).catch(() => undefined);
 }
 console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
 
