@@ -76,6 +76,7 @@ export interface TaskInteractiveTerminalViewProps {
   /** Initial / reset font size (px) before any session zoom. Default 14. */
   defaultFontSize?: number;
   disconnectHint?: string;
+  showDisconnectHintOnCleanClose?: boolean;
   onConnected?: () => void;
   onDisconnected?: (event: { code: number; reason: string; opened: boolean }) => void;
 }
@@ -89,6 +90,7 @@ export function TaskInteractiveTerminalView({
   mode = "terminal",
   defaultFontSize = DEFAULT_INTERACTIVE_TERMINAL_FONT_SIZE,
   disconnectHint = "Open the terminal again to start a new session.",
+  showDisconnectHintOnCleanClose = false,
   onConnected,
   onDisconnected
 }: TaskInteractiveTerminalViewProps) {
@@ -251,7 +253,7 @@ export function TaskInteractiveTerminalView({
       }
       const details = event.reason?.trim() || (event.code > 0 ? `code ${event.code}` : "");
       term.writeln(`\r\n\x1b[33m[disconnected${details ? `: ${details}` : ""}]\x1b[0m`);
-      if (event.code !== 1000) {
+      if (event.code !== 1000 || showDisconnectHintOnCleanClose) {
         term.writeln(`\r\n\x1b[90m${disconnectHint}\x1b[0m`);
       }
       onDisconnectedRef.current?.({
@@ -299,7 +301,7 @@ export function TaskInteractiveTerminalView({
       }
       term.dispose();
     };
-  }, [taskId, webSocketPath, mode, defaultFontSize, disconnectHint]);
+  }, [taskId, webSocketPath, mode, defaultFontSize, disconnectHint, showDisconnectHintOnCleanClose]);
 
   return (
     <div

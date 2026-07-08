@@ -515,6 +515,23 @@ export function SettingsPage() {
     setActiveTab(nextTab);
   };
 
+  const openLoginTerminalWindow = (path: string): void => {
+    const w = Math.min(960, window.screen.availWidth - 48);
+    const h = Math.min(640, window.screen.availHeight - 48);
+    const features = [
+      "popup=yes",
+      `width=${w}`,
+      `height=${h}`,
+      "menubar=no",
+      "toolbar=no",
+      "location=yes",
+      "status=no",
+      "resizable=yes",
+      "scrollbars=yes"
+    ].join(",");
+    window.open(path, "_blank", `${features},noopener,noreferrer`);
+  };
+
   const openProviderSetupTerminalWindow = (): void => {
     const url = `${window.location.origin}/settings/provider-setup-terminal`;
     const w = Math.min(1280, window.screen.availWidth - 48);
@@ -1020,6 +1037,18 @@ export function SettingsPage() {
                     Clear Anthropic Key
                   </Button>
                 </Popconfirm>
+                <Button
+                  disabled={!canEditSettings}
+                  onClick={() => openLoginTerminalWindow(`${window.location.origin}/settings/codex-login-terminal`)}
+                >
+                  Sign in Codex
+                </Button>
+                <Button
+                  disabled={!canEditSettings}
+                  onClick={() => openLoginTerminalWindow(`${window.location.origin}/settings/claude-login-terminal`)}
+                >
+                  Sign in Claude
+                </Button>
                 <Button disabled={!canEditSettings} onClick={openProviderSetupTerminalWindow}>
                   Open Provider Setup Terminal
                 </Button>
