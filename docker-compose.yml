@@ -1,8 +1,6 @@
 services:
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
 
@@ -12,8 +10,6 @@ services:
       - POSTGRES_DB=verft
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -29,7 +25,7 @@ services:
     environment:
       - PORT=4000
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:postgres@postgres:5432/verft}
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/verft
       - REPO_CACHE_ROOT=/repo-cache
       - REPO_CACHE_VOLUME=verft_repo_cache
       - RUNTIME_PAYLOAD_ROOT=/runtime-payloads
@@ -46,8 +42,6 @@ services:
       - DOCKER_SOCKET_HOST_PATH=${DOCKER_SOCKET_HOST_PATH:-/var/run/docker.sock}
       - DOCKER_SOCKET_CONTAINER_PATH_CODEX=${DOCKER_SOCKET_CONTAINER_PATH_CODEX:-/var/run/docker.sock}
       - DOCKER_SOCKET_CONTAINER_PATH_CLAUDE=${DOCKER_SOCKET_CONTAINER_PATH_CLAUDE:-/var/run/docker.sock}
-    expose:
-      - "4000"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -66,8 +60,6 @@ services:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-    expose:
-      - "3217"
     depends_on:
       - server
 

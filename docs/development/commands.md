@@ -22,7 +22,7 @@
 - Runner API note: `/run` expects `cmd` as a non-empty string array, not a single string.
 - Remote runner image should include: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
 - For remote browser E2E: if the runner is musl-based, harness auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`).
-- If the web host port is occupied, override `PUBLIC_PORT`.
+- If the web host port is occupied, override `PUBLIC_PORT`. Redis and Postgres are not published as host ports in the Docker stack.
 
 ## Root Package Manager Commands
 - `npm run dev`: runs server and web dev processes together.
