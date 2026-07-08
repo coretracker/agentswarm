@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { AGENT_RUNTIME_IMAGE, env } from "../config/env.js";
+import { resolveDockerSocketAccessPolicy, resolveDockerSocketRunArgs } from "../lib/docker-socket-access.js";
 import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "../lib/verft-base-mounts.js";
 import type { SettingsRuntimeCredentials } from "./settings-store.js";
 
@@ -72,6 +73,7 @@ export async function executeClaudeUtility(input: {
   timeoutMs?: number;
   outputMaxChars?: number;
 }): Promise<string> {
+  const dockerSocketRunArgs = resolveDockerSocketRunArgs(resolveDockerSocketAccessPolicy("claude"));
   const tempDir = path.join(env.RUNTIME_PAYLOAD_ROOT, CLAUDE_UTILITY_DIR_NAME, randomUUID());
   await mkdir(tempDir, { recursive: true });
   await writeFile(path.join(tempDir, "prompt.txt"), input.prompt, "utf8");
@@ -87,6 +89,7 @@ export async function executeClaudeUtility(input: {
     `CLAUDE_UTILITY_WORKDIR=${tempDir}`,
     ...(input.credentials.anthropicApiKey ? ["-e", `ANTHROPIC_API_KEY=${input.credentials.anthropicApiKey}`] : []),
     ...(input.credentials.anthropicBaseUrl ? ["-e", `ANTHROPIC_BASE_URL=${input.credentials.anthropicBaseUrl}`] : []),
+    ...dockerSocketRunArgs,
     ...buildVerftBaseEnvArgs(),
     "-v",
     `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,

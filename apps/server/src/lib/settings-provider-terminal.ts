@@ -10,6 +10,7 @@ import { WebSocket, WebSocketServer } from "ws";
 
 import { AGENT_RUNTIME_IMAGE } from "../config/env.js";
 import type { AuthService } from "./auth.js";
+import { resolveDockerSocketAccessPolicy, resolveDockerSocketRunArgs } from "./docker-socket-access.js";
 import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "./verft-base-mounts.js";
 import type { SettingsStore } from "../services/settings-store.js";
 
@@ -157,6 +158,8 @@ export function attachSettingsProviderTerminalUpgrade(httpServer: HttpServer, de
 
       wss.handleUpgrade(request, socket, head, (ws) => {
         const sessionName = `verft-settings-${scope}-${Date.now().toString(36)}`;
+        const dockerSocketProvider = scope === "claude" ? "claude" : "codex";
+        const dockerSocketRunArgs = resolveDockerSocketRunArgs(resolveDockerSocketAccessPolicy(dockerSocketProvider));
         const dockerArgs = [
           "run",
           "-i",
@@ -165,6 +168,7 @@ export function attachSettingsProviderTerminalUpgrade(httpServer: HttpServer, de
           "--name",
           sessionName,
           ...buildVerftBaseVolumeMountArgs(),
+          ...dockerSocketRunArgs,
           ...buildVerftBaseEnvArgs(),
           AGENT_RUNTIME_IMAGE,
           "sh",

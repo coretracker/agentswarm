@@ -5,6 +5,19 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 
+const booleanEnv = z.preprocess((value) => {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "off", ""].includes(normalized)) {
+      return false;
+    }
+  }
+  return value;
+}, z.boolean());
+
 const envSchema = z.object({
   PORT: z.coerce.number().default(4000),
   REDIS_URL: z.string().default("redis://localhost:6379"),
@@ -32,10 +45,10 @@ const envSchema = z.object({
   DEFAULT_ADMIN_PASSWORD: z.string().min(8).default("admin123!"),
   AUTH_COOKIE_NAME: z.string().default("verft_session"),
   AUTH_SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(7),
-  SENTRY_ENABLED: z.coerce.boolean().default(true),
+  SENTRY_ENABLED: booleanEnv.default(true),
   SENTRY_DSN: z.string().default("https://464566b3787dde0e2da9f69760ef8f40@o4511433840525312.ingest.de.sentry.io/4511433841901649"),
-  /** Opt-in flag: when true, Codex/Claude runtime containers can receive Docker socket access. */
-  DOCKER_SOCKET_ACCESS_ENABLED: z.coerce.boolean().default(false),
+  /** When true, toolbox runtime containers can receive Docker socket access. */
+  DOCKER_SOCKET_ACCESS_ENABLED: booleanEnv.default(true),
   /** Host path for docker.sock mount source. */
   DOCKER_SOCKET_HOST_PATH: z.string().default("/var/run/docker.sock"),
   /** Container path for docker.sock mount target in Codex runtime containers. */

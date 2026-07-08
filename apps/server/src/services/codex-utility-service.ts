@@ -4,6 +4,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { ProviderProfile } from "@verft/shared-types";
 import { AGENT_RUNTIME_IMAGE, env } from "../config/env.js";
+import { resolveDockerSocketAccessPolicy, resolveDockerSocketRunArgs } from "../lib/docker-socket-access.js";
 import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
 import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "../lib/verft-base-mounts.js";
 import type { SettingsRuntimeCredentials } from "./settings-store.js";
@@ -93,6 +94,7 @@ export async function executeCodexUtility(input: {
   outputMaxChars?: number;
 }): Promise<string> {
   const image = AGENT_RUNTIME_IMAGE;
+  const dockerSocketRunArgs = resolveDockerSocketRunArgs(resolveDockerSocketAccessPolicy("codex"));
 
   const tempDir = path.join(env.RUNTIME_PAYLOAD_ROOT, CODEX_UTILITY_DIR_NAME, randomUUID());
   await mkdir(tempDir, { recursive: true });
@@ -111,6 +113,7 @@ export async function executeCodexUtility(input: {
     `CODEX_UTILITY_WORKDIR=${tempDir}`,
     ...(input.credentials.openaiApiKey ? ["-e", `OPENAI_API_KEY=${input.credentials.openaiApiKey}`] : []),
     ...(input.credentials.openaiBaseUrl ? ["-e", `OPENAI_BASE_URL=${input.credentials.openaiBaseUrl}`] : []),
+    ...dockerSocketRunArgs,
     ...buildVerftBaseEnvArgs(),
     "-v",
     `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,

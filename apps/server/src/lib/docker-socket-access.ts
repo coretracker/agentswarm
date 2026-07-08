@@ -73,6 +73,13 @@ export function resolveDockerSocketEnvEntries(policy: DockerSocketAccessPolicy):
   return policy.enabled ? [["DOCKER_HOST", `unix://${policy.containerPath}`]] : [];
 }
 
+export function resolveDockerSocketRunArgs(policy: DockerSocketAccessPolicy): string[] {
+  return [
+    ...resolveDockerSocketMountArgs(policy),
+    ...resolveDockerSocketEnvEntries(policy).flatMap(([name, value]) => ["-e", `${name}=${value}`])
+  ];
+}
+
 const emittedDockerSocketEnabledProviders = new Set<AgentProvider>();
 
 export function emitDockerSocketEnabledEventOnce(input: { provider: AgentProvider; policy?: DockerSocketAccessPolicy }): void {
