@@ -9,6 +9,8 @@ import type { TaskStore } from "./task-store.js";
 import type { UserStore } from "./user-store.js";
 import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
 import type { PersonalAccessTokenStore } from "./personal-access-token-store.js";
+import type { AssistantSessionStore } from "./assistant-session-store.js";
+import type { SlackIdentityStore } from "./slack-identity-store.js";
 
 export interface AppStores {
   taskStore: TaskStore;
@@ -22,4 +24,6 @@ export interface AppStores {
   personalAccessTokenStore: PersonalAccessTokenStore;
   sessionStore: SessionStore;
   settingsStore: SettingsStore;
+  assistantSessionStore: AssistantSessionStore;
+  slackIdentityStore: SlackIdentityStore;
 }

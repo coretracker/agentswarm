@@ -91,6 +91,7 @@
 ## Progress Log
 - 2026-07-09 UTC: User approved implementation. Researched current architecture and historical implementation; created execution plan.
 - 2026-07-09 UTC: Completed host baseline lint, build, and tests. Canonical Docker CI remains an environment limitation.
+- 2026-07-09 UTC: Implemented the first backend foundation: stable Slack workspace/user identity persistence with uniqueness and validation, separate assistant session/event audit tables, atomic one-active-session creation, clear-session semantics, user-authorized log APIs, and focused identity tests.
 
 ## Decisions
 - 2026-07-09: Use Slack workspace ID plus Slack user ID as external identity; never mutable Slack username.

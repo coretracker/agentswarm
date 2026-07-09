@@ -13,6 +13,8 @@ import { PostgresTaskStore } from "./task-store.js";
 import { PostgresUserStore } from "./user-store.js";
 import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
 import { PostgresPersonalAccessTokenStore } from "./personal-access-token-store.js";
+import { PostgresAssistantSessionStore } from "./assistant-session-store.js";
+import { PostgresSlackIdentityStore } from "./slack-identity-store.js";
 
 export const createPostgresStores = (
   pool: Pool,
@@ -31,6 +33,8 @@ export const createPostgresStores = (
   const personalAccessTokenStore = new PostgresPersonalAccessTokenStore(pool, userStore);
   const sessionStore = new RedisSessionStore(redisClients.command, sessionTtlDays);
   const settingsStore = new PostgresSettingsStore(pool, eventBus, credentialStore);
+  const assistantSessionStore = new PostgresAssistantSessionStore(pool);
+  const slackIdentityStore = new PostgresSlackIdentityStore(pool);
 
   return {
     taskStore,
@@ -43,6 +47,8 @@ export const createPostgresStores = (
     userStore,
     personalAccessTokenStore,
     sessionStore,
-    settingsStore
+    settingsStore,
+    assistantSessionStore,
+    slackIdentityStore
   };
 };

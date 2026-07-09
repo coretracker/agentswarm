@@ -727,5 +727,52 @@ Feedback:
       ADD COLUMN IF NOT EXISTS slack_task_created_reply_template text NULL,
       ADD COLUMN IF NOT EXISTS slack_task_owner_user_id text NULL;
     `
+  },
+  {
+    id: "20260709_01_user_scoped_slack_assistant",
+    sql: `
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS slack_team_id text NULL,
+      ADD COLUMN IF NOT EXISTS slack_user_id text NULL;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS users_slack_identity_idx
+      ON users(slack_team_id, slack_user_id)
+      WHERE slack_team_id IS NOT NULL AND slack_user_id IS NOT NULL;
+
+      CREATE TABLE IF NOT EXISTS assistant_sessions (
+        id text PRIMARY KEY,
+        user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        slack_team_id text NOT NULL,
+        slack_channel_id text NOT NULL,
+        slack_user_id text NOT NULL,
+        provider text NOT NULL,
+        model text NULL,
+        effort text NOT NULL,
+        provider_session_id text NULL,
+        status text NOT NULL,
+        cleared_at text NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE UNIQUE INDEX IF NOT EXISTS assistant_sessions_active_user_idx
+      ON assistant_sessions(user_id)
+      WHERE status = 'active';
+
+      CREATE INDEX IF NOT EXISTS assistant_sessions_user_updated_idx
+      ON assistant_sessions(user_id, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS assistant_events (
+        id text PRIMARY KEY,
+        session_id text NOT NULL REFERENCES assistant_sessions(id) ON DELETE CASCADE,
+        kind text NOT NULL,
+        content text NOT NULL,
+        metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+        created_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS assistant_events_session_created_idx
+      ON assistant_events(session_id, created_at ASC);
+    `
   }
 ];
