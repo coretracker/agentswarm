@@ -23,6 +23,7 @@ import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerGitHubPrWebhookRoutes } from "./routes/github-pr-webhooks.js";
 import { registerSlackWebhookRoutes } from "./routes/slack-webhooks.js";
 import { registerAssistantSessionRoutes } from "./routes/assistant-sessions.js";
+import { AssistantRuntimeService } from "./services/assistant-runtime-service.js";
 import { registerSnippetRoutes } from "./routes/snippets.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 import { attachSettingsProviderTerminalUpgrade } from "./lib/settings-provider-terminal.js";
@@ -146,7 +147,8 @@ const bootstrap = async (): Promise<void> => {
     sessionStore,
     settingsStore,
     assistantSessionStore,
-    slackIdentityStore
+    slackIdentityStore,
+    assistantPolicyStore
   } = createPostgresStores(
     postgresPool,
     redisClients,
@@ -163,6 +165,12 @@ const bootstrap = async (): Promise<void> => {
   const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore, undefined, personalAccessTokenStore);
   const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
   const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
+  const assistantRuntimeService = new AssistantRuntimeService({
+    sessionStore: assistantSessionStore,
+    settingsStore,
+    personalAccessTokenStore,
+    policyStore: assistantPolicyStore
+  });
 
   await roleStore.ensureDefaultAdminRole();
   await userStore.ensureDefaultAdminUser({
@@ -188,8 +196,25 @@ const bootstrap = async (): Promise<void> => {
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerGitHubPrWebhookRoutes(app, { repositoryStore, taskStore, taskQueueStore, scheduler, settingsStore, spawner, userStore });
-  registerSlackWebhookRoutes(app, { repositoryStore, taskStore, scheduler, settingsStore, spawner });
-  registerAssistantSessionRoutes(app, { auth, assistantSessionStore, slackIdentityStore });
+  registerSlackWebhookRoutes(app, {
+    repositoryStore,
+    taskStore,
+    scheduler,
+    settingsStore,
+    spawner,
+    userStore,
+    slackIdentityStore,
+    assistantSessionStore,
+    assistantRuntimeService,
+    assistantPolicyStore
+  });
+  registerAssistantSessionRoutes(app, {
+    auth,
+    assistantSessionStore,
+    slackIdentityStore,
+    assistantPolicyStore,
+    assistantRuntimeService
+  });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
   registerMcpRoutes(app, {
     auth,

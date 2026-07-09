@@ -47,10 +47,12 @@ export interface AssistantSessionStore {
   getActiveSession(userId: string): Promise<AssistantSession | null>;
   getOrCreateActiveSession(input: CreateAssistantSessionInput): Promise<AssistantSession>;
   listSessions(userId: string, limit?: number): Promise<AssistantSession[]>;
+  listAllSessions(limit?: number): Promise<AssistantSession[]>;
   listEvents(userId: string, sessionId: string, limit?: number): Promise<AssistantEvent[]>;
   appendEvent(sessionId: string, kind: AssistantEventKind, content: string, metadata?: Record<string, unknown>): Promise<AssistantEvent>;
   setProviderSessionId(sessionId: string, providerSessionId: string | null): Promise<void>;
   clearActiveSession(userId: string): Promise<AssistantSession | null>;
+  deleteExpiredEvents(retentionDays: number): Promise<number>;
 }
 
 export class PostgresAssistantSessionStore implements AssistantSessionStore {
@@ -133,6 +135,14 @@ export class PostgresAssistantSessionStore implements AssistantSessionStore {
     return result.rows.map((row) => this.mapSession(row));
   }
 
+  async listAllSessions(limit = 100): Promise<AssistantSession[]> {
+    const result = await this.pool.query(
+      "SELECT * FROM assistant_sessions ORDER BY updated_at DESC LIMIT $1",
+      [Math.max(1, Math.min(limit, 500))]
+    );
+    return result.rows.map((row) => this.mapSession(row));
+  }
+
   async listEvents(userId: string, sessionId: string, limit = 200): Promise<AssistantEvent[]> {
     const result = await this.pool.query(
       `SELECT event.*
@@ -153,11 +163,22 @@ export class PostgresAssistantSessionStore implements AssistantSessionStore {
     metadata: Record<string, unknown> = {}
   ): Promise<AssistantEvent> {
     const timestamp = nowIso();
-    const result = await this.pool.query(
-      `INSERT INTO assistant_events (id, session_id, kind, content, metadata, created_at)
-       VALUES ($1,$2,$3,$4,$5::jsonb,$6) RETURNING *`,
-      [nanoid(), sessionId, kind, content, JSON.stringify(metadata), timestamp]
-    );
+    let result;
+    try {
+      result = await this.pool.query(
+        `INSERT INTO assistant_events (id, session_id, kind, content, metadata, created_at)
+         VALUES ($1,$2,$3,$4,$5::jsonb,$6) RETURNING *`,
+        [nanoid(), sessionId, kind, content, JSON.stringify(metadata), timestamp]
+      );
+    } catch (error) {
+      if (!("externalId" in metadata) || !error || typeof error !== "object" || !("code" in error) || error.code !== "23505") {
+        throw error;
+      }
+      result = await this.pool.query(
+        "SELECT * FROM assistant_events WHERE session_id = $1 AND metadata->>'externalId' = $2 LIMIT 1",
+        [sessionId, String(metadata.externalId)]
+      );
+    }
     await this.pool.query("UPDATE assistant_sessions SET updated_at = $2 WHERE id = $1", [sessionId, timestamp]);
     return this.mapEvent(result.rows[0]);
   }
@@ -190,5 +211,11 @@ export class PostgresAssistantSessionStore implements AssistantSessionStore {
       );
       return this.mapSession(row);
     });
+  }
+
+  async deleteExpiredEvents(retentionDays: number): Promise<number> {
+    const cutoff = new Date(Date.now() - Math.max(1, retentionDays) * 24 * 60 * 60 * 1000).toISOString();
+    const result = await this.pool.query("DELETE FROM assistant_events WHERE created_at < $1", [cutoff]);
+    return result.rowCount ?? 0;
   }
 }

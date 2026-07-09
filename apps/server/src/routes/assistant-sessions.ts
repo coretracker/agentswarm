@@ -2,18 +2,61 @@ import type { FastifyInstance } from "fastify";
 import type { AuthService } from "../lib/auth.js";
 import type { AssistantSessionStore } from "../services/assistant-session-store.js";
 import type { SlackIdentityStore } from "../services/slack-identity-store.js";
+import type { AssistantPolicyStore } from "../services/assistant-policy-store.js";
+import type { AssistantRuntimeService } from "../services/assistant-runtime-service.js";
 import { z } from "zod";
 import { sendHttpError } from "../lib/http-error.js";
+import { ALL_PERMISSION_SCOPES, type PermissionScope } from "@verft/shared-types";
 
 const slackIdentitySchema = z.object({
   slackTeamId: z.string().trim().nullable(),
   slackUserId: z.string().trim().nullable()
 });
+const permissionScopes = new Set<string>(ALL_PERMISSION_SCOPES);
+const assistantPolicySchema = z.object({
+  enabled: z.boolean(),
+  allowedProviders: z.array(z.enum(["codex", "claude"])).min(1),
+  allowedModels: z.array(z.string().trim().min(1).max(200)).max(100),
+  mcpScopes: z.array(z.string().refine((value) => permissionScopes.has(value), "Invalid permission scope")).min(1).max(50),
+  maxConcurrentRuns: z.number().int().min(1).max(50),
+  retentionDays: z.number().int().min(1).max(3650)
+});
 
 export const registerAssistantSessionRoutes = (
   app: FastifyInstance,
-  deps: { auth: AuthService; assistantSessionStore: AssistantSessionStore; slackIdentityStore: SlackIdentityStore }
+  deps: {
+    auth: AuthService;
+    assistantSessionStore: AssistantSessionStore;
+    slackIdentityStore: SlackIdentityStore;
+    assistantPolicyStore: AssistantPolicyStore;
+    assistantRuntimeService: AssistantRuntimeService;
+  }
 ): void => {
+  app.get(
+    "/assistant/policy",
+    { preHandler: deps.auth.requireAllScopes(["settings:read"]) },
+    async () => deps.assistantPolicyStore.get()
+  );
+
+  app.get(
+    "/assistant/admin/sessions",
+    { preHandler: deps.auth.requireAllScopes(["settings:read"]) },
+    async () => deps.assistantSessionStore.listAllSessions()
+  );
+
+  app.put(
+    "/assistant/policy",
+    { preHandler: deps.auth.requireAllScopes(["settings:edit"]) },
+    async (request, reply) => {
+      const parsed = assistantPolicySchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ message: parsed.error.message });
+      return deps.assistantPolicyStore.update({
+        ...parsed.data,
+        mcpScopes: parsed.data.mcpScopes as PermissionScope[]
+      });
+    }
+  );
+
   app.get(
     "/assistant/slack-identity",
     { preHandler: deps.auth.requireAuth() },
@@ -64,6 +107,7 @@ export const registerAssistantSessionRoutes = (
       if (!cleared) {
         return reply.status(204).send();
       }
+      await deps.assistantRuntimeService.clearSessionState(cleared.id);
       return reply.send(cleared);
     }
   );

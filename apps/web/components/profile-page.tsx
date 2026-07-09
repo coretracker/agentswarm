@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Alert, App, Button, Card, Divider, Flex, Form, Input, Select, Space, Spin, Tag, Typography } from "antd";
 import { CopyOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
-import type { AssistantSession } from "../src/api/client";
+import type { AssistantEvent, AssistantSession } from "../src/api/client";
 import { useAuth } from "./auth-provider";
 import { ResponsePolicyFields } from "./response-policy-fields";
 import { ModelSelect } from "./model-select";
@@ -47,6 +47,7 @@ export function ProfilePage() {
   const [personalAccessTokenLoading, setPersonalAccessTokenLoading] = useState(true);
   const [generatedPersonalAccessToken, setGeneratedPersonalAccessToken] = useState<string | null>(null);
   const [assistantSessions, setAssistantSessions] = useState<AssistantSession[]>([]);
+  const [assistantEvents, setAssistantEvents] = useState<AssistantEvent[]>([]);
   const [clearingAssistantSession, setClearingAssistantSession] = useState(false);
   const [form] = Form.useForm<{
     name: string;
@@ -93,6 +94,9 @@ export function ProfilePage() {
         });
         setPersonalAccessTokens(tokens);
         setAssistantSessions(sessions);
+        if (sessions[0]) {
+          void api.listAssistantEvents(sessions[0].id).then(setAssistantEvents);
+        }
       })
       .catch((error) => {
         message.error(error instanceof Error ? error.message : "Failed to load profile");
@@ -177,6 +181,7 @@ export function ProfilePage() {
     try {
       await api.clearAssistantSession();
       setAssistantSessions(await api.listAssistantSessions());
+      setAssistantEvents([]);
       message.success("Slack assistant session cleared");
     } catch (error) {
       message.error(error instanceof Error ? error.message : "Failed to clear Slack assistant session");
@@ -288,6 +293,21 @@ export function ProfilePage() {
                 Clear Active Session
               </Button>
             </div>
+            {assistantEvents.length > 0 ? (
+              <>
+                <Divider orientation="left" plain>Recent Activity</Divider>
+                <Space direction="vertical" size={8} style={{ width: "100%" }}>
+                  {assistantEvents.slice(-20).map((event) => (
+                    <Card key={event.id} size="small">
+                      <Typography.Text type="secondary">{event.kind} · {formatDateTime(event.createdAt)}</Typography.Text>
+                      <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }} ellipsis={{ rows: 4, expandable: true }}>
+                        {event.content}
+                      </Typography.Paragraph>
+                    </Card>
+                  ))}
+                </Space>
+              </>
+            ) : null}
           </Card>
           <Divider orientation="left" plain>
             Default Agent

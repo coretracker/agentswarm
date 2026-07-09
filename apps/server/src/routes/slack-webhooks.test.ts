@@ -231,3 +231,79 @@ test("Slack webhook queues thread feedback while task is running", async () => {
     restoreFetch();
   }
 });
+
+test("Slack webhook routes an authorized direct message to the detached assistant", async () => {
+  const app = Fastify();
+  addJsonParser(app);
+  const fetchCalls: Array<{ url: string; init: RequestInit }> = [];
+  const restoreFetch = installSlackFetchMock(fetchCalls);
+  const runtimeCalls: unknown[] = [];
+  try {
+    registerSlackWebhookRoutes(app, {
+      repositoryStore: {} as never,
+      taskStore: {} as never,
+      scheduler: {} as never,
+      settingsStore: defaultSettingsStore as never,
+      spawner: defaultSpawner as never,
+      slackIdentityStore: { findActiveUserId: async () => "user-1" } as never,
+      userStore: {
+        getAuthSessionUser: async () => ({
+          id: "user-1",
+          name: "User",
+          email: "user@example.com",
+          active: true,
+          defaultProvider: "codex",
+          defaultModel: null,
+          defaultProviderProfile: "high",
+          allowedProviders: ["codex", "claude"],
+          allowedModels: [],
+          allowedEfforts: ["low", "medium", "high", "max"]
+        })
+      } as never,
+      assistantSessionStore: {
+        getOrCreateActiveSession: async () => ({ id: "session-1", provider: "codex", model: null }),
+        listEvents: async () => []
+      } as never,
+      assistantRuntimeService: {
+        respond: async (...args: unknown[]) => {
+          runtimeCalls.push(args);
+          return "Assistant reply";
+        }
+      } as never,
+      assistantPolicyStore: {
+        get: async () => ({
+          enabled: true,
+          allowedProviders: ["codex", "claude"],
+          allowedModels: [],
+          mcpScopes: ["repo:list", "repo:read", "task:list", "task:read"]
+        })
+      } as never
+    });
+    const payload = JSON.stringify({
+      type: "event_callback",
+      team_id: "T12345678",
+      event_id: "Ev12345678",
+      event: {
+        type: "message",
+        channel_type: "im",
+        channel: "D12345678",
+        user: "U12345678",
+        ts: "111.222",
+        text: "List my active tasks"
+      }
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/slack/events",
+      headers: { "content-type": "application/json", ...signSlackPayload(payload, "slack-secret") },
+      payload
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(response.statusCode, 202);
+    assert.equal(runtimeCalls.length, 1);
+    assert.match(String(fetchCalls[0]?.init.body), /Assistant reply/);
+    assert.doesNotMatch(String(fetchCalls[0]?.init.body), /thread_ts/);
+  } finally {
+    restoreFetch();
+  }
+});

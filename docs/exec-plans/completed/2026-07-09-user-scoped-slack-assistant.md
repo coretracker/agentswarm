@@ -62,12 +62,12 @@
 - User Approval To Start: 2026-07-09 UTC - User replied `Start`.
 - Baseline Checks Run: 2026-07-09 UTC - Canonical `npm run ci` could not access Docker and the documented remote runner was unavailable. Host fallback `npm ci --include=dev`, `npm run lint`, `npm run build`, and `npm test` passed (200 server and 34 web tests); Node 20 emitted an engine warning for a Node 22 dependency.
 - Visible Task List Updated: 2026-07-09 UTC - Implementation task list published in the task conversation.
-- Task-Level Tests/Lint/Build: TODO
-- Self Review Complete: TODO
-- Code Review Complete: TODO
-- Final Verification Complete: TODO
-- Security/Privacy Review Complete: TODO
-- Docs/Changelog Updated: TODO
+- Task-Level Tests/Lint/Build: 2026-07-09 UTC - Root lint and build passed; focused Slack identity/DM tests passed; full tests passed with 204 server and 34 web tests.
+- Self Review Complete: 2026-07-09 UTC - Reviewed acceptance criteria, detached runtime mounts, identity uniqueness, policy enforcement, session authorization, retry handling, token lifecycle, clearing, audit retention, UI, and docs.
+- Code Review Complete: 2026-07-09 UTC - Reviewed server/web boundaries, existing Slack-task regression behavior, runtime command construction, policy upper bounds, and human-readable failure paths.
+- Final Verification Complete: 2026-07-09 UTC - Host lint, build, full tests, focused tests, and `git diff --check` passed. Docker-backed runtime E2E and canonical `npm run ci` remain unavailable because this environment has no Docker socket or remote runner.
+- Security/Privacy Review Complete: 2026-07-09 UTC - Slack signatures and immutable workspace/user IDs gate ingress; role and admin allowlists intersect; MCP uses expiring user-scoped tokens revoked after runs; no repository is mounted; logs are user-scoped and retention-bounded; tool inputs are not copied into audit records.
+- Docs/Changelog Updated: 2026-07-09 UTC - Added product behavior and operator setup docs and linked them from the product index.
 
 ## Validation Commands
 - `npm run ci`
@@ -93,6 +93,7 @@
 - 2026-07-09 UTC: Completed host baseline lint, build, and tests. Canonical Docker CI remains an environment limitation.
 - 2026-07-09 UTC: Implemented the first backend foundation: stable Slack workspace/user identity persistence with uniqueness and validation, separate assistant session/event audit tables, atomic one-active-session creation, clear-session semantics, user-authorized log APIs, and focused identity tests.
 - 2026-07-09 UTC: Added profile Slack identity controls, assistant session status, and explicit clear-session action. Server/web typechecks, focused identity tests, and diff validation pass.
+- 2026-07-09 UTC: Completed signed DM routing, policy enforcement, detached Claude/Codex execution, Verft MCP access, serialization/deduplication, tool audit events, runtime clearing, administrator policy UI, audit UI, retention, documentation, and host verification.
 
 ## Decisions
 - 2026-07-09: Use Slack workspace ID plus Slack user ID as external identity; never mutable Slack username.
@@ -101,4 +102,5 @@
 - 2026-07-09: Administrator policy is an upper bound; user choices cannot expand permissions.
 
 ## Completion Notes
-- TODO
+- Implementation is complete for review. Administrator must enable the feature after migration and configure Slack credentials/policy.
+- Docker-backed provider execution could not be exercised in this workspace; perform one Codex and one Claude DM smoke test in the deployment environment before broad rollout.

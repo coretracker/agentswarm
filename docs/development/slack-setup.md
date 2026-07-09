@@ -23,6 +23,8 @@ Configure repository-specific Slack behavior in the repository editor:
 
 Incoming Slack events are verified with the global signing secret, then routed to the repository whose Slack Channel ID matches the event channel. Repository Slack credentials are no longer used.
 
+Direct messages are routed separately to the [Slack DM assistant](../product/slack-dm-assistant.md). Enable it in the Slack assistant policy, then link the Slack workspace ID and user ID from the user's profile. Direct messages never inherit a repository mapping.
+
 ## Migration From Repository Credentials
 Automatic migration is intentionally not performed because existing repositories may contain different Slack signing secrets or bot tokens, and choosing one globally could silently bind Verft to the wrong Slack app.
 

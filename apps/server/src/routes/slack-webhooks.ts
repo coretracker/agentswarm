@@ -12,6 +12,11 @@ import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
+import type { UserStore } from "../services/user-store.js";
+import type { SlackIdentityStore } from "../services/slack-identity-store.js";
+import type { AssistantSessionStore } from "../services/assistant-session-store.js";
+import type { AssistantRuntimeService } from "../services/assistant-runtime-service.js";
+import type { AssistantPolicyStore } from "../services/assistant-policy-store.js";
 import { beginTaskStart } from "../lib/task-start-orchestrator.js";
 import { env } from "../config/env.js";
 
@@ -27,6 +32,15 @@ interface SlackFeedback {
   body: string;
   url: string;
   isRootMessage: boolean;
+}
+
+interface SlackDirectMessage {
+  externalId: string;
+  teamId: string;
+  channelId: string;
+  messageTs: string;
+  author: string;
+  body: string;
 }
 
 type SlackPromptKind = "initial" | "feedback";
@@ -115,6 +129,21 @@ const normalizeSlackFeedback = (payload: unknown): SlackFeedback | null => {
   };
 };
 
+const normalizeSlackDirectMessage = (payload: unknown): SlackDirectMessage | null => {
+  if (!isRecord(payload) || stringValue(payload, "type") !== "event_callback") return null;
+  const teamId = stringValue(payload, "team_id");
+  const eventId = stringValue(payload, "event_id");
+  const event = isRecord(payload.event) ? payload.event : null;
+  if (!teamId || !event || stringValue(event, "type") !== "message" || stringValue(event, "channel_type") !== "im") return null;
+  if (stringValue(event, "bot_id") || stringValue(event, "subtype")) return null;
+  const channelId = stringValue(event, "channel");
+  const messageTs = stringValue(event, "ts");
+  const author = stringValue(event, "user");
+  const body = stringValue(event, "text");
+  if (!eventId || !channelId || !messageTs || !author || !body) return null;
+  return { externalId: `slack:event:${teamId}:${eventId}`, teamId, channelId, messageTs, author, body };
+};
+
 const replaceTemplateMarkers = (template: string, markers: Record<string, string>): string => {
   let rendered = template;
   for (const [marker, value] of Object.entries(markers)) {
@@ -175,7 +204,7 @@ const renderSlackTaskCreatedReply = (template: string | null | undefined, input:
 const postSlackThreadReply = async (input: {
   botToken: string | null | undefined;
   channelId: string;
-  threadTs: string;
+  threadTs?: string;
   text: string;
 }): Promise<boolean> => {
   const botToken = input.botToken?.trim();
@@ -188,11 +217,7 @@ const postSlackThreadReply = async (input: {
       Authorization: `Bearer ${botToken}`,
       "Content-Type": "application/json; charset=utf-8"
     },
-    body: JSON.stringify({
-      channel: input.channelId,
-      thread_ts: input.threadTs,
-      text: input.text
-    })
+    body: JSON.stringify({ channel: input.channelId, ...(input.threadTs ? { thread_ts: input.threadTs } : {}), text: input.text })
   });
   if (!response.ok) {
     return false;
@@ -265,6 +290,11 @@ export const registerSlackWebhookRoutes = (
     scheduler: SchedulerService;
     settingsStore: SettingsStore;
     spawner: SpawnerService;
+    userStore?: UserStore;
+    slackIdentityStore?: SlackIdentityStore;
+    assistantSessionStore?: AssistantSessionStore;
+    assistantRuntimeService?: AssistantRuntimeService;
+    assistantPolicyStore?: AssistantPolicyStore;
   }
 ): void => {
   const handleSlackEvent = async (request: RawBodyRequest & { params?: { repositoryId?: string } }, reply: FastifyReply) => {
@@ -290,6 +320,73 @@ export const registerSlackWebhookRoutes = (
     }
     if (!credentials.slackBotToken) {
       return reply.status(409).send({ message: "Slack bot token is not configured." });
+    }
+
+    const directMessage = normalizeSlackDirectMessage(request.body);
+    if (directMessage) {
+      if (!deps.userStore || !deps.slackIdentityStore || !deps.assistantSessionStore || !deps.assistantRuntimeService || !deps.assistantPolicyStore) {
+        return reply.status(202).send({ queued: false, reason: "assistant_disabled" });
+      }
+      const policy = await deps.assistantPolicyStore.get();
+      if (!policy.enabled) return reply.status(202).send({ queued: false, reason: "assistant_disabled" });
+      const userId = await deps.slackIdentityStore.findActiveUserId(directMessage.teamId, directMessage.author);
+      if (!userId) {
+        await postSlackThreadReply({
+          botToken: credentials.slackBotToken,
+          channelId: directMessage.channelId,
+          text: "Slack assistant access is not linked. Add this workspace ID and user ID in your Verft profile."
+        }).catch(() => false);
+        return reply.status(202).send({ queued: false, reason: "unlinked_user" });
+      }
+      const user = await deps.userStore.getAuthSessionUser(userId);
+      if (!user?.active) return reply.status(202).send({ queued: false, reason: "inactive_user" });
+      const settings = await deps.settingsStore.getSettings();
+      const provider = user.defaultProvider ?? settings.defaultProvider;
+      if (
+        !policy.allowedProviders.includes(provider) ||
+        (user.allowedProviders.length > 0 && !user.allowedProviders.includes(provider))
+      ) {
+        return reply.status(202).send({ queued: false, reason: "provider_not_allowed" });
+      }
+      if (
+        user.defaultModel &&
+        ((policy.allowedModels.length > 0 && !policy.allowedModels.includes(user.defaultModel)) ||
+          (user.allowedModels.length > 0 && !user.allowedModels.includes(user.defaultModel)))
+      ) {
+        return reply.status(202).send({ queued: false, reason: "model_not_allowed" });
+      }
+      const effort = user.defaultProviderProfile ?? (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
+      if (user.allowedEfforts.length > 0 && !user.allowedEfforts.includes(effort)) {
+        return reply.status(202).send({ queued: false, reason: "effort_not_allowed" });
+      }
+      const session = await deps.assistantSessionStore.getOrCreateActiveSession({
+        userId,
+        slackTeamId: directMessage.teamId,
+        slackChannelId: directMessage.channelId,
+        slackUserId: directMessage.author,
+        provider,
+        model: user.defaultModel,
+        effort
+      });
+      if (
+        !policy.allowedProviders.includes(session.provider) ||
+        (session.model && policy.allowedModels.length > 0 && !policy.allowedModels.includes(session.model))
+      ) {
+        return reply.status(202).send({ queued: false, reason: "session_configuration_not_allowed" });
+      }
+      const recentEvents = await deps.assistantSessionStore.listEvents(userId, session.id, 500);
+      if (recentEvents.some((event) => event.metadata.externalId === directMessage.externalId)) {
+        return reply.status(202).send({ queued: false, reason: "duplicate", sessionId: session.id });
+      }
+      void deps.assistantRuntimeService.respond(user, session, directMessage.body, directMessage.externalId)
+        .then((text) => postSlackThreadReply({ botToken: credentials.slackBotToken, channelId: directMessage.channelId, text }))
+        .catch(() => postSlackThreadReply({
+          botToken: credentials.slackBotToken,
+          channelId: directMessage.channelId,
+          text: "The assistant runtime failed. Review the session log in your Verft profile."
+        }))
+        .catch(() => false);
+      return reply.status(202).send({ queued: true, sessionId: session.id });
     }
 
     const feedback = normalizeSlackFeedback(request.body);

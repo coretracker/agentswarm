@@ -121,6 +121,24 @@ export interface AssistantSession {
   updatedAt: string;
 }
 
+export interface AssistantEvent {
+  id: string;
+  kind: string;
+  content: string;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface AssistantPolicy {
+  enabled: boolean;
+  allowedProviders: AgentProvider[];
+  allowedModels: string[];
+  mcpScopes: PermissionScope[];
+  maxConcurrentRuns: number;
+  retentionDays: number;
+  updatedAt: string;
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -183,7 +201,13 @@ export const api = {
       body: JSON.stringify(input)
     }),
   listAssistantSessions: () => request<AssistantSession[]>("/assistant/sessions"),
+  listAssistantEvents: (sessionId: string) =>
+    request<AssistantEvent[]>(`/assistant/sessions/${encodeURIComponent(sessionId)}/events`),
   clearAssistantSession: () => request<AssistantSession | void>("/assistant/session", { method: "DELETE" }),
+  getAssistantPolicy: () => request<AssistantPolicy>("/assistant/policy"),
+  listAllAssistantSessions: () => request<AssistantSession[]>("/assistant/admin/sessions"),
+  updateAssistantPolicy: (input: Omit<AssistantPolicy, "updatedAt">) =>
+    request<AssistantPolicy>("/assistant/policy", { method: "PUT", body: JSON.stringify(input) }),
   logout: () =>
     request<void>("/auth/logout", {
       method: "POST"

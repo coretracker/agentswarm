@@ -46,7 +46,7 @@ import {
   Typography
 } from "antd";
 import { api } from "../src/api/client";
-import type { ProviderBaseStateStatus } from "../src/api/client";
+import type { AssistantPolicy, ProviderBaseStateStatus } from "../src/api/client";
 import { useSettings } from "../src/hooks/useSettings";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useAuth } from "./auth-provider";
@@ -82,6 +82,8 @@ interface CredentialForm {
   slackSigningSecret?: string;
   slackBotToken?: string;
 }
+
+type AssistantPolicyForm = Omit<AssistantPolicy, "updatedAt">;
 
 interface RoleFormValues {
   name: string;
@@ -170,12 +172,16 @@ export function SettingsPage() {
   const { loading, setSettings, settings } = useSettings();
   const [generalForm] = Form.useForm<GeneralSettingsForm>();
   const [credentialForm] = Form.useForm<CredentialForm>();
+  const [assistantPolicyForm] = Form.useForm<AssistantPolicyForm>();
   const [roleForm] = Form.useForm<RoleFormValues>();
   const [responsePreferencePresetForm] = Form.useForm<ResponsePreferencePresetFormValues>();
   const [roles, setRoles] = useState<Role[]>([]);
   const [rolesLoading, setRolesLoading] = useState(true);
   const [savingGeneral, setSavingGeneral] = useState(false);
   const [savingCredentials, setSavingCredentials] = useState(false);
+  const [savingAssistantPolicy, setSavingAssistantPolicy] = useState(false);
+  const [assistantPolicy, setAssistantPolicy] = useState<AssistantPolicy | null>(null);
+  const [assistantSessionCount, setAssistantSessionCount] = useState(0);
   const [checkingHostexec, setCheckingHostexec] = useState(false);
   const [hostexecAvailability, setHostexecAvailability] = useState<HostexecAvailability | null>(null);
   const [providerBaseStateStatus, setProviderBaseStateStatus] = useState<ProviderBaseStateStatus | null>(null);
@@ -231,6 +237,17 @@ export function SettingsPage() {
     setGeneralDirty(false);
     setGeneralDirtyTabs([]);
   }, [generalForm, settings]);
+
+  useEffect(() => {
+    if (!can("settings:read")) return;
+    void Promise.all([api.getAssistantPolicy(), api.listAllAssistantSessions()]).then(([policy, sessions]) => {
+      setAssistantPolicy(policy);
+      setAssistantSessionCount(sessions.length);
+      assistantPolicyForm.setFieldsValue(policy);
+    }).catch((error) => {
+      message.error(error instanceof Error ? error.message : "Failed to load Slack assistant policy");
+    });
+  }, [assistantPolicyForm, can, message]);
 
   const hasUnsavedChanges = generalDirty || credentialsDirty;
 
@@ -1073,6 +1090,58 @@ export function SettingsPage() {
                 </Popconfirm>
               </Space>
             </Form>
+            <Card size="small" title="DM Assistant Policy" style={{ marginTop: 24 }} loading={!assistantPolicy}>
+              <Typography.Paragraph type="secondary">
+                Recent sessions visible to administrators: {assistantSessionCount}
+              </Typography.Paragraph>
+              <Form
+                form={assistantPolicyForm}
+                layout="vertical"
+                disabled={!canEditSettings}
+                onFinish={async (values) => {
+                  setSavingAssistantPolicy(true);
+                  try {
+                    const next = await api.updateAssistantPolicy(values);
+                    setAssistantPolicy(next);
+                    assistantPolicyForm.setFieldsValue(next);
+                    message.success("Slack assistant policy saved");
+                  } catch (error) {
+                    message.error(error instanceof Error ? error.message : "Failed to save Slack assistant policy");
+                  } finally {
+                    setSavingAssistantPolicy(false);
+                  }
+                }}
+              >
+                <Form.Item name="enabled" valuePropName="checked">
+                  <Checkbox>Enable user-scoped Slack DM assistant</Checkbox>
+                </Form.Item>
+                <Form.Item name="allowedProviders" label="Allowed Providers" rules={[{ required: true }]}>
+                  <Checkbox.Group options={providerOptions} />
+                </Form.Item>
+                <Form.Item name="allowedModels" label="Allowed Models" extra="Empty allows every configured model.">
+                  <Select mode="tags" options={allModelOptions} />
+                </Form.Item>
+                <Form.Item name="mcpScopes" label="Assistant MCP Scopes">
+                  <Select
+                    mode="multiple"
+                    options={PERMISSION_SCOPE_GROUPS.flatMap((group) =>
+                      group.scopes.map((scope) => ({ label: `${group.label}: ${scope}`, value: scope }))
+                    )}
+                  />
+                </Form.Item>
+                <Flex gap={16} wrap="wrap">
+                  <Form.Item name="maxConcurrentRuns" label="Maximum Concurrent Runs" rules={[{ required: true }]}>
+                    <InputNumber min={1} max={50} />
+                  </Form.Item>
+                  <Form.Item name="retentionDays" label="Audit Retention Days" rules={[{ required: true }]}>
+                    <InputNumber min={1} max={3650} />
+                  </Form.Item>
+                </Flex>
+                <Button type="primary" htmlType="submit" loading={savingAssistantPolicy}>
+                  Save Assistant Policy
+                </Button>
+              </Form>
+            </Card>
           </Card>
         ) : null}
 

@@ -773,6 +773,25 @@ Feedback:
 
       CREATE INDEX IF NOT EXISTS assistant_events_session_created_idx
       ON assistant_events(session_id, created_at ASC);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS assistant_events_external_id_idx
+      ON assistant_events(session_id, (metadata->>'externalId'))
+      WHERE metadata ? 'externalId';
+
+      CREATE TABLE IF NOT EXISTS assistant_settings (
+        singleton_id smallint PRIMARY KEY CHECK (singleton_id = 1),
+        enabled boolean NOT NULL DEFAULT false,
+        allowed_providers jsonb NOT NULL DEFAULT '["codex","claude"]'::jsonb,
+        allowed_models jsonb NOT NULL DEFAULT '[]'::jsonb,
+        mcp_scopes jsonb NOT NULL DEFAULT '["repo:list","repo:read","task:list","task:read"]'::jsonb,
+        max_concurrent_runs integer NOT NULL DEFAULT 2,
+        retention_days integer NOT NULL DEFAULT 30,
+        updated_at text NOT NULL
+      );
+
+      INSERT INTO assistant_settings (singleton_id, updated_at)
+      VALUES (1, now()::text)
+      ON CONFLICT (singleton_id) DO NOTHING;
     `
   }
 ];
