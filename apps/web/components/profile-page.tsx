@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Alert, App, Button, Card, Divider, Flex, Form, Input, Select, Space, Spin, Tag, Typography } from "antd";
 import { CopyOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
+import type { AssistantSession } from "../src/api/client";
 import { useAuth } from "./auth-provider";
 import { ResponsePolicyFields } from "./response-policy-fields";
 import { ModelSelect } from "./model-select";
@@ -45,9 +46,13 @@ export function ProfilePage() {
   const [personalAccessTokens, setPersonalAccessTokens] = useState<PersonalAccessToken[]>([]);
   const [personalAccessTokenLoading, setPersonalAccessTokenLoading] = useState(true);
   const [generatedPersonalAccessToken, setGeneratedPersonalAccessToken] = useState<string | null>(null);
+  const [assistantSessions, setAssistantSessions] = useState<AssistantSession[]>([]);
+  const [clearingAssistantSession, setClearingAssistantSession] = useState(false);
   const [form] = Form.useForm<{
     name: string;
     githubUsername?: string;
+    slackTeamId?: string;
+    slackUserId?: string;
     defaultProvider?: AgentProvider;
     defaultModel?: string;
     defaultProviderProfile?: ProviderProfile;
@@ -68,11 +73,13 @@ export function ProfilePage() {
   const currentMcpToken = activeMcpTokens[0] ?? null;
 
   useEffect(() => {
-    void Promise.all([api.getProfile(), api.listPersonalAccessTokens()])
-      .then(([profile, tokens]) => {
+    void Promise.all([api.getProfile(), api.listPersonalAccessTokens(), api.getSlackIdentity(), api.listAssistantSessions()])
+      .then(([profile, tokens, slackIdentity, sessions]) => {
         form.setFieldsValue({
           name: profile.name,
           githubUsername: profile.githubUsername ?? "",
+          slackTeamId: slackIdentity?.slackTeamId ?? "",
+          slackUserId: slackIdentity?.slackUserId ?? "",
           defaultProvider: profile.defaultProvider ?? undefined,
           defaultModel: profile.defaultModel ?? undefined,
           defaultProviderProfile: profile.defaultProviderProfile ?? undefined,
@@ -85,6 +92,7 @@ export function ProfilePage() {
           extraInstructions: profile.agentResponsePreference.extraInstructions ?? ""
         });
         setPersonalAccessTokens(tokens);
+        setAssistantSessions(sessions);
       })
       .catch((error) => {
         message.error(error instanceof Error ? error.message : "Failed to load profile");
@@ -99,7 +107,9 @@ export function ProfilePage() {
     try {
       const values = await form.validateFields();
       setSaving(true);
-      const next = await api.updateProfile({
+      const slackTeamId = values.slackTeamId?.trim() || null;
+      const slackUserId = values.slackUserId?.trim() || null;
+      const [next] = await Promise.all([api.updateProfile({
         name: values.name,
         githubUsername: values.githubUsername?.trim() || null,
         defaultProvider: values.defaultProvider ?? null,
@@ -114,7 +124,7 @@ export function ProfilePage() {
           formattingStyle: values.formattingStyle,
           extraInstructions: values.extraInstructions?.trim() || undefined
         }
-      });
+      }), api.updateSlackIdentity({ slackTeamId, slackUserId })]);
       setSessionUser({
         name: next.name,
         githubUsername: next.githubUsername,
@@ -162,6 +172,19 @@ export function ProfilePage() {
     }
   };
 
+  const clearAssistantSession = async (): Promise<void> => {
+    setClearingAssistantSession(true);
+    try {
+      await api.clearAssistantSession();
+      setAssistantSessions(await api.listAssistantSessions());
+      message.success("Slack assistant session cleared");
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Failed to clear Slack assistant session");
+    } finally {
+      setClearingAssistantSession(false);
+    }
+  };
+
   return (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
       <Flex vertical gap={0}>
@@ -201,6 +224,71 @@ export function ProfilePage() {
           >
             <Input autoComplete="off" placeholder="octocat" />
           </Form.Item>
+          <Divider orientation="left" plain>
+            Slack Assistant
+          </Divider>
+          <Card size="small">
+            <Typography.Paragraph type="secondary">
+              Link the immutable IDs from your Slack profile. Both values are required. Clearing both disables DM access.
+            </Typography.Paragraph>
+            <Form.Item
+              name="slackTeamId"
+              label="Slack Workspace ID"
+              dependencies={["slackUserId"]}
+              rules={[
+                {
+                  validator: async (_, value: string | undefined) => {
+                    const other = form.getFieldValue("slackUserId") as string | undefined;
+                    if (Boolean(value?.trim()) !== Boolean(other?.trim())) {
+                      throw new Error("Workspace ID and user ID must be set together.");
+                    }
+                  }
+                }
+              ]}
+            >
+              <Input autoComplete="off" placeholder="T0123456789" />
+            </Form.Item>
+            <Form.Item
+              name="slackUserId"
+              label="Slack User ID"
+              dependencies={["slackTeamId"]}
+              rules={[
+                {
+                  validator: async (_, value: string | undefined) => {
+                    const other = form.getFieldValue("slackTeamId") as string | undefined;
+                    if (Boolean(value?.trim()) !== Boolean(other?.trim())) {
+                      throw new Error("Workspace ID and user ID must be set together.");
+                    }
+                  }
+                }
+              ]}
+            >
+              <Input autoComplete="off" placeholder="U0123456789" />
+            </Form.Item>
+            <Divider />
+            {assistantSessions.length > 0 ? (
+              <Space direction="vertical" size={4}>
+                <Typography.Text>
+                  Latest session: {assistantSessions[0]!.provider} · {assistantSessions[0]!.status}
+                </Typography.Text>
+                <Typography.Text type="secondary">
+                  Updated {formatDateTime(assistantSessions[0]!.updatedAt)}
+                </Typography.Text>
+              </Space>
+            ) : (
+              <Typography.Text type="secondary">No Slack assistant sessions.</Typography.Text>
+            )}
+            <div style={{ marginTop: 12 }}>
+              <Button
+                danger
+                disabled={!assistantSessions.some((sessionItem) => sessionItem.status === "active")}
+                loading={clearingAssistantSession}
+                onClick={() => { void clearAssistantSession(); }}
+              >
+                Clear Active Session
+              </Button>
+            </div>
+          </Card>
           <Divider orientation="left" plain>
             Default Agent
           </Divider>

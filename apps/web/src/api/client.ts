@@ -105,6 +105,22 @@ export interface HistoryPageResult<T> {
   hasMore: boolean;
 }
 
+export interface SlackIdentity {
+  userId: string;
+  slackTeamId: string;
+  slackUserId: string;
+}
+
+export interface AssistantSession {
+  id: string;
+  provider: AgentProvider;
+  model: string | null;
+  effort: string;
+  status: "active" | "cleared";
+  createdAt: string;
+  updatedAt: string;
+}
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -160,6 +176,14 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
+  getSlackIdentity: () => request<SlackIdentity | null>("/assistant/slack-identity"),
+  updateSlackIdentity: (input: { slackTeamId: string | null; slackUserId: string | null }) =>
+    request<SlackIdentity | null>("/assistant/slack-identity", {
+      method: "PUT",
+      body: JSON.stringify(input)
+    }),
+  listAssistantSessions: () => request<AssistantSession[]>("/assistant/sessions"),
+  clearAssistantSession: () => request<AssistantSession | void>("/assistant/session", { method: "DELETE" }),
   logout: () =>
     request<void>("/auth/logout", {
       method: "POST"
