@@ -230,7 +230,7 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
   }
 
   if (event === "pull_request_review_comment") {
-    if (action !== "created" || !isRecord(payload.pull_request) || !isRecord(payload.comment)) {
+    if ((action !== "created" && action !== "edited") || !isRecord(payload.pull_request) || !isRecord(payload.comment)) {
       return null;
     }
     const prNumber = numberValue(payload.pull_request, "number");
@@ -254,7 +254,8 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
       prHeadRepositoryFullName: readPullRequestHeadDetails(payload.pull_request)?.headRepositoryFullName,
       path: stringValue(payload.comment, "path") ?? undefined,
       line: numberValue(payload.comment, "line") ?? numberValue(payload.comment, "original_line") ?? undefined,
-      diffHunk: stringValue(payload.comment, "diff_hunk") ?? undefined
+      diffHunk: stringValue(payload.comment, "diff_hunk") ?? undefined,
+      commentId
     };
   }
 
@@ -614,11 +615,17 @@ const postGitHubFeedbackCommentReaction = async (input: {
 }): Promise<boolean> => {
   const githubToken = input.githubToken?.trim();
   const { feedback } = input;
-  if (!githubToken || !feedback.repositoryFullName || (feedback.kind !== "issue_comment" && feedback.kind !== "pr_comment") || !feedback.commentId) {
+  if (
+    !githubToken ||
+    !feedback.repositoryFullName ||
+    (feedback.kind !== "issue_comment" && feedback.kind !== "pr_comment" && feedback.kind !== "review_comment") ||
+    !feedback.commentId
+  ) {
     return false;
   }
 
-  const response = await fetch(`${GITHUB_API_BASE_URL}/repos/${feedback.repositoryFullName}/issues/comments/${feedback.commentId}/reactions`, {
+  const commentType = feedback.kind === "review_comment" ? "pulls" : "issues";
+  const response = await fetch(`${GITHUB_API_BASE_URL}/repos/${feedback.repositoryFullName}/${commentType}/comments/${feedback.commentId}/reactions`, {
     method: "POST",
     headers: {
       Accept: "application/vnd.github+json",
