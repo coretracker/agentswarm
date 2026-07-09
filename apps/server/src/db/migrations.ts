@@ -633,6 +633,18 @@ Feedback:
     `
   },
   {
+    id: "20260709_01_system_harness_fields",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS harness_what_exists text NULL,
+      ADD COLUMN IF NOT EXISTS harness_allowed_actions text NULL,
+      ADD COLUMN IF NOT EXISTS harness_not_allowed_actions text NULL,
+      ADD COLUMN IF NOT EXISTS harness_how_to_work text NULL,
+      ADD COLUMN IF NOT EXISTS harness_definition_of_done text NULL,
+      ADD COLUMN IF NOT EXISTS harness_evidence_expectations text NULL;
+    `
+  },
+  {
     id: "20260630_02_repository_github_task_created_comment_template",
     sql: `
       ALTER TABLE repositories

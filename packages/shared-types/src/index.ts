@@ -951,6 +951,12 @@ export interface SystemSettings {
   anthropicBaseUrl: string | null;
   taskPromptMagicModel: string;
   taskPromptMagicTemplate: string;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
   githubTokenConfigured: boolean;
   openaiApiKeyConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
@@ -1442,6 +1448,12 @@ export interface UpdateSettingsInput {
   anthropicBaseUrl?: string | null;
   taskPromptMagicModel?: string;
   taskPromptMagicTemplate?: string;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
   codexDefaultModel?: string;
   codexModels?: ProviderModelOption[];
   codexDefaultEffort?: ProviderProfile;

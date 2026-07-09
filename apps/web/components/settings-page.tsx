@@ -64,6 +64,12 @@ interface GeneralSettingsForm {
   anthropicBaseUrl: string;
   taskPromptMagicModel: string;
   taskPromptMagicTemplate: string;
+  harnessWhatExists: string;
+  harnessAllowedActions: string;
+  harnessNotAllowedActions: string;
+  harnessHowToWork: string;
+  harnessDefinitionOfDone: string;
+  harnessEvidenceExpectations: string;
   hostexecEnabled: boolean;
   hostexecUrl: string;
   hostexecBearerTokenEnvVar: string;
@@ -105,7 +111,7 @@ interface ResponsePreferencePresetFormValues {
 }
 
 type ClearCredentialTarget = "github" | "openai" | "anthropic" | "slackSigningSecret" | "slackBotToken";
-type SettingsTabKey = "general" | "git" | "hostexec" | "credentials" | "slack" | "codex" | "claude";
+type SettingsTabKey = "general" | "harness" | "git" | "hostexec" | "credentials" | "slack" | "codex" | "claude";
 type DirtyGeneralTabKey = SettingsTabKey;
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
@@ -153,6 +159,12 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   anthropicBaseUrl: settings.anthropicBaseUrl ?? "",
   taskPromptMagicModel: settings.taskPromptMagicModel,
   taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
+  harnessWhatExists: settings.harnessWhatExists ?? "",
+  harnessAllowedActions: settings.harnessAllowedActions ?? "",
+  harnessNotAllowedActions: settings.harnessNotAllowedActions ?? "",
+  harnessHowToWork: settings.harnessHowToWork ?? "",
+  harnessDefinitionOfDone: settings.harnessDefinitionOfDone ?? "",
+  harnessEvidenceExpectations: settings.harnessEvidenceExpectations ?? "",
   hostexecEnabled: settings.hostexec?.enabled === true,
   hostexecUrl: settings.hostexec?.url ?? "",
   hostexecBearerTokenEnvVar: settings.hostexec?.bearerTokenEnvVar ?? "",
@@ -434,6 +446,12 @@ export function SettingsPage() {
         anthropicBaseUrl: values.anthropicBaseUrl?.trim() ? values.anthropicBaseUrl.trim() : null,
         taskPromptMagicModel: values.taskPromptMagicModel,
         taskPromptMagicTemplate: values.taskPromptMagicTemplate,
+        harnessWhatExists: values.harnessWhatExists.trim() || null,
+        harnessAllowedActions: values.harnessAllowedActions.trim() || null,
+        harnessNotAllowedActions: values.harnessNotAllowedActions.trim() || null,
+        harnessHowToWork: values.harnessHowToWork.trim() || null,
+        harnessDefinitionOfDone: values.harnessDefinitionOfDone.trim() || null,
+        harnessEvidenceExpectations: values.harnessEvidenceExpectations.trim() || null,
         codexDefaultModel: values.codexDefaultModel,
         codexModels: values.codexModels,
         codexDefaultEffort: values.codexDefaultEffort,
@@ -609,6 +627,10 @@ export function SettingsPage() {
       label: <span>{generalDirtyTabs.includes("general") ? "General *" : "General"}</span>
     },
     {
+      key: "harness",
+      label: <span>{generalDirtyTabs.includes("harness") ? "Harness *" : "Harness"}</span>
+    },
+    {
       key: "git",
       label: <span>{generalDirtyTabs.includes("git") || credentialDirtyTabs.includes("git") ? "Git *" : "Git"}</span>
     },
@@ -683,6 +705,46 @@ export function SettingsPage() {
               </Card>
             </Space>
             {renderSaveBar({ dirty: generalDirty, label: "Save General Settings", loading: savingGeneral })}
+          </Form>
+        ) : null}
+
+        {activeTab === "harness" ? (
+          <Form
+            form={generalForm}
+            layout="vertical"
+            disabled={!canEditSettings}
+            onValuesChange={() => markGeneralTabDirty("harness")}
+            onFinish={saveGeneralSettings}
+          >
+            <Card bordered={false} loading={loading} title="Global Harness">
+              <Flex vertical gap={12}>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Applied to every task"
+                  description="Global guidance is written first, followed by repository harness guidance. Both are preserved in the runtime harness."
+                />
+                {([
+                  ["harnessWhatExists", "1. What exists?", "Shared platform context, services, tools, and conventions."],
+                  ["harnessAllowedActions", "2. What is allowed?", "Actions agents may take across repositories."],
+                  ["harnessNotAllowedActions", "3. What is not allowed?", "Actions agents must never take."],
+                  ["harnessHowToWork", "4. How should you work?", "Global process, planning, and approval expectations."],
+                  ["harnessDefinitionOfDone", "5. How do you know you are done?", "Global validation and quality gates."],
+                  ["harnessEvidenceExpectations", "6. How do you prove it?", "Evidence expected in task results."]
+                ] as const).map(([name, label, extra]) => (
+                  <Form.Item
+                    key={name}
+                    name={name}
+                    label={label}
+                    extra={extra}
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                  </Form.Item>
+                ))}
+              </Flex>
+            </Card>
+            {renderSaveBar({ dirty: generalDirty, label: "Save Global Harness", loading: savingGeneral })}
           </Form>
         ) : null}
 
