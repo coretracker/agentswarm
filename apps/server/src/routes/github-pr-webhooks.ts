@@ -469,9 +469,69 @@ const formatNewIssueTaskTitle = (feedback: GitHubIssueFeedback): string =>
   feedback.issueTitle?.trim() || `GitHub issue #${feedback.issueNumber} feedback from @${feedback.author}`;
 
 const GITHUB_API_BASE_URL = "https://api.github.com";
+const GITHUB_GRAPHQL_URL = "https://api.github.com/graphql";
 const GITHUB_USER_AGENT = "Verft GitHub PR webhook";
 
 const buildTaskUrl = (taskId: string): string => `${env.CORS_ORIGIN.replace(/\/+$/, "")}/tasks/${encodeURIComponent(taskId)}`;
+
+const resolveGitHubIssueLinkedBranch = async (
+  feedback: GitHubIssueFeedback,
+  githubToken: string | null | undefined
+): Promise<string | null> => {
+  const token = githubToken?.trim();
+  const repositoryParts = feedback.repositoryFullName?.split("/");
+  if (!token || repositoryParts?.length !== 2) {
+    return null;
+  }
+
+  const response = await fetch(GITHUB_GRAPHQL_URL, {
+    method: "POST",
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "User-Agent": GITHUB_USER_AGENT
+    },
+    body: JSON.stringify({
+      query: `
+        query VerftIssueLinkedBranch($owner: String!, $name: String!, $issueNumber: Int!) {
+          repository(owner: $owner, name: $name) {
+            issue(number: $issueNumber) {
+              linkedBranches(first: 1) {
+                nodes {
+                  ref {
+                    name
+                  }
+                }
+              }
+            }
+          }
+        }
+      `,
+      variables: {
+        owner: repositoryParts[0],
+        name: repositoryParts[1],
+        issueNumber: feedback.issueNumber
+      }
+    })
+  });
+  if (!response.ok) {
+    return null;
+  }
+
+  const payload: unknown = await response.json();
+  if (!isRecord(payload)) {
+    return null;
+  }
+  const data = recordValue(payload, "data");
+  const repository = data ? recordValue(data, "repository") : null;
+  const issue = repository ? recordValue(repository, "issue") : null;
+  const linkedBranches = issue ? recordValue(issue, "linkedBranches") : null;
+  const nodes = linkedBranches?.nodes;
+  const firstNode = Array.isArray(nodes) && isRecord(nodes[0]) ? nodes[0] : null;
+  const ref = firstNode ? recordValue(firstNode, "ref") : null;
+  return ref ? stringValue(ref, "name") : null;
+};
 
 const renderTaskCreatedCommentTemplate = (template: string | null | undefined, input: { feedback: GitHubFeedback; taskId: string; taskUrl: string }): string => {
   const targetRef = input.feedback.target === "pr" ? `PR #${input.feedback.prNumber}` : `issue #${input.feedback.issueNumber}`;
@@ -690,7 +750,11 @@ export const registerGitHubPrWebhookRoutes = (
           feedback: repository.githubPrFeedbackInstructions,
           review: repository.githubPrReviewInstructions
         });
-        const settings = await deps.settingsStore.getSettings();
+        const [settings, credentials] = await Promise.all([
+          deps.settingsStore.getSettings(),
+          deps.settingsStore.getRuntimeCredentials(null, "auto").catch(() => ({ githubToken: null }))
+        ]);
+        const linkedBranch = await resolveGitHubIssueLinkedBranch(feedback, credentials.githubToken).catch(() => null);
         const createdTask = await deps.taskStore.createTask(
           {
             title: formatNewIssueTaskTitle(feedback),
@@ -698,7 +762,7 @@ export const registerGitHubPrWebhookRoutes = (
             repoId: repository.id,
             prompt: content,
             taskType: "build",
-            baseBranch: repository.defaultBranch,
+            baseBranch: linkedBranch ?? repository.defaultBranch,
             branchStrategy: "feature_branch",
             autoApplyCheckpoints: true,
             ...resolveCreateTaskProviderConfig({}, settings, repository, requestingUser)
@@ -748,7 +812,6 @@ export const registerGitHubPrWebhookRoutes = (
           return reply.status(startResult.statusCode).send({ message: startResult.message });
         }
 
-        const credentials = await deps.settingsStore.getRuntimeCredentials(null, "auto").catch(() => ({ githubToken: null }));
         await postGitHubFeedbackCommentReaction({
           feedback,
           githubToken: credentials.githubToken
