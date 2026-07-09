@@ -881,19 +881,11 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
         }}
       >
         <Flex vertical gap={16}>
-          <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-            <Flex vertical gap={0}>
-              <Typography.Title level={2} style={{ margin: 0 }}>
-                {title}
-              </Typography.Title>
-              <Typography.Text type="secondary">Manage reusable repository definitions for task creation.</Typography.Text>
-            </Flex>
-            <Space wrap>
-              <Button onClick={goBack}>Cancel</Button>
-              <Button type="primary" htmlType="submit" loading={submitting}>
-                {mode === "edit" ? "Save" : "Create"}
-              </Button>
-            </Space>
+          <Flex vertical gap={0}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              {title}
+            </Typography.Title>
+            <Typography.Text type="secondary">Manage reusable repository definitions for task creation.</Typography.Text>
           </Flex>
 
           <Tabs
@@ -1701,6 +1693,34 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               ) : null}
             </Card>
           ) : null}
+
+          <Card
+            size="small"
+            style={{
+              position: "sticky",
+              bottom: 16,
+              zIndex: 20,
+              marginTop: 16
+            }}
+            styles={{ body: { padding: 12 } }}
+          >
+            <Flex justify="space-between" align="center" gap={12} wrap="wrap">
+              <Typography.Text type="secondary">
+                {hasUnsavedChanges ? "Unsaved changes" : "All changes saved"}
+              </Typography.Text>
+              <Space wrap>
+                <Button onClick={goBack}>Cancel</Button>
+                <Button
+                  type="primary"
+                  htmlType="submit"
+                  loading={submitting}
+                  disabled={!hasUnsavedChanges || submitting}
+                >
+                  {mode === "edit" ? "Save" : "Create"}
+                </Button>
+              </Space>
+            </Flex>
+          </Card>
         </Flex>
       </Form>
     </>
