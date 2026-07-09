@@ -51,6 +51,7 @@ Notes:
 8. Open your profile to manage GitHub username linking, personal default agent settings, and personal access tokens.
 
 Notes:
+- Global and repository Harness sections display as read-only, content-sized textareas. Use the `Edit` link below a section to edit its Markdown in a right-side drawer, then apply the draft before saving the containing settings or repository form.
 - The GitHub token is used for both server-side Git actions and in-agent `git pull` / `git push` inside Codex and Claude runtimes.
 - Stored credential values are write-only and never returned in plaintext by the API/UI.
 - Agent-created commit identity resolves from system Git author settings when configured, otherwise from the built-in Verft fallback identity.
