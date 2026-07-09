@@ -51,6 +51,7 @@ Notes:
 7. Use `Codex` to set default effort/model, model list, prompt magic settings, and base URL override.
 8. Use `Claude Code` to set default effort/model, model list, and base URL override.
 9. Open your profile to manage GitHub username linking, personal default agent settings, and personal access tokens.
+10. Administrators can edit another user's default provider, model, and effort from the user's edit form.
 
 Notes:
 - Global and repository Harness sections display as read-only, content-sized textareas. Use the `Edit` link below a section to edit its Markdown in a right-side drawer, then apply the draft before saving the containing settings or repository form.
