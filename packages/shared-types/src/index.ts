@@ -520,8 +520,6 @@ export interface Repository {
   githubPrReviewInstructions?: string | null;
   githubPrTaskCreatedCommentTemplate?: string | null;
   githubPrTaskOwnerUserId?: string | null;
-  slackSigningSecretConfigured?: boolean;
-  slackBotTokenConfigured?: boolean;
   slackChannelId?: string | null;
   slackInitialInstructions?: string | null;
   slackFeedbackInstructions?: string | null;
@@ -953,9 +951,17 @@ export interface SystemSettings {
   anthropicBaseUrl: string | null;
   taskPromptMagicModel: string;
   taskPromptMagicTemplate: string;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
   githubTokenConfigured: boolean;
   openaiApiKeyConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
+  slackSigningSecretConfigured: boolean;
+  slackBotTokenConfigured: boolean;
   codexDefaultModel: string;
   codexModels: ProviderModelOption[];
   codexDefaultEffort: ProviderProfile;
@@ -995,8 +1001,6 @@ export interface CreateRepositoryInput {
   githubPrReviewInstructions?: string | null;
   githubPrTaskCreatedCommentTemplate?: string | null;
   githubPrTaskOwnerUserId?: string | null;
-  slackSigningSecret?: string;
-  slackBotToken?: string;
   slackChannelId?: string | null;
   slackInitialInstructions?: string | null;
   slackFeedbackInstructions?: string | null;
@@ -1036,10 +1040,6 @@ export interface UpdateRepositoryInput {
   githubPrReviewInstructions?: string | null;
   githubPrTaskCreatedCommentTemplate?: string | null;
   githubPrTaskOwnerUserId?: string | null;
-  slackSigningSecret?: string;
-  clearSlackSigningSecret?: boolean;
-  slackBotToken?: string;
-  clearSlackBotToken?: boolean;
   slackChannelId?: string | null;
   slackInitialInstructions?: string | null;
   slackFeedbackInstructions?: string | null;
@@ -1448,6 +1448,12 @@ export interface UpdateSettingsInput {
   anthropicBaseUrl?: string | null;
   taskPromptMagicModel?: string;
   taskPromptMagicTemplate?: string;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
   codexDefaultModel?: string;
   codexModels?: ProviderModelOption[];
   codexDefaultEffort?: ProviderProfile;
@@ -1461,9 +1467,13 @@ export interface UpdateCredentialSettingsInput {
   githubToken?: string;
   openaiApiKey?: string;
   anthropicApiKey?: string;
+  slackSigningSecret?: string;
+  slackBotToken?: string;
   clearGithubToken?: boolean;
   clearOpenAiApiKey?: boolean;
   clearAnthropicApiKey?: boolean;
+  clearSlackSigningSecret?: boolean;
+  clearSlackBotToken?: boolean;
 }
 
 export interface UpdateAuthProfileInput {

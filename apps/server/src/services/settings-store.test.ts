@@ -28,7 +28,9 @@ const createCredentialStore = (credentials: RuntimeCredentials): CredentialStore
     return {
       githubTokenConfigured: Boolean(credentials.githubToken),
       openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
-      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
+      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey),
+      slackSigningSecretConfigured: Boolean(credentials.slackSigningSecret),
+      slackBotTokenConfigured: Boolean(credentials.slackBotToken)
     };
   },
   async updateCredentials() {
@@ -37,6 +39,30 @@ const createCredentialStore = (credentials: RuntimeCredentials): CredentialStore
 });
 
 describe("RedisSettingsStore runtime credentials", () => {
+  it("persists and normalizes global harness guidance", async () => {
+    const settingsStore = new RedisSettingsStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never,
+      createCredentialStore({
+        githubToken: null,
+        openaiApiKey: null,
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
+      })
+    );
+
+    const settings = await settingsStore.updateSettings({
+      harnessWhatExists: "  Shared CI platform.  ",
+      harnessAllowedActions: "   ",
+      harnessNotAllowedActions: "Never publish secrets."
+    });
+
+    assert.equal(settings.harnessWhatExists, "Shared CI platform.");
+    assert.equal(settings.harnessAllowedActions, null);
+    assert.equal(settings.harnessNotAllowedActions, "Never publish secrets.");
+  });
+
   it("uses global API credentials regardless of user id or legacy profile source", async () => {
     const settingsStore = new RedisSettingsStore(
       new FakeRedis() as never,
@@ -44,7 +70,9 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: "sk-system",
-        anthropicApiKey: "anthropic-system"
+        anthropicApiKey: "anthropic-system",
+        slackSigningSecret: null,
+        slackBotToken: null
       })
     );
 
@@ -62,7 +90,9 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
       })
     );
 
@@ -84,7 +114,9 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
       })
     );
 
@@ -106,7 +138,9 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
       })
     );
 
@@ -155,7 +189,9 @@ describe("RedisSettingsStore runtime credentials", () => {
       createCredentialStore({
         githubToken: null,
         openaiApiKey: null,
-        anthropicApiKey: null
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
       })
     );
 

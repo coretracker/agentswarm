@@ -19,6 +19,8 @@ const settings: SystemSettings = {
   githubTokenConfigured: false,
   openaiApiKeyConfigured: true,
   anthropicApiKeyConfigured: true,
+  slackSigningSecretConfigured: false,
+  slackBotTokenConfigured: false,
   codexDefaultModel: "gpt-5.5",
   codexModels: [],
   codexDefaultEffort: "medium",

@@ -1,7 +1,5 @@
 import { theme as antTheme, type ThemeConfig } from "antd";
 
-export const appMonospaceFontFamily = '"Fire Code", "Fira Code", "SFMono-Regular", "Consolas", "Liberation Mono", "Menlo", monospace';
-
 export type AppThemeMode =
   | "ember-light"
   | "ember-dark"
@@ -779,36 +777,20 @@ export const isDarkAppTheme = (mode: AppThemeMode): boolean =>
   mode === "graphite-dark";
 
 export const getAppAntdTheme = (mode: AppThemeMode): ThemeConfig => {
-  let theme: ThemeConfig;
   switch (mode) {
     case "ember-light":
-      theme = emberLightAntdTheme;
-      break;
+      return emberLightAntdTheme;
     case "ember-dark":
-      theme = emberDarkAntdTheme;
-      break;
+      return emberDarkAntdTheme;
     case "moss-light":
-      theme = mossLightAntdTheme;
-      break;
+      return mossLightAntdTheme;
     case "moss-dark":
-      theme = mossDarkAntdTheme;
-      break;
+      return mossDarkAntdTheme;
     case "graphite-light":
-      theme = graphiteLightAntdTheme;
-      break;
+      return graphiteLightAntdTheme;
     case "graphite-dark":
-      theme = graphiteDarkAntdTheme;
-      break;
+      return graphiteDarkAntdTheme;
     default:
-      theme = mossDarkAntdTheme;
+      return mossDarkAntdTheme;
   }
-
-  return {
-    ...theme,
-    token: {
-      ...theme.token,
-      fontFamily: appMonospaceFontFamily,
-      fontFamilyCode: appMonospaceFontFamily
-    }
-  };
 };

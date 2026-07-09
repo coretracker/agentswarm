@@ -7,7 +7,7 @@ import { Alert, AutoComplete, Button, Empty, Flex, Input, Space, Spin, Tag, Tree
 import type { DataNode } from "antd/es/tree";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../src/api/client";
-import { appMonospaceFontFamily, isDarkAppTheme } from "../src/theme/antd-theme";
+import { isDarkAppTheme } from "../src/theme/antd-theme";
 import type { WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 import { useThemeMode } from "./theme-provider";
 import { detectCodeLanguage, getCodeLanguageLabel } from "./workspace-file-preview-modal";
@@ -617,7 +617,6 @@ export function TaskFilesTab({ taskId, active, openTarget, onOpenTargetHandled }
                   automaticLayout: true,
                   minimap: { enabled: false },
                   scrollBeyondLastLine: false,
-                  fontFamily: appMonospaceFontFamily,
                   fontSize: 13,
                   wordWrap: "off"
                 }}

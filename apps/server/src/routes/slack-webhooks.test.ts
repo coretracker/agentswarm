@@ -25,6 +25,10 @@ const defaultSettingsStore = {
     codexDefaultModel: "gpt-5.5",
     claudeDefaultEffort: "high",
     claudeDefaultModel: "claude-opus-4-8"
+  }),
+  getRuntimeCredentials: async () => ({
+    slackSigningSecret: "slack-secret",
+    slackBotToken: "xoxb-token"
   })
 };
 
@@ -61,14 +65,15 @@ test("Slack webhook creates a task from a root app mention", async () => {
   try {
     registerSlackWebhookRoutes(app, {
       repositoryStore: {
-        getRepository: async () => ({
-          id: "repo-1",
-          name: "Web",
-          defaultBranch: "develop",
-          slackChannelId: "C12345",
-          slackTaskOwnerUserId: "user-1"
-        }),
-        getRepositorySlackSecrets: async () => ({ signingSecret: secret, botToken: "xoxb-token" })
+        listRepositories: async () => [
+          {
+            id: "repo-1",
+            name: "Web",
+            defaultBranch: "develop",
+            slackChannelId: "C12345",
+            slackTaskOwnerUserId: "user-1"
+          }
+        ]
       } as never,
       taskStore: {
         findTaskBySlackThread: async () => null,
@@ -118,7 +123,7 @@ test("Slack webhook creates a task from a root app mention", async () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/slack/events/repo-1",
+      url: "/slack/events",
       headers: {
         "content-type": "application/json",
         ...signSlackPayload(payload, secret)
@@ -161,13 +166,14 @@ test("Slack webhook queues thread feedback while task is running", async () => {
   try {
     registerSlackWebhookRoutes(app, {
       repositoryStore: {
-        getRepository: async () => ({
-          id: "repo-1",
-          name: "Web",
-          defaultBranch: "develop",
-          slackChannelId: "C12345"
-        }),
-        getRepositorySlackSecrets: async () => ({ signingSecret: secret, botToken: "xoxb-token" })
+        listRepositories: async () => [
+          {
+            id: "repo-1",
+            name: "Web",
+            defaultBranch: "develop",
+            slackChannelId: "C12345"
+          }
+        ]
       } as never,
       taskStore: {
         findTaskBySlackThread: async () => ({
@@ -207,7 +213,7 @@ test("Slack webhook queues thread feedback while task is running", async () => {
 
     const response = await app.inject({
       method: "POST",
-      url: "/slack/events/repo-1",
+      url: "/slack/events",
       headers: {
         "content-type": "application/json",
         ...signSlackPayload(payload, secret)

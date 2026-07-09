@@ -239,7 +239,7 @@ const postSlackThreadReply = async (input: {
 }): Promise<void> => {
   const botToken = input.botToken?.trim();
   if (!botToken) {
-    throw new McpToolError(409, "Slack bot token is not configured for this repository.", "slack_bot_token_missing");
+    throw new McpToolError(409, "Slack bot token is not configured in global settings.", "slack_bot_token_missing");
   }
   const response = await fetch("https://slack.com/api/chat.postMessage", {
     method: "POST",
@@ -495,9 +495,9 @@ export const createMcpTools = (): McpToolDefinition[] => [
       if (!task.slackChannelId || !task.slackThreadTs) {
         throw new McpToolError(409, "This task is not linked to a Slack thread.", "slack_thread_not_linked");
       }
-      const secrets = await context.deps.repositoryStore.getRepositorySlackSecrets(task.repoId);
+      const credentials = await context.deps.settingsStore.getRuntimeCredentials();
       await postSlackThreadReply({
-        botToken: secrets.botToken,
+        botToken: credentials.slackBotToken,
         channelId: task.slackChannelId,
         threadTs: task.slackThreadTs,
         text: input.text

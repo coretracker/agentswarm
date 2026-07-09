@@ -106,7 +106,7 @@ curl -fsS http://localhost:3217/api/health
 ```
 
 ## External Credentials
-GitHub/OpenAI/Anthropic credentials are configured in the app Settings UI, not in `.env`.
+GitHub/OpenAI/Anthropic/Slack credentials are configured in the app Settings UI, not in `.env`.
 
 For Git access from server-side actions and from Codex/Claude task runtimes:
 - Set a GitHub personal access token in `Settings -> Credentials -> GitHub Token`.
@@ -117,6 +117,8 @@ Recommended GitHub token permissions:
 - Repository contents read/write for clone, fetch, pull, commit push, and branch deletion on private repositories.
 - Pull request read/write if you also use PR-related automation and outbound updates.
 - Metadata read so repository access checks succeed consistently.
+
+For Slack app setup, configure the Slack Signing Secret and Bot Token in `Settings -> Slack`, copy the global Slack Event URL from that tab, and configure repository-specific Slack Channel IDs in repository settings. See [Slack setup](slack-setup.md).
 
 ## TODO
 - TODO: Document a fully verified host-only (non-Docker) local startup path end-to-end.

@@ -1840,7 +1840,7 @@ test("GitHub webhook ignores edited issue comments that were already processed",
   await app.close();
 });
 
-test("GitHub webhook creates feature branch task from issue body mention without linked task", async () => {
+test("GitHub webhook creates feature branch task from the first issue-linked branch", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
     const rawBody = typeof body === "string" ? body : body.toString("utf8");
@@ -1853,6 +1853,35 @@ test("GitHub webhook creates feature branch task from issue body mention without
   const patches: unknown[] = [];
   const appendedMessages: unknown[] = [];
   const triggeredActions: unknown[] = [];
+  const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.toString();
+    fetchCalls.push({ url, init });
+    if (url === "https://api.github.com/graphql") {
+      return new Response(
+        JSON.stringify({
+          data: {
+            repository: {
+              issue: {
+                linkedBranches: {
+                  nodes: [
+                    { ref: { name: "feature/first-linked" } },
+                    { ref: { name: "feature/second-linked" } }
+                  ]
+                }
+              }
+            }
+          }
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    if (init?.method === "POST") {
+      return new Response("{}", { status: 201, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+  };
 
   const openedTask = {
     id: "task-issue-created",
@@ -1901,7 +1930,12 @@ test("GitHub webhook creates feature branch task from issue body mention without
         return true;
       }
     } as never,
-    settingsStore: defaultSettingsStore as never,
+    settingsStore: {
+      ...defaultSettingsStore,
+      getRuntimeCredentials: async () => ({
+        githubToken: "github-token"
+      })
+    } as never,
     spawner: defaultSpawner as never
   });
 
@@ -1952,7 +1986,7 @@ test("GitHub webhook creates feature branch task from issue body mention without
       repoId: "repo-1",
       prompt: (appendedMessages[0] as { content: string }).content,
       taskType: "build",
-      baseBranch: "main",
+      baseBranch: "feature/first-linked",
       branchStrategy: "feature_branch",
       autoApplyCheckpoints: true,
       provider: "codex",
@@ -1982,7 +2016,19 @@ test("GitHub webhook creates feature branch task from issue body mention without
     { content: (appendedMessages[0] as { content: string }).content },
     { promptMessageId: "message-issue-created" }
   ]);
+  assert.equal(fetchCalls[0]?.url, "https://api.github.com/graphql");
+  const graphQlBody = JSON.parse(String(fetchCalls[0]?.init?.body)) as {
+    query: string;
+    variables: { owner: string; name: string; issueNumber: number };
+  };
+  assert.match(graphQlBody.query, /linkedBranches\(first: 1\)/);
+  assert.deepEqual(graphQlBody.variables, {
+    owner: "acme",
+    name: "repo",
+    issueNumber: 77
+  });
 
+  globalThis.fetch = originalFetch;
   await app.close();
 });
 
@@ -2080,12 +2126,13 @@ test("GitHub webhook posts an initial task comment when creating an issue task",
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(response.statusCode, 202);
-    assert.equal(fetchCalls.length, 2);
-    assert.equal(fetchCalls[0]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments?per_page=100");
-    assert.equal(fetchCalls[1]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments");
-    assert.equal(fetchCalls[1]?.init?.method, "POST");
-    assert.equal((fetchCalls[1]?.init?.headers as Record<string, string>).Authorization, "Bearer github-token");
-    assert.deepEqual(JSON.parse(String(fetchCalls[1]?.init?.body)), {
+    assert.equal(fetchCalls.length, 3);
+    assert.equal(fetchCalls[0]?.url, "https://api.github.com/graphql");
+    assert.equal(fetchCalls[1]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments?per_page=100");
+    assert.equal(fetchCalls[2]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments");
+    assert.equal(fetchCalls[2]?.init?.method, "POST");
+    assert.equal((fetchCalls[2]?.init?.headers as Record<string, string>).Authorization, "Bearer github-token");
+    assert.deepEqual(JSON.parse(String(fetchCalls[2]?.init?.body)), {
       body:
         "🤖 A new task has been created and will start working on this shortly.\n\nTask: http://localhost:3217/tasks/task-issue-created\n\nI’ll post progress updates here as work continues.\n\n<!-- verft-task-created:task-issue-created -->"
     });
@@ -2191,8 +2238,8 @@ test("GitHub webhook uses a custom task created comment template", async () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(response.statusCode, 202);
-    assert.equal(fetchCalls[1]?.init?.method, "POST");
-    assert.deepEqual(JSON.parse(String(fetchCalls[1]?.init?.body)), {
+    assert.equal(fetchCalls[2]?.init?.method, "POST");
+    assert.deepEqual(JSON.parse(String(fetchCalls[2]?.init?.body)), {
       body:
         "Task task-custom-comment is ready for issue #77 in acme/repo.\nOpen: http://localhost:3217/tasks/task-custom-comment\nRequested by @alice.\n\n<!-- verft-task-created:task-custom-comment -->"
     });
@@ -2298,8 +2345,9 @@ test("GitHub webhook skips duplicate initial task comments for retried issue tas
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(response.statusCode, 202);
-    assert.equal(fetchCalls.length, 1);
-    assert.equal(fetchCalls[0]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments?per_page=100");
+    assert.equal(fetchCalls.length, 2);
+    assert.equal(fetchCalls[0]?.url, "https://api.github.com/graphql");
+    assert.equal(fetchCalls[1]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments?per_page=100");
   } finally {
     globalThis.fetch = originalFetch;
     await app.close();

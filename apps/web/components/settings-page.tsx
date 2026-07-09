@@ -24,7 +24,7 @@ import {
   getEffortOptionsForProvider,
   getModelsForProvider
 } from "@verft/shared-types";
-import { DeleteOutlined, LockOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
+import { CopyOutlined, DeleteOutlined, LockOutlined, PlusOutlined, ReloadOutlined } from "@ant-design/icons";
 import {
   Alert,
   App,
@@ -51,6 +51,7 @@ import { useSettings } from "../src/hooks/useSettings";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useAuth } from "./auth-provider";
 import { ModelSelect } from "./model-select";
+import { buildApiUrl } from "../src/lib/public-url";
 
 interface GeneralSettingsForm {
   defaultProvider: AgentProvider;
@@ -63,6 +64,12 @@ interface GeneralSettingsForm {
   anthropicBaseUrl: string;
   taskPromptMagicModel: string;
   taskPromptMagicTemplate: string;
+  harnessWhatExists: string;
+  harnessAllowedActions: string;
+  harnessNotAllowedActions: string;
+  harnessHowToWork: string;
+  harnessDefinitionOfDone: string;
+  harnessEvidenceExpectations: string;
   hostexecEnabled: boolean;
   hostexecUrl: string;
   hostexecBearerTokenEnvVar: string;
@@ -78,6 +85,8 @@ interface CredentialForm {
   githubToken?: string;
   openaiApiKey?: string;
   anthropicApiKey?: string;
+  slackSigningSecret?: string;
+  slackBotToken?: string;
 }
 
 interface RoleFormValues {
@@ -101,8 +110,8 @@ interface ResponsePreferencePresetFormValues {
   extraInstructions?: string;
 }
 
-type ClearCredentialTarget = "github" | "openai" | "anthropic";
-type SettingsTabKey = "general" | "git" | "hostexec" | "credentials" | "codex" | "claude";
+type ClearCredentialTarget = "github" | "openai" | "anthropic" | "slackSigningSecret" | "slackBotToken";
+type SettingsTabKey = "general" | "harness" | "git" | "hostexec" | "credentials" | "slack" | "codex" | "claude";
 type DirtyGeneralTabKey = SettingsTabKey;
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
@@ -150,6 +159,12 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   anthropicBaseUrl: settings.anthropicBaseUrl ?? "",
   taskPromptMagicModel: settings.taskPromptMagicModel,
   taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
+  harnessWhatExists: settings.harnessWhatExists ?? "",
+  harnessAllowedActions: settings.harnessAllowedActions ?? "",
+  harnessNotAllowedActions: settings.harnessNotAllowedActions ?? "",
+  harnessHowToWork: settings.harnessHowToWork ?? "",
+  harnessDefinitionOfDone: settings.harnessDefinitionOfDone ?? "",
+  harnessEvidenceExpectations: settings.harnessEvidenceExpectations ?? "",
   hostexecEnabled: settings.hostexec?.enabled === true,
   hostexecUrl: settings.hostexec?.url ?? "",
   hostexecBearerTokenEnvVar: settings.hostexec?.bearerTokenEnvVar ?? "",
@@ -295,10 +310,26 @@ export function SettingsPage() {
         return;
       }
 
-      const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
+      if (target === "anthropic") {
+        const nextSettings = await api.updateCredentials({ clearAnthropicApiKey: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["anthropicApiKey"]);
+        message.success("Anthropic API key cleared");
+        return;
+      }
+
+      if (target === "slackSigningSecret") {
+        const nextSettings = await api.updateCredentials({ clearSlackSigningSecret: true });
+        setSettings(nextSettings);
+        credentialForm.resetFields(["slackSigningSecret"]);
+        message.success("Slack signing secret cleared");
+        return;
+      }
+
+      const nextSettings = await api.updateCredentials({ clearSlackBotToken: true });
       setSettings(nextSettings);
-      credentialForm.resetFields(["anthropicApiKey"]);
-      message.success("Anthropic API key cleared");
+      credentialForm.resetFields(["slackBotToken"]);
+      message.success("Slack bot token cleared");
     } catch (error) {
       if (target === "github") {
         message.error(error instanceof Error ? error.message : "Failed to clear GitHub token");
@@ -310,7 +341,17 @@ export function SettingsPage() {
         return;
       }
 
-      message.error(error instanceof Error ? error.message : "Failed to clear Anthropic API key");
+      if (target === "anthropic") {
+        message.error(error instanceof Error ? error.message : "Failed to clear Anthropic API key");
+        return;
+      }
+
+      if (target === "slackSigningSecret") {
+        message.error(error instanceof Error ? error.message : "Failed to clear Slack signing secret");
+        return;
+      }
+
+      message.error(error instanceof Error ? error.message : "Failed to clear Slack bot token");
     } finally {
       setSavingCredentials(false);
     }
@@ -405,6 +446,12 @@ export function SettingsPage() {
         anthropicBaseUrl: values.anthropicBaseUrl?.trim() ? values.anthropicBaseUrl.trim() : null,
         taskPromptMagicModel: values.taskPromptMagicModel,
         taskPromptMagicTemplate: values.taskPromptMagicTemplate,
+        harnessWhatExists: values.harnessWhatExists.trim() || null,
+        harnessAllowedActions: values.harnessAllowedActions.trim() || null,
+        harnessNotAllowedActions: values.harnessNotAllowedActions.trim() || null,
+        harnessHowToWork: values.harnessHowToWork.trim() || null,
+        harnessDefinitionOfDone: values.harnessDefinitionOfDone.trim() || null,
+        harnessEvidenceExpectations: values.harnessEvidenceExpectations.trim() || null,
         codexDefaultModel: values.codexDefaultModel,
         codexModels: values.codexModels,
         codexDefaultEffort: values.codexDefaultEffort,
@@ -430,7 +477,9 @@ export function SettingsPage() {
       const nextSettings = await api.updateCredentials({
         githubToken: values.githubToken?.trim() || undefined,
         openaiApiKey: values.openaiApiKey?.trim() || undefined,
-        anthropicApiKey: values.anthropicApiKey?.trim() || undefined
+        anthropicApiKey: values.anthropicApiKey?.trim() || undefined,
+        slackSigningSecret: values.slackSigningSecret?.trim() || undefined,
+        slackBotToken: values.slackBotToken?.trim() || undefined
       });
       credentialForm.resetFields();
       setSettings(nextSettings);
@@ -578,6 +627,10 @@ export function SettingsPage() {
       label: <span>{generalDirtyTabs.includes("general") ? "General *" : "General"}</span>
     },
     {
+      key: "harness",
+      label: <span>{generalDirtyTabs.includes("harness") ? "Harness *" : "Harness"}</span>
+    },
+    {
       key: "git",
       label: <span>{generalDirtyTabs.includes("git") ? "Git *" : "Git"}</span>
     },
@@ -588,6 +641,10 @@ export function SettingsPage() {
     {
       key: "credentials",
       label: <span>{credentialDirtyTabs.includes("credentials") ? "Credentials *" : "Credentials"}</span>
+    },
+    {
+      key: "slack",
+      label: <span>{credentialDirtyTabs.includes("slack") ? "Slack *" : "Slack"}</span>
     },
     {
       key: "codex",
@@ -648,6 +705,46 @@ export function SettingsPage() {
               </Card>
             </Space>
             {renderSaveBar({ dirty: generalDirty, label: "Save General Settings", loading: savingGeneral })}
+          </Form>
+        ) : null}
+
+        {activeTab === "harness" ? (
+          <Form
+            form={generalForm}
+            layout="vertical"
+            disabled={!canEditSettings}
+            onValuesChange={() => markGeneralTabDirty("harness")}
+            onFinish={saveGeneralSettings}
+          >
+            <Card bordered={false} loading={loading} title="Global Harness">
+              <Flex vertical gap={12}>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Applied to every task"
+                  description="Global guidance is written first, followed by repository harness guidance. Both are preserved in the runtime harness."
+                />
+                {([
+                  ["harnessWhatExists", "1. What exists?", "Shared platform context, services, tools, and conventions."],
+                  ["harnessAllowedActions", "2. What is allowed?", "Actions agents may take across repositories."],
+                  ["harnessNotAllowedActions", "3. What is not allowed?", "Actions agents must never take."],
+                  ["harnessHowToWork", "4. How should you work?", "Global process, planning, and approval expectations."],
+                  ["harnessDefinitionOfDone", "5. How do you know you are done?", "Global validation and quality gates."],
+                  ["harnessEvidenceExpectations", "6. How do you prove it?", "Evidence expected in task results."]
+                ] as const).map(([name, label, extra]) => (
+                  <Form.Item
+                    key={name}
+                    name={name}
+                    label={label}
+                    extra={extra}
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                  </Form.Item>
+                ))}
+              </Flex>
+            </Card>
+            {renderSaveBar({ dirty: generalDirty, label: "Save Global Harness", loading: savingGeneral })}
           </Form>
         ) : null}
 
@@ -872,6 +969,111 @@ export function SettingsPage() {
             </Card>
             {renderSaveBar({ dirty: generalDirty, label: "Save Hostexec Settings", loading: savingGeneral })}
           </Form>
+        ) : null}
+
+        {activeTab === "slack" ? (
+          <Card
+            bordered={false}
+            loading={loading}
+            title="Slack App"
+            extra={
+              settings ? (
+                <Space wrap>
+                  <Tag color={settings.slackSigningSecretConfigured ? "green" : "default"}>
+                    Signing Secret {settings.slackSigningSecretConfigured ? "Configured" : "Missing"}
+                  </Tag>
+                  <Tag color={settings.slackBotTokenConfigured ? "green" : "default"}>
+                    Bot Token {settings.slackBotTokenConfigured ? "Configured" : "Missing"}
+                  </Tag>
+                </Space>
+              ) : null
+            }
+          >
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="Slack app credentials are global"
+              description="Use this event URL in the Slack app event subscription. Each repository only chooses the Slack Channel ID it listens to."
+            />
+            <Form
+              form={credentialForm}
+              layout="vertical"
+              disabled={!canEditSettings}
+              onValuesChange={() => markCredentialTabDirty("slack")}
+              onFinish={saveCredentials}
+            >
+              <Form.Item label="Event URL">
+                <Input
+                  readOnly
+                  value={buildApiUrl("/slack/events")}
+                  addonAfter={
+                    <Button
+                      type="link"
+                      size="small"
+                      icon={<CopyOutlined />}
+                      onClick={() => {
+                        void navigator.clipboard.writeText(buildApiUrl("/slack/events"));
+                        message.success("Slack event URL copied");
+                      }}
+                    >
+                      Copy
+                    </Button>
+                  }
+                />
+              </Form.Item>
+              <Form.Item name="slackSigningSecret" label="Slack Signing Secret">
+                <Input.Password
+                  autoComplete="off"
+                  placeholder={
+                    settings?.slackSigningSecretConfigured ? "Configured. Enter a new signing secret to replace it." : "Signing secret"
+                  }
+                />
+              </Form.Item>
+              <Form.Item name="slackBotToken" label="Slack Bot Token">
+                <Input.Password
+                  autoComplete="off"
+                  placeholder={settings?.slackBotTokenConfigured ? "Configured. Enter a new bot token to replace it." : "xoxb-..."}
+                />
+              </Form.Item>
+              {renderSaveBar({
+                dirty: credentialsDirty,
+                label: "Save Slack Credentials",
+                loading: savingCredentials,
+                statusText: credentialsDirty ? "Unsaved Slack credential changes" : "No pending Slack credential changes"
+              })}
+              <Space wrap>
+                <Popconfirm
+                  title="Clear Slack signing secret?"
+                  description="This removes the stored Slack signing secret from settings."
+                  okText="Clear"
+                  cancelText="Cancel"
+                  okButtonProps={{ danger: true, loading: savingCredentials }}
+                  placement="top"
+                  disabled={!canEditSettings}
+                  onConfirm={() => handleClearCredential("slackSigningSecret")}
+                >
+                  <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                    Clear Signing Secret
+                  </Button>
+                </Popconfirm>
+                <Popconfirm
+                  title="Clear Slack bot token?"
+                  description="This removes the stored Slack bot token from settings."
+                  okText="Clear"
+                  cancelText="Cancel"
+                  okButtonProps={{ danger: true, loading: savingCredentials }}
+                  placement="top"
+                  disabled={!canEditSettings}
+                  onConfirm={() => handleClearCredential("slackBotToken")}
+                >
+                  <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                    Clear Bot Token
+                  </Button>
+                </Popconfirm>
+              </Space>
+            </Form>
+          </Card>
         ) : null}
 
         {activeTab === "credentials" ? (
