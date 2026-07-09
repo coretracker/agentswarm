@@ -40,6 +40,7 @@ interface UserFormValues {
   name: string;
   email: string;
   password?: string;
+  githubUsername?: string;
   active: boolean;
   audience?: AudienceType;
   explanationDepth?: AgentExplanationDepth;
@@ -126,6 +127,7 @@ export function UsersPage() {
       name: user.name,
       email: user.email,
       password: "",
+      githubUsername: user.githubUsername ?? "",
       active: user.active,
       audience: user.agentResponsePreference.audience,
       explanationDepth: user.agentResponsePreference.explanationDepth,
@@ -279,6 +281,7 @@ export function UsersPage() {
                   name: values.name,
                   email: values.email,
                   password: values.password?.trim() || undefined,
+                  githubUsername: values.githubUsername?.trim() || null,
                   active: values.active,
                   agentResponsePreference: {
                     audience: values.audience,
@@ -337,6 +340,15 @@ export function UsersPage() {
           >
             <Input.Password />
           </Form.Item>
+          {editingUser ? (
+            <Form.Item
+              name="githubUsername"
+              label="GitHub Username"
+              extra="Used to associate this user with GitHub activity."
+            >
+              <Input maxLength={80} />
+            </Form.Item>
+          ) : null}
           <Form.Item
             name="active"
             label="Active"
