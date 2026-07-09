@@ -39,6 +39,30 @@ const createCredentialStore = (credentials: RuntimeCredentials): CredentialStore
 });
 
 describe("RedisSettingsStore runtime credentials", () => {
+  it("persists and normalizes global harness guidance", async () => {
+    const settingsStore = new RedisSettingsStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never,
+      createCredentialStore({
+        githubToken: null,
+        openaiApiKey: null,
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
+      })
+    );
+
+    const settings = await settingsStore.updateSettings({
+      harnessWhatExists: "  Shared CI platform.  ",
+      harnessAllowedActions: "   ",
+      harnessNotAllowedActions: "Never publish secrets."
+    });
+
+    assert.equal(settings.harnessWhatExists, "Shared CI platform.");
+    assert.equal(settings.harnessAllowedActions, null);
+    assert.equal(settings.harnessNotAllowedActions, "Never publish secrets.");
+  });
+
   it("uses global API credentials regardless of user id or legacy profile source", async () => {
     const settingsStore = new RedisSettingsStore(
       new FakeRedis() as never,

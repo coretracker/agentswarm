@@ -42,11 +42,12 @@ Notes:
 ## Settings And Credentials Flow (Current)
 1. Open `/settings`.
 2. Use `General` to set the default provider, concurrent agents, access roles, and response presets.
-3. Use `Git` to set the GitHub token, Git username, optional commit author identity, and feature branch prefix. Default GitHub PAT HTTPS auth uses `x-access-token`.
-4. Start the host daemon with `npm run hostexec`, then use `Hostexec` to check availability and optionally set the bearer token env var reference. Verft autodetects the default daemon URLs; repository Host Commands restrict mounted shims.
-5. Use `Codex` to set the OpenAI API key or Codex `auth.json`, default effort/model, model list, prompt magic settings, and base URL override.
-6. Use `Claude Code` to set the Anthropic API key, default effort/model, model list, and base URL override.
-7. Open your profile to manage GitHub username linking, personal default agent settings, and personal access tokens.
+3. Use `Harness` to define standing guidance applied to every task.
+4. Use `Git` to set the GitHub token, Git username, optional commit author identity, and feature branch prefix. Default GitHub PAT HTTPS auth uses `x-access-token`.
+5. Start the host daemon with `npm run hostexec`, then use `Hostexec` to check availability and optionally set the bearer token env var reference. Verft autodetects the default daemon URLs; repository Host Commands restrict mounted shims.
+6. Use `Codex` to set the OpenAI API key or Codex `auth.json`, default effort/model, model list, prompt magic settings, and base URL override.
+7. Use `Claude Code` to set the Anthropic API key, default effort/model, model list, and base URL override.
+8. Open your profile to manage GitHub username linking, personal default agent settings, and personal access tokens.
 
 Notes:
 - The GitHub token is used for both server-side Git actions and in-agent `git pull` / `git push` inside Codex and Claude runtimes.
@@ -54,6 +55,7 @@ Notes:
 - Agent-created commit identity resolves from system Git author settings when configured, otherwise from the built-in Verft fallback identity.
 - Codex runs use system/global OpenAI API key or Codex `auth.json`; user profiles do not store per-user Codex `auth.json`.
 - Hostexec tokens are referenced by environment variable name; token values are not stored in settings. Bridge commands execute on the host with the task workspace as `cwd` and are rejected if the resolved directory escapes the workspace.
+- Task runtimes receive one generated `.verft-runtime/harness.md`. Populated global harness sections appear first, followed by populated repository harness sections; both scopes are preserved.
 
 ## Task Flows (New + Existing)
 
