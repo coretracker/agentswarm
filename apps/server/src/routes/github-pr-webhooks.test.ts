@@ -1561,6 +1561,97 @@ test("GitHub webhook reacts with eyes to linked issue comments", async () => {
   }
 });
 
+test("GitHub webhook reacts with eyes to linked pull request review comments", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    fetchCalls.push({ url: String(url), init });
+    return Response.json({ id: 1 }, { status: 201 });
+  }) as typeof fetch;
+
+  const secret = "webhook-secret";
+
+  try {
+    registerGitHubPrWebhookRoutes(app, {
+      repositoryStore: {
+        getRepository: async () => ({ id: "repo-1" }),
+        getRepositoryGitHubPrWebhookSecret: async () => secret
+      } as never,
+      taskStore: {
+        findTaskByGitHubPrNumber: async () => ({
+          id: "task-pr",
+          executionStatus: "queued"
+        }),
+        listMessages: async () => [],
+        appendMessage: async (_taskId: string, input: unknown) => ({
+          id: "message-pr",
+          content: (input as { content: string }).content
+        })
+      } as never,
+      scheduler: {} as never,
+      settingsStore: {
+        ...defaultSettingsStore,
+        getRuntimeCredentials: async () => ({
+          githubToken: "github-token"
+        })
+      } as never,
+      spawner: defaultSpawner as never
+    });
+
+    const payload = JSON.stringify({
+      action: "created",
+      repository: {
+        full_name: "acme/repo"
+      },
+      pull_request: {
+        number: 42,
+        title: "Fix import"
+      },
+      comment: {
+        id: 4001,
+        body: "Please cover this branch.",
+        html_url: "https://github.com/acme/repo/pull/42#discussion_r4001",
+        path: "src/import.ts",
+        line: 12
+      },
+      sender: {
+        login: "alice",
+        type: "User"
+      }
+    });
+    const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/github/webhooks/repo-1",
+      headers: {
+        "content-type": "application/json",
+        "x-github-event": "pull_request_review_comment",
+        "x-hub-signature-256": signature
+      },
+      payload
+    });
+
+    assert.equal(response.statusCode, 202);
+    assert.deepEqual(JSON.parse(response.body), { queued: true, taskId: "task-pr", messageId: "message-pr" });
+    assert.equal(fetchCalls.length, 1);
+    assert.equal(fetchCalls[0]?.url, "https://api.github.com/repos/acme/repo/pulls/comments/4001/reactions");
+    assert.equal(fetchCalls[0]?.init?.method, "POST");
+    assert.equal((fetchCalls[0]?.init?.headers as Record<string, string>).Authorization, "Bearer github-token");
+    assert.deepEqual(JSON.parse(String(fetchCalls[0]?.init?.body)), { content: "eyes" });
+  } finally {
+    globalThis.fetch = originalFetch;
+    await app.close();
+  }
+});
+
 test("GitHub webhook ignores task-created issue comments without reacting", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {

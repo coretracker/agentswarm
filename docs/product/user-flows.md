@@ -37,7 +37,7 @@ Notes:
 - GitHub Integration processes created or edited issue comments and pull request conversation comments when the comment body passes the configured bot mention and user filters.
 - When a GitHub webhook author matches an active Verft user's configured GitHub username, new tasks and linked-task continuations use that user's provider, model, and effort defaults.
 - New tasks created from GitHub issues use the first linked development branch as their base branch, falling back to the repository default branch when no linked branch is available.
-- GitHub Integration adds an `eyes` reaction to accepted issue comments and pull request conversation comments, but skips the hidden task-created comment that Verft posts after opening a task.
+- GitHub Integration adds an `eyes` reaction to accepted issue comments, pull request conversation comments, and inline pull request review comments, but skips the hidden task-created comment that Verft posts after opening a task.
 - GitHub Integration supports separate editable agent templates for newly created GitHub tasks, feedback comments on linked tasks, and requested PR reviews. Templates can include markers such as `{{target_ref}}`, `{{title}}`, `{{title_line}}`, `{{author}}`, `{{requested_reviewer}}`, `{{url_line}}`, and `{{feedback_body}}`.
 - GitHub Integration supports an editable task-created comment template for the public GitHub reply posted after Verft creates a new task. The server appends the hidden duplicate-detection marker automatically.
 
