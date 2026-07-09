@@ -1561,7 +1561,7 @@ test("GitHub webhook reacts with eyes to linked issue comments", async () => {
   }
 });
 
-test("GitHub webhook reacts with eyes to linked pull request review comments", async () => {
+test("GitHub webhook reacts with eyes to created and edited linked pull request review comments", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
     const rawBody = typeof body === "string" ? body : body.toString("utf8");
@@ -1605,47 +1605,52 @@ test("GitHub webhook reacts with eyes to linked pull request review comments", a
       spawner: defaultSpawner as never
     });
 
-    const payload = JSON.stringify({
-      action: "created",
-      repository: {
-        full_name: "acme/repo"
-      },
-      pull_request: {
-        number: 42,
-        title: "Fix import"
-      },
-      comment: {
-        id: 4001,
-        body: "Please cover this branch.",
-        html_url: "https://github.com/acme/repo/pull/42#discussion_r4001",
-        path: "src/import.ts",
-        line: 12
-      },
-      sender: {
-        login: "alice",
-        type: "User"
-      }
-    });
-    const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+    for (const [action, commentId] of [["created", 4001], ["edited", 4002]] as const) {
+      const payload = JSON.stringify({
+        action,
+        repository: {
+          full_name: "acme/repo"
+        },
+        pull_request: {
+          number: 42,
+          title: "Fix import"
+        },
+        comment: {
+          id: commentId,
+          body: "Please cover this branch.",
+          html_url: `https://github.com/acme/repo/pull/42#discussion_r${commentId}`,
+          path: "src/import.ts",
+          line: 12
+        },
+        sender: {
+          login: "alice",
+          type: "User"
+        }
+      });
+      const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
 
-    const response = await app.inject({
-      method: "POST",
-      url: "/github/webhooks/repo-1",
-      headers: {
-        "content-type": "application/json",
-        "x-github-event": "pull_request_review_comment",
-        "x-hub-signature-256": signature
-      },
-      payload
-    });
+      const response = await app.inject({
+        method: "POST",
+        url: "/github/webhooks/repo-1",
+        headers: {
+          "content-type": "application/json",
+          "x-github-event": "pull_request_review_comment",
+          "x-hub-signature-256": signature
+        },
+        payload
+      });
 
-    assert.equal(response.statusCode, 202);
-    assert.deepEqual(JSON.parse(response.body), { queued: true, taskId: "task-pr", messageId: "message-pr" });
-    assert.equal(fetchCalls.length, 1);
-    assert.equal(fetchCalls[0]?.url, "https://api.github.com/repos/acme/repo/pulls/comments/4001/reactions");
-    assert.equal(fetchCalls[0]?.init?.method, "POST");
-    assert.equal((fetchCalls[0]?.init?.headers as Record<string, string>).Authorization, "Bearer github-token");
-    assert.deepEqual(JSON.parse(String(fetchCalls[0]?.init?.body)), { content: "eyes" });
+      assert.equal(response.statusCode, 202);
+      assert.deepEqual(JSON.parse(response.body), { queued: true, taskId: "task-pr", messageId: "message-pr" });
+    }
+
+    assert.equal(fetchCalls.length, 2);
+    for (const [index, commentId] of [4001, 4002].entries()) {
+      assert.equal(fetchCalls[index]?.url, `https://api.github.com/repos/acme/repo/pulls/comments/${commentId}/reactions`);
+      assert.equal(fetchCalls[index]?.init?.method, "POST");
+      assert.equal((fetchCalls[index]?.init?.headers as Record<string, string>).Authorization, "Bearer github-token");
+      assert.deepEqual(JSON.parse(String(fetchCalls[index]?.init?.body)), { content: "eyes" });
+    }
   } finally {
     globalThis.fetch = originalFetch;
     await app.close();

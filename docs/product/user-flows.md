@@ -34,7 +34,7 @@ Notes:
 - GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
 - GitHub Integration can optionally archive linked tasks when a GitHub pull request webhook reports the PR as merged.
 - GitHub Integration creates or queues build-mode tasks when a `pull_request.review_requested` webhook targets the configured integration bot.
-- GitHub Integration processes created or edited issue comments and pull request conversation comments when the comment body passes the configured bot mention and user filters.
+- GitHub Integration processes created or edited issue comments, pull request conversation comments, and inline pull request review comments when the comment body passes the configured bot mention and user filters.
 - When a GitHub webhook author matches an active Verft user's configured GitHub username, new tasks and linked-task continuations use that user's provider, model, and effort defaults.
 - New tasks created from GitHub issues use the first linked development branch as their base branch, falling back to the repository default branch when no linked branch is available.
 - GitHub Integration adds an `eyes` reaction to accepted issue comments, pull request conversation comments, and inline pull request review comments, but skips the hidden task-created comment that Verft posts after opening a task.

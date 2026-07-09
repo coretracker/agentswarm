@@ -230,7 +230,7 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
   }
 
   if (event === "pull_request_review_comment") {
-    if (action !== "created" || !isRecord(payload.pull_request) || !isRecord(payload.comment)) {
+    if ((action !== "created" && action !== "edited") || !isRecord(payload.pull_request) || !isRecord(payload.comment)) {
       return null;
     }
     const prNumber = numberValue(payload.pull_request, "number");
