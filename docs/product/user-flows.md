@@ -44,11 +44,12 @@ Notes:
 1. Open `/settings`.
 2. Use `General` to set the default provider, concurrent agents, access roles, and response presets.
 3. Use `Harness` to define standing guidance applied to every task.
-4. Use `Git` to set the GitHub token, Git username, optional commit author identity, and feature branch prefix. Default GitHub PAT HTTPS auth uses `x-access-token`.
-5. Start the host daemon with `npm run hostexec`, then use `Hostexec` to check availability and optionally set the bearer token env var reference. Verft autodetects the default daemon URLs; repository Host Commands restrict mounted shims.
-6. Use `Codex` to set the OpenAI API key or Codex `auth.json`, default effort/model, model list, prompt magic settings, and base URL override.
-7. Use `Claude Code` to set the Anthropic API key, default effort/model, model list, and base URL override.
-8. Open your profile to manage GitHub username linking, personal default agent settings, and personal access tokens.
+4. Use `Credentials` to set the GitHub token, OpenAI API key, and Anthropic API key. Stored credential values are write-only.
+5. Use `Git` to set the Git username, optional commit author identity, and feature branch prefix. Default GitHub PAT HTTPS auth uses `x-access-token`.
+6. Start the host daemon with `npm run hostexec`, then use `Hostexec` to check availability and optionally set the bearer token env var reference. Verft autodetects the default daemon URLs; repository Host Commands restrict mounted shims.
+7. Use `Codex` to set default effort/model, model list, prompt magic settings, and base URL override.
+8. Use `Claude Code` to set default effort/model, model list, and base URL override.
+9. Open your profile to manage GitHub username linking, personal default agent settings, and personal access tokens.
 
 Notes:
 - Global and repository Harness sections display as read-only, content-sized textareas. Use the `Edit` link below a section to edit its Markdown in a right-side drawer, then apply the draft before saving the containing settings or repository form.
