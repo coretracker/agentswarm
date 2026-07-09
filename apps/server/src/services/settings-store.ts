@@ -523,7 +523,7 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19::jsonb, $20, $21::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::jsonb, $23, $24, $25::jsonb, $26, $27::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
@@ -541,6 +541,12 @@ export class PostgresSettingsStore implements SettingsStore {
         defaultSettings.anthropicBaseUrl,
         defaultSettings.taskPromptMagicModel,
         defaultSettings.taskPromptMagicTemplate,
+        defaultSettings.harnessWhatExists,
+        defaultSettings.harnessAllowedActions,
+        defaultSettings.harnessNotAllowedActions,
+        defaultSettings.harnessHowToWork,
+        defaultSettings.harnessDefinitionOfDone,
+        defaultSettings.harnessEvidenceExpectations,
         defaultSettings.codexDefaultModel,
         JSON.stringify(defaultSettings.codexModels),
         defaultSettings.codexDefaultEffort,
@@ -571,6 +577,12 @@ export class PostgresSettingsStore implements SettingsStore {
           anthropic_base_url,
           task_prompt_magic_model,
           task_prompt_magic_template,
+          harness_what_exists,
+          harness_allowed_actions,
+          harness_not_allowed_actions,
+          harness_how_to_work,
+          harness_definition_of_done,
+          harness_evidence_expectations,
           codex_default_model,
           codex_models,
           codex_default_effort,
