@@ -30,12 +30,18 @@ test("GitHub PR webhook queues linked PR comments", async () => {
   });
 
   const appendedMessages: unknown[] = [];
+  const taskPatches: unknown[] = [];
   const triggeredActions: unknown[] = [];
   const secret = "webhook-secret";
 
   registerGitHubPrWebhookRoutes(app, {
     repositoryStore: {
-      getRepository: async () => ({ id: "repo-1" }),
+      getRepository: async () => ({
+        id: "repo-1",
+        defaultProvider: "claude",
+        defaultProviderProfile: "medium",
+        defaultModel: "claude-sonnet-4-6"
+      }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
     } as never,
     taskStore: {
@@ -44,6 +50,10 @@ test("GitHub PR webhook queues linked PR comments", async () => {
         executionStatus: "idle"
       }),
       listMessages: async () => [],
+      patchTask: async (_taskId: string, patch: unknown) => {
+        taskPatches.push(patch);
+        return {};
+      },
       appendMessage: async (_taskId: string, input: unknown) => {
         appendedMessages.push(input);
         return {
@@ -61,7 +71,14 @@ test("GitHub PR webhook queues linked PR comments", async () => {
       }
     } as never,
     settingsStore: defaultSettingsStore as never,
-    spawner: defaultSpawner as never
+    spawner: defaultSpawner as never,
+    userStore: {
+      findByGithubUsername: async () => ({
+        defaultProvider: "codex",
+        defaultProviderProfile: "max",
+        defaultModel: "gpt-5.4"
+      })
+    } as never
   });
 
   const payload = JSON.stringify({
@@ -94,6 +111,13 @@ test("GitHub PR webhook queues linked PR comments", async () => {
   });
 
   assert.equal(response.statusCode, 202);
+  assert.deepEqual(taskPatches, [
+    {
+      provider: "codex",
+      providerProfile: "max",
+      modelOverride: "gpt-5.4"
+    }
+  ]);
   assert.equal(appendedMessages.length, 1);
   assert.deepEqual(appendedMessages[0], {
     role: "user",
@@ -1337,12 +1361,18 @@ test("GitHub webhook queues linked issue comments", async () => {
   });
 
   const appendedMessages: unknown[] = [];
+  const taskPatches: unknown[] = [];
   const triggeredActions: unknown[] = [];
   const secret = "webhook-secret";
 
   registerGitHubPrWebhookRoutes(app, {
     repositoryStore: {
-      getRepository: async () => ({ id: "repo-1" }),
+      getRepository: async () => ({
+        id: "repo-1",
+        defaultProvider: "claude",
+        defaultProviderProfile: "medium",
+        defaultModel: "claude-sonnet-4-6"
+      }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
     } as never,
     taskStore: {
@@ -1351,6 +1381,10 @@ test("GitHub webhook queues linked issue comments", async () => {
         executionStatus: "idle"
       }),
       listMessages: async () => [],
+      patchTask: async (_taskId: string, patch: unknown) => {
+        taskPatches.push(patch);
+        return {};
+      },
       appendMessage: async (_taskId: string, input: unknown) => {
         appendedMessages.push(input);
         return {
@@ -1368,7 +1402,14 @@ test("GitHub webhook queues linked issue comments", async () => {
       }
     } as never,
     settingsStore: defaultSettingsStore as never,
-    spawner: defaultSpawner as never
+    spawner: defaultSpawner as never,
+    userStore: {
+      findByGithubUsername: async () => ({
+        defaultProvider: "codex",
+        defaultProviderProfile: "low",
+        defaultModel: "gpt-5.4-mini"
+      })
+    } as never
   });
 
   const payload = JSON.stringify({
@@ -1402,6 +1443,13 @@ test("GitHub webhook queues linked issue comments", async () => {
   });
 
   assert.equal(response.statusCode, 202);
+  assert.deepEqual(taskPatches, [
+    {
+      provider: "codex",
+      providerProfile: "low",
+      modelOverride: "gpt-5.4-mini"
+    }
+  ]);
   assert.equal(appendedMessages.length, 1);
   assert.deepEqual(appendedMessages[0], {
     role: "user",
