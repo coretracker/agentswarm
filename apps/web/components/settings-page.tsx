@@ -51,6 +51,7 @@ import { useSettings } from "../src/hooks/useSettings";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useAuth } from "./auth-provider";
 import { ModelSelect } from "./model-select";
+import { HarnessMarkdownField } from "./harness-markdown-field";
 import { buildApiUrl } from "../src/lib/public-url";
 
 interface GeneralSettingsForm {
@@ -739,7 +740,7 @@ export function SettingsPage() {
                     extra={extra}
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                    <HarnessMarkdownField label={label} disabled={!canEditSettings} />
                   </Form.Item>
                 ))}
               </Flex>

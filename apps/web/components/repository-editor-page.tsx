@@ -30,6 +30,7 @@ import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useSettings } from "../src/hooks/useSettings";
 import { trackEvent } from "../src/utils/analytics";
 import { buildApiUrl } from "../src/lib/public-url";
+import { HarnessMarkdownField } from "./harness-markdown-field";
 
 interface RepositoryEditorPageProps {
   mode: "create" | "edit";
@@ -1584,7 +1585,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra="Repository understanding: apps, packages, docs, important folders, generated files, and runtime services."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                    <HarnessMarkdownField label="1. What exists?" />
                   </Form.Item>
                   <Form.Item
                     name="harnessAllowedActions"
@@ -1592,7 +1593,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra="Constraints and policies: what agents may edit, what is protected, secret handling, network/Docker limits, and PR rules."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                    <HarnessMarkdownField label="2. What is allowed?" />
                   </Form.Item>
                   <Form.Item
                     name="harnessNotAllowedActions"
@@ -1600,7 +1601,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra="Restrictions and off-limits actions: what agents must never do, protected files or branches, forbidden commands, and hard constraints."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                    <HarnessMarkdownField label="3. What is not allowed?" />
                   </Form.Item>
                   <Form.Item
                     name="harnessHowToWork"
@@ -1608,7 +1609,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra="Process and decision-making: planning expectations, approval points, branch flow, preferred commands, and when to ask questions."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                    <HarnessMarkdownField label="4. How should you work?" />
                   </Form.Item>
                   <Form.Item
                     name="harnessDefinitionOfDone"
@@ -1616,7 +1617,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra="Validation and quality gates: required checks, tests, builds, and review criteria."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                    <HarnessMarkdownField label="5. How do you know you are done?" />
                   </Form.Item>
                   <Form.Item
                     name="harnessEvidenceExpectations"
@@ -1624,7 +1625,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra="Expected proof: command outcomes, links, screenshots, changed docs, and skipped-check explanations."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                    <HarnessMarkdownField label="6. How do you prove it?" />
                   </Form.Item>
                 </Flex>
               </Card>
