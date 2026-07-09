@@ -831,6 +831,15 @@ export const registerGitHubPrWebhookRoutes = (
         return reply.status(202).send({ queued: false, reason: "duplicate" });
       }
 
+      if (requestingUser) {
+        const settings = await deps.settingsStore.getSettings();
+        const providerConfig = resolveCreateTaskProviderConfig({}, settings, repository, requestingUser);
+        await deps.taskStore.patchTask(task.id, {
+          ...providerConfig,
+          modelOverride: providerConfig.modelOverride ?? null
+        });
+      }
+
       const message = await deps.taskStore.appendMessage(task.id, {
         role: "user",
         action: "build",
@@ -970,6 +979,15 @@ export const registerGitHubPrWebhookRoutes = (
     const existing = await deps.taskStore.listMessages(task.id);
     if (existing.some((message) => message.externalId === feedback.externalId)) {
       return reply.status(202).send({ queued: false, reason: "duplicate" });
+    }
+
+    if (requestingUser) {
+      const settings = await deps.settingsStore.getSettings();
+      const providerConfig = resolveCreateTaskProviderConfig({}, settings, repository, requestingUser);
+      await deps.taskStore.patchTask(task.id, {
+        ...providerConfig,
+        modelOverride: providerConfig.modelOverride ?? null
+      });
     }
 
     const linkedPromptKind: GitHubPromptKind = feedback.kind === "review_requested" ? "review" : "feedback";
