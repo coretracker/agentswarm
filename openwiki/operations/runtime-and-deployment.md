@@ -127,7 +127,7 @@ Current workflows:
 - `.github/workflows/openwiki-init.yml`: manual workflow that installs OpenWiki, runs `openwiki code --init --print`, and opens an init PR adding `openwiki` (and `AGENTS.md` in `add-paths`). It currently uses `OPENAI_API_KEY`, `OPENWIKI_MODEL_ID=gpt-5.5`, and tracing disabled.
 - `.github/workflows/openwiki-update.yml`: manual + daily scheduled workflow that installs OpenWiki, runs `openwiki code --update --print`, and opens an update PR adding `openwiki`.
 
-At this wiki initialization, `.github/workflows/openwiki-update.yml` has an uncommitted working-tree change: it removes `environment: Build`, switches from `OPENAI_API_KEY`/`gpt-5.5`/tracing off to `OPENROUTER_API_KEY`, `OPENWIKI_MODEL_ID=z-ai/glm-5.2`, `LANGSMITH_API_KEY`, `LANGCHAIN_PROJECT=openwiki`, and tracing on. Treat this as current local state until committed.
+In the current working tree, `.github/workflows/openwiki-update.yml` does not use the `Build` environment and runs updates with `OPENROUTER_API_KEY`, `OPENWIKI_MODEL_ID=z-ai/glm-5.2`, `LANGSMITH_API_KEY`, `LANGCHAIN_PROJECT=openwiki`, and tracing enabled. Treat this as current local state until committed.
 
 ## Operational watchpoints
 
