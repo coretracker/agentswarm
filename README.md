@@ -4,32 +4,61 @@
 
 # Verft
 
-Verft is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
+Self-hosted control plane for parallel AI coding agents.
 
-The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
+Verft helps engineering teams delegate coding work to Codex and Claude across existing Git repositories. Create isolated tasks, watch each agent's logs and diffs, then decide what gets applied, pushed, or merged.
 
-## Features
+It is built for teams that want the speed of AI coding agents without giving up Git discipline, review boundaries, credential control, or visibility into what changed.
 
-- Create build or ask tasks from a blank prompt or reusable snippet.
-- Run Codex and Claude tasks in isolated Docker runtime containers.
-- Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
-- Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
-- Open task workspaces in an interactive browser terminal.
-- Configure repositories, credentials, roles, users, provider defaults, and snippets.
-- Add repository-local postflight checks with `.verft/postflight.yml`.
-- Optionally expose selected manually started host commands through hostexec bridge shims.
+## Why Verft
+
+- Run multiple AI coding tasks against the same codebase in parallel.
+- Keep each agent in an isolated Docker workspace with its own branch and runtime context.
+- Review logs, checkpoints, diffs, and Git operations before changes move forward.
+- Use Codex and Claude from one web UI with shared repository, credential, and model settings.
+- Let agents ask questions, implement work, react to GitHub feedback, and create follow-up subtasks.
+- Self-host the app, runtime containers, credentials, database, queue, and review workflow in your own infrastructure.
+
+## How It Works
+
+1. **Connect**: Add repositories, GitHub credentials, provider credentials, repository env, MCP tools, snippets, and defaults.
+2. **Create**: Start build or ask tasks from prompts, reusable snippets, GitHub feedback, or agent-created subtasks.
+3. **Observe**: Follow task status, streamed logs, messages, terminal output, checkpoints, and pending diffs from the browser.
+4. **Decide**: Apply, reject, revert, push, or merge each result from Verft's review UI.
+
+## What You Can Do
+
+### Split Work Across Agents
+
+Create separate tasks for bugs, refactors, tests, migrations, documentation, and review feedback. Verft prepares isolated workspaces so agents can make progress independently while the server tracks state, branches, and task history.
+
+### Review Before Anything Lands
+
+Build tasks produce reviewable output instead of silently changing your main codebase. Inspect diffs, logs, checkpoints, and Git sync state before applying, reverting, pushing, or merging.
+
+### Use Ask Mode For Repository Questions
+
+Ask tasks let Codex or Claude inspect a codebase and answer without writing files. Use them for code discovery, implementation planning, debugging context, or risk analysis before starting a build task.
+
+### Standardize Repeated Work
+
+Use snippets for recurring prompts, repository defaults for provider/model choices, repository-local postflight checks for validation, and MCP servers for repository-specific tool access.
+
+### Integrate With GitHub Feedback
+
+Repository GitHub integration can create or continue tasks from issues, pull request comments, edited comments, and review requests when configured. Verft can link tasks to pull requests and archive linked tasks after merge.
 
 ## Requirements
 
 | Requirement | Notes |
 | --- | --- |
-| Docker | Required for the main app stack and agent runtime containers. |
+| Docker | Required for the app stack and agent runtime containers. |
 | Docker Compose | `docker compose` is preferred; `docker-compose` is also supported. |
-| Bash | Required by the helper and harness scripts. |
+| Bash | Required by helper and harness scripts. |
 | Node.js 20+ and npm | Required for local development, checks, tests, and builds. |
 | Python 3 | Required when installing local npm dependencies because native modules such as `node-pty` may build from source. |
 
-## Installation
+## Get Started
 
 Clone the repository:
 
@@ -50,14 +79,6 @@ Initialize the Docker stack and agent runtime image:
 ./verft.sh init
 ```
 
-For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-## Quick Start
-
 Start the app:
 
 ```bash
@@ -74,7 +95,7 @@ Bootstrap credentials come from `.env.example` and are used only when the first 
 
 After signing in:
 
-1. Open **Settings** and add provider credentials for OpenAI/Codex and/or Anthropic/Claude.
+1. Open **Settings** and add GitHub, OpenAI/Codex, and/or Anthropic/Claude credentials.
 2. Open **Repositories** and add a Git repository.
 3. Open **Tasks** and create a build or ask task.
 4. Review task output, logs, diffs, and checkpoints from the task detail page.
@@ -85,54 +106,31 @@ Stop the app:
 ./verft.sh stop
 ```
 
-## Usage
+## Core Concepts
 
-### Common Commands
-
-| Command | Description |
-| --- | --- |
-| `./verft.sh init` | Build the agent toolbox runtime image, rebuild compose images, and start the stack. |
-| `./verft.sh start` | Start the Docker Compose stack in the background. |
-| `./verft.sh rebuild` | Rebuild the agent toolbox runtime and compose images, then restart the stack. |
-| `./verft.sh stop` | Stop the Docker Compose stack. |
-| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
-
-The health endpoint is available at:
-
-```bash
-curl -fsS http://localhost:3217/api/health
-```
-
-### Creating Tasks
+### Tasks
 
 Tasks are the main unit of work in Verft.
 
-- **Build tasks** ask an agent to make repository changes.
-- **Ask tasks** ask an agent to inspect and answer without changing code.
+- **Build tasks** ask an agent to modify a repository in an isolated workspace.
+- **Ask tasks** ask an agent to inspect and answer without writing files.
 - **Snippet tasks** start from reusable prompt templates and variables.
 
-Task definitions include title, repository, prompt, deadline, provider/model settings, branch settings, and optional prompt attachments. Task-specific notes are not part of the task model.
+Task definitions include title, repository, prompt, deadline, provider/model settings, branch settings, and optional prompt attachments. Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
 
-Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
+### Checkpoints And Git Actions
+
+Verft tracks task status, messages, runs, logs, diffs, checkpoints, and Git operations from the web UI. Pending change proposals can be applied, rejected, reverted, pushed, or merged after review.
+
+### Repository Configuration
+
+Repositories can define environment variables, write-only environment secrets, default agent provider/model/effort settings, GitHub integration settings, repository-local MCP servers, host commands, snippets, and postflight checks.
+
+Repository-specific MCP servers are configured on each repository. Task runs and interactive terminals receive only the MCP servers configured for the task repository, plus the internal Verft MCP bridge.
 
 ### Postflight Checks
 
 Repositories can define post-build automation in `.verft/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
-
-### Hostexec Bridge Commands
-
-Hostexec lets a manually started host daemon expose selected host commands, such as macOS `xcodebuild`, to agent containers through bridge shims.
-
-1. Start the daemon on the host with `npm run hostexec`.
-2. Open a repository and add simple command names to **Host Commands**, for example `xcodebuild`, `xcrun`, or `gradlew`.
-
-Verft autodetects the daemon at the default host URLs. Repository **Host Commands** decide which command shims Verft mounts for each repository. The daemon reads `HOSTEXEC_HOST`, `HOSTEXEC_PORT`, and `HOSTEXEC_TOKEN` from `.env`.
-
-See `hostexec/README.md` for the host daemon details.
-
-At runtime Verft creates a read-only shim directory, mounts it at `/hostexec/bin`, and prepends that directory to `PATH`. Existing container bin directories are not overwritten; configured command names only shadow matching commands through `PATH` order.
-
-Bridge commands execute on the host with the task workspace as `cwd`. Nested workspace directories preserve their relative `cwd`, and execution is rejected if the resolved host directory escapes the task workspace. v1 requires the task workspace path to be visible to the host daemon.
 
 Example:
 
@@ -155,6 +153,15 @@ steps:
 on_failure: "fail_task"
 ```
 
+### Hostexec Bridge
+
+Hostexec lets a manually started host daemon expose selected host commands, such as macOS `xcodebuild`, to agent containers through bridge shims.
+
+1. Start the daemon on the host with `npm run hostexec`.
+2. Open a repository and add simple command names to **Host Commands**, for example `xcodebuild`, `xcrun`, or `gradlew`.
+
+Verft autodetects the daemon at the default host URLs. Repository **Host Commands** decide which command shims Verft mounts for each repository. See `hostexec/README.md` for daemon details.
+
 ## Configuration
 
 Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the Verft Settings UI, not in `.env`.
@@ -173,7 +180,7 @@ Most runtime configuration starts in `.env`. Provider API keys and GitHub creden
 
 ### Storage
 
-Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub. In the Docker stack, Verft owns the server database connection string, and only the nginx proxy publishes a host port; Redis, Postgres, server, and web stay on the internal Compose network.
+Durable application data is stored in Postgres. Redis is required for sessions, queues, webhook jobs, and realtime pub/sub. In the Docker stack, only the nginx proxy publishes a host port; Redis, Postgres, server, and web stay on the internal Compose network.
 
 ### Runtime Images
 
@@ -196,6 +203,45 @@ Docker socket access is enabled by default in the local Docker Compose setup so 
 
 Mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the runtime container.
 
+## MCP Server
+
+Verft exposes an MCP-compatible HTTP JSON-RPC endpoint at `/mcp`.
+
+Authentication uses user personal access tokens:
+
+1. Create a token with `POST /auth/personal-access-tokens` while signed in.
+2. Store the returned `token` securely; it is only returned once.
+3. Call `/mcp` with `Authorization: Bearer <token>`.
+4. Revoke tokens with `DELETE /auth/personal-access-tokens/:id`.
+
+Supported MCP methods:
+
+- `initialize`
+- `tools/list`
+- `tools/call`
+
+Available tools include repository and task listing, task creation, subtask creation, draft updates, task starts, task messages, pull request linking, and task configuration updates.
+
+Task agents receive the Verft MCP server automatically at runtime through an internal stdio bridge and a short-lived run token. Runtime task agents can call `verft_create_subtask` to create child tasks for the repository of the currently running parent task.
+
+Checkpoint mutation, push/merge, attachments, terminal control, and summarization are intentionally deferred to later MCP phases.
+
+## Common Commands
+
+| Command | Description |
+| --- | --- |
+| `./verft.sh init` | Build the agent toolbox runtime image, rebuild compose images, and start the stack. |
+| `./verft.sh start` | Start the Docker Compose stack in the background. |
+| `./verft.sh rebuild` | Rebuild the agent toolbox runtime and compose images, then restart the stack. |
+| `./verft.sh stop` | Stop the Docker Compose stack. |
+| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
+
+The health endpoint is available at:
+
+```bash
+curl -fsS http://localhost:3217/api/health
+```
+
 ## Project Structure
 
 ```text
@@ -211,12 +257,12 @@ Mounting `docker.sock` is highly privileged and can effectively grant host-level
 +-- scripts/harness/     # Canonical setup, check, test, and PR scripts
 +-- task-workspaces/     # Runtime task workspaces; do not commit
 +-- docker-compose.yml   # Local Docker stack
-+-- verft.sh        # Main stack helper script
++-- verft.sh             # Main stack helper script
 ```
 
 ## Development
 
-Install dependencies on a clean checkout:
+For a clean developer checkout, initialize the stack and install npm dependencies:
 
 ```bash
 HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
@@ -234,7 +280,7 @@ Useful development commands:
 | `npm run dev` | Run server and web dev processes together. |
 | `npm run lint` | Run TypeScript no-emit checks for server and web. |
 | `npm run build` | Build shared types, server, and web. |
-| `npm run test` | Run `./scripts/harness/test.sh`. |
+| `npm run test` | Run server and web tests. |
 
 Workspace-specific commands:
 
@@ -247,7 +293,7 @@ npm run build -w @verft/shared-types
 Before opening a pull request, run:
 
 ```bash
-./scripts/harness/pr-ready.sh
+npm run ci
 ```
 
 The repository uses execution-plan and human-gated-flow checks for non-trivial changes. Useful references:
@@ -257,44 +303,6 @@ The repository uses execution-plan and human-gated-flow checks for non-trivial c
 - `docs/development/testing.md`
 - `docs/development/pr-workflow.md`
 - `docs/development/agent-review.md`
-
-## MCP Server
-
-Verft exposes a Phase 1 MCP-compatible HTTP JSON-RPC endpoint at `/mcp`.
-
-Authentication uses user personal access tokens:
-
-1. Create a token with `POST /auth/personal-access-tokens` while signed in.
-2. Store the returned `token` securely; it is only returned once.
-3. Call `/mcp` with `Authorization: Bearer <token>`.
-4. Revoke tokens with `DELETE /auth/personal-access-tokens/:id`.
-
-Supported MCP methods:
-
-- `initialize`
-- `tools/list`
-- `tools/call`
-
-Phase 1 tools:
-
-- `verft_list_repositories`
-- `verft_list_tasks`
-- `verft_get_task`
-- `verft_create_task`
-- `verft_create_subtask`
-- `verft_update_draft`
-- `verft_start_task`
-- `verft_add_task_message`
-- `verft_link_pull_request`
-- `verft_update_task_config`
-
-Task agents receive the Verft MCP server automatically at runtime through an internal stdio bridge and a short-lived run token.
-
-Runtime task agents can call `verft_create_subtask` to create child tasks for the repository of the currently running parent task. Runtime tokens receive the narrow `task:create_subtask` scope, not broad `task:create`; the tool is only listed when the token includes runtime task context. The server links created children with `parentTaskId` and `rootTaskId`, applies the same build/ask capability checks and task defaults as normal MCP task creation, and rejects target repositories that do not match the parent task repository.
-
-Repository-specific MCP servers are configured on each repository. Task runs and interactive terminals receive only the MCP servers configured for the task repository, plus the internal Verft MCP bridge. Legacy global MCP server settings are no longer used; recreate any previously global MCP server on each repository that should expose it.
-
-Checkpoint mutation, push/merge, attachments, terminal control, and summarization are intentionally deferred to later phases.
 
 ## FAQ
 
@@ -321,7 +329,7 @@ HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
 3. Run the canonical checks before opening a pull request:
 
    ```bash
-   ./scripts/harness/pr-ready.sh
+   npm run ci
    ```
 
 4. Use the pull request template in `.github/pull_request_template.md`.
