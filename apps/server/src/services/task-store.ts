@@ -736,6 +736,8 @@ export class RedisTaskStore implements TaskStore {
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
     const autoApplyCheckpoints = input.autoApplyCheckpoints === true;
+    const parentTaskId = input.parentTaskId?.trim() || null;
+    const rootTaskId = input.rootTaskId?.trim() || parentTaskId;
     const taskSource = "blank";
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
@@ -750,6 +752,8 @@ export class RedisTaskStore implements TaskStore {
       activeInteractiveSession: false,
       activeTerminalSessionMode: null,
       linkedWorkspaces: [],
+      parentTaskId,
+      rootTaskId,
       ownerUserId,
       repoId: repository.id,
       repoName: repository.name,
@@ -2188,6 +2192,8 @@ export class PostgresTaskStore implements TaskStore {
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const codexCredentialSource = normalizeCodexCredentialSource(input.codexCredentialSource);
     const autoApplyCheckpoints = input.autoApplyCheckpoints === true;
+    const parentTaskId = input.parentTaskId?.trim() || null;
+    const rootTaskId = input.rootTaskId?.trim() || parentTaskId;
     const taskSource = "blank";
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
@@ -2202,6 +2208,8 @@ export class PostgresTaskStore implements TaskStore {
       activeInteractiveSession: false,
       activeTerminalSessionMode: null,
       linkedWorkspaces: [],
+      parentTaskId,
+      rootTaskId,
       ownerUserId,
       repoId: repository.id,
       repoName: repository.name,

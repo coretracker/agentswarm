@@ -90,6 +90,8 @@ const createTaskSchema = z
   })
   .strict();
 
+const createSubtaskSchema = createTaskSchema;
+
 const updateDraftSchema = createTaskSchema.omit({ repoId: true, draft: true }).partial().extend({
   taskId: z.string().trim().min(1)
 });
@@ -231,6 +233,48 @@ const startTask = async (context: McpToolContext, task: Task, action?: TaskActio
   return result.task;
 };
 
+const createMcpTask = async (
+  rawInput: unknown,
+  context: McpToolContext,
+  options: { parentTask?: Task | null } = {}
+): Promise<Task> => {
+  const input = createTaskSchema.parse(rawInput ?? {});
+  const taskType = input.taskType ?? "build";
+  requireScopes(context.user, [getTaskCapabilityScopeForTaskType(taskType)]);
+  const repository = await context.deps.repositoryStore.getRepository(input.repoId);
+  if (!repository || !canUserAccessRepository(context.user, repository.id)) {
+    throw new McpToolError(404, "Repository not found", "not_found");
+  }
+  const parentTask = options.parentTask ?? null;
+  if (parentTask && repository.id !== parentTask.repoId) {
+    throw new McpToolError(404, "Repository not found", "not_found");
+  }
+  const settings = await context.deps.settingsStore.getSettings();
+  const providerConfig = resolveCreateTaskProviderConfig(input, settings, repository, context.user);
+  const task = await context.deps.taskStore.createTask(
+    {
+      ...input,
+      ...providerConfig,
+      draft: true,
+      prompt: input.prompt,
+      ...(parentTask
+        ? {
+            parentTaskId: parentTask.id,
+            rootTaskId: parentTask.rootTaskId ?? parentTask.parentTaskId ?? parentTask.id
+          }
+        : {})
+    },
+    repository,
+    context.user.id
+  );
+  await context.deps.taskStore.appendMessage(task.id, {
+    role: "user",
+    action: taskType === "ask" ? "ask" : "build",
+    content: input.prompt
+  });
+  return (await context.deps.taskStore.getTask(task.id)) ?? task;
+};
+
 const postSlackThreadReply = async (input: {
   botToken: string | null | undefined;
   channelId: string;
@@ -337,34 +381,43 @@ export const createMcpTools = (): McpToolDefinition[] => [
     scopes: ["task:create", "repo:list"],
     async handler(rawInput, context) {
       const input = createTaskSchema.parse(rawInput ?? {});
-      const taskType = input.taskType ?? "build";
-      requireScopes(context.user, [getTaskCapabilityScopeForTaskType(taskType)]);
-      const repository = await context.deps.repositoryStore.getRepository(input.repoId);
-      if (!repository || !canUserAccessRepository(context.user, repository.id)) {
-        throw new McpToolError(404, "Repository not found", "not_found");
-      }
-      const settings = await context.deps.settingsStore.getSettings();
-      const providerConfig = resolveCreateTaskProviderConfig(input, settings, repository, context.user);
-      const task = await context.deps.taskStore.createTask(
-        {
-          ...input,
-          ...providerConfig,
-          draft: true,
-          prompt: input.prompt
-        },
-        repository,
-        context.user.id
-      );
-      await context.deps.taskStore.appendMessage(task.id, {
-        role: "user",
-        action: taskType === "ask" ? "ask" : "build",
-        content: input.prompt
-      });
-      const created = (await context.deps.taskStore.getTask(task.id)) ?? task;
+      const created = await createMcpTask(rawInput, context);
       if (input.draft === false) {
         return { task: compactTask(await startTask(context, created)) };
       }
       return { task: compactTask(created) };
+    }
+  },
+  {
+    name: "verft_create_subtask",
+    description:
+      "Create a child task from inside the current task runtime. The target repository must match the current runtime task repository.",
+    inputSchema: schemaToJson(createSubtaskSchema),
+    scopes: ["task:create_subtask", "repo:list"],
+    available(context) {
+      return typeof context.runtimeContext?.taskId === "string" && context.runtimeContext.taskId.trim().length > 0;
+    },
+    async handler(rawInput, context) {
+      const input = createSubtaskSchema.parse(rawInput ?? {});
+      const runtimeTaskId = context.runtimeContext?.taskId?.trim();
+      if (!runtimeTaskId) {
+        throw new McpToolError(404, "Subtask creation is only available inside a task runtime.", "runtime_context_missing");
+      }
+      const parentTask = await getAccessibleTask(context, runtimeTaskId);
+      const created = await createMcpTask(rawInput, context, { parentTask });
+      if (input.draft === false) {
+        const started = await startTask(context, created);
+        return {
+          task: compactTask(started),
+          parentTaskId: parentTask.id,
+          rootTaskId: parentTask.rootTaskId ?? parentTask.parentTaskId ?? parentTask.id
+        };
+      }
+      return {
+        task: compactTask(created),
+        parentTaskId: parentTask.id,
+        rootTaskId: parentTask.rootTaskId ?? parentTask.parentTaskId ?? parentTask.id
+      };
     }
   },
   {

@@ -104,6 +104,7 @@ const VERFT_RUNTIME_MCP_SCOPES: PermissionScope[] = [
   "repo:read",
   "task:list",
   "task:read",
+  "task:create_subtask",
   "task:edit",
   "task:build",
   "task:ask"

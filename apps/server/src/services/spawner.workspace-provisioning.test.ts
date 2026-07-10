@@ -157,6 +157,16 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(runtimeMcp.injectedVerftMcp, true);
     assert.equal(runtimeMcp.env.VERFT_MCP_OAUTH_TOKEN, "runtime-token");
     assert.equal(createdTokens.length, 1);
+    assert.deepEqual((createdTokens[0] as { scopes: string[] }).scopes, [
+      "repo:list",
+      "repo:read",
+      "task:list",
+      "task:read",
+      "task:create_subtask",
+      "task:edit",
+      "task:build",
+      "task:ask"
+    ]);
     assert.equal(runtimeMcp.servers.length, 2);
     assert.deepEqual(
       runtimeMcp.servers.map((server: { name: string }) => server.name),
