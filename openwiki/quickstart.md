@@ -1,6 +1,8 @@
 # Verft OpenWiki Quickstart
 
-Verft is a Docker-based web application for running AI coding work on real Git repositories. Users create **build** or **ask** tasks, run Codex or Claude in isolated toolbox containers, inspect logs/diffs/checkpoints, manage Git branches, and continue work through an interactive browser terminal. The product goal is agent-assisted coding with human visibility into repository state and reviewable changes.
+Verft is a self-hosted control plane for parallel AI coding agents. It helps engineering teams delegate coding work to Codex and Claude across existing Git repositories: create isolated **build** or **ask** tasks, watch each agent's logs and diffs, then decide what gets applied, pushed, or merged.
+
+It is built for teams that want the speed of AI coding agents without giving up Git discipline, review boundaries, credential control, or visibility into what changed.
 
 This wiki is a synthesis layer over the source tree and existing docs. Start here, then follow the focused pages below.
 
