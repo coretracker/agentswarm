@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="apps/web/public/logo.svg" width="120" alt="Verft logo"/>
+  <img src="apps/web/public/logo.svg" width="320" alt="Verft logo"/>
 </p>
 
 # Verft
