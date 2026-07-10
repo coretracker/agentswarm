@@ -739,5 +739,13 @@ Feedback:
       ADD COLUMN IF NOT EXISTS slack_task_created_reply_template text NULL,
       ADD COLUMN IF NOT EXISTS slack_task_owner_user_id text NULL;
     `
+  },
+  {
+    id: "20260710_01_archived_task_auto_delete_settings",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS archived_task_auto_delete_enabled boolean NOT NULL DEFAULT true,
+      ADD COLUMN IF NOT EXISTS archived_task_auto_delete_days integer NOT NULL DEFAULT 7;
+    `
   }
 ];

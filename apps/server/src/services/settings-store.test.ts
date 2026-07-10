@@ -63,6 +63,31 @@ describe("RedisSettingsStore runtime credentials", () => {
     assert.equal(settings.harnessNotAllowedActions, "Never publish secrets.");
   });
 
+  it("defaults archived task auto-delete to seven days and persists overrides", async () => {
+    const settingsStore = new RedisSettingsStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never,
+      createCredentialStore({
+        githubToken: null,
+        openaiApiKey: null,
+        anthropicApiKey: null,
+        slackSigningSecret: null,
+        slackBotToken: null
+      })
+    );
+
+    const initial = await settingsStore.getSettings();
+    assert.equal(initial.archivedTaskAutoDeleteEnabled, true);
+    assert.equal(initial.archivedTaskAutoDeleteDays, 7);
+
+    const updated = await settingsStore.updateSettings({
+      archivedTaskAutoDeleteEnabled: false,
+      archivedTaskAutoDeleteDays: 30
+    });
+    assert.equal(updated.archivedTaskAutoDeleteEnabled, false);
+    assert.equal(updated.archivedTaskAutoDeleteDays, 30);
+  });
+
   it("uses global API credentials regardless of user id or legacy profile source", async () => {
     const settingsStore = new RedisSettingsStore(
       new FakeRedis() as never,
@@ -212,6 +237,8 @@ describe("PostgresSettingsStore", () => {
           return {
             rows: [
               {
+                archived_task_auto_delete_enabled: false,
+                archived_task_auto_delete_days: 14,
                 harness_what_exists: "Shared CI platform.",
                 harness_allowed_actions: "Run repository tests.",
                 harness_not_allowed_actions: "Do not publish.",
@@ -239,9 +266,11 @@ describe("PostgresSettingsStore", () => {
 
     const settings = await store.getSettings();
 
-    assert.equal(queries[0]?.values.length, 27);
-    assert.match(queries[0]?.sql ?? "", /VALUES \(1, \$1,.*\$27::jsonb\)/s);
+    assert.equal(queries[0]?.values.length, 29);
+    assert.match(queries[0]?.sql ?? "", /VALUES \(1, \$1,.*\$29::jsonb\)/s);
     for (const column of [
+      "archived_task_auto_delete_enabled",
+      "archived_task_auto_delete_days",
       "harness_what_exists",
       "harness_allowed_actions",
       "harness_not_allowed_actions",
@@ -251,6 +280,8 @@ describe("PostgresSettingsStore", () => {
     ]) {
       assert.match(queries[1]?.sql ?? "", new RegExp(`\\b${column}\\b`));
     }
+    assert.equal(settings.archivedTaskAutoDeleteEnabled, false);
+    assert.equal(settings.archivedTaskAutoDeleteDays, 14);
     assert.equal(settings.harnessWhatExists, "Shared CI platform.");
     assert.equal(settings.harnessAllowedActions, "Run repository tests.");
     assert.equal(settings.harnessNotAllowedActions, "Do not publish.");

@@ -24,7 +24,9 @@ interface TriggerActionOptions {
 export class SchedulerService {
   private activeExecutionCount = 0;
   private interval: NodeJS.Timeout | null = null;
+  private archivedTaskCleanupInterval: NodeJS.Timeout | null = null;
   private draining = false;
+  private cleaningArchivedTasks = false;
 
   constructor(
     private readonly taskStore: TaskStore,
@@ -35,9 +37,13 @@ export class SchedulerService {
 
   async bootstrap(): Promise<void> {
     await this.recoverInterruptedExecutions();
+    await this.cleanupExpiredArchivedTasks();
     this.interval = setInterval(() => {
       void this.drainQueue();
     }, 1000);
+    this.archivedTaskCleanupInterval = setInterval(() => {
+      void this.cleanupExpiredArchivedTasks();
+    }, 60 * 60 * 1000);
     await this.drainQueue();
   }
 
@@ -45,6 +51,10 @@ export class SchedulerService {
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = null;
+    }
+    if (this.archivedTaskCleanupInterval) {
+      clearInterval(this.archivedTaskCleanupInterval);
+      this.archivedTaskCleanupInterval = null;
     }
   }
 
@@ -54,7 +64,39 @@ export class SchedulerService {
   }
 
   async onSettingsChanged(): Promise<void> {
+    await this.cleanupExpiredArchivedTasks();
     await this.drainQueue();
+  }
+
+  async cleanupExpiredArchivedTasks(now: Date = new Date()): Promise<string[]> {
+    if (this.cleaningArchivedTasks) {
+      return [];
+    }
+    this.cleaningArchivedTasks = true;
+    try {
+      const settings = await this.settingsStore.getSettings();
+      if (!settings.archivedTaskAutoDeleteEnabled) {
+        return [];
+      }
+
+      const cutoffMs = now.getTime() - settings.archivedTaskAutoDeleteDays * 24 * 60 * 60 * 1000;
+      const archivedTasks = await this.taskStore.listTasks({ view: "archived" });
+      const deletedTaskIds: string[] = [];
+      for (const task of archivedTasks) {
+        const archivedAtMs = Date.parse(task.updatedAt);
+        if (!Number.isFinite(archivedAtMs) || archivedAtMs > cutoffMs) {
+          continue;
+        }
+        await this.spawner.cleanupTaskArtifacts(task);
+        await this.taskQueueStore.removeTask(task.id);
+        if (await this.taskStore.deleteTask(task.id)) {
+          deletedTaskIds.push(task.id);
+        }
+      }
+      return deletedTaskIds;
+    } finally {
+      this.cleaningArchivedTasks = false;
+    }
   }
 
   async hasExecutionCapacity(): Promise<boolean> {

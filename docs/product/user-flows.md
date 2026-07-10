@@ -33,6 +33,7 @@ Notes:
 - Installations that previously used global MCP server settings must recreate the intended MCP servers on each repository that should expose them.
 - GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
 - GitHub Integration can optionally archive linked tasks when a GitHub pull request webhook reports the PR as merged.
+- Archived tasks are automatically deleted after the configured retention window; the setting defaults to 7 days and can be disabled.
 - GitHub Integration creates or queues build-mode tasks when a `pull_request.review_requested` webhook targets the configured integration bot.
 - GitHub Integration processes created or edited issue comments, pull request conversation comments, and inline pull request review comments when the comment body passes the configured bot mention and user filters.
 - When a GitHub webhook author matches an active Verft user's configured GitHub username, new tasks and linked-task continuations use that user's provider, model, and effort defaults.

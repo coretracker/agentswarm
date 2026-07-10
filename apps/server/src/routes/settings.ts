@@ -146,6 +146,8 @@ const hostexecSettingsSchema = z
 const updateSettingsSchema = z.object({
   defaultProvider: z.enum(["codex", "claude"]).optional(),
   maxAgents: z.coerce.number().int().min(1).max(20).optional(),
+  archivedTaskAutoDeleteEnabled: z.boolean().optional(),
+  archivedTaskAutoDeleteDays: z.coerce.number().int().min(1).max(3650).optional(),
   branchPrefix: z.string().trim().min(1).max(80).optional(),
   workspaceProvisioningMode: z.enum(["clone_only", "hybrid"]).optional(),
   gitUsername: z.string().trim().min(1).max(120).optional(),

@@ -442,3 +442,81 @@ describe("SchedulerService.triggerAction", () => {
     assert.equal(triggered, false);
   });
 });
+
+describe("SchedulerService.cleanupExpiredArchivedTasks", () => {
+  it("deletes archived tasks older than the configured retention window", async () => {
+    const deletedTaskIds: string[] = [];
+    const cleanedTaskIds: string[] = [];
+    const removedQueueTaskIds: string[] = [];
+    const taskStore = {
+      listTasks: async (options: unknown) => {
+        assert.deepEqual(options, { view: "archived" });
+        return [
+          {
+            id: "old-archived",
+            status: "archived",
+            updatedAt: "2026-07-01T00:00:00.000Z"
+          },
+          {
+            id: "new-archived",
+            status: "archived",
+            updatedAt: "2026-07-08T00:00:00.000Z"
+          }
+        ];
+      },
+      deleteTask: async (taskId: string) => {
+        deletedTaskIds.push(taskId);
+        return true;
+      }
+    };
+    const taskQueueStore = {
+      removeTask: async (taskId: string) => {
+        removedQueueTaskIds.push(taskId);
+      }
+    };
+    const settingsStore = {
+      getSettings: async () => ({
+        archivedTaskAutoDeleteEnabled: true,
+        archivedTaskAutoDeleteDays: 7
+      })
+    };
+    const spawner = {
+      cleanupTaskArtifacts: async (task: { id: string }) => {
+        cleanedTaskIds.push(task.id);
+      }
+    };
+    const scheduler = new SchedulerService(taskStore as never, taskQueueStore as never, settingsStore as never, spawner as never);
+
+    const deleted = await scheduler.cleanupExpiredArchivedTasks(new Date("2026-07-10T00:00:00.000Z"));
+
+    assert.deepEqual(deleted, ["old-archived"]);
+    assert.deepEqual(cleanedTaskIds, ["old-archived"]);
+    assert.deepEqual(removedQueueTaskIds, ["old-archived"]);
+    assert.deepEqual(deletedTaskIds, ["old-archived"]);
+  });
+
+  it("skips archived task cleanup when disabled", async () => {
+    let listed = false;
+    const scheduler = new SchedulerService(
+      {
+        listTasks: async () => {
+          listed = true;
+          return [];
+        }
+      } as never,
+      {} as never,
+      {
+        getSettings: async () => ({
+          archivedTaskAutoDeleteEnabled: false,
+          archivedTaskAutoDeleteDays: 7
+        })
+      } as never,
+      {} as never
+    );
+
+    const deleted = await scheduler.cleanupExpiredArchivedTasks(new Date("2026-07-10T00:00:00.000Z"));
+
+    assert.deepEqual(deleted, []);
+    assert.equal(listed, false);
+  });
+});

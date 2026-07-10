@@ -57,6 +57,8 @@ import { buildApiUrl } from "../src/lib/public-url";
 interface GeneralSettingsForm {
   defaultProvider: AgentProvider;
   maxAgents: number;
+  archivedTaskAutoDeleteEnabled: boolean;
+  archivedTaskAutoDeleteDays: number;
   branchPrefix: string;
   gitUsername: string;
   gitAuthorName: string;
@@ -152,6 +154,8 @@ const summarizeResponsePreference = (preset: ResponsePreferencePreset): string =
 const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   defaultProvider: settings.defaultProvider,
   maxAgents: settings.maxAgents,
+  archivedTaskAutoDeleteEnabled: settings.archivedTaskAutoDeleteEnabled,
+  archivedTaskAutoDeleteDays: settings.archivedTaskAutoDeleteDays,
   branchPrefix: settings.branchPrefix,
   gitUsername: settings.gitUsername,
   gitAuthorName: settings.gitAuthorName ?? "",
@@ -434,6 +438,8 @@ export function SettingsPage() {
       const payload: UpdateSettingsInput = {
         defaultProvider: values.defaultProvider,
         maxAgents: values.maxAgents,
+        archivedTaskAutoDeleteEnabled: values.archivedTaskAutoDeleteEnabled === true,
+        archivedTaskAutoDeleteDays: values.archivedTaskAutoDeleteDays,
         branchPrefix: values.branchPrefix,
         gitUsername: values.gitUsername,
         gitAuthorName: values.gitAuthorName?.trim() || null,
@@ -701,6 +707,17 @@ export function SettingsPage() {
                     rules={[{ required: true }]}
                   >
                     <InputNumber min={1} max={20} style={{ width: "100%" }} />
+                  </Form.Item>
+                  <Form.Item name="archivedTaskAutoDeleteEnabled" valuePropName="checked">
+                    <Checkbox>Automatically delete archived tasks</Checkbox>
+                  </Form.Item>
+                  <Form.Item
+                    name="archivedTaskAutoDeleteDays"
+                    label="Delete Archived Tasks After"
+                    extra="Archived tasks older than this many days are deleted automatically."
+                    rules={[{ required: true }]}
+                  >
+                    <InputNumber min={1} max={3650} addonAfter="days" style={{ width: "100%" }} />
                   </Form.Item>
                 </Flex>
               </Card>
