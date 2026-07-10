@@ -134,7 +134,7 @@ test("GitHub PR webhook queues linked PR comments", async () => {
   await app.close();
 });
 
-test("GitHub PR merged webhook ignores archive when repository toggle is disabled", async () => {
+test("GitHub PR closed webhook archives linked task when merge archive toggle is disabled", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
     const rawBody = typeof body === "string" ? body : body.toString("utf8");
@@ -142,8 +142,10 @@ test("GitHub PR merged webhook ignores archive when repository toggle is disable
     done(null, JSON.parse(rawBody));
   });
 
-  let taskLookupCount = 0;
   const secret = "webhook-secret";
+  const archivedTaskIds: string[] = [];
+  const removedQueueTaskIds: string[] = [];
+  const logs: Array<{ taskId: string; line: string }> = [];
 
   registerGitHubPrWebhookRoutes(app, {
     repositoryStore: {
@@ -151,11 +153,25 @@ test("GitHub PR merged webhook ignores archive when repository toggle is disable
       getRepositoryGitHubPrWebhookSecret: async () => secret
     } as never,
     taskStore: {
-      findTaskByGitHubPrNumber: async () => {
-        taskLookupCount += 1;
+      findTaskByGitHubPrNumber: async () => ({
+        id: "task-1",
+        status: "open",
+        executionStatus: "idle"
+      }),
+      archiveTask: async (taskId: string) => {
+        archivedTaskIds.push(taskId);
+        return null;
+      },
+      appendLog: async (taskId: string, line: string) => {
+        logs.push({ taskId, line });
         return null;
       }
     } as never,
+    taskQueueStore: {
+      removeTask: async (taskId: string) => {
+        removedQueueTaskIds.push(taskId);
+      }
+    },
     scheduler: {} as never,
     settingsStore: defaultSettingsStore as never,
     spawner: defaultSpawner as never
@@ -188,8 +204,10 @@ test("GitHub PR merged webhook ignores archive when repository toggle is disable
   });
 
   assert.equal(response.statusCode, 202);
-  assert.deepEqual(JSON.parse(response.body), { archived: false, reason: "auto_archive_disabled" });
-  assert.equal(taskLookupCount, 0);
+  assert.deepEqual(JSON.parse(response.body), { archived: true, taskId: "task-1" });
+  assert.deepEqual(removedQueueTaskIds, ["task-1"]);
+  assert.deepEqual(archivedTaskIds, ["task-1"]);
+  assert.deepEqual(logs, [{ taskId: "task-1", line: "Task archived after GitHub PR #42 was closed." }]);
 
   await app.close();
 });
@@ -280,7 +298,84 @@ test("GitHub PR merged webhook archives linked task when repository toggle is en
   ]);
   assert.deepEqual(removedQueueTaskIds, ["task-1"]);
   assert.deepEqual(archivedTaskIds, ["task-1"]);
-  assert.deepEqual(logs, [{ taskId: "task-1", line: "Task archived after GitHub PR #42 was merged." }]);
+  assert.deepEqual(logs, [{ taskId: "task-1", line: "Task archived after GitHub PR #42 was closed." }]);
+
+  await app.close();
+});
+
+test("GitHub issue closed webhook archives linked task", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const secret = "webhook-secret";
+  const archivedTaskIds: string[] = [];
+  const removedQueueTaskIds: string[] = [];
+  const logs: Array<{ taskId: string; line: string }> = [];
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({ id: "repo-1" }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubIssueNumber: async () => ({
+        id: "task-issue",
+        status: "open",
+        executionStatus: "idle"
+      }),
+      archiveTask: async (taskId: string) => {
+        archivedTaskIds.push(taskId);
+        return null;
+      },
+      appendLog: async (taskId: string, line: string) => {
+        logs.push({ taskId, line });
+        return null;
+      }
+    } as never,
+    taskQueueStore: {
+      removeTask: async (taskId: string) => {
+        removedQueueTaskIds.push(taskId);
+      }
+    },
+    scheduler: {} as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "closed",
+    issue: {
+      id: 9001,
+      number: 77,
+      title: "Import customers fails"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issues",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { archived: true, taskId: "task-issue" });
+  assert.deepEqual(removedQueueTaskIds, ["task-issue"]);
+  assert.deepEqual(archivedTaskIds, ["task-issue"]);
+  assert.deepEqual(logs, [{ taskId: "task-issue", line: "Task archived after GitHub issue #77 was closed." }]);
 
   await app.close();
 });

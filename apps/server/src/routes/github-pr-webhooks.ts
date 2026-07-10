@@ -63,11 +63,18 @@ interface GitHubPrBranchDetails {
   headRepositoryFullName?: string;
 }
 
-interface GitHubMergedPullRequest {
-  prNumber: number;
-  sourceBranch?: string;
-  targetBranch?: string;
-}
+type GitHubClosedTarget =
+  | {
+      target: "pr";
+      number: number;
+      merged: boolean;
+      sourceBranch?: string;
+      targetBranch?: string;
+    }
+  | {
+      target: "issue";
+      number: number;
+    };
 
 const readHeader = (value: string | string[] | undefined): string | null => {
   if (typeof value === "string") {
@@ -340,30 +347,29 @@ const normalizeGitHubFeedback = (event: string | null, payload: unknown): GitHub
   return null;
 };
 
-const normalizeGitHubMergedPullRequest = (event: string | null, payload: unknown): GitHubMergedPullRequest | null => {
-  if (event !== "pull_request" || !isRecord(payload)) {
+const normalizeGitHubClosedTarget = (event: string | null, payload: unknown): GitHubClosedTarget | null => {
+  if (!event || !isRecord(payload) || stringValue(payload, "action") !== "closed") {
     return null;
   }
-
-  if (stringValue(payload, "action") !== "closed" || !isRecord(payload.pull_request)) {
-    return null;
+  if (event === "pull_request" && isRecord(payload.pull_request)) {
+    const prNumber = numberValue(payload.pull_request, "number");
+    if (!prNumber) {
+      return null;
+    }
+    const headDetails = readPullRequestHeadDetails(payload.pull_request);
+    return {
+      target: "pr",
+      number: prNumber,
+      merged: booleanValue(payload.pull_request, "merged") === true,
+      sourceBranch: headDetails?.headBranch,
+      targetBranch: readPullRequestBaseBranch(payload.pull_request)
+    };
   }
-
-  if (booleanValue(payload.pull_request, "merged") !== true) {
-    return null;
+  if (event === "issues" && isRecord(payload.issue) && !isRecord(payload.issue.pull_request)) {
+    const issueNumber = numberValue(payload.issue, "number");
+    return issueNumber ? { target: "issue", number: issueNumber } : null;
   }
-
-  const prNumber = numberValue(payload.pull_request, "number");
-  if (!prNumber) {
-    return null;
-  }
-
-  const headDetails = readPullRequestHeadDetails(payload.pull_request);
-  return {
-    prNumber,
-    sourceBranch: headDetails?.headBranch,
-    targetBranch: readPullRequestBaseBranch(payload.pull_request)
-  };
+  return null;
 };
 
 const replaceTemplateMarkers = (template: string, markers: Record<string, string>): string => {
@@ -668,13 +674,12 @@ export const registerGitHubPrWebhookRoutes = (
     }
 
     const event = readHeader(request.headers["x-github-event"]);
-    const mergedPullRequest = normalizeGitHubMergedPullRequest(event, request.body);
-    if (mergedPullRequest) {
-      if (repository.githubPrAutoArchiveOnMerge !== true) {
-        return reply.status(202).send({ archived: false, reason: "auto_archive_disabled" });
-      }
-
-      const task = await deps.taskStore.findTaskByGitHubPrNumber(repository.id, mergedPullRequest.prNumber);
+    const closedTarget = normalizeGitHubClosedTarget(event, request.body);
+    if (closedTarget) {
+      const task =
+        closedTarget.target === "pr"
+          ? await deps.taskStore.findTaskByGitHubPrNumber(repository.id, closedTarget.number)
+          : await deps.taskStore.findTaskByGitHubIssueNumber(repository.id, closedTarget.number);
       if (!task) {
         return reply.status(202).send({ archived: false, reason: "linked_task_not_found" });
       }
@@ -682,22 +687,26 @@ export const registerGitHubPrWebhookRoutes = (
         return reply.status(202).send({ archived: false, reason: "already_archived", taskId: task.id });
       }
       if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
+        const targetLabel = closedTarget.target === "pr" ? "PR" : "issue";
         await deps.taskStore.appendLog(
           task.id,
-          `GitHub PR #${mergedPullRequest.prNumber} was merged, but the task was not archived because it is active.`
+          `GitHub ${targetLabel} #${closedTarget.number} was closed, but the task was not archived because it is active.`
         );
         return reply.status(202).send({ archived: false, reason: "active_task", taskId: task.id });
       }
 
-      await deps.taskStore.publishTaskMergedEvent({
-        taskId: task.id,
-        sourceBranch: mergedPullRequest.sourceBranch ?? task.branchName ?? `pull/${mergedPullRequest.prNumber}`,
-        targetBranch: mergedPullRequest.targetBranch ?? repository.defaultBranch,
-        commitMessage: null
-      });
+      if (closedTarget.target === "pr" && closedTarget.merged && repository.githubPrAutoArchiveOnMerge === true) {
+        await deps.taskStore.publishTaskMergedEvent({
+          taskId: task.id,
+          sourceBranch: closedTarget.sourceBranch ?? task.branchName ?? `pull/${closedTarget.number}`,
+          targetBranch: closedTarget.targetBranch ?? repository.defaultBranch,
+          commitMessage: null
+        });
+      }
       await deps.taskQueueStore?.removeTask(task.id);
       await deps.taskStore.archiveTask(task.id);
-      await deps.taskStore.appendLog(task.id, `Task archived after GitHub PR #${mergedPullRequest.prNumber} was merged.`);
+      const targetLabel = closedTarget.target === "pr" ? "PR" : "issue";
+      await deps.taskStore.appendLog(task.id, `Task archived after GitHub ${targetLabel} #${closedTarget.number} was closed.`);
       return reply.status(202).send({ archived: true, taskId: task.id });
     }
 
