@@ -85,4 +85,4 @@ Key terms are defined in `docs/product/terminology.md` and represented in `packa
 
 ## Current git context at initialization
 
-The inspected HEAD is `22d3dc16dd9ad529d4541cb51e7f0323e8f7d387` (`ci: add OpenWiki init workflow`). The working tree has an uncommitted modification to `.github/workflows/openwiki-update.yml`: it removes the `Build` environment and changes the update run from OpenAI/gpt-5.5/no tracing to OpenRouter `z-ai/glm-5.2` with LangSmith tracing env vars. Treat this as working-tree state, not committed baseline.
+The inspected HEAD is `5f1966d29d2344360443527129333023944d2654` (`docs: update OpenWiki (#159)`). The working tree has an uncommitted modification to `.github/workflows/openwiki-update.yml`: it removes the `Build` environment and changes the update run from OpenAI/gpt-5.5/no tracing to OpenRouter `z-ai/glm-5.2` with LangSmith tracing env vars. Treat this as working-tree state, not committed baseline.
