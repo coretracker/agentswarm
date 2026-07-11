@@ -71,6 +71,18 @@ Notes:
 
 `update` runs `git pull --ff-only` for the current branch, then performs the cached rebuild. If Git cannot fast-forward or pull successfully, the rebuild does not run.
 
+## Creating a Release
+
+Run the **Release** workflow manually from the GitHub Actions page while selecting the `develop` branch. Choose the semantic version component to increase:
+
+- `patch`: `0.1.0` to `0.1.1`
+- `minor`: `0.1.0` to `0.2.0`
+- `major`: `0.1.0` to `1.0.0`
+
+The manual run executes CI, updates the root `package.json` and `package-lock.json`, commits the new version to `develop`, and opens a release pull request from `develop` to `main`. Review and merge that pull request to run CI on `main`, create an annotated `vX.Y.Z` tag, and publish a GitHub Release with generated notes.
+
+The workflow requires permission to push its version commit to `develop` and open a pull request. Branch protection must allow the GitHub Actions bot to push to `develop`, and the repository Actions settings must allow workflows to create pull requests. Normal `main` review and merge protections remain in effect.
+
 ## CI / Local Parity Notes
 - CI workflow: `.github/workflows/lint-and-tests.yml`.
 - CI runs:
