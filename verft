@@ -9,12 +9,14 @@ DEFAULT_TASK_WORKSPACE_DIR="$ROOT_DIR/task-workspaces"
 
 print_usage() {
   cat <<EOF
-Usage: ./${SCRIPT_NAME} <start|stop|rebuild|init|help>
+Usage: ./${SCRIPT_NAME} <start|stop|rebuild [--clean]|update|init|help>
 
 Commands:
   start    Start the Verft compose stack in the background.
   stop     Stop the Verft compose stack.
   rebuild  Rebuild compose and agent toolbox runtime images, then restart.
+           Pass --clean to pull base images and disable the build cache.
+  update   Fast-forward the current Git branch, then rebuild and restart.
   init     Alias for rebuild.
   help     Show this help text.
 EOF
@@ -49,6 +51,13 @@ load_env_file() {
 require_docker() {
   if ! command -v docker >/dev/null 2>&1; then
     echo "docker is required but not installed." >&2
+    exit 1
+  fi
+}
+
+require_git() {
+  if ! command -v git >/dev/null 2>&1; then
+    echo "git is required but not installed." >&2
     exit 1
   fi
 }
@@ -90,10 +99,15 @@ ensure_task_workspace_dir() {
 }
 
 build_runtime_image() {
+  local clean_build="$1"
+  local -a build_args=()
+  if [[ "$clean_build" == "true" ]]; then
+    build_args=(--pull --no-cache)
+  fi
+
   echo "Building agent toolbox runtime image: $AGENT_RUNTIME_IMAGE"
   docker build \
-    --pull \
-    --no-cache \
+    "${build_args[@]}" \
     -f "$ROOT_DIR/agent-runtime/Dockerfile" \
     -t "$AGENT_RUNTIME_IMAGE" \
     "$ROOT_DIR/agent-runtime"
@@ -113,23 +127,48 @@ stop_stack() {
 }
 
 rebuild_stack() {
-  build_runtime_image
+  local clean_build="$1"
+  local -a build_args=()
+  if [[ "$clean_build" == "true" ]]; then
+    build_args=(--pull --no-cache)
+  fi
+
+  build_runtime_image "$clean_build"
   echo "Rebuilding Verft compose images"
-  compose build --pull --no-cache
+  compose build "${build_args[@]}"
   echo "Restarting Verft services"
   ensure_task_workspace_dir
   compose up -d --force-recreate
   print_access_hint
 }
 
+update_stack() {
+  echo "Updating Verft from Git"
+  git pull --ff-only
+  rebuild_stack false
+}
+
 main() {
   local command="${1:-help}"
+  local option="${2:-}"
+
+  if (( $# > 2 )); then
+    echo "Too many arguments." >&2
+    print_usage >&2
+    exit 1
+  fi
+
+  if [[ -n "$option" && ! ( "$command" == "rebuild" && "$option" == "--clean" ) ]]; then
+    echo "Unsupported option for '$command': $option" >&2
+    print_usage >&2
+    exit 1
+  fi
 
   case "$command" in
     help|-h|--help)
       print_usage
       ;;
-    start|stop|rebuild|init)
+    start|stop|rebuild|update|init)
       load_env_file
       require_docker
       detect_compose
@@ -145,8 +184,19 @@ main() {
         stop)
           stop_stack
           ;;
-        rebuild|init)
-          rebuild_stack
+        rebuild)
+          if [[ "$option" == "--clean" ]]; then
+            rebuild_stack true
+          else
+            rebuild_stack false
+          fi
+          ;;
+        update)
+          require_git
+          update_stack
+          ;;
+        init)
+          rebuild_stack false
           ;;
       esac
       ;;

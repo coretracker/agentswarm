@@ -76,13 +76,13 @@ cp .env.example .env
 Initialize the Docker stack and agent runtime image:
 
 ```bash
-./verft.sh init
+./verft init
 ```
 
 Start the app:
 
 ```bash
-./verft.sh start
+./verft start
 ```
 
 Open the UI:
@@ -103,7 +103,7 @@ After signing in:
 Stop the app:
 
 ```bash
-./verft.sh stop
+./verft stop
 ```
 
 ## Core Concepts
@@ -230,10 +230,12 @@ Checkpoint mutation, push/merge, attachments, terminal control, and summarizatio
 
 | Command | Description |
 | --- | --- |
-| `./verft.sh init` | Build the agent toolbox runtime image, rebuild compose images, and start the stack. |
-| `./verft.sh start` | Start the Docker Compose stack in the background. |
-| `./verft.sh rebuild` | Rebuild the agent toolbox runtime and compose images, then restart the stack. |
-| `./verft.sh stop` | Stop the Docker Compose stack. |
+| `./verft init` | Build the agent toolbox runtime image, rebuild compose images, and start the stack. |
+| `./verft start` | Start the Docker Compose stack in the background. |
+| `./verft rebuild` | Rebuild the agent toolbox runtime and compose images using the build cache, then restart the stack. |
+| `./verft rebuild --clean` | Pull base images, rebuild runtime and compose images without the build cache, then restart the stack. |
+| `./verft update` | Fast-forward the current Git branch, rebuild using the build cache, and restart the stack. |
+| `./verft stop` | Stop the Docker Compose stack. |
 | `./scripts/harness/start.sh` | Start the development stack and wait for health. |
 
 The health endpoint is available at:
@@ -257,7 +259,7 @@ curl -fsS http://localhost:3217/api/health
 +-- scripts/harness/     # Canonical setup, check, test, and PR scripts
 +-- task-workspaces/     # Runtime task workspaces; do not commit
 +-- docker-compose.yml   # Local Docker stack
-+-- verft.sh             # Main stack helper script
++-- verft                # Main stack helper script
 ```
 
 ## Development

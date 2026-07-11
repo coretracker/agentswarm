@@ -25,7 +25,7 @@ This wiki is a synthesis layer over the source tree and existing docs. Start her
 | `hostexec` | Optional host daemon exposing selected host commands to runtime containers via generated shims. |
 | `docs` | Existing architecture, product, development, quality, and execution-plan docs. Prefer linking to them instead of duplicating detailed runbooks. |
 | `scripts/harness` and `scripts/ci.sh` | Development setup/check/test helpers; `npm run ci` uses `scripts/ci.sh`. |
-| `docker-compose.yml`, `deploy/nginx.conf`, `verft.sh` | Local stack orchestration and reverse proxy. |
+| `docker-compose.yml`, `deploy/nginx.conf`, `verft` | Local stack orchestration and reverse proxy. |
 
 Primary source references: `README.md`, `ARCHITECTURE.md`, `docs/index.md`, `docs/architecture/domains.md`, `package.json`, and `docker-compose.yml`.
 
@@ -40,7 +40,7 @@ Primary source references: `README.md`, `ARCHITECTURE.md`, `docs/index.md`, `doc
 2. Build the toolbox runtime image and start the Docker stack:
 
    ```bash
-   ./verft.sh init
+   ./verft init
    ```
 
 3. Open `http://localhost:3217/login`.
