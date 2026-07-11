@@ -1,8 +1,8 @@
 import { randomBytes } from "node:crypto";
 import type Redis from "ioredis";
 
-const SESSION_KEY_PREFIX = "agentswarm:session:";
-const USER_SESSION_IDS_KEY_PREFIX = "agentswarm:user_session_ids:";
+const SESSION_KEY_PREFIX = "verft:session:";
+const USER_SESSION_IDS_KEY_PREFIX = "verft:user_session_ids:";
 
 export interface SessionRecord {
   token: string;

@@ -16,7 +16,7 @@
 ## What To Look For In Logs
 Server logs are structured JSON. Useful fields:
 - `time`, `level`, `msg`
-- `service` (should be `agentswarm-server`)
+- `service` (should be `verft-server`)
 - `requestId` (correlates request start/end/error)
 - `operationId` (when `x-operation-id` header is sent)
 - `method`, `url`, `statusCode`, `durationMs`
@@ -50,11 +50,10 @@ Fix:
 Symptoms:
 - `start.sh` never reaches healthy state.
 - Browser cannot open `http://localhost:3217/login`.
-- Setup/start fails with bind errors for `6379` or `5432`.
+- Setup/start fails with a bind error for the proxy web port.
 
 Fix:
 - Change `PUBLIC_PORT` in `.env`.
-- If Redis/Postgres ports conflict, change `REDIS_HOST_PORT` and `POSTGRES_HOST_PORT` in `.env`.
 - Re-run `./scripts/harness/start.sh`.
 
 ### Environment file missing or incomplete
@@ -97,6 +96,7 @@ Fix:
 ```
 
 - Confirm required services exist and are up: `server`, `web`, `proxy`, `redis`, `postgres`.
+- Redis and Postgres should not have host port bindings; only the proxy should publish `PUBLIC_PORT`.
 
 ### Login fails with expected default admin
 Symptoms:
@@ -126,4 +126,10 @@ docker compose ps
 
 ## External Services and Secrets
 - Provider credentials (GitHub/OpenAI/Anthropic) are set in the app Settings UI.
+- GitHub token and Git username in Settings are used for authenticated GitHub HTTPS operations from both server-side Git actions and Codex/Claude task runtimes.
+- Git author identity comes from the task owner's `Git Author Name` / `Git Author Email`, falling back to the user's profile name/email.
+- If agents can edit locally but remote Git commands fail, verify the GitHub token first.
+- `could not read Username` usually means the GitHub token is missing, the runtime did not receive `GIT_TOKEN`, or the remote requires a different auth mode than HTTPS PAT.
+- `Authentication failed` usually means the token exists but lacks repository permissions or no longer grants access to that repository.
+- `Author identity unknown` means the runtime did not receive a usable Git author name/email; check the task owner's profile or user admin record.
 - TODO: Document any additional external dependencies required for production-like flows.

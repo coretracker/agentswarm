@@ -8,7 +8,7 @@ import {
   type TaskAction,
   type TaskReasoningEffort,
   type TaskType
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   defaultModelForProvider,
   normalizeModelOverride,
@@ -65,8 +65,8 @@ export const requireInteractiveTerminalAccess = (request: FastifyRequest, reply:
   requireScopes(
     request,
     reply,
-    ["task:interactive"],
-    "Interactive terminal access is not permitted for this role."
+    ["task:terminal"],
+    "Terminal access is not permitted for this role."
   );
 
 export const requireTaskExecutionConfigAccess = (

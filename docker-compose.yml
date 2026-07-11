@@ -1,21 +1,22 @@
 services:
   redis:
     image: redis:7-alpine
-    ports:
-      - "${REDIS_HOST_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
 
   postgres:
     image: postgres:16-alpine
     environment:
-      - POSTGRES_DB=agentswarm
+      - POSTGRES_DB=verft
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
-    ports:
-      - "${POSTGRES_HOST_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d verft"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
   server:
     build:
@@ -24,58 +25,41 @@ services:
     environment:
       - PORT=4000
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:postgres@postgres:5432/agentswarm}
-      - POSTGRES_AUTO_MIGRATE=${POSTGRES_AUTO_MIGRATE:-true}
-      - GIT_USER_NAME=${GIT_USER_NAME:-AgentSwarm Bot}
-      - GIT_USER_EMAIL=${GIT_USER_EMAIL:-agentswarm@local.dev}
-      - LOCAL_PLANS_ROOT=/plans
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/verft
       - REPO_CACHE_ROOT=/repo-cache
-      - REPO_CACHE_VOLUME=agentswarm_repo_cache
+      - REPO_CACHE_VOLUME=verft_repo_cache
       - RUNTIME_PAYLOAD_ROOT=/runtime-payloads
-      - RUNTIME_PAYLOAD_VOLUME=agentswarm_runtime_payloads
+      - RUNTIME_PAYLOAD_VOLUME=verft_runtime_payloads
       - TASK_WORKSPACE_ROOT=/task-workspaces
-      - TASK_WORKSPACE_HOST_ROOT=${PWD}/task-workspaces
-      - SECRET_KEY_PATH=/secrets/agentswarm.key
+      - SECRET_KEY_PATH=/secrets/verft.key
       - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3217}
       - DEFAULT_ADMIN_NAME=${DEFAULT_ADMIN_NAME:-Administrator}
-      - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@agentswarm.local}
+      - DEFAULT_ADMIN_EMAIL=${DEFAULT_ADMIN_EMAIL:-admin@verft.local}
       - DEFAULT_ADMIN_PASSWORD=${DEFAULT_ADMIN_PASSWORD:-admin123!}
-      - AUTH_COOKIE_NAME=${AUTH_COOKIE_NAME:-agentswarm_session}
+      - AUTH_COOKIE_NAME=${AUTH_COOKIE_NAME:-verft_session}
       - AUTH_SESSION_TTL_DAYS=${AUTH_SESSION_TTL_DAYS:-7}
-      - APP_ENVIRONMENT=${APP_ENVIRONMENT:-local}
-      - DOCKER_SOCKET_ACCESS_ENABLED=${DOCKER_SOCKET_ACCESS_ENABLED:-false}
+      - DOCKER_SOCKET_ACCESS_ENABLED=${DOCKER_SOCKET_ACCESS_ENABLED:-true}
       - DOCKER_SOCKET_HOST_PATH=${DOCKER_SOCKET_HOST_PATH:-/var/run/docker.sock}
       - DOCKER_SOCKET_CONTAINER_PATH_CODEX=${DOCKER_SOCKET_CONTAINER_PATH_CODEX:-/var/run/docker.sock}
       - DOCKER_SOCKET_CONTAINER_PATH_CLAUDE=${DOCKER_SOCKET_CONTAINER_PATH_CLAUDE:-/var/run/docker.sock}
-      - GIT_TERMINAL_IMAGE=${GIT_TERMINAL_IMAGE:-local/git-terminal:latest}
-      # In-browser terminal images: build with tools/codex-web-terminal/Dockerfile.git, Dockerfile.codex, and Dockerfile.claude
-      - CODEX_INTERACTIVE_IMAGE=${CODEX_INTERACTIVE_IMAGE:-local/codex-interactive:latest}
-      - CLAUDE_INTERACTIVE_IMAGE=${CLAUDE_INTERACTIVE_IMAGE:-local/claude-interactive:latest}
-    expose:
-      - "4000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ${LOCAL_PLANS_HOST_ROOT:-./local-plans}:/plans
       - repo_cache:/repo-cache
       - runtime_payloads:/runtime-payloads
-      - ${PWD}/task-workspaces:/task-workspaces
+      - ./task-workspaces:/task-workspaces
       - server_secrets:/secrets
     depends_on:
-      - redis
-      - postgres
+      redis:
+        condition: service_started
+      postgres:
+        condition: service_healthy
 
   web:
     build:
       context: .
       dockerfile: apps/web/Dockerfile
-      args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-}
-        NEXT_PUBLIC_SOCKET_URL: ${NEXT_PUBLIC_SOCKET_URL:-}
-    environment:
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-}
-      - NEXT_PUBLIC_SOCKET_URL=${NEXT_PUBLIC_SOCKET_URL:-}
-    expose:
-      - "3217"
     depends_on:
       - server
 
@@ -84,7 +68,7 @@ services:
     ports:
       - "${PUBLIC_PORT:-3217}:3217"
     volumes:
-      - ${NGINX_CONF_HOST_PATH:-./deploy/nginx.conf}:/etc/nginx/conf.d/default.conf:ro
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
       - web
       - server
@@ -93,8 +77,8 @@ volumes:
   redis_data:
   postgres_data:
   repo_cache:
-    name: agentswarm_repo_cache
+    name: verft_repo_cache
   runtime_payloads:
-    name: agentswarm_runtime_payloads
+    name: verft_runtime_payloads
   server_secrets:
-    name: agentswarm_server_secrets
+    name: verft_server_secrets

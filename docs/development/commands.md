@@ -1,15 +1,15 @@
 # Development Commands
 
-## Canonical Agent Harness Commands
+## Harness Commands
 - `./scripts/harness/doctor.sh`: verify tools and script availability.
 - `./scripts/harness/setup.sh`: initialize Docker stack and local runtime folders.
-- `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh`: also install npm dependencies for check/test/pr-ready.
+- `HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh`: also install npm dependencies.
 - `./scripts/harness/check-docs.sh`: scan docs for broken internal links, TODO/FIXME counts, and stale review metadata warnings.
 - `./scripts/harness/check-human-gated-flow.sh`: verify active execution plans contain required human-gated flow evidence.
-- `./scripts/harness/check.sh`: run docs checks + human-gated flow checks + boundary checks + lint + build.
+- `./scripts/harness/check.sh`: compatibility wrapper for `npm run ci`.
 - `node ./scripts/harness/boundary-check.mjs`: run architecture boundary checks only.
-- `./scripts/harness/test.sh`: run server + web tests.
-- `./scripts/harness/pr-ready.sh`: run pull request readiness verification.
+- `./scripts/harness/test.sh`: legacy scoped test runner.
+- `./scripts/harness/pr-ready.sh`: compatibility wrapper for `npm run ci`.
 - `./scripts/harness/start.sh`: start dev processes (foreground).
 
 ## Remote Build Mode
@@ -17,64 +17,78 @@
 - Required with remote mode: `REMOTE_BUILD_IMAGE`.
 - Optional override: `REMOTE_BUILD_RUNNER_URL` (default: `http://host.docker.internal:38127`).
 - Remote runs use `TASK_WORKSPACE_PATH` when present for the runner `workdir`.
-- Remote mode auto-derives `TASK_WORKSPACE_HOST_ROOT`, `LOCAL_PLANS_HOST_ROOT`, and `NGINX_CONF_HOST_PATH` from the remote workdir unless explicitly set.
+- Remote mode uses `TASK_WORKSPACE_PATH` as the runner workdir when present.
 - Set `REMOTE_BUILD=0` (or unset it) to run harness scripts locally.
 - Runner API note: `/run` expects `cmd` as a non-empty string array, not a single string.
 - Remote runner image should include: `bash`, `node`, `npm`, `python3`, `docker`, and Docker Compose.
 - For remote browser E2E: if the runner is musl-based, harness auto-falls back to `PLAYWRIGHT_DOCKER_IMAGE` (default `mcr.microsoft.com/playwright:v1.60.0-noble`).
-- If host ports are occupied, override: `PUBLIC_PORT`, `REDIS_HOST_PORT`, `POSTGRES_HOST_PORT`.
+- If the web host port is occupied, override `PUBLIC_PORT`. Redis and Postgres are not published as host ports in the Docker stack.
 
 ## Root Package Manager Commands
 - `npm run dev`: runs server and web dev processes together.
 - `npm run dev:server`: runs backend only.
 - `npm run dev:web`: runs frontend only.
-- `npm run test`: canonical harness test run (`./scripts/harness/test.sh`).
+- `npm run ci`: runs dependency install, lint, build, and tests inside a single Node Docker container, then removes the container and image.
+- `npm test`: runs server and web tests.
 - `npm run typecheck`: alias to repository type checks (`npm run lint`).
 - `npm run build`: builds shared-types, server, and web.
 - `npm run lint`: TypeScript no-emit checks for server and web.
 
 Notes:
 - `setup.sh` only installs npm dependencies when `HARNESS_INSTALL_NPM_DEPS=1` is set.
-- On clean checkout, install dependencies before running `check.sh`, `test.sh`, or `pr-ready.sh`.
-- `pr-ready.sh` forces dependency installation automatically when `node_modules` is missing.
+- `npm run ci` does not require host `node_modules`; it runs `npm ci --include=dev` inside Docker.
+- `npm run ci` removes its Docker container and image when it exits. Set `CI_DOCKER_KEEP_IMAGE=1` only when deliberately debugging image reuse.
+- On clean checkout, install dependencies before running host-local lint or tests directly.
 - Harness setup installs dependencies with `npm ci --include=dev`.
 - `npm ci` requires `python3` in this repo because `node-pty` may need local native build steps.
-- `check.sh` and `pr-ready.sh` enforce human-gated flow evidence for active execution plans.
-- Set `HARNESS_REQUIRE_ACTIVE_EXEC_PLAN=1` to fail when no active execution plan exists.
 
 ## Workspace Commands
-- Server (`@agentswarm/server`):
-  - `npm run -w @agentswarm/server dev`
-  - `npm run -w @agentswarm/server start`
-  - `npm run -w @agentswarm/server build`
-  - `npm run -w @agentswarm/server lint`
-  - `npm run -w @agentswarm/server test`
-  - `npm run -w @agentswarm/server db:migrate`
-  - `npm run -w @agentswarm/server db:backfill:redis-to-postgres`
-- Web (`@agentswarm/web`):
-  - `npm run -w @agentswarm/web dev`
-  - `npm run -w @agentswarm/web start`
-  - `npm run -w @agentswarm/web build`
-  - `npm run -w @agentswarm/web lint`
-  - `npm run -w @agentswarm/web test`
-- Shared types (`@agentswarm/shared-types`):
-  - `npm run -w @agentswarm/shared-types build`
+- Server (`@verft/server`):
+  - `npm run -w @verft/server dev`
+  - `npm run -w @verft/server start`
+  - `npm run -w @verft/server build`
+  - `npm run -w @verft/server lint`
+  - `npm run -w @verft/server test`
+  - `npm run -w @verft/server db:migrate`
+- Web (`@verft/web`):
+  - `npm run -w @verft/web dev`
+  - `npm run -w @verft/web start`
+  - `npm run -w @verft/web build`
+  - `npm run -w @verft/web lint`
+  - `npm run -w @verft/web test`
+- Shared types (`@verft/shared-types`):
+  - `npm run -w @verft/shared-types build`
 
 ## Existing Docker Control Commands
-- `./agentswarm.sh init`
-- `./agentswarm.sh start`
-- `./agentswarm.sh rebuild`
-- `./agentswarm.sh stop`
+- `./verft init`
+- `./verft start`
+- `./verft rebuild`
+- `./verft rebuild --clean`
+- `./verft update`
+- `./verft stop`
+
+`init` and `rebuild` build the unified agent toolbox image from `agent-runtime/Dockerfile`. Builds use Docker's cache by default; pass `--clean` to `rebuild` to pull base images and disable the build cache. Override the tag with `AGENT_RUNTIME_IMAGE` when testing a custom runtime image.
+
+`update` runs `git pull --ff-only` for the current branch, then performs the cached rebuild. If Git cannot fast-forward or pull successfully, the rebuild does not run.
+
+## Creating a Release
+
+Run the **Release** workflow manually from the GitHub Actions page while selecting the `develop` branch. Choose the semantic version component to increase:
+
+- `patch`: `0.1.0` to `0.1.1`
+- `minor`: `0.1.0` to `0.2.0`
+- `major`: `0.1.0` to `1.0.0`
+
+The manual run executes CI, updates the root `package.json` and `package-lock.json`, commits the new version to `develop`, and opens a release pull request from `develop` to `main`. Review and merge that pull request to run CI on `main`, create an annotated `vX.Y.Z` tag, and publish a GitHub Release with generated notes.
+
+The workflow requires permission to push its version commit to `develop` and open a pull request. Branch protection must allow the GitHub Actions bot to push to `develop`, and the repository Actions settings must allow workflows to create pull requests. Normal `main` review and merge protections remain in effect.
 
 ## CI / Local Parity Notes
-- CI workflow: `.github/workflows/harness-check.yml`.
+- CI workflow: `.github/workflows/lint-and-tests.yml`.
 - CI runs:
-  - `./scripts/harness/doctor.sh` when Docker is available on the runner.
-  - `./scripts/harness/check.sh`.
-  - `./scripts/harness/test.sh`.
-- CI does **not** run `./scripts/harness/pr-ready.sh` because that would duplicate expensive checks already covered by doctor/check/test.
+  - `./scripts/ci.sh`, which runs `npm ci`, lint, build, and tests in `node:22-bookworm`.
 - Local pre-PR flow remains:
-  - `./scripts/harness/pr-ready.sh`
+  - `npm run ci`
 
 ## TODO
 - TODO: Add a canonical root format-check command (`format:check` or `fmt:check`) if/when a formatter is adopted.

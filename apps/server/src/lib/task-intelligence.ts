@@ -1,4 +1,4 @@
-import type { TaskComplexity } from "@agentswarm/shared-types";
+import type { TaskComplexity } from "@verft/shared-types";
 
 const pathPattern = /\b(?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+\b/g;
 const complexityKeywords = /(refactor|migrate|architecture|redis|docker|socket|websocket|backend|frontend|database|queue|worker|concurrency|stream|realtime|multi[- ]step|full stack|end[- ]to[- ]end)/i;

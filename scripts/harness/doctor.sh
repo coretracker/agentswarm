@@ -8,6 +8,8 @@ source "${SCRIPT_DIR}/lib/remote-build.sh"
 ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/doctor.sh" "$@"
 
 cd "$REPO_ROOT"
+TASK_WORKSPACE_DOCKER_SOURCE="${TASK_WORKSPACE_DOCKER_SOURCE:-$REPO_ROOT/task-workspaces}"
+export TASK_WORKSPACE_DOCKER_SOURCE
 
 log() {
   echo "[harness:doctor] $1"
@@ -60,8 +62,8 @@ if [[ -f .env.example ]]; then
   done
 fi
 
-if [[ ! -x ./agentswarm.sh ]]; then
-  echo "[harness:doctor] error: ./agentswarm.sh is missing or not executable" >&2
+if [[ ! -x ./verft ]]; then
+  echo "[harness:doctor] error: ./verft is missing or not executable" >&2
   exit 1
 fi
 
@@ -87,8 +89,8 @@ fi
 
 log "validating npm workspace scripts"
 npm run >/dev/null
-npm run -w @agentswarm/server >/dev/null
-npm run -w @agentswarm/web >/dev/null
+npm run -w @verft/server >/dev/null
+npm run -w @verft/web >/dev/null
 
 log "doctor checks passed"
 log "next: run ./scripts/harness/setup.sh"

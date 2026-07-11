@@ -105,14 +105,14 @@ const collectSpecifiers = (content) => {
 const analyzeImport = ({ filePath, fileKind, specifier }) => {
   const violations = [];
 
-  if (specifier.startsWith("@agentswarm/shared-types/")) {
+  if (specifier.startsWith("@verft/shared-types/")) {
     violations.push(
       createViolation({
         filePath,
         specifier,
-        rule: "Do not deep-import from @agentswarm/shared-types.",
+        rule: "Do not deep-import from @verft/shared-types.",
         why: "Deep imports bypass the package boundary and can break when internals change.",
-        fix: "Import from @agentswarm/shared-types root export instead."
+        fix: "Import from @verft/shared-types root export instead."
       })
     );
     return violations;
@@ -173,7 +173,7 @@ const analyzeImport = ({ filePath, fileKind, specifier }) => {
         specifier,
         rule: "Apps must import shared-types via package name, not filesystem paths.",
         why: "Package imports preserve clear boundaries and stable public exports.",
-        fix: "Replace relative path import with @agentswarm/shared-types."
+        fix: "Replace relative path import with @verft/shared-types."
       })
     );
   }

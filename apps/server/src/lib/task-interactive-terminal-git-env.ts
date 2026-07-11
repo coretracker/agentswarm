@@ -1,6 +1,6 @@
 import type { GitCommitIdentity } from "./task-git-identity.js";
 
-export function buildInteractiveWorkspaceGitEnvEntries(
+export function buildWorkspaceGitEnvEntries(
   workspacePath: string,
   configEntries: Array<[string, string]> = []
 ): Array<[string, string]> {
@@ -14,7 +14,7 @@ export function buildInteractiveWorkspaceGitEnvEntries(
   return envEntries;
 }
 
-export function buildGitTerminalEnvEntries(options: {
+export function buildTaskRuntimeGitEnvEntries(options: {
   workspacePath: string;
   githubToken?: string | null;
   gitUsername?: string | null;
@@ -23,11 +23,8 @@ export function buildGitTerminalEnvEntries(options: {
   const identityName = options.gitIdentity?.name.trim() ?? "";
   const identityEmail = options.gitIdentity?.email.trim() ?? "";
   const envEntries: Array<[string, string]> = [
-    ["TERM", "xterm-256color"],
-    ["HOME", "/root"],
-    ["TASK_INTERACTIVE_WORKSPACE", options.workspacePath],
     ["GIT_OPTIONAL_LOCKS", "0"],
-    ...buildInteractiveWorkspaceGitEnvEntries(
+    ...buildWorkspaceGitEnvEntries(
       options.workspacePath,
       identityName && identityEmail
         ? [
@@ -48,14 +45,30 @@ export function buildGitTerminalEnvEntries(options: {
   }
 
   if (options.githubToken?.trim()) {
-    envEntries.push(["GIT_TOKEN", options.githubToken.trim()]);
+    const githubToken = options.githubToken.trim();
+    envEntries.push(["GIT_TOKEN", githubToken]);
+    envEntries.push(["GH_TOKEN", githubToken]);
     envEntries.push(["GIT_USERNAME", options.gitUsername?.trim() || "x-access-token"]);
   }
 
   return envEntries;
 }
 
-export function buildGitTerminalDockerEnvEntries(options: {
+export function buildTerminalEnvEntries(options: {
+  workspacePath: string;
+  githubToken?: string | null;
+  gitUsername?: string | null;
+  gitIdentity?: GitCommitIdentity | null;
+}): Array<[string, string]> {
+  return [
+    ["TERM", "xterm-256color"],
+    ["HOME", "/home/agent"],
+    ["TASK_INTERACTIVE_WORKSPACE", options.workspacePath],
+    ...buildTaskRuntimeGitEnvEntries(options)
+  ];
+}
+
+export function buildTerminalDockerEnvEntries(options: {
   runtimeEnvEntries: Array<[string, string]>;
   repositoryEnvEntries?: Array<[string, string]> | null;
 }): Array<[string, string]> {

@@ -16,9 +16,9 @@ build_remote_command() {
     DOC_STALE_DAYS
     FOLLOW
     TAIL_LINES
-    AGENTSWARM_UI_BASE_URL
-    AGENTSWARM_E2E_EMAIL
-    AGENTSWARM_E2E_PASSWORD
+    VERFT_UI_BASE_URL
+    VERFT_E2E_EMAIL
+    VERFT_E2E_PASSWORD
     PLAYWRIGHT_CAPTURE_VIDEO
     PLAYWRIGHT_SKIP_INSTALL
     CI
@@ -28,14 +28,10 @@ build_remote_command() {
     LC_ALL
     NO_COLOR
     FORCE_COLOR
-    AGENTSWARM_TEST_SEED
+    VERFT_TEST_SEED
     PUBLIC_PORT
-    REDIS_HOST_PORT
-    POSTGRES_HOST_PORT
     TASK_WORKSPACE_PATH
-    TASK_WORKSPACE_HOST_ROOT
-    LOCAL_PLANS_HOST_ROOT
-    NGINX_CONF_HOST_PATH
+    TASK_WORKSPACE_DOCKER_SOURCE
   )
 
   local -a cmd_parts=("env" "HARNESS_REMOTE_EXECUTING=1")
@@ -89,14 +85,7 @@ ensure_remote_build_execution() {
   fi
 
   local remote_cmd=""
-  if [[ "$script_path" == "./scripts/harness/setup.sh" || "$script_path" == "./scripts/harness/start.sh" ]]; then
-    local remote_task_workspace_host_root="${TASK_WORKSPACE_HOST_ROOT:-$workdir/task-workspaces}"
-    local remote_local_plans_host_root="${LOCAL_PLANS_HOST_ROOT:-$workdir/local-plans}"
-    local remote_nginx_conf_host_path="${NGINX_CONF_HOST_PATH:-$workdir/deploy/nginx.conf}"
-    remote_cmd="$(TASK_WORKSPACE_HOST_ROOT="$remote_task_workspace_host_root" LOCAL_PLANS_HOST_ROOT="$remote_local_plans_host_root" NGINX_CONF_HOST_PATH="$remote_nginx_conf_host_path" build_remote_command "$script_path" "$@")"
-  else
-    remote_cmd="$(build_remote_command "$script_path" "$@")"
-  fi
+  remote_cmd="$(build_remote_command "$script_path" "$@")"
   echo "[harness:remote] REMOTE_BUILD=1; routing to Remote Build Runner"
   echo "[harness:remote] endpoint: ${endpoint}/run"
   echo "[harness:remote] image: $image"

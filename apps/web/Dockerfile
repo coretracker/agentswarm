@@ -4,8 +4,6 @@ RUN apk add --no-cache python3 make g++
 
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_OPTIONS=--max-old-space-size=1024
-ARG NEXT_PUBLIC_API_URL
-ARG NEXT_PUBLIC_SOCKET_URL
 
 WORKDIR /workspace
 COPY package.json package-lock.json ./
@@ -17,11 +15,9 @@ RUN npm ci
 COPY . .
 
 ENV NODE_ENV=production
-ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
-ENV NEXT_PUBLIC_SOCKET_URL=$NEXT_PUBLIC_SOCKET_URL
 
-RUN npm run build -w @agentswarm/shared-types
-RUN npm run build -w @agentswarm/web
+RUN npm run build -w @verft/shared-types
+RUN npm run build -w @verft/web
 
 EXPOSE 3217
-CMD ["npm", "run", "start", "-w", "@agentswarm/web"]
+CMD ["npm", "run", "start", "-w", "@verft/web"]

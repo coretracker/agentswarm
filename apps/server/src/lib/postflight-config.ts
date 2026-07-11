@@ -1,4 +1,4 @@
-import type { AgentProvider, Task } from "@agentswarm/shared-types";
+import type { AgentProvider, Task } from "@verft/shared-types";
 import { z } from "zod";
 
 type ParsedYamlValue = string | number | boolean | ParsedYamlObject | ParsedYamlValue[];

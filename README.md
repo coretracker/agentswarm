@@ -1,41 +1,70 @@
 <p align="center">
-  <img src="apps/web/public/logo.svg" width="120" alt="AgentSwarm logo"/>
+  <img src="apps/web/public/logo.svg" width="320" alt="Verft logo"/>
 </p>
 
-# AgentSwarm
+# Verft
 
-AgentSwarm is a Docker-based web app for running and managing AI coding work on real Git repositories. It provides one place to create tasks, run Codex or Claude agents, inspect logs and diffs, review checkpoints, manage branches, and continue work in an interactive browser terminal.
+Self-hosted control plane for parallel AI coding agents.
 
-The project is built for developers and teams who want agent-assisted coding workflows without losing visibility into Git state, task history, or repository changes.
+Verft helps engineering teams delegate coding work to Codex and Claude across existing Git repositories. Create isolated tasks, watch each agent's logs and diffs, then decide what gets applied, pushed, or merged.
 
-## Features
+It is built for teams that want the speed of AI coding agents without giving up Git discipline, review boundaries, credential control, or visibility into what changed.
 
-- Create build or ask tasks from a blank prompt, reusable snippet, GitHub issue, or pull request.
-- Run Codex and Claude tasks in isolated Docker runtime containers.
-- Track task status, messages, logs, runs, diffs, checkpoints, and Git operations from the web UI.
-- Review pending change proposals before applying, rejecting, reverting, pushing, or merging.
-- Open task workspaces in an interactive browser terminal.
-- Configure repositories, credentials, roles, users, provider defaults, and snippets.
-- Automate task creation from GitHub webhooks and repository automation rules.
-- Add repository-local postflight checks with `.agentswarm/postflight.yml`.
+## Why Verft
+
+- Run multiple AI coding tasks against the same codebase in parallel.
+- Keep each agent in an isolated Docker workspace with its own branch and runtime context.
+- Review logs, checkpoints, diffs, and Git operations before changes move forward.
+- Use Codex and Claude from one web UI with shared repository, credential, and model settings.
+- Let agents ask questions, implement work, react to GitHub feedback, and create follow-up subtasks.
+- Self-host the app, runtime containers, credentials, database, queue, and review workflow in your own infrastructure.
+
+## How It Works
+
+1. **Connect**: Add repositories, GitHub credentials, provider credentials, repository env, MCP tools, snippets, and defaults.
+2. **Create**: Start build or ask tasks from prompts, reusable snippets, GitHub feedback, or agent-created subtasks.
+3. **Observe**: Follow task status, streamed logs, messages, terminal output, checkpoints, and pending diffs from the browser.
+4. **Decide**: Apply, reject, revert, push, or merge each result from Verft's review UI.
+
+## What You Can Do
+
+### Split Work Across Agents
+
+Create separate tasks for bugs, refactors, tests, migrations, documentation, and review feedback. Verft prepares isolated workspaces so agents can make progress independently while the server tracks state, branches, and task history.
+
+### Review Before Anything Lands
+
+Build tasks produce reviewable output instead of silently changing your main codebase. Inspect diffs, logs, checkpoints, and Git sync state before applying, reverting, pushing, or merging.
+
+### Use Ask Mode For Repository Questions
+
+Ask tasks let Codex or Claude inspect a codebase and answer without writing files. Use them for code discovery, implementation planning, debugging context, or risk analysis before starting a build task.
+
+### Standardize Repeated Work
+
+Use snippets for recurring prompts, repository defaults for provider/model choices, repository-local postflight checks for validation, and MCP servers for repository-specific tool access.
+
+### Integrate With GitHub Feedback
+
+Repository GitHub integration can create or continue tasks from issues, pull request comments, edited comments, and review requests when configured. Verft can link tasks to pull requests and archive linked tasks after merge.
 
 ## Requirements
 
 | Requirement | Notes |
 | --- | --- |
-| Docker | Required for the main app stack and agent runtime containers. |
+| Docker | Required for the app stack and agent runtime containers. |
 | Docker Compose | `docker compose` is preferred; `docker-compose` is also supported. |
-| Bash | Required by the helper and harness scripts. |
+| Bash | Required by helper and harness scripts. |
 | Node.js 20+ and npm | Required for local development, checks, tests, and builds. |
 | Python 3 | Required when installing local npm dependencies because native modules such as `node-pty` may build from source. |
 
-## Installation
+## Get Started
 
 Clone the repository:
 
 ```bash
-git clone git@github.com:coretracker/agentswarm.git
-cd agentswarm
+git clone git@github.com:coretracker/verft.git
+cd verft
 ```
 
 Create a local environment file:
@@ -44,24 +73,16 @@ Create a local environment file:
 cp .env.example .env
 ```
 
-Initialize the Docker stack and runtime images:
+Initialize the Docker stack and agent runtime image:
 
 ```bash
-./agentswarm.sh init
+./verft init
 ```
-
-For a clean developer checkout that also installs npm dependencies, use the harness setup command instead:
-
-```bash
-HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
-```
-
-## Quick Start
 
 Start the app:
 
 ```bash
-./agentswarm.sh start
+./verft start
 ```
 
 Open the UI:
@@ -74,7 +95,7 @@ Bootstrap credentials come from `.env.example` and are used only when the first 
 
 After signing in:
 
-1. Open **Settings** and add provider credentials for OpenAI/Codex and/or Anthropic/Claude.
+1. Open **Settings** and add GitHub, OpenAI/Codex, and/or Anthropic/Claude credentials.
 2. Open **Repositories** and add a Git repository.
 3. Open **Tasks** and create a build or ask task.
 4. Review task output, logs, diffs, and checkpoints from the task detail page.
@@ -82,85 +103,34 @@ After signing in:
 Stop the app:
 
 ```bash
-./agentswarm.sh stop
+./verft stop
 ```
 
-## Usage
+## Core Concepts
 
-### Common Commands
+### Tasks
 
-| Command | Description |
-| --- | --- |
-| `./agentswarm.sh init` | Build runtime images, rebuild compose images, and start the stack. |
-| `./agentswarm.sh start` | Start the Docker Compose stack in the background. |
-| `./agentswarm.sh rebuild` | Rebuild runtime and compose images, then restart the stack. |
-| `./agentswarm.sh stop` | Stop the Docker Compose stack. |
-| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
+Tasks are the main unit of work in Verft.
 
-The health endpoint is available at:
-
-```bash
-curl -fsS http://localhost:3217/api/health
-```
-
-### Creating Tasks
-
-Tasks are the main unit of work in AgentSwarm.
-
-- **Build tasks** ask an agent to make repository changes.
-- **Ask tasks** ask an agent to inspect and answer without changing code.
+- **Build tasks** ask an agent to modify a repository in an isolated workspace.
+- **Ask tasks** ask an agent to inspect and answer without writing files.
 - **Snippet tasks** start from reusable prompt templates and variables.
-- **GitHub-imported tasks** can be created from issues, pull requests, review comments, and automation rules.
 
-Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
+Task definitions include title, repository, prompt, deadline, provider/model settings, branch settings, and optional prompt attachments. Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
 
-### GitHub Webhooks
+### Checkpoints And Git Actions
 
-AgentSwarm supports repository-scoped GitHub webhooks that can create tasks automatically.
+Verft tracks task status, messages, runs, logs, diffs, checkpoints, and Git operations from the web UI. Pending change proposals can be applied, rejected, reverted, pushed, or merged after review.
 
-For each repository, configure this webhook URL in GitHub:
+### Repository Configuration
 
-```text
-https://<your-host>/api/webhooks/github/<repositoryId>
-```
+Repositories can define environment variables, write-only environment secrets, default agent provider/model/effort settings, GitHub integration settings, repository-local MCP servers, host commands, snippets, and postflight checks.
 
-Use content type `application/json` and subscribe to the events you want to automate, such as Issues, Pull requests, Pull request review comments, Issue comments, and Reactions.
-
-Example repository automation rule:
-
-```json
-[
-  {
-    "id": "ai-issue-opened",
-    "name": "AI issue to build task",
-    "enabled": true,
-    "trigger": "issue_opened",
-    "syncStatusEnabled": true,
-    "labelFilter": {
-      "labelsAny": ["ai"],
-      "labelsNone": ["wip"]
-    },
-    "task": {
-      "assigneeEmail": "dev@example.com",
-      "taskType": "build",
-      "provider": "codex",
-      "providerProfile": "high",
-      "modelOverride": "gpt-5.4",
-      "codexCredentialSource": "profile"
-    }
-  }
-]
-```
-
-Supported automation triggers include:
-
-- `issue_opened`
-- `pull_request_opened`
-- comment or reaction triggers when rule-level comment automation is enabled
+Repository-specific MCP servers are configured on each repository. Task runs and interactive terminals receive only the MCP servers configured for the task repository, plus the internal Verft MCP bridge.
 
 ### Postflight Checks
 
-Repositories can define post-build automation in `.agentswarm/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
+Repositories can define post-build automation in `.verft/postflight.yml`. Postflight runs after a successful build task and before the final checkpoint is created.
 
 Example:
 
@@ -183,9 +153,18 @@ steps:
 on_failure: "fail_task"
 ```
 
+### Hostexec Bridge
+
+Hostexec lets a manually started host daemon expose selected host commands, such as macOS `xcodebuild`, to agent containers through bridge shims.
+
+1. Start the daemon on the host with `npm run hostexec`.
+2. Open a repository and add simple command names to **Host Commands**, for example `xcodebuild`, `xcrun`, or `gradlew`.
+
+Verft autodetects the daemon at the default host URLs. Repository **Host Commands** decide which command shims Verft mounts for each repository. See `hostexec/README.md` for daemon details.
+
 ## Configuration
 
-Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the AgentSwarm Settings UI, not in `.env`.
+Most runtime configuration starts in `.env`. Provider API keys and GitHub credentials are configured in the Verft Settings UI, not in `.env`.
 
 ### Core Environment Variables
 
@@ -194,65 +173,76 @@ Most runtime configuration starts in `.env`. Provider API keys and GitHub creden
 | `PUBLIC_PORT` | Public port exposed by nginx. | `3217` |
 | `CORS_ORIGIN` | Allowed web origin for the API. | `http://localhost:3217` |
 | `DEFAULT_ADMIN_NAME` | Bootstrap admin display name. | `Administrator` |
-| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@agentswarm.local` |
+| `DEFAULT_ADMIN_EMAIL` | Bootstrap admin email. | `admin@verft.local` |
 | `DEFAULT_ADMIN_PASSWORD` | Bootstrap admin password. | see `.env.example` |
-| `AUTH_COOKIE_NAME` | Session cookie name. | `agentswarm_session` |
+| `AUTH_COOKIE_NAME` | Session cookie name. | `verft_session` |
 | `AUTH_SESSION_TTL_DAYS` | Session lifetime in days. | `7` |
-| `APP_ENVIRONMENT` | Runtime environment label. | `local` |
 
 ### Storage
 
-| Variable | Description | Default |
-| --- | --- | --- |
-| `DATABASE_URL` | Postgres connection string. | see `.env.example` |
-| `POSTGRES_AUTO_MIGRATE` | Run Postgres migrations on server start. | `true` |
-| `REDIS_HOST_PORT` | Host port for Redis in local Docker setups. | `6379` |
-| `POSTGRES_HOST_PORT` | Host port for Postgres in local Docker setups. | `5432` |
-
-Durable application data is stored in Postgres. Redis is still required for sessions, queues, webhook jobs, and realtime pub/sub.
-
-### Git and Workspaces
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `GIT_USER_NAME` | Git author name used by the server. | `AgentSwarm Bot` |
-| `GIT_USER_EMAIL` | Git author email used by the server. | `agentswarm@local.dev` |
-| `TASK_WORKSPACE_HOST_ROOT` | Absolute host path for task workspaces. | unset |
-| `LOCAL_PLANS_HOST_ROOT` | Absolute host path for local plan storage. | unset |
-
-`TASK_WORKSPACE_HOST_ROOT` is important in Docker setups because the server and runtime containers must mount the same host workspace directory.
-
-### Frontend API Routing
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `NEXT_PUBLIC_API_URL` | Explicit public API base URL. | empty |
-| `NEXT_PUBLIC_SOCKET_URL` | Explicit public Socket.IO URL. | empty |
-
-Leave these empty to use the bundled same-origin `/api` proxy.
+Durable application data is stored in Postgres. Redis is required for sessions, queues, webhook jobs, and realtime pub/sub. In the Docker stack, only the nginx proxy publishes a host port; Redis, Postgres, server, and web stay on the internal Compose network.
 
 ### Runtime Images
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `CODEX_RUNTIME_IMAGE` | Automated Codex runtime image. | `agentswarm-agent-runtime-codex:latest` |
-| `CLAUDE_RUNTIME_IMAGE` | Automated Claude runtime image. | `agentswarm-agent-runtime-claude:latest` |
-| `GIT_TERMINAL_IMAGE` | Restricted Git terminal image. | `local/git-terminal:latest` |
-| `CODEX_INTERACTIVE_IMAGE` | Interactive Codex terminal image. | `local/codex-interactive:latest` |
-| `CLAUDE_INTERACTIVE_IMAGE` | Interactive Claude terminal image. | `local/claude-interactive:latest` |
+| `AGENT_RUNTIME_IMAGE` | Unified toolbox image for automated Codex/Claude runs, interactive terminals, utility runs, and Git worker containers. | `verft-agent-toolbox:latest` |
+
+The toolbox image includes Codex CLI, Claude Code, Git, GitHub CLI (`gh`), Docker CLI, Python, Node/npm, shell tools, and common build dependencies. Runtime image contents and mounted capabilities are part of the operator security boundary. GitHub CLI authentication is supplied at runtime from configured GitHub credentials; credentials are not baked into the image.
 
 ### Docker Socket Access
 
-Docker socket access is disabled by default and should stay disabled unless a runtime must start nested containers.
+Docker socket access is enabled by default in the local Docker Compose setup so toolbox containers can run Docker-backed checks and nested containers. Set `DOCKER_SOCKET_ACCESS_ENABLED=false` to opt out.
 
 | Variable | Description | Default |
 | --- | --- | --- |
-| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into Codex/Claude runtime containers. | `false` |
+| `DOCKER_SOCKET_ACCESS_ENABLED` | Mount Docker socket into toolbox runtime containers. | `true` |
 | `DOCKER_SOCKET_HOST_PATH` | Host Docker socket path. | `/var/run/docker.sock` |
 | `DOCKER_SOCKET_CONTAINER_PATH_CODEX` | In-container socket path for Codex runtimes. | `/var/run/docker.sock` |
 | `DOCKER_SOCKET_CONTAINER_PATH_CLAUDE` | In-container socket path for Claude runtimes. | `/var/run/docker.sock` |
 
 Mounting `docker.sock` is highly privileged and can effectively grant host-level control from inside the runtime container.
+
+## MCP Server
+
+Verft exposes an MCP-compatible HTTP JSON-RPC endpoint at `/mcp`.
+
+Authentication uses user personal access tokens:
+
+1. Create a token with `POST /auth/personal-access-tokens` while signed in.
+2. Store the returned `token` securely; it is only returned once.
+3. Call `/mcp` with `Authorization: Bearer <token>`.
+4. Revoke tokens with `DELETE /auth/personal-access-tokens/:id`.
+
+Supported MCP methods:
+
+- `initialize`
+- `tools/list`
+- `tools/call`
+
+Available tools include repository and task listing, task creation, subtask creation, draft updates, task starts, task messages, pull request linking, and task configuration updates.
+
+Task agents receive the Verft MCP server automatically at runtime through an internal stdio bridge and a short-lived run token. Runtime task agents can call `verft_create_subtask` to create child tasks for the repository of the currently running parent task.
+
+Checkpoint mutation, push/merge, attachments, terminal control, and summarization are intentionally deferred to later MCP phases.
+
+## Common Commands
+
+| Command | Description |
+| --- | --- |
+| `./verft init` | Build the agent toolbox runtime image, rebuild compose images, and start the stack. |
+| `./verft start` | Start the Docker Compose stack in the background. |
+| `./verft rebuild` | Rebuild the agent toolbox runtime and compose images using the build cache, then restart the stack. |
+| `./verft rebuild --clean` | Pull base images, rebuild runtime and compose images without the build cache, then restart the stack. |
+| `./verft update` | Fast-forward the current Git branch, rebuild using the build cache, and restart the stack. |
+| `./verft stop` | Stop the Docker Compose stack. |
+| `./scripts/harness/start.sh` | Start the development stack and wait for health. |
+
+The health endpoint is available at:
+
+```bash
+curl -fsS http://localhost:3217/api/health
+```
 
 ## Project Structure
 
@@ -263,19 +253,18 @@ Mounting `docker.sock` is highly privileged and can effectively grant host-level
 |   +-- web/             # Next.js web app
 +-- packages/
 |   +-- shared-types/    # Shared TypeScript types used by server and web
-+-- agent-runtime-codex/ # Automated Codex task runtime
-+-- agent-runtime-claude/# Automated Claude task runtime
++-- agent-runtime/       # Unified agent toolbox runtime
 +-- tools/               # Supporting runtime and terminal tooling
 +-- docs/                # Architecture, development, product, and quality docs
 +-- scripts/harness/     # Canonical setup, check, test, and PR scripts
 +-- task-workspaces/     # Runtime task workspaces; do not commit
 +-- docker-compose.yml   # Local Docker stack
-+-- agentswarm.sh        # Main stack helper script
++-- verft                # Main stack helper script
 ```
 
 ## Development
 
-Install dependencies on a clean checkout:
+For a clean developer checkout, initialize the stack and install npm dependencies:
 
 ```bash
 HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
@@ -293,20 +282,20 @@ Useful development commands:
 | `npm run dev` | Run server and web dev processes together. |
 | `npm run lint` | Run TypeScript no-emit checks for server and web. |
 | `npm run build` | Build shared types, server, and web. |
-| `npm run test` | Run `./scripts/harness/test.sh`. |
+| `npm run test` | Run server and web tests. |
 
 Workspace-specific commands:
 
 ```bash
-npm run dev -w @agentswarm/server
-npm run dev -w @agentswarm/web
-npm run build -w @agentswarm/shared-types
+npm run dev -w @verft/server
+npm run dev -w @verft/web
+npm run build -w @verft/shared-types
 ```
 
 Before opening a pull request, run:
 
 ```bash
-./scripts/harness/pr-ready.sh
+npm run ci
 ```
 
 The repository uses execution-plan and human-gated-flow checks for non-trivial changes. Useful references:
@@ -321,15 +310,11 @@ The repository uses execution-plan and human-gated-flow checks for non-trivial c
 
 ### Where do I configure API keys?
 
-Configure GitHub, OpenAI, and Anthropic credentials in the AgentSwarm Settings UI. Credentials are write-only from the UI and are not returned by the API.
+Configure GitHub, OpenAI, and Anthropic credentials in the Verft Settings UI. Credentials are write-only from the UI and are not returned by the API.
 
 ### Can I run without Docker?
 
 The documented and supported path is Docker-based. Some server and web commands can run locally with Node.js, but the full task execution flow depends on Docker runtime containers.
-
-### What does a `202` response from a GitHub webhook mean?
-
-It means AgentSwarm accepted the webhook payload. Whether tasks were created depends on repository automation rules, label filters, trigger type, and actor restrictions.
 
 ### How do I reset local data?
 
@@ -346,7 +331,7 @@ HARNESS_DB_RESET=1 ./scripts/harness/setup.sh
 3. Run the canonical checks before opening a pull request:
 
    ```bash
-   ./scripts/harness/pr-ready.sh
+   npm run ci
    ```
 
 4. Use the pull request template in `.github/pull_request_template.md`.

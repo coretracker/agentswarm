@@ -7,23 +7,24 @@ import type {
   AgentProvider,
   CodexCredentialSource,
   CreateTaskPromptAttachmentInput,
-  GitHubBranchReference,
   ProviderProfile,
   Repository,
   Snippet,
   SystemSettings,
   TaskBranchStrategy,
   TaskDefinitionInput,
-  TaskType
-} from "@agentswarm/shared-types";
+  TaskType,
+  User
+} from "@verft/shared-types";
 import {
   getAgentProviderLabel,
   getDefaultModelForProvider,
   getEffortOptionsForProvider,
   getModelsForProvider
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Typography, message } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
+import type { ProviderBaseStateStatus } from "../src/api/client";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
@@ -40,7 +41,6 @@ export type TaskDefinitionFormValues = {
   deadline?: string | null | Dayjs;
   repoId?: string;
   prompt?: string;
-  notes?: string;
   taskType?: TaskType;
   provider?: AgentProvider;
   model?: string;
@@ -61,18 +61,14 @@ export interface TaskDefinitionFieldsProps {
 
 type SnippetVariableFormValues = Record<string, string>;
 
-const providerOptions = (
-  hasOpenAi: boolean,
-  hasAnthropic: boolean
-): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
-  { label: "Codex (OpenAI)", value: "codex", disabled: !hasOpenAi },
-  { label: getAgentProviderLabel("claude"), value: "claude", disabled: !hasAnthropic }
+const providerOptions = (hasClaudeCredentials: boolean): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
+  { label: "Codex (OpenAI)", value: "codex" },
+  { label: getAgentProviderLabel("claude"), value: "claude", disabled: !hasClaudeCredentials }
 ];
 
 const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
-  { label: "Auto (Profile then Global)", value: "auto" },
-  { label: "Profile auth.json only", value: "profile" },
-  { label: "Global OpenAI key or auth.json", value: "global" }
+  { label: "Auto (System credentials)", value: "auto" },
+  { label: "Global OpenAI key", value: "global" }
 ];
 
 const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSettings | null): string =>
@@ -82,6 +78,35 @@ const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSetti
 
 const getProviderDefaultProfile = (provider: AgentProvider, settings?: SystemSettings | null): ProviderProfile =>
   provider === "claude" ? settings?.claudeDefaultEffort ?? "high" : settings?.codexDefaultEffort ?? "high";
+
+const getProviderConfiguredModels = (provider: AgentProvider, settings?: SystemSettings | null) => {
+  const models = provider === "claude" ? settings?.claudeModels : settings?.codexModels;
+  return models && models.length > 0 ? models : getModelsForProvider(provider);
+};
+
+export const hasClaudeTaskCredentials = (
+  settings?: Pick<SystemSettings, "anthropicApiKeyConfigured"> | null,
+  providerBaseState?: Pick<ProviderBaseStateStatus, "files"> | null
+): boolean => Boolean(settings?.anthropicApiKeyConfigured || providerBaseState?.files["claude/.credentials.json"]);
+
+const getResolvedProviderForDefaults = (
+  repository?: Repository | null,
+  settings?: SystemSettings | null,
+  user?: Pick<User, "defaultProvider"> | null
+): AgentProvider => user?.defaultProvider ?? repository?.defaultProvider ?? settings?.defaultProvider ?? "codex";
+
+const getTaskDefinitionResolvedDefaults = (
+  settings?: SystemSettings | null,
+  repository?: Repository | null,
+  user?: Pick<User, "defaultProvider" | "defaultModel" | "defaultProviderProfile"> | null
+): { provider: AgentProvider; model: string; providerProfile: ProviderProfile } => {
+  const provider = getResolvedProviderForDefaults(repository, settings, user);
+  return {
+    provider,
+    model: user?.defaultModel ?? repository?.defaultModel ?? getProviderDefaultModel(provider, settings),
+    providerProfile: user?.defaultProviderProfile ?? repository?.defaultProviderProfile ?? getProviderDefaultProfile(provider, settings)
+  };
+};
 
 const deriveTitleFromPrompt = (prompt: string): string => {
   const lines = prompt
@@ -110,14 +135,16 @@ export const getTaskDefinitionDeadlineIso = (value: TaskDefinitionFormValues["de
 };
 
 export const getTaskDefinitionInitialValues = (
-  settings?: SystemSettings | null
+  settings?: SystemSettings | null,
+  repository?: Repository | null,
+  user?: Pick<User, "defaultProvider" | "defaultModel" | "defaultProviderProfile"> | null
 ): Partial<TaskDefinitionFormValues> => {
-  const provider = settings?.defaultProvider ?? "codex";
+  const resolvedDefaults = getTaskDefinitionResolvedDefaults(settings, repository, user);
   return {
     taskType: "build",
-    provider,
-    model: getProviderDefaultModel(provider, settings),
-    providerProfile: getProviderDefaultProfile(provider, settings),
+    provider: resolvedDefaults.provider,
+    model: resolvedDefaults.model,
+    providerProfile: resolvedDefaults.providerProfile,
     codexCredentialSource: "auto",
     branchStrategy: "feature_branch"
   };
@@ -135,7 +162,6 @@ export const buildTaskDefinitionInput = (
     deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
     repoId: values.repoId ?? "",
     prompt: values.prompt?.trim() ?? "",
-    notes: values.notes?.trim() || undefined,
     ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
     taskType: values.taskType ?? "build",
     provider,
@@ -158,14 +184,12 @@ export function TaskDefinitionFields({
   const { can, session } = useAuth();
   const { repositories } = useRepositories();
   const { settings } = useSettings();
-  const [githubBranches, setGitHubBranches] = useState<GitHubBranchReference[]>([]);
-  const [githubOptionsLoading, setGitHubOptionsLoading] = useState(false);
+  const [providerBaseState, setProviderBaseState] = useState<ProviderBaseStateStatus | null>(null);
   const [magicPromptLoading, setMagicPromptLoading] = useState(false);
   const [selectedSnippetToInsertId, setSelectedSnippetToInsertId] = useState<string | null>(null);
   const [pendingSnippetForInsert, setPendingSnippetForInsert] = useState<Snippet | null>(null);
   const [snippetVariableModalOpen, setSnippetVariableModalOpen] = useState(false);
   const [snippetVariableForm] = Form.useForm<SnippetVariableFormValues>();
-  const canReadRepositoryMetadata = can("repo:read");
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
   const canRunAutomatedTask = canBuildTasks || canAskTasks;
@@ -176,24 +200,18 @@ export function TaskDefinitionFields({
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
   const selectedPrompt = Form.useWatch("prompt", form);
-  const { models: providerModels, loading: providerModelsLoading } = useProviderModels(selectedProvider);
+  const { models: providerModels, loading: providerModelsLoading, source: providerModelsSource } = useProviderModels(selectedProvider);
   const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
   const effectiveTaskType = selectedTaskType;
   const isImplementationTask = effectiveTaskType === "build";
-  const hasGlobalCodexCredentials = Boolean(settings?.openaiApiKeyConfigured || settings?.codexAuthJsonConfigured);
-  const hasAnyCodexCredentials = Boolean(hasGlobalCodexCredentials || session?.user.codexAuthJsonConfigured);
+  const hasClaudeCredentials = hasClaudeTaskCredentials(settings, providerBaseState);
   const providerMissingCredentials =
-    selectedProvider === "codex"
-      ? !hasAnyCodexCredentials
-      : !settings?.anthropicApiKeyConfigured;
+    selectedProvider === "codex" ? false : !hasClaudeCredentials;
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
   const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
-  const providerSelectOptions = providerOptions(
-    hasAnyCodexCredentials,
-    Boolean(settings?.anthropicApiKeyConfigured)
-  ).map(
+  const providerSelectOptions = providerOptions(hasClaudeCredentials).map(
     (option) => ({
       ...option,
       disabled: Boolean(option.disabled || (roleAllowedProviders.length > 0 && !roleAllowedProviders.includes(option.value)))
@@ -211,31 +229,47 @@ export function TaskDefinitionFields({
   ];
 
   useEffect(() => {
+    let active = true;
+    void api
+      .getProviderBaseStateStatus()
+      .then((status) => {
+        if (active) {
+          setProviderBaseState(status);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setProviderBaseState(null);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!settings || !syncSettingsDefaults) {
       return;
     }
 
     const currentProvider = form.getFieldValue("provider") as AgentProvider | undefined;
-    const shouldReplaceProvider = !form.isFieldTouched("provider") && (!currentProvider || currentProvider === "codex");
-    const nextProvider = shouldReplaceProvider ? settings.defaultProvider : currentProvider ?? settings.defaultProvider;
-    const providerChanged = nextProvider !== currentProvider;
-
-    if (shouldReplaceProvider) {
-      form.setFieldValue("provider", nextProvider);
+    const resolvedDefaults = getTaskDefinitionResolvedDefaults(settings, selectedRepository, session?.user);
+    const effectiveProvider =
+      form.isFieldTouched("provider") && currentProvider ? currentProvider : resolvedDefaults.provider;
+    if (!form.isFieldTouched("provider")) {
+      form.setFieldValue("provider", resolvedDefaults.provider);
     }
-
-    const currentModel = form.getFieldValue("model") as string | undefined;
-    const currentProfile = form.getFieldValue("providerProfile") as ProviderProfile | undefined;
-    const genericModel = getDefaultModelForProvider(currentProvider ?? nextProvider);
-
-    if (!form.isFieldTouched("model") && (providerChanged || !currentModel || currentModel === genericModel)) {
-      form.setFieldValue("model", getProviderDefaultModel(nextProvider, settings));
+    if (!form.isFieldTouched("model")) {
+      form.setFieldValue("model", selectedRepository?.defaultModel ?? getProviderDefaultModel(effectiveProvider, settings));
     }
-
-    if (!form.isFieldTouched("providerProfile") && (providerChanged || !currentProfile || currentProfile === "high")) {
-      form.setFieldValue("providerProfile", getProviderDefaultProfile(nextProvider, settings));
+    if (!form.isFieldTouched("providerProfile")) {
+      form.setFieldValue(
+        "providerProfile",
+        selectedRepository?.defaultProviderProfile ?? getProviderDefaultProfile(effectiveProvider, settings)
+      );
     }
-  }, [form, settings, syncSettingsDefaults]);
+  }, [form, selectedRepository, session?.user, settings, syncSettingsDefaults]);
 
   useEffect(() => {
     const selected = providerSelectOptions.find((option) => option.value === selectedProvider && !option.disabled);
@@ -280,7 +314,7 @@ export function TaskDefinitionFields({
       return;
     }
     const current = form.getFieldValue("codexCredentialSource") as CodexCredentialSource | undefined;
-    if (current === "auto" || current === "profile" || current === "global") {
+    if (current === "auto" || current === "global") {
       return;
     }
     form.setFieldValue("codexCredentialSource", "auto");
@@ -296,29 +330,6 @@ export function TaskDefinitionFields({
       form.setFieldValue("taskType", "build");
     }
   }, [canAskTasks, canBuildTasks, form, selectedTaskType]);
-
-  useEffect(() => {
-    if (!selectedRepoId || !canReadRepositoryMetadata) {
-      setGitHubBranches([]);
-      return;
-    }
-
-    let active = true;
-    setGitHubOptionsLoading(true);
-
-    void api.listGitHubBranches(selectedRepoId).catch(() => []).then((branches) => {
-      if (!active) {
-        return;
-      }
-
-      setGitHubBranches(branches);
-      setGitHubOptionsLoading(false);
-    });
-
-    return () => {
-      active = false;
-    };
-  }, [canReadRepositoryMetadata, selectedRepoId]);
 
   const promptPanelTitle = effectiveTaskType === "ask" ? "Question" : "Prompt";
   const canAttachPromptImages = allowPromptAttachments;
@@ -505,22 +516,6 @@ export function TaskDefinitionFields({
           ) : null}
         </Flex>
       </Form.Item>
-      <Form.Item
-        name="notes"
-        label="Notes (Markdown)"
-        extra={
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Optional. These notes are shown in the task Info tab below current configuration.
-          </Typography.Text>
-        }
-        style={{ marginTop: 16, marginBottom: 0 }}
-      >
-        <Input.TextArea
-          autoSize={{ minRows: 6, maxRows: 16 }}
-          style={{ resize: "none" }}
-          placeholder="Add markdown notes for context, acceptance criteria, links, or reminders."
-        />
-      </Form.Item>
     </>
   );
 
@@ -569,7 +564,7 @@ export function TaskDefinitionFields({
               <Select
                 options={providerSelectOptions}
                 onChange={(value: AgentProvider) => {
-                  const nextModels = getModelsForProvider(value).filter(
+                  const nextModels = getProviderConfiguredModels(value, settings).filter(
                     (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
                   );
                   const nextEfforts = getEffortOptionsForProvider(value).filter(
@@ -581,8 +576,25 @@ export function TaskDefinitionFields({
               />
             </Form.Item>
 
-            <Form.Item name="model" label="Model" rules={[{ required: true }]}>
-              <Select options={allowedModelOptions} loading={providerModelsLoading} showSearch optionFilterProp="label" />
+            <Form.Item
+              name="model"
+              label="Model"
+              rules={[{ required: true }]}
+              extra={
+                providerModelsSource === "api"
+                  ? "Model suggestions were refreshed from the provider."
+                  : roleAllowedModels.length === 0
+                    ? "Model choices come from the model list in Settings."
+                    : "Model choices are restricted by your role."
+              }
+            >
+              <Select
+                showSearch
+                options={allowedModelOptions}
+                loading={providerModelsLoading}
+                optionFilterProp="label"
+                placeholder="Select model"
+              />
             </Form.Item>
 
             <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
@@ -603,29 +615,14 @@ export function TaskDefinitionFields({
                 message={`${selectedProvider === "codex" ? "Codex" : "Anthropic"} credentials are missing`}
                 description={
                 selectedProvider === "codex"
-                  ? "Configure Codex auth.json in your Profile or Settings, or set an OpenAI API key in Settings before running this task."
+                  ? "Configure a Codex login terminal or set an OpenAI API key in Settings before running this task."
                   : "Configure the provider credential in Settings before running this task."
                 }
               />
             ) : null}
 
             <Form.Item name="baseBranch" label="Base Branch" rules={[{ required: true }]}>
-              <Select
-                showSearch
-                loading={githubOptionsLoading}
-                placeholder={selectedRepository?.defaultBranch ?? "develop"}
-                optionFilterProp="label"
-                options={
-                  canReadRepositoryMetadata
-                    ? githubBranches.map((branch) => ({
-                        label: branch.isDefault ? `${branch.name} (default)` : branch.name,
-                        value: branch.name
-                      }))
-                    : selectedRepository
-                      ? [{ label: selectedRepository.defaultBranch, value: selectedRepository.defaultBranch }]
-                      : []
-                }
-              />
+              <Input placeholder={selectedRepository?.defaultBranch ?? "develop"} />
             </Form.Item>
 
             {isImplementationTask ? (

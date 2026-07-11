@@ -1,6 +1,6 @@
 "use client";
 
-import type { Task, TaskDefinitionInput } from "@agentswarm/shared-types";
+import type { Task, TaskDefinitionInput } from "@verft/shared-types";
 import { api } from "../api/client";
 
 export const startMessageForDefinition = (definition: TaskDefinitionInput): string => {
@@ -13,7 +13,6 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput, option
     draft: options.draft,
     repoId: definition.repoId,
     prompt: definition.prompt,
-    notes: definition.notes,
     deadline: definition.deadline,
     attachments: definition.attachments,
     taskType: definition.taskType,

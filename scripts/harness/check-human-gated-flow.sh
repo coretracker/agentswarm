@@ -28,6 +28,18 @@ if [[ ${#plans[@]} -eq 0 ]]; then
   exit 0
 fi
 
+contains_pattern() {
+  local pattern="$1"
+  local file="$2"
+
+  if command -v rg >/dev/null 2>&1; then
+    rg -q "$pattern" "$file"
+    return $?
+  fi
+
+  grep -Eq "$pattern" "$file"
+}
+
 required_labels=(
   "Requirements Read:"
   "Requirements Understood:"
@@ -48,13 +60,13 @@ required_labels=(
 failure=0
 for plan in "${plans[@]}"; do
   echo "[harness:human-gated] checking: $plan"
-  if ! rg -q "^## Human-Gated Flow Evidence" "$plan"; then
+  if ! contains_pattern "^## Human-Gated Flow Evidence" "$plan"; then
     echo "[harness:human-gated] error: missing section '## Human-Gated Flow Evidence' in $plan" >&2
     failure=1
     continue
   fi
   for label in "${required_labels[@]}"; do
-    if ! rg -q "^- ${label}" "$plan"; then
+    if ! contains_pattern "^- ${label}" "$plan"; then
       echo "[harness:human-gated] error: missing checklist item '- ${label}' in $plan" >&2
       failure=1
     fi

@@ -92,13 +92,18 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         branch_prefix text NOT NULL,
         workspace_provisioning_mode text NOT NULL DEFAULT 'clone_only',
         git_username text NOT NULL,
+        git_author_name text NULL,
+        git_author_email text NULL,
         mcp_servers jsonb NOT NULL,
         openai_base_url text NULL,
+        anthropic_base_url text NULL,
         task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini',
         task_prompt_magic_template text NOT NULL DEFAULT '',
         codex_default_model text NOT NULL,
+        codex_models jsonb NOT NULL DEFAULT '[]'::jsonb,
         codex_default_effort text NOT NULL,
         claude_default_model text NOT NULL,
+        claude_models jsonb NOT NULL DEFAULT '[]'::jsonb,
         claude_default_effort text NOT NULL,
         response_preference_presets jsonb NOT NULL DEFAULT '[]'::jsonb
       );
@@ -401,6 +406,346 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
     sql: `
       DROP TABLE IF EXISTS sequence_runs;
       DROP TABLE IF EXISTS sequences;
+    `
+  },
+  {
+    id: "20260610_01_provider_model_settings",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS codex_models jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS claude_models jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260612_01_personal_access_tokens",
+    sql: `
+      CREATE TABLE IF NOT EXISTS personal_access_tokens (
+        id text PRIMARY KEY,
+        user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name text NOT NULL,
+        token_hash text NOT NULL UNIQUE,
+        token_prefix text NOT NULL,
+        scopes jsonb NOT NULL,
+        expires_at text NULL,
+        last_used_at text NULL,
+        revoked_at text NULL,
+        created_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS personal_access_tokens_user_created_at_idx
+        ON personal_access_tokens(user_id, created_at DESC);
+    `
+  },
+  {
+    id: "20260622_01_migrate_terminal_permission_scope",
+    sql: `
+      UPDATE roles AS r
+      SET scopes = COALESCE(
+        (
+          SELECT jsonb_agg(value ORDER BY value)
+          FROM (
+            SELECT DISTINCT
+              CASE value
+                WHEN 'task:interactive' THEN 'task:terminal'
+                ELSE value
+              END AS value
+            FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+          ) AS deduped
+        ),
+        '[]'::jsonb
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+        WHERE value = 'task:interactive'
+      );
+
+      UPDATE personal_access_tokens AS t
+      SET scopes = COALESCE(
+        (
+          SELECT jsonb_agg(value ORDER BY value)
+          FROM (
+            SELECT DISTINCT
+              CASE value
+                WHEN 'task:interactive' THEN 'task:terminal'
+                ELSE value
+              END AS value
+            FROM jsonb_array_elements_text(t.scopes) AS scope(value)
+          ) AS deduped
+        ),
+        '[]'::jsonb
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(t.scopes) AS scope(value)
+        WHERE value = 'task:interactive'
+      );
+    `
+  },
+  {
+    id: "20260623_01_remove_legacy_github_sync_columns",
+    sql: `
+      ALTER TABLE repositories
+      DROP COLUMN IF EXISTS github_webhook_secret,
+      DROP COLUMN IF EXISTS github_automations,
+      DROP COLUMN IF EXISTS sync_status_enabled;
+    `
+  },
+  {
+    id: "20260623_02_repository_github_pr_feedback_webhook_secret",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_webhook_secret text NULL;
+    `
+  },
+  {
+    id: "20260624_01_repository_github_integration_bot_login",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_integration_bot_login text NULL;
+    `
+  },
+  {
+    id: "20260624_02_repository_github_pr_feedback_instructions",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_feedback_instructions text NULL;
+    `
+  },
+  {
+    id: "20260624_02a_repository_github_pr_initial_instructions",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_initial_instructions text NULL;
+    `
+  },
+  {
+    id: "20260624_02b_repository_github_pr_feedback_template_backfill",
+    sql: `
+      UPDATE repositories
+      SET github_pr_feedback_instructions = concat(
+        'A new GitHub {{target_label}} feedback item was added to linked {{target_ref}}.
+
+Type: {{feedback_type}}
+Author: @{{author}}
+{{issue_title_line}}{{review_state_line}}{{file_line}}{{url_line}}{{diff_context_block}}
+Feedback:
+{{feedback_body}}
+
+',
+        btrim(github_pr_feedback_instructions)
+      )
+      WHERE github_pr_feedback_instructions IS NOT NULL
+        AND btrim(github_pr_feedback_instructions) <> ''
+        AND position('{{' in github_pr_feedback_instructions) = 0;
+    `
+  },
+  {
+    id: "20260624_03_repository_github_pr_require_bot_mention",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_require_bot_mention boolean NOT NULL DEFAULT false;
+    `
+  },
+  {
+    id: "20260624_04_repository_github_pr_task_owner",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_task_owner_user_id text NULL REFERENCES users(id) ON DELETE SET NULL;
+    `
+  },
+  {
+    id: "20260624_05_repository_github_pr_allowed_users",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_allowed_users jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260625_01_remove_task_notes",
+    sql: `
+      UPDATE tasks
+      SET task_data = task_data - 'notes'
+      WHERE task_data ? 'notes';
+
+      UPDATE task_drafts
+      SET definition = definition - 'notes'
+      WHERE definition ? 'notes';
+    `
+  },
+  {
+    id: "20260625_02_repository_github_pr_auto_archive_on_merge",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_auto_archive_on_merge boolean NOT NULL DEFAULT false;
+    `
+  },
+  {
+    id: "20260626_01_repository_github_pr_review_instructions",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_review_instructions text NULL;
+    `
+  },
+  {
+    id: "20260629_01_system_git_author_identity",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS git_author_name text NULL,
+      ADD COLUMN IF NOT EXISTS git_author_email text NULL;
+    `
+  },
+  {
+    id: "20260629_02_repository_mcp_servers",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS mcp_servers jsonb NOT NULL DEFAULT '[]'::jsonb;
+
+      ALTER TABLE system_settings
+      ALTER COLUMN mcp_servers SET DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260629_03_settings_anthropic_base_url",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS anthropic_base_url text NULL;
+    `
+  },
+  {
+    id: "20260630_01_repository_harness_fields",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS harness_what_exists text NULL,
+      ADD COLUMN IF NOT EXISTS harness_allowed_actions text NULL,
+      ADD COLUMN IF NOT EXISTS harness_how_to_work text NULL,
+      ADD COLUMN IF NOT EXISTS harness_definition_of_done text NULL,
+      ADD COLUMN IF NOT EXISTS harness_evidence_expectations text NULL;
+    `
+  },
+  {
+    id: "20260707_01_repository_harness_not_allowed_actions",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS harness_not_allowed_actions text NULL;
+    `
+  },
+  {
+    id: "20260709_01_system_harness_fields",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS harness_what_exists text NULL,
+      ADD COLUMN IF NOT EXISTS harness_allowed_actions text NULL,
+      ADD COLUMN IF NOT EXISTS harness_not_allowed_actions text NULL,
+      ADD COLUMN IF NOT EXISTS harness_how_to_work text NULL,
+      ADD COLUMN IF NOT EXISTS harness_definition_of_done text NULL,
+      ADD COLUMN IF NOT EXISTS harness_evidence_expectations text NULL;
+    `
+  },
+  {
+    id: "20260630_02_repository_github_task_created_comment_template",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS github_pr_task_created_comment_template text NULL;
+    `
+  },
+  {
+    id: "20260701_01_hostexec_bridge_settings",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS hostexec_enabled boolean NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS hostexec_url text NULL,
+      ADD COLUMN IF NOT EXISTS hostexec_bearer_token_env_var text NULL;
+
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS host_commands jsonb NOT NULL DEFAULT '[]'::jsonb;
+    `
+  },
+  {
+    id: "20260701_08_personal_access_token_runtime_context",
+    sql: `
+      ALTER TABLE personal_access_tokens
+      ADD COLUMN IF NOT EXISTS runtime_context jsonb NULL;
+    `
+  },
+  {
+    id: "20260702_01_repository_default_agent_settings",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS default_provider text NULL,
+      ADD COLUMN IF NOT EXISTS default_model text NULL,
+      ADD COLUMN IF NOT EXISTS default_provider_profile text NULL;
+    `
+  },
+  {
+    id: "20260702_02_user_default_agent_settings",
+    sql: `
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS github_username text NULL,
+      ADD COLUMN IF NOT EXISTS default_provider text NULL,
+      ADD COLUMN IF NOT EXISTS default_model text NULL,
+      ADD COLUMN IF NOT EXISTS default_provider_profile text NULL;
+    `
+  },
+  {
+    id: "20260706_01_remove_slack_assistant_schema",
+    sql: `
+      DROP INDEX IF EXISTS users_slack_username_idx;
+      DROP INDEX IF EXISTS slack_assistant_conversations_user_idx;
+      DROP INDEX IF EXISTS slack_assistant_conversations_slack_context_idx;
+
+      DROP TABLE IF EXISTS slack_assistant_conversations;
+
+      ALTER TABLE users
+      DROP COLUMN IF EXISTS slack_username;
+
+      ALTER TABLE repositories
+      DROP COLUMN IF EXISTS slack_bot_token,
+      DROP COLUMN IF EXISTS slack_signing_secret,
+      DROP COLUMN IF EXISTS slack_agent_mcp_servers,
+      DROP COLUMN IF EXISTS slack_last_event_at,
+      DROP COLUMN IF EXISTS slack_last_event_status,
+      DROP COLUMN IF EXISTS slack_last_event_type,
+      DROP COLUMN IF EXISTS slack_last_event_error;
+
+      ALTER TABLE system_settings
+      DROP COLUMN IF EXISTS slack_bot_token,
+      DROP COLUMN IF EXISTS slack_signing_secret,
+      DROP COLUMN IF EXISTS slack_agent_mcp_servers,
+      DROP COLUMN IF EXISTS slack_last_event_at,
+      DROP COLUMN IF EXISTS slack_last_event_status,
+      DROP COLUMN IF EXISTS slack_last_event_type,
+      DROP COLUMN IF EXISTS slack_last_event_error,
+      DROP COLUMN IF EXISTS slack_assistant_provider,
+      DROP COLUMN IF EXISTS slack_assistant_model,
+      DROP COLUMN IF EXISTS slack_harness_what_exists,
+      DROP COLUMN IF EXISTS slack_harness_allowed_actions,
+      DROP COLUMN IF EXISTS slack_harness_how_to_work,
+      DROP COLUMN IF EXISTS slack_harness_definition_of_done,
+      DROP COLUMN IF EXISTS slack_harness_evidence_expectations;
+    `
+  },
+  {
+    id: "20260707_01_repository_slack_thread_integration",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS slack_signing_secret text NULL,
+      ADD COLUMN IF NOT EXISTS slack_bot_token text NULL,
+      ADD COLUMN IF NOT EXISTS slack_channel_id text NULL,
+      ADD COLUMN IF NOT EXISTS slack_initial_instructions text NULL,
+      ADD COLUMN IF NOT EXISTS slack_feedback_instructions text NULL,
+      ADD COLUMN IF NOT EXISTS slack_task_created_reply_template text NULL,
+      ADD COLUMN IF NOT EXISTS slack_task_owner_user_id text NULL;
+    `
+  },
+  {
+    id: "20260710_01_archived_task_auto_delete_settings",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS archived_task_auto_delete_enabled boolean NOT NULL DEFAULT true,
+      ADD COLUMN IF NOT EXISTS archived_task_auto_delete_days integer NOT NULL DEFAULT 7;
     `
   }
 ];

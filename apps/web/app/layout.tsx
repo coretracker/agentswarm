@@ -7,7 +7,7 @@ import "./globals.css";
 import "react-diff-view/style/index.css";
 
 export const metadata: Metadata = {
-  title: "AgentSwarm",
+  title: "Verft",
   description: "Build, ask, and manage autonomous coding tasks"
 };
 

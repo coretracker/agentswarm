@@ -1,18 +1,21 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type {
   AgentClarifyBehavior,
   AgentCodePreference,
   AgentExplanationDepth,
   AgentFormattingStyle,
   AgentJargonLevel,
+  AgentProvider,
   AudienceType,
+  ProviderProfile,
   Repository,
   ResponsePreferencePreset,
   Role,
   User
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
+import { getAgentProviderLabel, getEffortOptionsForProvider, getModelsForProvider } from "@verft/shared-types";
 import {
   App,
   Button,
@@ -34,14 +37,17 @@ import {
 import dayjs from "dayjs";
 import { api } from "../src/api/client";
 import { useAuth } from "./auth-provider";
+import { ModelSelect } from "./model-select";
 import { ResponsePolicyFields } from "./response-policy-fields";
 
 interface UserFormValues {
   name: string;
   email: string;
-  gitAuthorName?: string;
-  gitAuthorEmail?: string;
   password?: string;
+  githubUsername?: string;
+  defaultProvider?: AgentProvider;
+  defaultModel?: string;
+  defaultProviderProfile?: ProviderProfile;
   active: boolean;
   audience?: AudienceType;
   explanationDepth?: AgentExplanationDepth;
@@ -56,6 +62,10 @@ interface UserFormValues {
 }
 
 const SYSTEM_ADMIN_ROLE_ID = "admin";
+const providerOptions: Array<{ label: string; value: AgentProvider }> = [
+  { label: getAgentProviderLabel("codex"), value: "codex" },
+  { label: getAgentProviderLabel("claude"), value: "claude" }
+];
 
 export function UsersPage() {
   const { message } = App.useApp();
@@ -69,6 +79,12 @@ export function UsersPage() {
   const [submitting, setSubmitting] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
+  const selectedDefaultProvider = (Form.useWatch("defaultProvider", form) as AgentProvider | undefined) ?? "codex";
+  const defaultModelOptions = useMemo(() => getModelsForProvider(selectedDefaultProvider), [selectedDefaultProvider]);
+  const defaultEffortOptions = useMemo(
+    () => getEffortOptionsForProvider(selectedDefaultProvider),
+    [selectedDefaultProvider]
+  );
 
   const canCreateUsers = can("user:create");
   const canEditUsers = can("user:edit");
@@ -106,8 +122,6 @@ export function UsersPage() {
     form.setFieldsValue({
       name: "",
       email: "",
-      gitAuthorName: "",
-      gitAuthorEmail: "",
       password: "",
       active: true,
       audience: undefined,
@@ -129,9 +143,11 @@ export function UsersPage() {
     form.setFieldsValue({
       name: user.name,
       email: user.email,
-      gitAuthorName: user.gitAuthorName ?? "",
-      gitAuthorEmail: user.gitAuthorEmail ?? "",
       password: "",
+      githubUsername: user.githubUsername ?? "",
+      defaultProvider: user.defaultProvider ?? undefined,
+      defaultModel: user.defaultModel ?? undefined,
+      defaultProviderProfile: user.defaultProviderProfile ?? undefined,
       active: user.active,
       audience: user.agentResponsePreference.audience,
       explanationDepth: user.agentResponsePreference.explanationDepth,
@@ -284,9 +300,11 @@ export function UsersPage() {
                 await api.updateUser(editingUser.id, {
                   name: values.name,
                   email: values.email,
-                  gitAuthorName: values.gitAuthorName?.trim() || null,
-                  gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
                   password: values.password?.trim() || undefined,
+                  githubUsername: values.githubUsername?.trim() || null,
+                  defaultProvider: values.defaultProvider ?? null,
+                  defaultModel: values.defaultModel?.trim() || null,
+                  defaultProviderProfile: values.defaultProviderProfile ?? null,
                   active: values.active,
                   agentResponsePreference: {
                     audience: values.audience,
@@ -305,8 +323,6 @@ export function UsersPage() {
                 await api.createUser({
                   name: values.name,
                   email: values.email,
-                  gitAuthorName: values.gitAuthorName?.trim() || null,
-                  gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
                   password: values.password?.trim() || "",
                   active: values.active,
                   agentResponsePreference: {
@@ -339,24 +355,6 @@ export function UsersPage() {
           <Form.Item name="email" label="Email" rules={[{ required: true, message: "Enter an email address" }]}>
             <Input />
           </Form.Item>
-          <Divider orientation="left" plain>
-            Git Commit Identity
-          </Divider>
-          <Form.Item
-            name="gitAuthorName"
-            label="Git Author Name"
-            extra="Leave blank to use the user's profile name."
-          >
-            <Input placeholder="Profile name" />
-          </Form.Item>
-          <Form.Item
-            name="gitAuthorEmail"
-            label="Git Author Email"
-            rules={[{ type: "email", message: "Enter a valid email address" }]}
-            extra="Leave blank to use the user's profile email."
-          >
-            <Input placeholder="Profile email" />
-          </Form.Item>
           <Form.Item
             name="password"
             label={editingUser ? "Password" : "Password"}
@@ -365,6 +363,43 @@ export function UsersPage() {
           >
             <Input.Password />
           </Form.Item>
+          {editingUser ? (
+            <Form.Item
+              name="githubUsername"
+              label="GitHub Username"
+              extra="Used to associate this user with GitHub activity."
+            >
+              <Input maxLength={80} />
+            </Form.Item>
+          ) : null}
+          {editingUser ? (
+            <>
+              <Divider orientation="left" plain>
+                Default Agent
+              </Divider>
+              <Card size="small">
+                <Form.Item name="defaultProvider" label="Provider">
+                  <Select
+                    allowClear
+                    placeholder="Repository or system default"
+                    options={providerOptions}
+                    onChange={(value: AgentProvider | undefined) => {
+                      const nextEfforts = getEffortOptionsForProvider(value ?? "codex");
+                      if (!nextEfforts.some((option) => option.value === form.getFieldValue("defaultProviderProfile"))) {
+                        form.setFieldValue("defaultProviderProfile", undefined);
+                      }
+                    }}
+                  />
+                </Form.Item>
+                <Form.Item name="defaultModel" label="Model">
+                  <ModelSelect options={defaultModelOptions} placeholder="Repository or system default" />
+                </Form.Item>
+                <Form.Item name="defaultProviderProfile" label="Effort">
+                  <Select allowClear options={defaultEffortOptions} placeholder="Repository or system default" />
+                </Form.Item>
+              </Card>
+            </>
+          ) : null}
           <Form.Item
             name="active"
             label="Active"

@@ -1,4 +1,4 @@
-import type { PermissionScope } from "@agentswarm/shared-types";
+import type { PermissionScope } from "@verft/shared-types";
 
 export interface NavigationRoute {
   key: string;
@@ -17,8 +17,8 @@ export const navigationRoutes: NavigationRoute[] = [
 
 export const isPublicPathname = (pathname: string): boolean => pathname === "/login";
 
-export const isTaskInteractiveFullscreenPath = (pathname: string): boolean =>
-  /^\/tasks\/[^/]+\/interactive$/.test(pathname);
+export const isTerminalFullscreenPath = (pathname: string): boolean =>
+  /^\/tasks\/[^/]+\/terminal$/.test(pathname) || pathname === "/settings/provider-setup-terminal";
 
 export const getRequiredScopesForPathname = (pathname: string): PermissionScope[] => {
   if (pathname === "/tasks" || pathname === "/tasks/board") {
@@ -29,8 +29,12 @@ export const getRequiredScopesForPathname = (pathname: string): PermissionScope[
     return ["task:create", "repo:list"];
   }
 
-  if (/^\/tasks\/[^/]+\/interactive$/.test(pathname)) {
-    return ["task:edit", "task:interactive"];
+  if (/^\/tasks\/[^/]+\/terminal$/.test(pathname)) {
+    return ["task:edit", "task:terminal"];
+  }
+
+  if (pathname === "/settings/provider-setup-terminal") {
+    return ["settings:edit"];
   }
 
   if (pathname.startsWith("/tasks/")) {
@@ -51,6 +55,10 @@ export const getRequiredScopesForPathname = (pathname: string): PermissionScope[
 
   if (pathname === "/users") {
     return ["user:list"];
+  }
+
+  if (pathname === "/profile") {
+    return [];
   }
 
   return [];

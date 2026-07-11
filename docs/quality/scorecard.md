@@ -16,8 +16,8 @@ Scale:
 | `apps/web` | 3 | 3 | 4 | 3 | 2 | 3 | 4 |
 | `packages/shared-types` | 1 | 2 | 4 | 3 | unknown | 3 | 3 |
 | Runtime (`agent-runtime*`, `tools/codex-web-terminal`) | 1 | 2 | 3 | 2 | 1 | unknown | 2 |
-| Deployment (`docker-compose.yml`, `deploy/`, `agentswarm.sh`) | 2 | 3 | 4 | 4 | 3 | 2 | 4 |
-| Harness + CI (`scripts/harness`, `.github/workflows`) | 3 | 4 | 5 | 4 | 4 | 3 | 5 |
+| Deployment (`docker-compose.yml`, `deploy/`, `verft`) | 2 | 3 | 4 | 4 | 3 | 2 | 4 |
+| CI (`.github/workflows`) | 3 | 4 | 3 | 3 | 3 | 3 | 4 |
 
 ## Evidence Notes
 
@@ -28,7 +28,7 @@ Scale:
 
 ### `apps/web`
 - 4 utility tests plus 1 Playwright browser spec in `apps/web/e2e/auth.smoke.spec.ts`.
-- Architecture boundary checks prevent web/server cross-imports.
+- Architecture boundary checks are available for web/server cross-import checks.
 - Limited client-side observability evidence (mostly server-side logs today).
 
 ### `packages/shared-types`
@@ -42,17 +42,17 @@ Scale:
 - Security is `unknown` due to limited direct hardening evidence in repo docs/tests.
 
 ### Deployment domain
-- Local orchestration is documented and scripted (`docker-compose.yml`, `agentswarm.sh`, harness setup/start/doctor).
+- Local orchestration is documented and scripted (`docker-compose.yml`, `verft`, harness setup/start/doctor).
 - Reliability is improved by health checks and doctor checks.
 - Security remains low for production use because current repo evidence is mainly local/dev setup.
 
-### Harness + CI
+### CI
 - Strong legibility and workflow guidance in `AGENTS.md` and `docs/development/*`.
-- Boundary checks are mechanically enforced (`scripts/harness/boundary-check.mjs`).
-- CI currently runs `./scripts/harness/check.sh` in `.github/workflows/harness-check.yml`.
+- Boundary checks remain available through `scripts/harness/boundary-check.mjs`, but are not part of the current default gate.
+- CI currently runs `./scripts/ci.sh` in `.github/workflows/lint-and-tests.yml`.
 
 ## Summary of Top Gaps
 1. Shared contracts have no direct tests.
 2. Runtime domain has minimal test/observability/security evidence.
 3. Web test depth is still light for core user journeys.
-4. CI does not yet run full PR readiness (`pr-ready.sh` / full harness test scope).
+4. CI does not currently run architecture boundary checks.

@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
+import type { RealtimeEvent, Repository, Task } from "@verft/shared-types";
 import type { RepositoryStore } from "./repository-store.js";
 import type { WebhookDeliveryStore, WebhookEventType, WebhookJob } from "./webhook-delivery-store.js";
 
@@ -169,10 +169,10 @@ export class WebhookDeliveryService {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-agentswarm-event": job.eventType,
-        "x-agentswarm-delivery-id": job.id,
-        "x-agentswarm-timestamp": timestamp,
-        "x-agentswarm-signature": `sha256=${signature}`
+        "x-verft-event": job.eventType,
+        "x-verft-delivery-id": job.id,
+        "x-verft-timestamp": timestamp,
+        "x-verft-signature": `sha256=${signature}`
       },
       body,
       signal: AbortSignal.timeout(WEBHOOK_TIMEOUT_MS)

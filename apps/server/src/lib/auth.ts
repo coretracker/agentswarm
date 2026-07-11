@@ -1,8 +1,8 @@
 import type { IncomingHttpHeaders } from "node:http";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { AuthSession, PermissionScope, RealtimeEvent } from "@agentswarm/shared-types";
+import type { AuthSession, PermissionScope, RealtimeEvent } from "@verft/shared-types";
 import type { Server as SocketIOServer, Socket } from "socket.io";
-import type { CredentialStore } from "../services/credential-store.js";
+import type { PersonalAccessTokenRuntimeContext, PersonalAccessTokenStore } from "../services/personal-access-token-store.js";
 import type { SessionStore } from "../services/session-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { UserStore } from "../services/user-store.js";
@@ -15,6 +15,7 @@ const realtimeScopesByEventType: Record<RealtimeEvent["type"], PermissionScope[]
   "task:log": ["task:read"],
   "task:message": ["task:read"],
   "task:message_updated": ["task:read"],
+  "task:message_deleted": ["task:read"],
   "task:run_updated": ["task:read"],
   "task:git_operation": ["task:read"],
   "task:change_proposal": ["task:read"],
@@ -54,6 +55,7 @@ export interface RequestAuthContext {
   sessionToken: string;
   expiresAt: string;
   session: AuthSession;
+  personalAccessTokenRuntimeContext?: PersonalAccessTokenRuntimeContext | null;
 }
 
 export interface AuthService {
@@ -61,6 +63,7 @@ export interface AuthService {
   requireAllScopes: (scopes: PermissionScope[]) => AuthPreHandler;
   /** Cookie-based auth for raw Node HTTP upgrades (e.g. interactive terminal WebSocket). */
   authenticateCookieHeader: (headers: IncomingHttpHeaders) => Promise<RequestAuthContext | null>;
+  authenticateBearerToken: (token: string | null) => Promise<RequestAuthContext | null>;
   setSessionCookie: (reply: FastifyReply, token: string, expiresAt: string) => void;
   clearSessionCookie: (reply: FastifyReply) => void;
   clearSessionFromRequest: (request: FastifyRequest) => Promise<void>;
@@ -80,13 +83,13 @@ export const createAuthService = ({
   sessionStore,
   userStore,
   taskStore,
-  credentialStore
+  personalAccessTokenStore
 }: {
   cookieName: string;
   sessionStore: SessionStore;
   userStore: UserStore;
   taskStore: TaskStore;
-  credentialStore: CredentialStore;
+  personalAccessTokenStore?: PersonalAccessTokenStore;
 }): AuthService => {
   const getRequestToken = (request: FastifyRequest): string | null => {
     const token = request.cookies?.[cookieName];
@@ -108,20 +111,39 @@ export const createAuthService = ({
       await sessionStore.deleteSession(token);
       return null;
     }
-    const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
-    const sessionUser = {
-      ...user,
-      codexAuthJsonConfigured
-    };
-
     return {
-      user: sessionUser,
-      scopes: new Set(sessionUser.scopes),
+      user,
+      scopes: new Set(user.scopes),
       sessionToken: token,
       expiresAt: session.expiresAt,
       session: {
-        user: sessionUser,
+        user,
         expiresAt: session.expiresAt
+      }
+    };
+  };
+
+  const buildBearerAuthContext = async (token: string | null): Promise<RequestAuthContext | null> => {
+    if (!token || !personalAccessTokenStore) {
+      return null;
+    }
+
+    const authenticatedToken = await personalAccessTokenStore.authenticateToken(token);
+    if (!authenticatedToken) {
+      return null;
+    }
+    const { user, runtimeContext } = authenticatedToken;
+    const expiresAt = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString();
+
+    return {
+      user,
+      scopes: new Set(user.scopes),
+      sessionToken: "",
+      expiresAt,
+      personalAccessTokenRuntimeContext: runtimeContext,
+      session: {
+        user,
+        expiresAt
       }
     };
   };
@@ -182,7 +204,8 @@ export const createAuthService = ({
         return task?.ownerUserId ?? null;
       }
       case "task:message":
-      case "task:message_updated": {
+      case "task:message_updated":
+      case "task:message_deleted": {
         const task = await taskStore.getTaskMetadata(event.payload.taskId);
         return task?.ownerUserId ?? null;
       }
@@ -264,6 +287,9 @@ export const createAuthService = ({
       const token = cookies[cookieName]?.trim() ? cookies[cookieName].trim() : null;
       return buildAuthContext(token);
     },
+    authenticateBearerToken(token) {
+      return buildBearerAuthContext(token);
+    },
     setSessionCookie(reply, token, expiresAt) {
       reply.setCookie(cookieName, token, {
         httpOnly: true,
@@ -294,13 +320,8 @@ export const createAuthService = ({
       if (!user) {
         throw new Error("Active session user not found");
       }
-      const codexAuthJsonConfigured = await credentialStore.hasCodexAuthJsonForUser(user.id);
-
       return {
-        user: {
-          ...user,
-          codexAuthJsonConfigured
-        },
+        user,
         expiresAt
       };
     },

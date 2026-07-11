@@ -20,7 +20,7 @@ done
 
 while IFS= read -r file; do
   DOC_FILES+=("$file")
-done < <(find docs -type f -name '*.md' | sort)
+done < <(find docs -type f -name '*.md' ! -path 'docs/repomix.md' | sort)
 
 if [[ "${#DOC_FILES[@]}" -eq 0 ]]; then
   echo "[harness:check-docs] warning: no documentation files found"

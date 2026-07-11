@@ -8,7 +8,7 @@ import {
   getTaskTypeLabel,
   isTaskWorking,
   type Task
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Button, Card, Checkbox, DatePicker, Divider, Flex, Input, Modal, Select, Space, Spin, Table, Typography, message } from "antd";
 import { PushpinFilled } from "@ant-design/icons";
 import dayjs from "dayjs";
@@ -21,7 +21,7 @@ import { useAuth } from "./auth-provider";
 
 function getWorkingIndicatorLabel(task: Task): string {
   if (task.activeInteractiveSession) {
-    return `${getTaskTerminalSessionLabel(task.activeTerminalSessionMode === "git" ? "git" : "interactive")} is running`;
+    return `${getTaskTerminalSessionLabel("terminal")} is running`;
   }
 
   return task.executionStatus !== "idle" ? getTaskExecutionStatusLabel(task.executionStatus) : `${getTaskTypeLabel(task.taskType)} task is working`;
@@ -54,7 +54,7 @@ export function TasksPage() {
   const [createdAtFilter, setCreatedAtFilter] = useState<string | null>(null);
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
-  const canCreateTask = can("task:create") && (can("task:build") || can("task:ask") || can("task:interactive"));
+  const canCreateTask = can("task:create") && (can("task:build") || can("task:ask") || can("task:terminal"));
   const canEditTask = can("task:edit");
   const canDeleteTask = can("task:delete");
   useEffect(() => {

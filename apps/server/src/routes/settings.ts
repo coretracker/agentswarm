@@ -1,19 +1,34 @@
 import { z } from "zod";
+import { spawn as spawnChild } from "node:child_process";
 import type { FastifyInstance } from "fastify";
-import type { AgentProvider } from "@agentswarm/shared-types";
-import { CODEX_MODELS, CLAUDE_MODELS } from "@agentswarm/shared-types";
+import type { AgentProvider, HostexecAvailability, HostexecSettings } from "@verft/shared-types";
+import { CODEX_MODELS, CLAUDE_MODELS } from "@verft/shared-types";
 import type { AuthService } from "../lib/auth.js";
+import { discoverHostexecEndpoint } from "../lib/hostexec-discovery.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
+import { AGENT_RUNTIME_IMAGE, env } from "../config/env.js";
 
 interface ProviderModelEntry {
   label: string;
   value: string;
 }
 
+const normalizeMcpServerNameForComparison = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+function providerModelsUrl(baseUrl: string | null, defaultBaseUrl: string): string {
+  const base = (baseUrl?.replace(/\/$/, "") ?? defaultBaseUrl);
+  return `${base.endsWith("/v1") ? base : `${base}/v1`}/models`;
+}
+
 async function fetchOpenAiModels(apiKey: string, baseUrl: string | null): Promise<ProviderModelEntry[]> {
-  const base = (baseUrl?.replace(/\/$/, "") ?? "https://api.openai.com") + "/v1";
-  const response = await fetch(`${base}/models`, {
+  const response = await fetch(providerModelsUrl(baseUrl, "https://api.openai.com"), {
     headers: { Authorization: `Bearer ${apiKey}` }
   });
 
@@ -27,8 +42,8 @@ async function fetchOpenAiModels(apiKey: string, baseUrl: string | null): Promis
     .sort((a, b) => a.value.localeCompare(b.value));
 }
 
-async function fetchAnthropicModels(apiKey: string): Promise<ProviderModelEntry[]> {
-  const response = await fetch("https://api.anthropic.com/v1/models", {
+async function fetchAnthropicModels(apiKey: string, baseUrl: string | null): Promise<ProviderModelEntry[]> {
+  const response = await fetch(providerModelsUrl(baseUrl, "https://api.anthropic.com"), {
     headers: {
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01"
@@ -45,6 +60,11 @@ async function fetchAnthropicModels(apiKey: string): Promise<ProviderModelEntry[
     .sort((a, b) => a.value.localeCompare(b.value));
 }
 
+const providerProfileEnum = z.enum(["low", "medium", "high", "max"]);
+const providerModelSchema = z.object({
+  label: z.string().trim().min(1).max(160),
+  value: z.string().trim().min(1).max(160)
+});
 const mcpServerSchema = z.discriminatedUnion("transport", [
   z.object({
     name: z.string().trim().min(1).max(120),
@@ -65,11 +85,32 @@ const mcpServerSchema = z.discriminatedUnion("transport", [
       .max(120)
       .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
       .nullable()
-      .optional()
+      .optional(),
+    bearerToken: z.string().trim().min(1).max(4096).optional(),
+    clearBearerToken: z.boolean().optional()
   })
 ]);
-
-const providerProfileEnum = z.enum(["low", "medium", "high", "max"]);
+const mcpServersSchema = z
+  .array(mcpServerSchema)
+  .max(25)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const normalized = normalizeMcpServerNameForComparison(entries[index]?.name ?? "");
+      if (!normalized) {
+        continue;
+      }
+      if (seen.has(normalized)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "name"],
+          message: `Duplicate MCP server name: ${entries[index]?.name}`
+        });
+      } else {
+        seen.add(normalized);
+      }
+    }
+  });
 const responsePreferenceSchema = z
   .object({
     audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
@@ -86,20 +127,48 @@ const responsePreferencePresetSchema = z.object({
   description: z.string().trim().max(500).optional(),
   preference: responsePreferenceSchema
 });
+const hostexecSettingsSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    url: z.string().trim().url().nullable().optional(),
+    bearerTokenEnvVar: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
+      .nullable()
+      .optional()
+  })
+  .nullable()
+  .optional();
 
 const updateSettingsSchema = z.object({
   defaultProvider: z.enum(["codex", "claude"]).optional(),
   maxAgents: z.coerce.number().int().min(1).max(20).optional(),
+  archivedTaskAutoDeleteEnabled: z.boolean().optional(),
+  archivedTaskAutoDeleteDays: z.coerce.number().int().min(1).max(3650).optional(),
   branchPrefix: z.string().trim().min(1).max(80).optional(),
   workspaceProvisioningMode: z.enum(["clone_only", "hybrid"]).optional(),
   gitUsername: z.string().trim().min(1).max(120).optional(),
-  mcpServers: z.array(mcpServerSchema).max(25).optional(),
+  gitAuthorName: z.string().trim().min(1).max(120).nullable().optional(),
+  gitAuthorEmail: z.string().trim().email().nullable().optional(),
+  hostexec: hostexecSettingsSchema,
   openaiBaseUrl: z.string().trim().url().nullable().optional(),
+  anthropicBaseUrl: z.string().trim().url().nullable().optional(),
   taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
   taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),
+  harnessWhatExists: z.string().trim().max(8000).nullable().optional(),
+  harnessAllowedActions: z.string().trim().max(8000).nullable().optional(),
+  harnessNotAllowedActions: z.string().trim().max(8000).nullable().optional(),
+  harnessHowToWork: z.string().trim().max(8000).nullable().optional(),
+  harnessDefinitionOfDone: z.string().trim().max(8000).nullable().optional(),
+  harnessEvidenceExpectations: z.string().trim().max(8000).nullable().optional(),
   codexDefaultModel: z.string().trim().min(1).max(120).optional(),
+  codexModels: z.array(providerModelSchema).max(500).optional(),
   codexDefaultEffort: providerProfileEnum.optional(),
   claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
+  claudeModels: z.array(providerModelSchema).max(500).optional(),
   claudeDefaultEffort: providerProfileEnum.optional(),
   responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
 });
@@ -107,17 +176,99 @@ const updateSettingsSchema = z.object({
 const updateCredentialsSchema = z.object({
   githubToken: z.string().trim().min(1).optional(),
   openaiApiKey: z.string().trim().min(1).optional(),
-  codexAuthJson: z.string().trim().min(1).optional(),
   anthropicApiKey: z.string().trim().min(1).optional(),
+  slackSigningSecret: z.string().trim().min(1).optional(),
+  slackBotToken: z.string().trim().min(1).optional(),
   clearGithubToken: z.boolean().optional(),
   clearOpenAiApiKey: z.boolean().optional(),
-  clearCodexAuthJson: z.boolean().optional(),
-  clearAnthropicApiKey: z.boolean().optional()
+  clearAnthropicApiKey: z.boolean().optional(),
+  clearSlackSigningSecret: z.boolean().optional(),
+  clearSlackBotToken: z.boolean().optional()
 });
 
 const updateUserNotesSchema = z.object({
   notes: z.string().max(200_000)
 });
+
+async function getProviderBaseStateStatus(): Promise<{ volume: string; files: Record<string, boolean> }> {
+  const files = [
+    "codex/auth.json",
+    "codex/config.toml",
+    "codex/plugins",
+    "codex/skills",
+    "claude/.credentials.json",
+    "claude/.claude.json",
+    "claude/settings.json",
+    "claude/plugins"
+  ];
+  const script = [
+    "set -eu",
+    "printf '{'",
+    files
+      .map((file, index) =>
+        `[ -e "/verft-base/${file}" ] && v=true || v=false; printf '${index === 0 ? "" : ","}"${file}":%s' "$v"`
+      )
+      .join("\n"),
+    "printf '}'"
+  ].join("\n");
+
+  return new Promise((resolve) => {
+    const child = spawnChild(
+      "docker",
+      ["run", "--rm", "-v", `${env.VERFT_BASE_VOLUME}:/verft-base:ro`, AGENT_RUNTIME_IMAGE, "sh", "-lc", script],
+      { stdio: ["ignore", "pipe", "ignore"] }
+    );
+    let stdout = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.on("error", () => {
+      resolve({ volume: env.VERFT_BASE_VOLUME, files: Object.fromEntries(files.map((file) => [file, false])) });
+    });
+    child.on("close", (code) => {
+      if (code !== 0) {
+        resolve({ volume: env.VERFT_BASE_VOLUME, files: Object.fromEntries(files.map((file) => [file, false])) });
+        return;
+      }
+      try {
+        resolve({ volume: env.VERFT_BASE_VOLUME, files: JSON.parse(stdout) as Record<string, boolean> });
+      } catch {
+        resolve({ volume: env.VERFT_BASE_VOLUME, files: Object.fromEntries(files.map((file) => [file, false])) });
+      }
+    });
+  });
+}
+
+async function checkHostexecAvailability(settings: HostexecSettings): Promise<HostexecAvailability> {
+  const discovery = await discoverHostexecEndpoint(settings);
+  const endpoint = discovery.endpoint;
+  if (!endpoint) {
+    return {
+      available: false,
+      enabled: discovery.enabled,
+      url: discovery.configuredUrl,
+      detected: false,
+      allowAll: false,
+      commands: [],
+      message: discovery.message
+    };
+  }
+
+  const { allowAll, commands } = endpoint.capabilities;
+  return {
+    available: true,
+    enabled: discovery.enabled,
+    url: endpoint.url,
+    detected: endpoint.detected,
+    allowAll,
+    commands,
+    message: allowAll
+      ? "Hostexec daemon detected and allows repository Host Commands."
+      : commands.length > 0
+        ? `Hostexec daemon detected with ${commands.length} daemon command(s).`
+        : "Hostexec daemon detected."
+  };
+}
 
 export const registerSettingsRoutes = (
   app: FastifyInstance,
@@ -129,30 +280,46 @@ export const registerSettingsRoutes = (
 ): void => {
   app.get("/settings", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => deps.settingsStore.getSettings());
 
+  app.get("/settings/provider-base-state", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () =>
+    getProviderBaseStateStatus()
+  );
+
+  app.get("/settings/hostexec/check", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => {
+    const settings = await deps.settingsStore.getSettings();
+    return checkHostexecAvailability(settings.hostexec);
+  });
+
   app.get("/settings/models", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async (request, reply) => {
     const providerParam = (request.query as Record<string, string>).provider as AgentProvider | undefined;
     const provider = providerParam === "claude" ? "claude" : "codex";
+    const refresh = (request.query as Record<string, string | undefined>).refresh === "1";
+
+    const settings = await deps.settingsStore.getSettings();
+    const configured = provider === "claude" ? settings.claudeModels : settings.codexModels;
+    const fallback = provider === "claude" ? [...CLAUDE_MODELS] : [...CODEX_MODELS];
+
+    if (!refresh) {
+      return reply.send({ models: configured.length > 0 ? configured : fallback, source: configured.length > 0 ? "cache" : "fallback" });
+    }
 
     const credentials = await deps.settingsStore.getRuntimeCredentials();
-    const settings = await deps.settingsStore.getSettings();
-    const fallback = provider === "claude" ? [...CLAUDE_MODELS] : [...CODEX_MODELS];
 
     try {
       if (provider === "claude") {
         if (!credentials.anthropicApiKey) {
-          return reply.send({ models: fallback, source: "static" });
+          return reply.send({ models: configured.length > 0 ? configured : fallback, source: configured.length > 0 ? "cache" : "fallback" });
         }
-        const models = await fetchAnthropicModels(credentials.anthropicApiKey);
+        const models = await fetchAnthropicModels(credentials.anthropicApiKey, settings.anthropicBaseUrl);
         return reply.send({ models, source: "api" });
       }
 
       if (!credentials.openaiApiKey) {
-        return reply.send({ models: fallback, source: "static" });
+        return reply.send({ models: configured.length > 0 ? configured : fallback, source: configured.length > 0 ? "cache" : "fallback" });
       }
       const models = await fetchOpenAiModels(credentials.openaiApiKey, settings.openaiBaseUrl);
       return reply.send({ models, source: "api" });
     } catch {
-      return reply.send({ models: fallback, source: "static" });
+      return reply.send({ models: configured.length > 0 ? configured : fallback, source: configured.length > 0 ? "cache" : "fallback" });
     }
   });
 
@@ -171,17 +338,6 @@ export const registerSettingsRoutes = (
     const parsed = updateCredentialsSchema.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    if (parsed.data.codexAuthJson !== undefined && !parsed.data.clearCodexAuthJson) {
-      try {
-        const parsedJson = JSON.parse(parsed.data.codexAuthJson) as unknown;
-        if (!parsedJson || typeof parsedJson !== "object" || Array.isArray(parsedJson)) {
-          return reply.status(400).send({ message: "Codex auth.json must be a JSON object" });
-        }
-      } catch {
-        return reply.status(400).send({ message: "Codex auth.json must be valid JSON" });
-      }
     }
 
     const settings = await deps.settingsStore.updateCredentials(parsed.data);

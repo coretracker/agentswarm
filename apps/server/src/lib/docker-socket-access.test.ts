@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { evaluateDockerSocketAccessPolicy, resolveDockerSocketEnvEntries, resolveDockerSocketMountArgs } from "./docker-socket-access.js";
+import {
+  evaluateDockerSocketAccessPolicy,
+  resolveDockerSocketEnvEntries,
+  resolveDockerSocketMountArgs,
+  resolveDockerSocketRunArgs
+} from "./docker-socket-access.js";
 
 describe("evaluateDockerSocketAccessPolicy", () => {
   it("stays disabled by default when the feature flag is off", () => {
@@ -63,6 +68,12 @@ describe("docker socket mount/env helpers", () => {
 
     assert.deepEqual(resolveDockerSocketMountArgs(policy), ["-v", "/var/run/docker.sock:/socket/docker.sock:rw"]);
     assert.deepEqual(resolveDockerSocketEnvEntries(policy), [["DOCKER_HOST", "unix:///socket/docker.sock"]]);
+    assert.deepEqual(resolveDockerSocketRunArgs(policy), [
+      "-v",
+      "/var/run/docker.sock:/socket/docker.sock:rw",
+      "-e",
+      "DOCKER_HOST=unix:///socket/docker.sock"
+    ]);
   });
 
   it("returns no mount/env entries when policy is disabled", () => {
@@ -75,5 +86,6 @@ describe("docker socket mount/env helpers", () => {
 
     assert.deepEqual(resolveDockerSocketMountArgs(policy), []);
     assert.deepEqual(resolveDockerSocketEnvEntries(policy), []);
+    assert.deepEqual(resolveDockerSocketRunArgs(policy), []);
   });
 });

@@ -1,4 +1,4 @@
-import type { McpServerConfig } from "@agentswarm/shared-types";
+import type { McpServerConfig } from "@verft/shared-types";
 
 const tomlString = (value: string): string => JSON.stringify(value);
 const ENV_VAR_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -11,6 +11,73 @@ const validEnvVarName = (value: string): string | null => {
     return null;
   }
   return trimmed;
+};
+
+const validEnvEntries = (env: Record<string, string> | undefined): Array<[string, string]> =>
+  Object.entries(env ?? {}).flatMap(([name, value]) => {
+    const validName = validEnvVarName(name);
+    if (!validName || typeof value !== "string") {
+      return [];
+    }
+    return [[validName, value]];
+  });
+
+const normalizeMcpServerName = (value: string | undefined): string =>
+  (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const normalizeMcpServerArgs = (value: string[] | undefined): string[] =>
+  (value ?? []).map((item) => item.trim()).filter(Boolean);
+
+export const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerConfig[] => {
+  const normalized: McpServerConfig[] = [];
+  const seenNames = new Set<string>();
+
+  for (const server of value ?? []) {
+    const name = normalizeMcpServerName(server.name);
+    if (!name || seenNames.has(name)) {
+      continue;
+    }
+
+    const transport = server.transport === "http" ? "http" : "stdio";
+    const baseServer: McpServerConfig = {
+      name,
+      enabled: server.enabled !== false,
+      transport
+    };
+
+    if (transport === "http") {
+      const url = server.url?.trim() || null;
+      if (!url) {
+        continue;
+      }
+
+      normalized.push({
+        ...baseServer,
+        url,
+        bearerTokenEnvVar: server.bearerTokenEnvVar ? validEnvVarName(server.bearerTokenEnvVar) : null
+      });
+    } else {
+      const command = server.command?.trim() || null;
+      if (!command) {
+        continue;
+      }
+
+      normalized.push({
+        ...baseServer,
+        command,
+        args: normalizeMcpServerArgs(server.args)
+      });
+    }
+
+    seenNames.add(name);
+  }
+
+  return normalized;
 };
 
 export function serializeCodexMcpConfig(servers: McpServerConfig[]): string {
@@ -38,6 +105,14 @@ export function serializeCodexMcpConfig(servers: McpServerConfig[]): string {
       lines.push(`command = ${tomlString(server.command)}`);
       if ((server.args ?? []).length > 0) {
         lines.push(`args = [${(server.args ?? []).map(tomlString).join(", ")}]`);
+      }
+      const envEntries = validEnvEntries(server.env);
+      if (envEntries.length > 0) {
+        lines.push("");
+        lines.push(`[mcp_servers.${server.name}.env]`);
+        for (const [name, value] of envEntries) {
+          lines.push(`${name} = ${tomlString(value)}`);
+        }
       }
     }
     lines.push("");
@@ -77,7 +152,7 @@ export function serializeClaudeMcpConfig(servers: McpServerConfig[]): string {
       type: "stdio",
       command: server.command,
       args: server.args ?? [],
-      env: {}
+      env: Object.fromEntries(validEnvEntries(server.env))
     };
   }
 

@@ -1,8 +1,8 @@
 import type Redis from "ioredis";
-import type { TaskAction, TaskExecutionInput, TaskPromptAttachment } from "@agentswarm/shared-types";
+import type { TaskAction, TaskExecutionInput, TaskPromptAttachment } from "@verft/shared-types";
 import { normalizeTaskPromptAttachment } from "../lib/task-prompt-attachments.js";
 
-const TASK_QUEUE_KEY = "agentswarm:queue";
+const TASK_QUEUE_KEY = "verft:queue";
 
 export type QueueReason = "manual" | "auto";
 
@@ -34,6 +34,7 @@ const normalizeQueueEntryInput = (input: unknown): TaskExecutionInput | undefine
 
 export interface QueueEntry {
   taskId: string;
+  promptMessageId?: string | null;
   reason: QueueReason;
   action: TaskAction;
   input?: TaskExecutionInput;
@@ -105,6 +106,7 @@ export class RedisTaskQueueStore implements TaskQueueStore {
       ) {
         return {
           ...parsed,
+          promptMessageId: typeof parsed.promptMessageId === "string" && parsed.promptMessageId.trim().length > 0 ? parsed.promptMessageId : null,
           input: normalizeQueueEntryInput(parsed.input)
         };
       }

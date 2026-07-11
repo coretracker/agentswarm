@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { afterEach, describe, it } from "node:test";
-import type { RealtimeEvent, Repository, Task } from "@agentswarm/shared-types";
+import type { RealtimeEvent, Repository, Task } from "@verft/shared-types";
 import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
 import { WebhookDeliveryService } from "./webhook-delivery-service.js";
 
@@ -116,6 +116,7 @@ const baseTask = (): Task => ({
   deadline: null,
   pinned: false,
   hasPendingCheckpoint: false,
+  autoApplyCheckpoints: false,
   ownerUserId: "user-1",
   repoId: "repo-1",
   repoName: "Repo",
@@ -128,7 +129,7 @@ const baseTask = (): Task => ({
   baseBranch: "main",
   branchStrategy: "feature_branch",
   complexity: "normal",
-  branchName: "agentswarm/task-1",
+  branchName: "verft/task-1",
   workspaceBaseRef: null,
   prompt: "Do it",
   resultMarkdown: null,
@@ -155,6 +156,8 @@ const baseRepository = (): Repository => ({
   url: "https://github.com/example/repo.git",
   defaultBranch: "main",
   envVars: [],
+  mcpServers: [],
+  hostCommands: [],
   webhookUrl: "https://example.com/webhook",
   webhookEnabled: true,
   webhookSecretConfigured: true,
@@ -204,8 +207,8 @@ describe("WebhookDeliveryService", () => {
     assert.equal(fetchCalls.length, 1);
     assert.equal(fetchCalls[0]?.url, "https://example.com/webhook");
     const headers = fetchCalls[0]?.init?.headers as Record<string, string>;
-    assert.equal(headers["x-agentswarm-event"], "created");
-    assert.equal(typeof headers["x-agentswarm-signature"], "string");
+    assert.equal(headers["x-verft-event"], "created");
+    assert.equal(typeof headers["x-verft-signature"], "string");
     assert.equal(deliveryResults.length, 1);
     assert.equal(deliveryResults[0]?.status, "success");
   });
@@ -231,7 +234,7 @@ describe("WebhookDeliveryService", () => {
       }
     });
 
-    const queued = await redis.zrangebyscore("agentswarm:webhook_delivery_queue", 0, Number.MAX_SAFE_INTEGER);
+    const queued = await redis.zrangebyscore("verft:webhook_delivery_queue", 0, Number.MAX_SAFE_INTEGER);
     assert.equal(queued.length, 2);
   });
 });

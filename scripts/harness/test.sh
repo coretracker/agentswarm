@@ -28,7 +28,7 @@ export LANG="${LANG:-C}"
 export LC_ALL="${LC_ALL:-C}"
 export NO_COLOR="${NO_COLOR:-1}"
 export FORCE_COLOR="${FORCE_COLOR:-0}"
-export AGENTSWARM_TEST_SEED="${AGENTSWARM_TEST_SEED:-20260523}"
+export VERFT_TEST_SEED="${VERFT_TEST_SEED:-20260523}"
 
 if ! node -e 'require.resolve("tsx/package.json")' >/dev/null 2>&1; then
   echo "[harness:test] error: required test dependency 'tsx' is not installed" >&2
@@ -39,7 +39,7 @@ fi
 FIXTURE_ROOT="${REPO_ROOT}/.tmp/harness-tests"
 rm -rf "$FIXTURE_ROOT"
 mkdir -p "$FIXTURE_ROOT"
-export AGENTSWARM_TEST_FIXTURE_ROOT="$FIXTURE_ROOT"
+export VERFT_TEST_FIXTURE_ROOT="$FIXTURE_ROOT"
 
 CURRENT_PHASE="initializing"
 CURRENT_CMD=""
@@ -198,7 +198,7 @@ run_playwright_e2e() {
   if [[ "${HARNESS_REMOTE_EXECUTING:-0}" == "1" ]]; then
     default_ui_host="host.docker.internal"
   fi
-  local ui_base_url="${AGENTSWARM_UI_BASE_URL:-http://${default_ui_host}:${public_port}}"
+  local ui_base_url="${VERFT_UI_BASE_URL:-http://${default_ui_host}:${public_port}}"
 
   ensure_ui_for_playwright "$ui_base_url"
 
@@ -221,7 +221,7 @@ run_playwright_e2e() {
       docker run --rm \
         -w /workspace \
         -v "$musl_docker_workspace_mount:/workspace" \
-        -e AGENTSWARM_UI_BASE_URL="$ui_base_url" \
+        -e VERFT_UI_BASE_URL="$ui_base_url" \
         -e CI="${CI:-1}" \
         -e NO_COLOR="${NO_COLOR:-1}" \
         -e FORCE_COLOR="${FORCE_COLOR:-0}" \
@@ -242,8 +242,8 @@ run_playwright_e2e() {
     echo "[harness:test] skipping browser install (PLAYWRIGHT_SKIP_INSTALL=1)"
   fi
 
-  if env AGENTSWARM_UI_BASE_URL="$ui_base_url" node -e 'const { chromium } = require("@playwright/test"); chromium.launch({ headless: true }).then((browser) => browser.close()).then(() => process.exit(0)).catch(() => process.exit(1));'; then
-    run_phase "e2e:playwright" env AGENTSWARM_UI_BASE_URL="$ui_base_url" npx playwright test --config playwright.config.ts
+  if env VERFT_UI_BASE_URL="$ui_base_url" node -e 'const { chromium } = require("@playwright/test"); chromium.launch({ headless: true }).then((browser) => browser.close()).then(() => process.exit(0)).catch(() => process.exit(1));'; then
+    run_phase "e2e:playwright" env VERFT_UI_BASE_URL="$ui_base_url" npx playwright test --config playwright.config.ts
     return
   fi
 
@@ -259,7 +259,7 @@ run_playwright_e2e() {
       docker run --rm \
         -w /workspace \
         -v "$docker_workspace_mount:/workspace" \
-        -e AGENTSWARM_UI_BASE_URL="$ui_base_url" \
+        -e VERFT_UI_BASE_URL="$ui_base_url" \
         -e CI="${CI:-1}" \
         -e NO_COLOR="${NO_COLOR:-1}" \
         -e FORCE_COLOR="${FORCE_COLOR:-0}" \
@@ -276,8 +276,8 @@ run_playwright_e2e() {
 
 echo "[harness:test] repo root: $REPO_ROOT"
 echo "[harness:test] scope: $TEST_SCOPE"
-echo "[harness:test] deterministic seed: $AGENTSWARM_TEST_SEED"
-echo "[harness:test] fixture root: $AGENTSWARM_TEST_FIXTURE_ROOT"
+echo "[harness:test] deterministic seed: $VERFT_TEST_SEED"
+echo "[harness:test] fixture root: $VERFT_TEST_FIXTURE_ROOT"
 echo "[harness:test] discovered tests: total=${#all_tests[@]}, unit=${#unit_tests[@]}, integration=${#integration_tests[@]}, e2e=${#e2e_tests[@]}"
 
 case "$TEST_SCOPE" in

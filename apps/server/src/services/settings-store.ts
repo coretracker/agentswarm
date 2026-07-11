@@ -6,7 +6,7 @@ import type {
   AgentResponsePreference,
   AudienceType,
   SystemDataStores,
-  McpServerConfig,
+  ProviderModelOption,
   ProviderProfile,
   WorkspaceProvisioningMode,
   ResponsePreferencePreset,
@@ -15,14 +15,16 @@ import type {
   UserNotes,
   UpdateCredentialSettingsInput,
   UpdateSettingsInput
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
+import { CODEX_MODELS, CLAUDE_MODELS } from "@verft/shared-types";
 import { EventBus } from "../lib/events.js";
+import { defaultHostexecSettings, normalizeHostexecSettings } from "../lib/hostexec-config.js";
 import { normalizeProvider, DEFAULT_PROVIDER, normalizeProviderProfile } from "../lib/provider-config.js";
 import { defaultModelForProvider } from "../lib/provider-config.js";
 import type { CredentialStore, RuntimeCredentials } from "./credential-store.js";
 
-const SETTINGS_KEY = "agentswarm:settings";
-const USER_NOTES_KEY_PREFIX = "agentswarm:user-notes:";
+const SETTINGS_KEY = "verft:settings";
+const USER_NOTES_KEY_PREFIX = "verft:user-notes:";
 const SYSTEM_RESPONSE_PREFERENCE_PRESET_ID = "neutral";
 
 const DEFAULT_CODEX_EFFORT: ProviderProfile = "high";
@@ -58,21 +60,35 @@ const buildSystemDataStores = (): SystemDataStores => ({
 const defaultSettings: SystemSettings = {
   defaultProvider: DEFAULT_PROVIDER,
   maxAgents: 2,
-  branchPrefix: "agentswarm",
+  archivedTaskAutoDeleteEnabled: true,
+  archivedTaskAutoDeleteDays: 7,
+  branchPrefix: "verft",
   workspaceProvisioningMode: "clone_only",
   gitUsername: "x-access-token",
-  mcpServers: [],
+  gitAuthorName: null,
+  gitAuthorEmail: null,
+  hostexec: defaultHostexecSettings,
   openaiBaseUrl: null,
+  anthropicBaseUrl: null,
   taskPromptMagicModel: "gpt-5.4-mini",
   taskPromptMagicTemplate:
     "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
+  harnessWhatExists: null,
+  harnessAllowedActions: null,
+  harnessNotAllowedActions: null,
+  harnessHowToWork: null,
+  harnessDefinitionOfDone: null,
+  harnessEvidenceExpectations: null,
   githubTokenConfigured: false,
   openaiApiKeyConfigured: false,
-  codexAuthJsonConfigured: false,
   anthropicApiKeyConfigured: false,
-  codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.4",
+  slackSigningSecretConfigured: false,
+  slackBotTokenConfigured: false,
+  codexDefaultModel: defaultModelForProvider("codex", DEFAULT_CODEX_EFFORT) ?? "gpt-5.5",
+  codexModels: CODEX_MODELS,
   codexDefaultEffort: DEFAULT_CODEX_EFFORT,
-  claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-sonnet-4-5",
+  claudeDefaultModel: defaultModelForProvider("claude", DEFAULT_CLAUDE_EFFORT) ?? "claude-opus-4-8",
+  claudeModels: CLAUDE_MODELS,
   claudeDefaultEffort: DEFAULT_CLAUDE_EFFORT,
   responsePreferencePresets: [buildSystemResponsePreferencePreset()],
   dataStores: buildSystemDataStores()
@@ -94,78 +110,54 @@ const normalizeGitUsername = (value: string | undefined): string => {
   return cleaned || defaultSettings.gitUsername;
 };
 
+const normalizeOptionalGitAuthorName = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().replace(/\s+/g, " ");
+  return normalized || null;
+};
+
+const normalizeOptionalGitAuthorEmail = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim().toLowerCase();
+  return normalized || null;
+};
+
+const normalizeOptionalUrl = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim();
+  return normalized || null;
+};
+
+const normalizeHarnessValue = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim();
+  return normalized || null;
+};
+
 const normalizeDefaultProvider = (value: AgentProvider | string | undefined): AgentProvider =>
   normalizeProvider(value ?? defaultSettings.defaultProvider);
 
 const normalizeWorkspaceProvisioningMode = (value: WorkspaceProvisioningMode | string | undefined): WorkspaceProvisioningMode =>
   value === "hybrid" ? "hybrid" : "clone_only";
 
-const normalizeMcpServerName = (value: string | undefined): string =>
-  (value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-const normalizeMcpServerArgs = (value: string[] | undefined): string[] =>
-  (value ?? []).map((item) => item.trim()).filter(Boolean);
-
-const MCP_BEARER_TOKEN_ENV_VAR_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
-const normalizeMcpBearerTokenEnvVar = (value: string | null | undefined): string | null => {
-  const trimmed = value?.trim() ?? "";
-  if (!trimmed || !MCP_BEARER_TOKEN_ENV_VAR_PATTERN.test(trimmed)) {
-    return null;
+const normalizeArchivedTaskAutoDeleteDays = (value: number | undefined): number => {
+  if (typeof value !== "number") {
+    return defaultSettings.archivedTaskAutoDeleteDays;
   }
-  return trimmed;
+  return Number.isInteger(value) && value >= 1 && value <= 3650 ? value : defaultSettings.archivedTaskAutoDeleteDays;
 };
 
-const normalizeMcpServers = (value: McpServerConfig[] | undefined): McpServerConfig[] => {
-  const normalized: McpServerConfig[] = [];
-  const seenNames = new Set<string>();
+const normalizeProviderModels = (value: ProviderModelOption[] | undefined, fallback: ProviderModelOption[]): ProviderModelOption[] => {
+  const normalized: ProviderModelOption[] = [];
+  const seenValues = new Set<string>();
 
-  for (const server of value ?? []) {
-    const name = normalizeMcpServerName(server.name);
-    if (!name || seenNames.has(name)) {
+  for (const model of value ?? []) {
+    const modelValue = model.value?.trim();
+    if (!modelValue || seenValues.has(modelValue)) {
       continue;
     }
-
-    const transport = server.transport === "http" ? "http" : "stdio";
-    const baseServer: McpServerConfig = {
-      name,
-      enabled: server.enabled !== false,
-      transport
-    };
-
-    if (transport === "http") {
-      const url = server.url?.trim() || null;
-      if (!url) {
-        continue;
-      }
-
-      normalized.push({
-        ...baseServer,
-        url,
-        bearerTokenEnvVar: normalizeMcpBearerTokenEnvVar(server.bearerTokenEnvVar)
-      });
-    } else {
-      const command = server.command?.trim() || null;
-      if (!command) {
-        continue;
-      }
-
-      normalized.push({
-        ...baseServer,
-        command,
-        args: normalizeMcpServerArgs(server.args)
-      });
-    }
-
-    seenNames.add(name);
+    const label = model.label?.trim() || modelValue;
+    normalized.push({ label, value: modelValue });
+    seenValues.add(modelValue);
   }
 
-  return normalized;
+  return normalized.length > 0 ? normalized : fallback;
 };
 
 const normalizeResponsePreferencePresetName = (value: string | undefined): string =>
@@ -258,15 +250,20 @@ const normalizeResponsePreferencePresets = (
 
 export interface SettingsRuntimeCredentials extends RuntimeCredentials {
   gitUsername: string;
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
   openaiBaseUrl: string | null;
+  anthropicBaseUrl: string | null;
   defaultProvider: AgentProvider;
 }
+
+type RuntimeCodexCredentialSource = "auto" | "global" | "profile";
 
 export interface SettingsStore {
   getSettings(): Promise<SystemSettings>;
   updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
   updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
-  getRuntimeCredentials(userId?: string | null, codexCredentialSource?: "auto" | "profile" | "global"): Promise<SettingsRuntimeCredentials>;
+  getRuntimeCredentials(userId?: string | null, codexCredentialSource?: RuntimeCodexCredentialSource): Promise<SettingsRuntimeCredentials>;
   getUserNotes(userId: string): Promise<UserNotes>;
   updateUserNotes(userId: string, notes: string): Promise<UserNotes>;
 }
@@ -288,36 +285,74 @@ export class RedisSettingsStore implements SettingsStore {
       const baseSettings = {
         defaultProvider: defaultSettings.defaultProvider,
         maxAgents: defaultSettings.maxAgents,
+        archivedTaskAutoDeleteEnabled: defaultSettings.archivedTaskAutoDeleteEnabled,
+        archivedTaskAutoDeleteDays: defaultSettings.archivedTaskAutoDeleteDays,
         branchPrefix: defaultSettings.branchPrefix,
         workspaceProvisioningMode: defaultSettings.workspaceProvisioningMode,
         gitUsername: defaultSettings.gitUsername,
-        mcpServers: defaultSettings.mcpServers,
+        gitAuthorName: defaultSettings.gitAuthorName,
+        gitAuthorEmail: defaultSettings.gitAuthorEmail,
+        hostexec: defaultSettings.hostexec,
         openaiBaseUrl: defaultSettings.openaiBaseUrl,
+        anthropicBaseUrl: defaultSettings.anthropicBaseUrl,
         taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
         taskPromptMagicTemplate: defaultSettings.taskPromptMagicTemplate,
+        harnessWhatExists: defaultSettings.harnessWhatExists,
+        harnessAllowedActions: defaultSettings.harnessAllowedActions,
+        harnessNotAllowedActions: defaultSettings.harnessNotAllowedActions,
+        harnessHowToWork: defaultSettings.harnessHowToWork,
+        harnessDefinitionOfDone: defaultSettings.harnessDefinitionOfDone,
+        harnessEvidenceExpectations: defaultSettings.harnessEvidenceExpectations,
         codexDefaultModel: defaultSettings.codexDefaultModel,
+        codexModels: defaultSettings.codexModels,
         codexDefaultEffort: defaultSettings.codexDefaultEffort,
         claudeDefaultModel: defaultSettings.claudeDefaultModel,
+        claudeModels: defaultSettings.claudeModels,
         claudeDefaultEffort: defaultSettings.claudeDefaultEffort,
         responsePreferencePresets: defaultSettings.responsePreferencePresets
       };
       await this.redis.set(SETTINGS_KEY, JSON.stringify(baseSettings));
     }
 
-    const parsed = raw ? (JSON.parse(raw) as Partial<SystemSettings> & { agentRules?: string; autoModeEnabled?: boolean }) : {};
+    const parsed = raw
+      ? (JSON.parse(raw) as Partial<SystemSettings> & {
+          agentRules?: string;
+          autoModeEnabled?: boolean;
+          mcpServers?: unknown;
+        })
+      : {};
+    const normalizedDefaultProvider = normalizeDefaultProvider(parsed.defaultProvider);
+    const normalizedCodexDefaultModel = parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel;
+    const normalizedClaudeDefaultModel = parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel;
     const normalizedBase = {
-      defaultProvider: normalizeDefaultProvider(parsed.defaultProvider),
+      defaultProvider: normalizedDefaultProvider,
       maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
+      archivedTaskAutoDeleteEnabled:
+        typeof parsed.archivedTaskAutoDeleteEnabled === "boolean"
+          ? parsed.archivedTaskAutoDeleteEnabled
+          : defaultSettings.archivedTaskAutoDeleteEnabled,
+      archivedTaskAutoDeleteDays: normalizeArchivedTaskAutoDeleteDays(parsed.archivedTaskAutoDeleteDays),
       branchPrefix: normalizeBranchPrefix(parsed.branchPrefix),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(parsed.workspaceProvisioningMode),
       gitUsername: normalizeGitUsername(parsed.gitUsername),
-      mcpServers: normalizeMcpServers(parsed.mcpServers),
-      openaiBaseUrl: parsed.openaiBaseUrl?.trim() || null,
+      gitAuthorName: normalizeOptionalGitAuthorName(parsed.gitAuthorName),
+      gitAuthorEmail: normalizeOptionalGitAuthorEmail(parsed.gitAuthorEmail),
+      hostexec: normalizeHostexecSettings(parsed.hostexec),
+      openaiBaseUrl: normalizeOptionalUrl(parsed.openaiBaseUrl),
+      anthropicBaseUrl: normalizeOptionalUrl(parsed.anthropicBaseUrl),
       taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
       taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
-      codexDefaultModel: parsed.codexDefaultModel?.trim() || defaultSettings.codexDefaultModel,
+      harnessWhatExists: normalizeHarnessValue(parsed.harnessWhatExists),
+      harnessAllowedActions: normalizeHarnessValue(parsed.harnessAllowedActions),
+      harnessNotAllowedActions: normalizeHarnessValue(parsed.harnessNotAllowedActions),
+      harnessHowToWork: normalizeHarnessValue(parsed.harnessHowToWork),
+      harnessDefinitionOfDone: normalizeHarnessValue(parsed.harnessDefinitionOfDone),
+      harnessEvidenceExpectations: normalizeHarnessValue(parsed.harnessEvidenceExpectations),
+      codexDefaultModel: normalizedCodexDefaultModel,
+      codexModels: normalizeProviderModels(parsed.codexModels, defaultSettings.codexModels),
       codexDefaultEffort: normalizeProviderProfile(parsed.codexDefaultEffort) ?? defaultSettings.codexDefaultEffort,
-      claudeDefaultModel: parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel,
+      claudeDefaultModel: normalizedClaudeDefaultModel,
+      claudeModels: normalizeProviderModels(parsed.claudeModels, defaultSettings.claudeModels),
       claudeDefaultEffort: normalizeProviderProfile(parsed.claudeDefaultEffort) ?? defaultSettings.claudeDefaultEffort,
       responsePreferencePresets: normalizeResponsePreferencePresets(parsed.responsePreferencePresets)
     };
@@ -327,13 +362,21 @@ export class RedisSettingsStore implements SettingsStore {
       Object.prototype.hasOwnProperty.call(parsed, "agentRules") ||
       parsed.defaultProvider !== normalizedBase.defaultProvider ||
       parsed.maxAgents !== normalizedBase.maxAgents ||
+      parsed.archivedTaskAutoDeleteEnabled !== normalizedBase.archivedTaskAutoDeleteEnabled ||
+      parsed.archivedTaskAutoDeleteDays !== normalizedBase.archivedTaskAutoDeleteDays ||
       parsed.branchPrefix !== normalizedBase.branchPrefix ||
       parsed.workspaceProvisioningMode !== normalizedBase.workspaceProvisioningMode ||
       parsed.gitUsername !== normalizedBase.gitUsername ||
-      JSON.stringify(parsed.mcpServers ?? []) !== JSON.stringify(normalizedBase.mcpServers) ||
-      (parsed.openaiBaseUrl?.trim() || null) !== normalizedBase.openaiBaseUrl ||
+      (parsed.gitAuthorName ?? null) !== normalizedBase.gitAuthorName ||
+      (parsed.gitAuthorEmail ?? null) !== normalizedBase.gitAuthorEmail ||
+      JSON.stringify(parsed.hostexec ?? defaultHostexecSettings) !== JSON.stringify(normalizedBase.hostexec) ||
+      Object.prototype.hasOwnProperty.call(parsed, "mcpServers") ||
+      normalizeOptionalUrl(parsed.openaiBaseUrl) !== normalizedBase.openaiBaseUrl ||
+      normalizeOptionalUrl(parsed.anthropicBaseUrl) !== normalizedBase.anthropicBaseUrl ||
       (parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel) !== normalizedBase.taskPromptMagicModel ||
       (parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate) !== normalizedBase.taskPromptMagicTemplate ||
+      JSON.stringify(parsed.codexModels ?? []) !== JSON.stringify(normalizedBase.codexModels) ||
+      JSON.stringify(parsed.claudeModels ?? []) !== JSON.stringify(normalizedBase.claudeModels) ||
       JSON.stringify(parsed.responsePreferencePresets ?? []) !== JSON.stringify(normalizedBase.responsePreferencePresets)
     ) {
       await this.redis.set(SETTINGS_KEY, JSON.stringify(normalizedBase));
@@ -349,34 +392,62 @@ export class RedisSettingsStore implements SettingsStore {
 
   async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
     const current = await this.getSettings();
+    const nextDefaultProvider = normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider);
+    const nextCodexDefaultModel = input.codexDefaultModel?.trim() || current.codexDefaultModel;
+    const nextClaudeDefaultModel = input.claudeDefaultModel?.trim() || current.claudeDefaultModel;
     const nextBase = {
-      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
+      defaultProvider: nextDefaultProvider,
       maxAgents: input.maxAgents ?? current.maxAgents,
+      archivedTaskAutoDeleteEnabled:
+        input.archivedTaskAutoDeleteEnabled === undefined
+          ? current.archivedTaskAutoDeleteEnabled
+          : input.archivedTaskAutoDeleteEnabled,
+      archivedTaskAutoDeleteDays:
+        input.archivedTaskAutoDeleteDays === undefined
+          ? current.archivedTaskAutoDeleteDays
+          : normalizeArchivedTaskAutoDeleteDays(input.archivedTaskAutoDeleteDays),
       branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
         input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
       ),
       gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
-      mcpServers:
-        input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
+      gitAuthorName:
+        input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName),
+      gitAuthorEmail:
+        input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail),
+      hostexec:
+        input.hostexec === undefined
+          ? current.hostexec
+          : input.hostexec === null
+            ? defaultHostexecSettings
+            : normalizeHostexecSettings({ ...current.hostexec, ...input.hostexec }),
       openaiBaseUrl:
         input.openaiBaseUrl === undefined
           ? current.openaiBaseUrl
-          : input.openaiBaseUrl?.trim()
-            ? input.openaiBaseUrl.trim()
-            : null,
+          : normalizeOptionalUrl(input.openaiBaseUrl),
+      anthropicBaseUrl:
+        input.anthropicBaseUrl === undefined
+          ? current.anthropicBaseUrl
+          : normalizeOptionalUrl(input.anthropicBaseUrl),
       taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
       taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
-      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      harnessWhatExists: input.harnessWhatExists === undefined ? current.harnessWhatExists : normalizeHarnessValue(input.harnessWhatExists),
+      harnessAllowedActions: input.harnessAllowedActions === undefined ? current.harnessAllowedActions : normalizeHarnessValue(input.harnessAllowedActions),
+      harnessNotAllowedActions: input.harnessNotAllowedActions === undefined ? current.harnessNotAllowedActions : normalizeHarnessValue(input.harnessNotAllowedActions),
+      harnessHowToWork: input.harnessHowToWork === undefined ? current.harnessHowToWork : normalizeHarnessValue(input.harnessHowToWork),
+      harnessDefinitionOfDone: input.harnessDefinitionOfDone === undefined ? current.harnessDefinitionOfDone : normalizeHarnessValue(input.harnessDefinitionOfDone),
+      harnessEvidenceExpectations: input.harnessEvidenceExpectations === undefined ? current.harnessEvidenceExpectations : normalizeHarnessValue(input.harnessEvidenceExpectations),
+      codexDefaultModel: nextCodexDefaultModel,
+      codexModels: input.codexModels === undefined ? current.codexModels : normalizeProviderModels(input.codexModels, defaultSettings.codexModels),
       codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
-      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeDefaultModel: nextClaudeDefaultModel,
+      claudeModels: input.claudeModels === undefined ? current.claudeModels : normalizeProviderModels(input.claudeModels, defaultSettings.claudeModels),
       claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
       responsePreferencePresets:
         input.responsePreferencePresets === undefined
           ? current.responsePreferencePresets
           : normalizeResponsePreferencePresets(input.responsePreferencePresets)
     };
-
     await this.redis.set(SETTINGS_KEY, JSON.stringify(nextBase));
     const next = await this.getSettings();
     await this.publishSettings(next);
@@ -390,27 +461,19 @@ export class RedisSettingsStore implements SettingsStore {
     return settings;
   }
 
-  async getRuntimeCredentials(userId?: string | null, codexCredentialSource: "auto" | "profile" | "global" = "auto"): Promise<SettingsRuntimeCredentials> {
+  async getRuntimeCredentials(_userId?: string | null, _codexCredentialSource: RuntimeCodexCredentialSource = "auto"): Promise<SettingsRuntimeCredentials> {
     const [credentials, settings] = await Promise.all([
       this.credentialStore.getCredentials(),
       this.getSettings()
     ]);
-    const profileCodexAuthJson = userId?.trim()
-      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
-      : null;
-    const globalCodexAuthJson = credentials.codexAuthJson ?? null;
-    const codexAuthJson =
-      codexCredentialSource === "profile"
-        ? profileCodexAuthJson
-        : codexCredentialSource === "global"
-          ? globalCodexAuthJson
-          : profileCodexAuthJson || globalCodexAuthJson;
 
     return {
       ...credentials,
-      codexAuthJson: codexAuthJson || null,
       gitUsername: settings.gitUsername,
+      gitAuthorName: settings.gitAuthorName,
+      gitAuthorEmail: settings.gitAuthorEmail,
       openaiBaseUrl: settings.openaiBaseUrl,
+      anthropicBaseUrl: settings.anthropicBaseUrl,
       defaultProvider: settings.defaultProvider
     };
   }
@@ -460,35 +523,65 @@ export class PostgresSettingsStore implements SettingsStore {
           singleton_id,
           default_provider,
           max_agents,
+          archived_task_auto_delete_enabled,
+          archived_task_auto_delete_days,
           branch_prefix,
           workspace_provisioning_mode,
           git_username,
-          mcp_servers,
+          git_author_name,
+          git_author_email,
+          hostexec_enabled,
+          hostexec_url,
+          hostexec_bearer_token_env_var,
           openai_base_url,
+          anthropic_base_url,
           task_prompt_magic_model,
           task_prompt_magic_template,
+          harness_what_exists,
+          harness_allowed_actions,
+          harness_not_allowed_actions,
+          harness_how_to_work,
+          harness_definition_of_done,
+          harness_evidence_expectations,
           codex_default_model,
+          codex_models,
           codex_default_effort,
           claude_default_model,
+          claude_models,
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24::jsonb, $25, $26, $27::jsonb, $28, $29::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
         defaultSettings.defaultProvider,
         defaultSettings.maxAgents,
+        defaultSettings.archivedTaskAutoDeleteEnabled,
+        defaultSettings.archivedTaskAutoDeleteDays,
         defaultSettings.branchPrefix,
         defaultSettings.workspaceProvisioningMode,
         defaultSettings.gitUsername,
-        JSON.stringify(defaultSettings.mcpServers),
+        defaultSettings.gitAuthorName,
+        defaultSettings.gitAuthorEmail,
+        defaultSettings.hostexec.enabled,
+        defaultSettings.hostexec.url,
+        defaultSettings.hostexec.bearerTokenEnvVar,
         defaultSettings.openaiBaseUrl,
+        defaultSettings.anthropicBaseUrl,
         defaultSettings.taskPromptMagicModel,
         defaultSettings.taskPromptMagicTemplate,
+        defaultSettings.harnessWhatExists,
+        defaultSettings.harnessAllowedActions,
+        defaultSettings.harnessNotAllowedActions,
+        defaultSettings.harnessHowToWork,
+        defaultSettings.harnessDefinitionOfDone,
+        defaultSettings.harnessEvidenceExpectations,
         defaultSettings.codexDefaultModel,
+        JSON.stringify(defaultSettings.codexModels),
         defaultSettings.codexDefaultEffort,
         defaultSettings.claudeDefaultModel,
+        JSON.stringify(defaultSettings.claudeModels),
         defaultSettings.claudeDefaultEffort,
         JSON.stringify(defaultSettings.responsePreferencePresets)
       ]
@@ -502,16 +595,31 @@ export class PostgresSettingsStore implements SettingsStore {
         SELECT
           default_provider,
           max_agents,
+          archived_task_auto_delete_enabled,
+          archived_task_auto_delete_days,
           branch_prefix,
           workspace_provisioning_mode,
           git_username,
-          mcp_servers,
+          git_author_name,
+          git_author_email,
+          hostexec_enabled,
+          hostexec_url,
+          hostexec_bearer_token_env_var,
           openai_base_url,
+          anthropic_base_url,
           task_prompt_magic_model,
           task_prompt_magic_template,
+          harness_what_exists,
+          harness_allowed_actions,
+          harness_not_allowed_actions,
+          harness_how_to_work,
+          harness_definition_of_done,
+          harness_evidence_expectations,
           codex_default_model,
+          codex_models,
           codex_default_effort,
           claude_default_model,
+          claude_models,
           claude_default_effort,
           response_preference_presets
         FROM system_settings
@@ -519,14 +627,38 @@ export class PostgresSettingsStore implements SettingsStore {
       `
     );
     const row = result.rows[0];
+    const normalizedDefaultProvider = normalizeDefaultProvider(row?.default_provider);
+    const normalizedCodexDefaultModel =
+      typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
+        ? row.codex_default_model.trim()
+        : defaultSettings.codexDefaultModel;
+    const normalizedClaudeDefaultModel =
+      typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
+        ? row.claude_default_model.trim()
+        : defaultSettings.claudeDefaultModel;
     const normalizedBase = {
-      defaultProvider: normalizeDefaultProvider(row?.default_provider),
+      defaultProvider: normalizedDefaultProvider,
       maxAgents: typeof row?.max_agents === "number" ? row.max_agents : defaultSettings.maxAgents,
+      archivedTaskAutoDeleteEnabled:
+        typeof row?.archived_task_auto_delete_enabled === "boolean"
+          ? row.archived_task_auto_delete_enabled
+          : defaultSettings.archivedTaskAutoDeleteEnabled,
+      archivedTaskAutoDeleteDays: normalizeArchivedTaskAutoDeleteDays(
+        typeof row?.archived_task_auto_delete_days === "number" ? row.archived_task_auto_delete_days : undefined
+      ),
       branchPrefix: normalizeBranchPrefix(typeof row?.branch_prefix === "string" ? row.branch_prefix : undefined),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(row?.workspace_provisioning_mode),
       gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
-      mcpServers: normalizeMcpServers(Array.isArray(row?.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined),
-      openaiBaseUrl: typeof row?.openai_base_url === "string" && row.openai_base_url.trim().length > 0 ? row.openai_base_url.trim() : null,
+      gitAuthorName: normalizeOptionalGitAuthorName(typeof row?.git_author_name === "string" ? row.git_author_name : null),
+      gitAuthorEmail: normalizeOptionalGitAuthorEmail(typeof row?.git_author_email === "string" ? row.git_author_email : null),
+      hostexec: normalizeHostexecSettings({
+        enabled: row?.hostexec_enabled === true,
+        url: typeof row?.hostexec_url === "string" ? row.hostexec_url : null,
+        bearerTokenEnvVar:
+          typeof row?.hostexec_bearer_token_env_var === "string" ? row.hostexec_bearer_token_env_var : null
+      }),
+      openaiBaseUrl: normalizeOptionalUrl(typeof row?.openai_base_url === "string" ? row.openai_base_url : null),
+      anthropicBaseUrl: normalizeOptionalUrl(typeof row?.anthropic_base_url === "string" ? row.anthropic_base_url : null),
       taskPromptMagicModel:
         typeof row?.task_prompt_magic_model === "string" && row.task_prompt_magic_model.trim().length > 0
           ? row.task_prompt_magic_model.trim()
@@ -535,15 +667,23 @@ export class PostgresSettingsStore implements SettingsStore {
         typeof row?.task_prompt_magic_template === "string" && row.task_prompt_magic_template.trim().length > 0
           ? row.task_prompt_magic_template.trim()
           : defaultSettings.taskPromptMagicTemplate,
-      codexDefaultModel:
-        typeof row?.codex_default_model === "string" && row.codex_default_model.trim().length > 0
-          ? row.codex_default_model.trim()
-          : defaultSettings.codexDefaultModel,
+      harnessWhatExists: normalizeHarnessValue(row?.harness_what_exists),
+      harnessAllowedActions: normalizeHarnessValue(row?.harness_allowed_actions),
+      harnessNotAllowedActions: normalizeHarnessValue(row?.harness_not_allowed_actions),
+      harnessHowToWork: normalizeHarnessValue(row?.harness_how_to_work),
+      harnessDefinitionOfDone: normalizeHarnessValue(row?.harness_definition_of_done),
+      harnessEvidenceExpectations: normalizeHarnessValue(row?.harness_evidence_expectations),
+      codexDefaultModel: normalizedCodexDefaultModel,
+      codexModels: normalizeProviderModels(
+        Array.isArray(row?.codex_models) ? (row.codex_models as ProviderModelOption[]) : undefined,
+        defaultSettings.codexModels
+      ),
       codexDefaultEffort: normalizeProviderProfile(row?.codex_default_effort) ?? defaultSettings.codexDefaultEffort,
-      claudeDefaultModel:
-        typeof row?.claude_default_model === "string" && row.claude_default_model.trim().length > 0
-          ? row.claude_default_model.trim()
-          : defaultSettings.claudeDefaultModel,
+      claudeDefaultModel: normalizedClaudeDefaultModel,
+      claudeModels: normalizeProviderModels(
+        Array.isArray(row?.claude_models) ? (row.claude_models as ProviderModelOption[]) : undefined,
+        defaultSettings.claudeModels
+      ),
       claudeDefaultEffort: normalizeProviderProfile(row?.claude_default_effort) ?? defaultSettings.claudeDefaultEffort,
       responsePreferencePresets: normalizeResponsePreferencePresets(
         Array.isArray(row?.response_preference_presets) ? (row.response_preference_presets as ResponsePreferencePreset[]) : undefined
@@ -560,26 +700,56 @@ export class PostgresSettingsStore implements SettingsStore {
 
   async updateSettings(input: UpdateSettingsInput): Promise<SystemSettings> {
     const current = await this.getSettings();
+    const nextDefaultProvider = normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider);
+    const nextCodexDefaultModel = input.codexDefaultModel?.trim() || current.codexDefaultModel;
+    const nextClaudeDefaultModel = input.claudeDefaultModel?.trim() || current.claudeDefaultModel;
     const nextBase = {
-      defaultProvider: normalizeDefaultProvider(input.defaultProvider ?? current.defaultProvider),
+      defaultProvider: nextDefaultProvider,
       maxAgents: input.maxAgents ?? current.maxAgents,
+      archivedTaskAutoDeleteEnabled:
+        input.archivedTaskAutoDeleteEnabled === undefined
+          ? current.archivedTaskAutoDeleteEnabled
+          : input.archivedTaskAutoDeleteEnabled,
+      archivedTaskAutoDeleteDays:
+        input.archivedTaskAutoDeleteDays === undefined
+          ? current.archivedTaskAutoDeleteDays
+          : normalizeArchivedTaskAutoDeleteDays(input.archivedTaskAutoDeleteDays),
       branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
         input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
       ),
       gitUsername: normalizeGitUsername(input.gitUsername ?? current.gitUsername),
-      mcpServers: input.mcpServers === undefined ? current.mcpServers : normalizeMcpServers(input.mcpServers),
+      gitAuthorName:
+        input.gitAuthorName === undefined ? current.gitAuthorName : normalizeOptionalGitAuthorName(input.gitAuthorName),
+      gitAuthorEmail:
+        input.gitAuthorEmail === undefined ? current.gitAuthorEmail : normalizeOptionalGitAuthorEmail(input.gitAuthorEmail),
+      hostexec:
+        input.hostexec === undefined
+          ? current.hostexec
+          : input.hostexec === null
+            ? defaultHostexecSettings
+            : normalizeHostexecSettings({ ...current.hostexec, ...input.hostexec }),
       openaiBaseUrl:
         input.openaiBaseUrl === undefined
           ? current.openaiBaseUrl
-          : input.openaiBaseUrl?.trim()
-            ? input.openaiBaseUrl.trim()
-            : null,
+          : normalizeOptionalUrl(input.openaiBaseUrl),
+      anthropicBaseUrl:
+        input.anthropicBaseUrl === undefined
+          ? current.anthropicBaseUrl
+          : normalizeOptionalUrl(input.anthropicBaseUrl),
       taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
       taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
-      codexDefaultModel: input.codexDefaultModel?.trim() || current.codexDefaultModel,
+      harnessWhatExists: input.harnessWhatExists === undefined ? current.harnessWhatExists : normalizeHarnessValue(input.harnessWhatExists),
+      harnessAllowedActions: input.harnessAllowedActions === undefined ? current.harnessAllowedActions : normalizeHarnessValue(input.harnessAllowedActions),
+      harnessNotAllowedActions: input.harnessNotAllowedActions === undefined ? current.harnessNotAllowedActions : normalizeHarnessValue(input.harnessNotAllowedActions),
+      harnessHowToWork: input.harnessHowToWork === undefined ? current.harnessHowToWork : normalizeHarnessValue(input.harnessHowToWork),
+      harnessDefinitionOfDone: input.harnessDefinitionOfDone === undefined ? current.harnessDefinitionOfDone : normalizeHarnessValue(input.harnessDefinitionOfDone),
+      harnessEvidenceExpectations: input.harnessEvidenceExpectations === undefined ? current.harnessEvidenceExpectations : normalizeHarnessValue(input.harnessEvidenceExpectations),
+      codexDefaultModel: nextCodexDefaultModel,
+      codexModels: input.codexModels === undefined ? current.codexModels : normalizeProviderModels(input.codexModels, defaultSettings.codexModels),
       codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
-      claudeDefaultModel: input.claudeDefaultModel?.trim() || current.claudeDefaultModel,
+      claudeDefaultModel: nextClaudeDefaultModel,
+      claudeModels: input.claudeModels === undefined ? current.claudeModels : normalizeProviderModels(input.claudeModels, defaultSettings.claudeModels),
       claudeDefaultEffort: normalizeProviderProfile(input.claudeDefaultEffort) ?? current.claudeDefaultEffort,
       responsePreferencePresets:
         input.responsePreferencePresets === undefined
@@ -593,50 +763,95 @@ export class PostgresSettingsStore implements SettingsStore {
           singleton_id,
           default_provider,
           max_agents,
+          archived_task_auto_delete_enabled,
+          archived_task_auto_delete_days,
           branch_prefix,
           workspace_provisioning_mode,
           git_username,
-          mcp_servers,
+          git_author_name,
+          git_author_email,
+          hostexec_enabled,
+          hostexec_url,
+          hostexec_bearer_token_env_var,
           openai_base_url,
+          anthropic_base_url,
           task_prompt_magic_model,
           task_prompt_magic_template,
+          harness_what_exists,
+          harness_allowed_actions,
+          harness_not_allowed_actions,
+          harness_how_to_work,
+          harness_definition_of_done,
+          harness_evidence_expectations,
           codex_default_model,
+          codex_models,
           codex_default_effort,
           claude_default_model,
+          claude_models,
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12, $13, $14::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24::jsonb, $25, $26, $27::jsonb, $28, $29::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
           max_agents = EXCLUDED.max_agents,
+          archived_task_auto_delete_enabled = EXCLUDED.archived_task_auto_delete_enabled,
+          archived_task_auto_delete_days = EXCLUDED.archived_task_auto_delete_days,
           branch_prefix = EXCLUDED.branch_prefix,
           workspace_provisioning_mode = EXCLUDED.workspace_provisioning_mode,
           git_username = EXCLUDED.git_username,
-          mcp_servers = EXCLUDED.mcp_servers,
+          git_author_name = EXCLUDED.git_author_name,
+          git_author_email = EXCLUDED.git_author_email,
+          hostexec_enabled = EXCLUDED.hostexec_enabled,
+          hostexec_url = EXCLUDED.hostexec_url,
+          hostexec_bearer_token_env_var = EXCLUDED.hostexec_bearer_token_env_var,
           openai_base_url = EXCLUDED.openai_base_url,
+          anthropic_base_url = EXCLUDED.anthropic_base_url,
           task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
           task_prompt_magic_template = EXCLUDED.task_prompt_magic_template,
+          harness_what_exists = EXCLUDED.harness_what_exists,
+          harness_allowed_actions = EXCLUDED.harness_allowed_actions,
+          harness_not_allowed_actions = EXCLUDED.harness_not_allowed_actions,
+          harness_how_to_work = EXCLUDED.harness_how_to_work,
+          harness_definition_of_done = EXCLUDED.harness_definition_of_done,
+          harness_evidence_expectations = EXCLUDED.harness_evidence_expectations,
           codex_default_model = EXCLUDED.codex_default_model,
+          codex_models = EXCLUDED.codex_models,
           codex_default_effort = EXCLUDED.codex_default_effort,
           claude_default_model = EXCLUDED.claude_default_model,
+          claude_models = EXCLUDED.claude_models,
           claude_default_effort = EXCLUDED.claude_default_effort,
           response_preference_presets = EXCLUDED.response_preference_presets
       `,
       [
         nextBase.defaultProvider,
         nextBase.maxAgents,
+        nextBase.archivedTaskAutoDeleteEnabled,
+        nextBase.archivedTaskAutoDeleteDays,
         nextBase.branchPrefix,
         nextBase.workspaceProvisioningMode,
         nextBase.gitUsername,
-        JSON.stringify(nextBase.mcpServers),
+        nextBase.gitAuthorName,
+        nextBase.gitAuthorEmail,
+        nextBase.hostexec.enabled,
+        nextBase.hostexec.url,
+        nextBase.hostexec.bearerTokenEnvVar,
         nextBase.openaiBaseUrl,
+        nextBase.anthropicBaseUrl,
         nextBase.taskPromptMagicModel,
         nextBase.taskPromptMagicTemplate,
+        nextBase.harnessWhatExists,
+        nextBase.harnessAllowedActions,
+        nextBase.harnessNotAllowedActions,
+        nextBase.harnessHowToWork,
+        nextBase.harnessDefinitionOfDone,
+        nextBase.harnessEvidenceExpectations,
         nextBase.codexDefaultModel,
+        JSON.stringify(nextBase.codexModels),
         nextBase.codexDefaultEffort,
         nextBase.claudeDefaultModel,
+        JSON.stringify(nextBase.claudeModels),
         nextBase.claudeDefaultEffort,
         JSON.stringify(nextBase.responsePreferencePresets)
       ]
@@ -653,27 +868,19 @@ export class PostgresSettingsStore implements SettingsStore {
     return settings;
   }
 
-  async getRuntimeCredentials(userId?: string | null, codexCredentialSource: "auto" | "profile" | "global" = "auto"): Promise<SettingsRuntimeCredentials> {
+  async getRuntimeCredentials(_userId?: string | null, _codexCredentialSource: RuntimeCodexCredentialSource = "auto"): Promise<SettingsRuntimeCredentials> {
     const [credentials, settings] = await Promise.all([
       this.credentialStore.getCredentials(),
       this.getSettings()
     ]);
-    const profileCodexAuthJson = userId?.trim()
-      ? await this.credentialStore.getCodexAuthJsonForUser(userId.trim())
-      : null;
-    const globalCodexAuthJson = credentials.codexAuthJson ?? null;
-    const codexAuthJson =
-      codexCredentialSource === "profile"
-        ? profileCodexAuthJson
-        : codexCredentialSource === "global"
-          ? globalCodexAuthJson
-          : profileCodexAuthJson || globalCodexAuthJson;
 
     return {
       ...credentials,
-      codexAuthJson: codexAuthJson || null,
       gitUsername: settings.gitUsername,
+      gitAuthorName: settings.gitAuthorName,
+      gitAuthorEmail: settings.gitAuthorEmail,
       openaiBaseUrl: settings.openaiBaseUrl,
+      anthropicBaseUrl: settings.anthropicBaseUrl,
       defaultProvider: settings.defaultProvider
     };
   }

@@ -8,7 +8,7 @@
 - [ ] No unrelated behavior changed.
 
 ## Testing Performed
-- [ ] `./scripts/harness/pr-ready.sh`
+- [ ] `npm run ci`
 - [ ] Additional manual checks (describe below)
 
 Manual checks:

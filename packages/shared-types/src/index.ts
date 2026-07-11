@@ -1,6 +1,83 @@
 export type TaskType = "build" | "ask";
 export type AgentProvider = "codex" | "claude";
 
+export const DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS = [
+  "A new GitHub {{target_label}} feedback item was added to linked {{target_ref}}.",
+  "",
+  "Type: {{feedback_type}}",
+  "Author: @{{author}}",
+  "{{issue_title_line}}{{review_state_line}}{{file_line}}{{url_line}}{{diff_context_block}}",
+  "Feedback:",
+  "{{feedback_body}}",
+  "",
+  "If the feedback is a question without a clear requested code or file change, reply on GitHub asking for confirmation or a follow-up before changing files.",
+  "",
+  "After handling this feedback, reply on GitHub at the URL above with a brief status."
+].join("\n");
+
+export const DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS = [
+  "A new GitHub {{target_label}} task was created from {{target_ref}}.",
+  "",
+  "Type: {{feedback_type}}",
+  "Author: @{{author}}",
+  "{{issue_title_line}}{{review_state_line}}{{file_line}}{{url_line}}{{diff_context_block}}",
+  "Feedback:",
+  "{{feedback_body}}",
+  "",
+  "If the feedback is a question without a clear requested code or file change, reply on GitHub asking for confirmation or a follow-up before changing files.",
+  "",
+  "After handling this feedback, reply on GitHub at the URL above with a brief status."
+].join("\n");
+
+export const DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS = [
+  "A GitHub pull request review was requested for {{target_ref}}.",
+  "",
+  "Requested by: @{{author}}",
+  "{{requested_reviewer_line}}{{title_line}}{{url_line}}",
+  "Pull request body:",
+  "{{feedback_body}}",
+  "",
+  "Review the pull request and leave GitHub review feedback or comments.",
+  "Do not make code changes unless these instructions explicitly request them.",
+  "",
+  "After completing the review, reply on GitHub at the URL above with a brief status."
+].join("\n");
+
+export const DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE = [
+  "🤖 A new task has been created and will start working on this shortly.",
+  "",
+  "Task: {{task_url}}",
+  "",
+  "I’ll post progress updates here as work continues."
+].join("\n");
+
+export const DEFAULT_SLACK_INITIAL_INSTRUCTIONS = [
+  "A new Slack task was created from a thread in {{channel_id}}.",
+  "",
+  "Author: <@{{author}}>",
+  "{{url_line}}",
+  "Request:",
+  "{{feedback_body}}",
+  "",
+  "After handling this, call the Verft MCP tool `verft_reply_slack_thread` with a brief status reply."
+].join("\n");
+
+export const DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS = [
+  "A new Slack thread reply was added to this task.",
+  "",
+  "Author: <@{{author}}>",
+  "{{url_line}}",
+  "Feedback:",
+  "{{feedback_body}}",
+  "",
+  "After handling this feedback, call the Verft MCP tool `verft_reply_slack_thread` with a brief status reply."
+].join("\n");
+
+export const DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE = [
+  "Created task: {{task_url}}",
+  "I’ll post updates here as work continues."
+].join("\n");
+
 /** Native effort values from providers. "max" is Claude-only. */
 export type ProviderProfile = "low" | "medium" | "high" | "max";
 
@@ -15,7 +92,10 @@ export interface ProviderEffortOption {
 }
 
 export const CODEX_MODELS: ProviderModelOption[] = [
+  { label: "GPT-5.5", value: "gpt-5.5" },
   { label: "GPT-5.4", value: "gpt-5.4" },
+  { label: "GPT-5.4 mini", value: "gpt-5.4-mini" },
+  { label: "GPT-5.4 nano", value: "gpt-5.4-nano" },
   { label: "o3", value: "o3" },
   { label: "o4-mini", value: "o4-mini" },
   { label: "o3-mini", value: "o3-mini" },
@@ -24,7 +104,10 @@ export const CODEX_MODELS: ProviderModelOption[] = [
 ];
 
 export const CLAUDE_MODELS: ProviderModelOption[] = [
-  { label: "Claude Opus 4", value: "claude-opus-4-5" },
+  { label: "Claude Opus 4.8", value: "claude-opus-4-8" },
+  { label: "Claude Sonnet 4.6", value: "claude-sonnet-4-6" },
+  { label: "Claude Haiku 4.5", value: "claude-haiku-4-5-20251001" },
+  { label: "Claude Opus 4.5", value: "claude-opus-4-5" },
   { label: "Claude Sonnet 4.5", value: "claude-sonnet-4-5" },
   { label: "Claude Sonnet 4", value: "claude-sonnet-4" },
   { label: "Claude Haiku 3.5", value: "claude-haiku-3-5" }
@@ -52,13 +135,12 @@ export const getEffortOptionsForProvider = (provider: AgentProvider): ProviderEf
   provider === "claude" ? CLAUDE_EFFORT_OPTIONS : CODEX_EFFORT_OPTIONS;
 
 export const getDefaultModelForProvider = (provider: AgentProvider): string =>
-  provider === "claude" ? "claude-sonnet-4-5" : "gpt-5.4";
+  provider === "claude" ? "claude-opus-4-8" : "gpt-5.5";
 export type TaskMessageRole = "user" | "assistant" | "system";
 export type TaskRunStatus = "running" | "succeeded" | "failed" | "cancelled";
 
 export type TaskStatus =
   | "draft"
-  | "scheduled"
   | "build_queued"
   | "preparing_workspace"
   | "building"
@@ -77,10 +159,10 @@ export type TaskStatus =
   | "failed";
 
 export type TaskWorkflowStatus = "backlog" | "ready" | "in_progress" | "review" | "done" | "archived";
-export type TaskExecutionStatus = "idle" | "scheduled" | "queued" | "preparing" | "running" | "failed" | "cancelled";
+export type TaskExecutionStatus = "idle" | "queued" | "preparing" | "running" | "failed" | "cancelled";
 export type TaskReviewReason = "checkpoint" | "answer" | "manual" | "merge" | null;
 export type TaskAction = "build" | "ask";
-export type TaskExecutionAction = TaskAction | "interactive" | "terminal" | null;
+export type TaskExecutionAction = TaskAction | "terminal" | null;
 export type TaskMessageAction = TaskAction | "comment";
 export const TASK_PROMPT_ATTACHMENT_MAX_COUNT = 6;
 export const TASK_PROMPT_ATTACHMENT_MAX_SIZE_BYTES = 6 * 1024 * 1024;
@@ -130,11 +212,12 @@ export type McpServerTransport = "stdio" | "http";
 export type PermissionScope =
   | "task:list"
   | "task:create"
+  | "task:create_subtask"
   | "task:read"
   | "task:edit"
   | "task:build"
   | "task:ask"
-  | "task:interactive"
+  | "task:terminal"
   | "task:delete"
   | "snippet:list"
   | "snippet:create"
@@ -157,11 +240,12 @@ export type PermissionScope =
 export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "task:list",
   "task:create",
+  "task:create_subtask",
   "task:read",
   "task:edit",
   "task:build",
   "task:ask",
-  "task:interactive",
+  "task:terminal",
   "task:delete",
   "snippet:list",
   "snippet:create",
@@ -182,13 +266,22 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "user:delete"
 ];
 
+export const LEGACY_PERMISSION_SCOPE_ALIASES: Record<string, PermissionScope> = {
+  "task:interactive": "task:terminal"
+};
+
+export const normalizePermissionScope = (scope: string): PermissionScope | null => {
+  const normalized = LEGACY_PERMISSION_SCOPE_ALIASES[scope.trim()] ?? scope.trim();
+  return ALL_PERMISSION_SCOPES.includes(normalized as PermissionScope) ? (normalized as PermissionScope) : null;
+};
+
 export interface PermissionScopeGroup {
   label: string;
   scopes: PermissionScope[];
 }
 
 export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
-  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:interactive", "task:delete"] },
+  { label: "Tasks", scopes: ["task:list", "task:create", "task:create_subtask", "task:read", "task:edit", "task:build", "task:ask", "task:terminal", "task:delete"] },
   { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
   { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
   { label: "Settings", scopes: ["settings:read", "settings:edit"] },
@@ -252,8 +345,10 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  gitAuthorName: string | null;
-  gitAuthorEmail: string | null;
+  githubUsername: string | null;
+  defaultProvider: AgentProvider | null;
+  defaultModel: string | null;
+  defaultProviderProfile: ProviderProfile | null;
   active: boolean;
   agentResponsePreference: AgentResponsePreference;
   roles: UserRoleRef[];
@@ -268,7 +363,6 @@ export interface AuthSessionUser extends User {
   allowedProviders: AgentProvider[];
   allowedModels: string[];
   allowedEfforts: ProviderProfile[];
-  codexAuthJsonConfigured?: boolean;
 }
 
 export interface AuthSession {
@@ -279,10 +373,26 @@ export interface AuthSession {
 export interface AuthProfile {
   name: string;
   email: string;
-  gitAuthorName: string | null;
-  gitAuthorEmail: string | null;
+  githubUsername: string | null;
+  defaultProvider: AgentProvider | null;
+  defaultModel: string | null;
+  defaultProviderProfile: ProviderProfile | null;
   agentResponsePreference: AgentResponsePreference;
-  codexAuthJsonConfigured: boolean;
+}
+
+export interface PersonalAccessToken {
+  id: string;
+  name: string;
+  scopes: PermissionScope[];
+  tokenPrefix: string;
+  expiresAt: string | null;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+  createdAt: string;
+}
+
+export interface CreatedPersonalAccessToken extends PersonalAccessToken {
+  token: string;
 }
 
 export interface LoginInput {
@@ -311,9 +421,11 @@ export interface UpdateRoleInput {
 export interface CreateUserInput {
   name: string;
   email: string;
-  gitAuthorName?: string | null;
-  gitAuthorEmail?: string | null;
   password: string;
+  githubUsername?: string | null;
+  defaultProvider?: AgentProvider | null;
+  defaultModel?: string | null;
+  defaultProviderProfile?: ProviderProfile | null;
   active?: boolean;
   roleIds?: string[];
   repositoryIds?: string[];
@@ -323,9 +435,11 @@ export interface CreateUserInput {
 export interface UpdateUserInput {
   name?: string;
   email?: string;
-  gitAuthorName?: string | null;
-  gitAuthorEmail?: string | null;
   password?: string;
+  githubUsername?: string | null;
+  defaultProvider?: AgentProvider | null;
+  defaultModel?: string | null;
+  defaultProviderProfile?: ProviderProfile | null;
   active?: boolean;
   roleIds?: string[];
   repositoryIds?: string[];
@@ -383,70 +497,60 @@ export interface RepositoryEnvSecretInputFile {
 }
 
 export type RepositoryEnvSecretInput = RepositoryEnvSecretInputText | RepositoryEnvSecretInputFile;
-
-export type GitHubAutomationTrigger = "issue_opened" | "pull_request_opened";
-export type GitHubCommentTriggerType = "emoji_reaction" | "slash_command" | "bot_mention";
-
-export interface GitHubAutomationLabelFilter {
-  labelsAny?: string[];
-  labelsAll?: string[];
-  labelsNone?: string[];
-}
-
-export interface GitHubAutomationTaskConfig {
-  assigneeEmail?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  taskType?: Extract<TaskType, "build" | "ask">;
-  includeComments?: boolean;
-  titleTemplate?: string;
-  notes?: string;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string | null;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  snippetId?: string;
-}
-
-export interface GitHubAutomationRule {
-  id: string;
-  name: string;
-  enabled: boolean;
-  trigger: GitHubAutomationTrigger;
-  syncStatusEnabled?: boolean;
-  automationEnabled?: boolean;
-  allowedTriggers?: GitHubCommentTriggerType[];
-  allowedReactions?: string[];
-  allowedCommands?: string[];
-  allowedActorLogins?: string[];
-  labelFilter?: GitHubAutomationLabelFilter;
-  task: GitHubAutomationTaskConfig;
-  createdAt: string;
-  updatedAt: string;
-}
-
 export interface Repository {
   id: string;
   name: string;
   url: string;
   defaultBranch: string;
-  syncStatusEnabled?: boolean;
+  defaultProvider?: AgentProvider | null;
+  defaultModel?: string | null;
+  defaultProviderProfile?: ProviderProfile | null;
   envVars: RepositoryEnvVarValue[];
   envSecrets?: RepositoryEnvSecret[];
+  mcpServers: McpServerConfig[];
+  hostCommands: string[];
   webhookUrl: string | null;
   webhookEnabled: boolean;
   webhookSecretConfigured: boolean;
+  githubPrWebhookSecretConfigured?: boolean;
+  githubIntegrationBotLogin?: string | null;
+  githubPrAllowedUsers?: string[];
+  githubPrRequireBotMention?: boolean;
+  githubPrAutoArchiveOnMerge?: boolean;
+  githubPrInitialInstructions?: string | null;
+  githubPrFeedbackInstructions?: string | null;
+  githubPrReviewInstructions?: string | null;
+  githubPrTaskCreatedCommentTemplate?: string | null;
+  githubPrTaskOwnerUserId?: string | null;
+  slackChannelId?: string | null;
+  slackInitialInstructions?: string | null;
+  slackFeedbackInstructions?: string | null;
+  slackTaskCreatedReplyTemplate?: string | null;
+  slackTaskOwnerUserId?: string | null;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
   webhookLastAttemptAt: string | null;
   webhookLastStatus: "success" | "failed" | null;
   webhookLastError: string | null;
-  githubWebhookSecretConfigured?: boolean;
-  githubAutomations?: GitHubAutomationRule[];
   createdAt: string;
   updatedAt: string;
 }
 
-export type TaskTerminalSessionMode = "interactive" | "git";
-export type CodexCredentialSource = "auto" | "profile" | "global";
+export type TaskTerminalSessionMode = "terminal";
+export type CodexCredentialSource = "auto" | "global";
+
+export interface TaskLinkedWorkspace {
+  taskId: string;
+  alias: string;
+  title: string;
+  repoName: string;
+  linkedAt: string;
+  linkedByUserId: string;
+}
 
 export interface Task {
   id: string;
@@ -454,14 +558,22 @@ export interface Task {
   deadline: string | null;
   pinned: boolean;
   hasPendingCheckpoint: boolean;
+  autoApplyCheckpoints: boolean;
   activeInteractiveSession?: boolean;
   activeTerminalSessionMode?: TaskTerminalSessionMode | null;
+  linkedWorkspaces?: TaskLinkedWorkspace[];
+  parentTaskId?: string | null;
+  rootTaskId?: string | null;
   ownerUserId: string | null;
   creatorName?: string | null;
   repoId: string;
   repoName: string;
   repoUrl: string;
   repoDefaultBranch: string;
+  githubPrNumber?: number | null;
+  githubIssueNumber?: number | null;
+  slackChannelId?: string | null;
+  slackThreadTs?: string | null;
   taskType: TaskType;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
@@ -475,7 +587,6 @@ export interface Task {
   branchName: string | null;
   workspaceBaseRef: string | null;
   prompt: string;
-  notes?: string;
   resultMarkdown: string | null;
   executionSummary: string;
   branchDiff: string | null;
@@ -489,8 +600,6 @@ export interface Task {
   reviewReason: TaskReviewReason;
   logs: string[];
   enqueued: boolean;
-  scheduledStartAt?: string | null;
-  scheduledEndAt?: string | null;
   createdAt: string;
   updatedAt: string;
   startedAt: string | null;
@@ -542,6 +651,8 @@ export interface TaskWorkspaceCommit {
   /** ISO 8601 timestamp from `git log` (%cI). */
   committedAt: string;
   authorName: string;
+  /** True when this commit is already reachable from the task branch on origin. */
+  isPushed: boolean;
 }
 
 export interface TaskWorkspaceCommitLog {
@@ -603,6 +714,13 @@ export interface TaskPushPreview {
   suggestedCommitMessage: string;
 }
 
+export interface TaskGitStateSnapshot {
+  fetchedAt: string;
+  pullCount: number;
+  pushCount: number;
+  pushPreview: TaskPushPreview;
+}
+
 export interface TaskMergePreview {
   sourceBranch: string;
   targetBranch: string;
@@ -631,9 +749,12 @@ export interface TaskMessage {
   role: TaskMessageRole;
   content: string;
   action: TaskMessageAction | null;
+  queueState?: "pending" | null;
+  queueSource?: "user" | "github_pr" | "github_issue" | "slack_thread" | null;
+  externalId?: string | null;
   /** Optional saved image attachments that were attached when the user submitted this message. */
   attachments?: TaskPromptAttachment[];
-  /** Present for interactive terminal lifecycle messages so history can address the terminal session. */
+  /** Present for terminal lifecycle messages so history can address the terminal session. */
   sessionId?: string | null;
   createdAt: string;
 }
@@ -687,6 +808,7 @@ export interface TaskRun {
   id: string;
   taskId: string;
   action: TaskAction;
+  promptMessageId?: string | null;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride: string | null;
@@ -733,7 +855,7 @@ export interface TaskGitOperation {
 
 export type TaskChangeProposalSourceType = "build_run" | "interactive_session";
 
-export type TaskChangeProposalStatus = "pending" | "applied" | "rejected" | "reverted";
+export type TaskChangeProposalStatus = "pending" | "applying" | "applied" | "rejected" | "reverted";
 
 export interface TaskChangeProposal {
   id: string;
@@ -779,27 +901,28 @@ export interface McpServerConfig {
   transport: McpServerTransport;
   command?: string | null;
   args?: string[];
+  env?: Record<string, string>;
   url?: string | null;
   bearerTokenEnvVar?: string | null;
+  bearerToken?: string | null;
+  bearerTokenConfigured?: boolean;
+  clearBearerToken?: boolean;
 }
 
-export interface GitHubIssueReference {
-  number: number;
-  title: string;
-  url: string;
+export interface HostexecSettings {
+  enabled: boolean;
+  url: string | null;
+  bearerTokenEnvVar: string | null;
 }
 
-export interface GitHubPullRequestReference {
-  number: number;
-  title: string;
-  url: string;
-  headBranch: string;
-  baseBranch: string;
-}
-
-export interface GitHubBranchReference {
-  name: string;
-  isDefault: boolean;
+export interface HostexecAvailability {
+  available: boolean;
+  enabled: boolean;
+  url: string | null;
+  detected: boolean;
+  allowAll: boolean;
+  commands: string[];
+  message: string;
 }
 
 export type DataStoreBackend = "redis" | "postgres";
@@ -822,20 +945,34 @@ export interface SystemDataStores {
 export interface SystemSettings {
   defaultProvider: AgentProvider;
   maxAgents: number;
+  archivedTaskAutoDeleteEnabled: boolean;
+  archivedTaskAutoDeleteDays: number;
   branchPrefix: string;
   workspaceProvisioningMode: WorkspaceProvisioningMode;
   gitUsername: string;
-  mcpServers: McpServerConfig[];
+  gitAuthorName: string | null;
+  gitAuthorEmail: string | null;
+  hostexec: HostexecSettings;
   openaiBaseUrl: string | null;
+  anthropicBaseUrl: string | null;
   taskPromptMagicModel: string;
   taskPromptMagicTemplate: string;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
   githubTokenConfigured: boolean;
   openaiApiKeyConfigured: boolean;
-  codexAuthJsonConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
+  slackSigningSecretConfigured: boolean;
+  slackBotTokenConfigured: boolean;
   codexDefaultModel: string;
+  codexModels: ProviderModelOption[];
   codexDefaultEffort: ProviderProfile;
   claudeDefaultModel: string;
+  claudeModels: ProviderModelOption[];
   claudeDefaultEffort: ProviderProfile;
   responsePreferencePresets: ResponsePreferencePreset[];
   dataStores?: SystemDataStores;
@@ -850,30 +987,76 @@ export interface CreateRepositoryInput {
   name: string;
   url: string;
   defaultBranch?: string;
-  syncStatusEnabled?: boolean;
+  defaultProvider?: AgentProvider | null;
+  defaultModel?: string | null;
+  defaultProviderProfile?: ProviderProfile | null;
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
+  mcpServers?: McpServerConfig[];
+  hostCommands?: string[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
-  githubWebhookSecret?: string;
-  githubAutomations?: GitHubAutomationRule[];
+  githubPrWebhookSecret?: string;
+  githubIntegrationBotLogin?: string | null;
+  githubPrAllowedUsers?: string[];
+  githubPrRequireBotMention?: boolean;
+  githubPrAutoArchiveOnMerge?: boolean;
+  githubPrInitialInstructions?: string | null;
+  githubPrFeedbackInstructions?: string | null;
+  githubPrReviewInstructions?: string | null;
+  githubPrTaskCreatedCommentTemplate?: string | null;
+  githubPrTaskOwnerUserId?: string | null;
+  slackChannelId?: string | null;
+  slackInitialInstructions?: string | null;
+  slackFeedbackInstructions?: string | null;
+  slackTaskCreatedReplyTemplate?: string | null;
+  slackTaskOwnerUserId?: string | null;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
 }
 
 export interface UpdateRepositoryInput {
   name?: string;
   url?: string;
   defaultBranch?: string;
-  syncStatusEnabled?: boolean;
+  defaultProvider?: AgentProvider | null;
+  defaultModel?: string | null;
+  defaultProviderProfile?: ProviderProfile | null;
   envVars?: RepositoryEnvVarInput[];
   envSecrets?: RepositoryEnvSecretInput[];
+  mcpServers?: McpServerConfig[];
+  hostCommands?: string[];
   webhookUrl?: string | null;
   webhookEnabled?: boolean;
   webhookSecret?: string;
   clearWebhookSecret?: boolean;
-  githubWebhookSecret?: string;
-  clearGithubWebhookSecret?: boolean;
-  githubAutomations?: GitHubAutomationRule[];
+  githubPrWebhookSecret?: string;
+  clearGithubPrWebhookSecret?: boolean;
+  githubIntegrationBotLogin?: string | null;
+  githubPrAllowedUsers?: string[];
+  githubPrRequireBotMention?: boolean;
+  githubPrAutoArchiveOnMerge?: boolean;
+  githubPrInitialInstructions?: string | null;
+  githubPrFeedbackInstructions?: string | null;
+  githubPrReviewInstructions?: string | null;
+  githubPrTaskCreatedCommentTemplate?: string | null;
+  githubPrTaskOwnerUserId?: string | null;
+  slackChannelId?: string | null;
+  slackInitialInstructions?: string | null;
+  slackFeedbackInstructions?: string | null;
+  slackTaskCreatedReplyTemplate?: string | null;
+  slackTaskOwnerUserId?: string | null;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
 }
 
 export interface CreateTaskInput {
@@ -882,7 +1065,6 @@ export interface CreateTaskInput {
   deadline?: string | null;
   repoId: string;
   prompt: string;
-  notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
   taskType?: TaskType;
   provider?: AgentProvider;
@@ -891,6 +1073,9 @@ export interface CreateTaskInput {
   codexCredentialSource?: CodexCredentialSource;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
+  autoApplyCheckpoints?: boolean;
+  parentTaskId?: string | null;
+  rootTaskId?: string | null;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
 }
@@ -900,7 +1085,6 @@ export interface TaskDefinitionInput {
   deadline?: string | null;
   repoId: string;
   prompt: string;
-  notes?: string;
   attachments?: CreateTaskPromptAttachmentInput[];
   taskType: TaskType;
   provider: AgentProvider;
@@ -942,40 +1126,6 @@ export interface UpdateSnippetInput {
   variables?: SnippetVariable[];
 }
 
-export interface CreateTaskFromIssueInput {
-  repoId: string;
-  draft?: boolean;
-  issueNumber: number;
-  includeComments?: boolean;
-  notes?: string;
-  deadline?: string | null;
-  taskType?: Extract<TaskType, "build" | "ask">;
-  title?: string;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  baseBranch?: string;
-  branchStrategy?: TaskBranchStrategy;
-  model?: string;
-  reasoningEffort?: TaskReasoningEffort;
-}
-
-export interface CreateTaskFromPullRequestInput {
-  repoId: string;
-  draft?: boolean;
-  pullRequestNumber: number;
-  title?: string;
-  notes?: string;
-  deadline?: string | null;
-  provider?: AgentProvider;
-  providerProfile?: ProviderProfile;
-  modelOverride?: string;
-  codexCredentialSource?: CodexCredentialSource;
-  model?: string;
-  reasoningEffort?: TaskReasoningEffort;
-}
-
 export interface TriggerTaskActionInput {
   action: TaskAction;
 }
@@ -986,6 +1136,7 @@ export interface UpdateTaskConfigInput {
   modelOverride?: string | null;
   codexCredentialSource?: CodexCredentialSource;
   branchStrategy?: TaskBranchStrategy;
+  autoApplyCheckpoints?: boolean;
 }
 
 export interface UpdateTaskPinInput {
@@ -996,10 +1147,6 @@ export interface UpdateTaskTitleInput {
   title: string;
 }
 
-export interface UpdateTaskNotesInput {
-  notes: string;
-}
-
 export interface UpdateTaskDeadlineInput {
   deadline: string | null;
 }
@@ -1008,7 +1155,6 @@ export interface UpdateTaskDraftInput {
   title: string;
   deadline: string | null;
   prompt: string;
-  notes?: string;
   taskType: TaskType;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
@@ -1028,6 +1174,14 @@ export interface UpdateTaskStateInput {
 
 export interface UpdateTaskAssigneeInput {
   ownerUserId: string;
+}
+
+export interface UpdateTaskPullRequestInput {
+  githubPrNumber: number | null;
+}
+
+export interface UpdateTaskIssueInput {
+  githubIssueNumber: number | null;
 }
 
 export interface CreateTaskMessageInput {
@@ -1121,7 +1275,6 @@ export const getTaskExecutionStatus = (
 
   if (
     task.executionStatus === "idle" ||
-    task.executionStatus === "scheduled" ||
     task.executionStatus === "queued" ||
     task.executionStatus === "preparing" ||
     task.executionStatus === "running" ||
@@ -1129,10 +1282,6 @@ export const getTaskExecutionStatus = (
     task.executionStatus === "cancelled"
   ) {
     return task.executionStatus;
-  }
-
-  if (task.status === "scheduled") {
-    return "scheduled";
   }
 
   if (isQueuedTaskStatus(task.status)) {
@@ -1162,15 +1311,19 @@ export const getTaskExecutionAction = (
   task: Pick<Task, "status" | "lastAction" | "activeInteractiveSession" | "activeTerminalSessionMode"> & { executionAction?: TaskExecutionAction }
 ): TaskExecutionAction => {
   if (task.activeInteractiveSession === true) {
-    return task.activeTerminalSessionMode === "git" ? "terminal" : "interactive";
+    return "terminal";
   }
 
   if (task.status === "draft") {
     return null;
   }
 
-  if (task.executionAction === "build" || task.executionAction === "ask" || task.executionAction === "interactive" || task.executionAction === "terminal") {
-    return task.executionAction;
+  const executionAction = task.executionAction as string | null | undefined;
+  if (executionAction === "build" || executionAction === "ask" || executionAction === "terminal") {
+    return executionAction;
+  }
+  if (executionAction === "interactive") {
+    return "terminal";
   }
 
   if (task.status === "build_queued" || task.status === "preparing_workspace" || task.status === "building") {
@@ -1213,21 +1366,21 @@ export const getTaskWorkflowStatus = (task: Pick<Task, "status" | "hasPendingChe
     return "review";
   }
 
-  if (task.status === "draft" || task.status === "scheduled") {
+  if (task.status === "draft") {
     return "backlog";
   }
 
   return "ready";
 };
 
-export const getTaskTerminalSessionLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Terminal" : "Interactive Terminal";
+export const getTaskTerminalSessionLabel = (_mode: TaskTerminalSessionMode): string =>
+  "Terminal";
 
-export const getTaskTerminalSessionSentenceLabel = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Terminal" : "Interactive terminal";
+export const getTaskTerminalSessionSentenceLabel = (_mode: TaskTerminalSessionMode): string =>
+  "Terminal";
 
 export const getTaskTerminalSessionStartMessage = (mode: TaskTerminalSessionMode): string =>
-  mode === "git" ? "Terminal session started." : `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
+  `${getTaskTerminalSessionSentenceLabel(mode)} session started.`;
 
 export const getTaskTerminalSessionEndMessage = (mode: TaskTerminalSessionMode): string =>
   `${getTaskTerminalSessionSentenceLabel(mode)} session ended.`;
@@ -1252,7 +1405,6 @@ export const isTerminalTaskStatus = (status: TaskStatus): boolean =>
 export const getTaskStatusLabel = (status: TaskStatus): string =>
   ({
     draft: "Draft",
-    scheduled: "Scheduled",
     build_queued: "Build Queued",
     preparing_workspace: "Preparing Workspace",
     building: "Building",
@@ -1284,7 +1436,6 @@ export const getTaskWorkflowStatusLabel = (status: TaskWorkflowStatus): string =
 export const getTaskExecutionStatusLabel = (status: TaskExecutionStatus): string =>
   ({
     idle: "Idle",
-    scheduled: "Scheduled",
     queued: "Queued",
     preparing: "Preparing",
     running: "Running",
@@ -1295,16 +1446,29 @@ export const getTaskExecutionStatusLabel = (status: TaskExecutionStatus): string
 export interface UpdateSettingsInput {
   defaultProvider?: AgentProvider;
   maxAgents?: number;
+  archivedTaskAutoDeleteEnabled?: boolean;
+  archivedTaskAutoDeleteDays?: number;
   branchPrefix?: string;
   workspaceProvisioningMode?: WorkspaceProvisioningMode;
   gitUsername?: string;
-  mcpServers?: McpServerConfig[];
+  gitAuthorName?: string | null;
+  gitAuthorEmail?: string | null;
+  hostexec?: Partial<HostexecSettings> | null;
   openaiBaseUrl?: string | null;
+  anthropicBaseUrl?: string | null;
   taskPromptMagicModel?: string;
   taskPromptMagicTemplate?: string;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
   codexDefaultModel?: string;
+  codexModels?: ProviderModelOption[];
   codexDefaultEffort?: ProviderProfile;
   claudeDefaultModel?: string;
+  claudeModels?: ProviderModelOption[];
   claudeDefaultEffort?: ProviderProfile;
   responsePreferencePresets?: ResponsePreferencePresetInput[];
 }
@@ -1312,20 +1476,22 @@ export interface UpdateSettingsInput {
 export interface UpdateCredentialSettingsInput {
   githubToken?: string;
   openaiApiKey?: string;
-  codexAuthJson?: string;
   anthropicApiKey?: string;
+  slackSigningSecret?: string;
+  slackBotToken?: string;
   clearGithubToken?: boolean;
   clearOpenAiApiKey?: boolean;
-  clearCodexAuthJson?: boolean;
   clearAnthropicApiKey?: boolean;
+  clearSlackSigningSecret?: boolean;
+  clearSlackBotToken?: boolean;
 }
 
 export interface UpdateAuthProfileInput {
   name?: string;
-  gitAuthorName?: string | null;
-  gitAuthorEmail?: string | null;
-  codexAuthJson?: string;
-  clearCodexAuthJson?: boolean;
+  githubUsername?: string | null;
+  defaultProvider?: AgentProvider | null;
+  defaultModel?: string | null;
+  defaultProviderProfile?: ProviderProfile | null;
   agentResponsePreference?: Partial<AgentResponsePreference>;
 }
 
@@ -1361,6 +1527,14 @@ export interface TaskMessageEvent {
 export interface TaskMessageUpdatedEvent {
   type: "task:message_updated";
   payload: TaskMessage;
+}
+
+export interface TaskMessageDeletedEvent {
+  type: "task:message_deleted";
+  payload: {
+    taskId: string;
+    messageId: string;
+  };
 }
 
 export interface TaskRunEvent {
@@ -1422,6 +1596,7 @@ export type RealtimeEvent =
   | TaskLogEvent
   | TaskMessageEvent
   | TaskMessageUpdatedEvent
+  | TaskMessageDeletedEvent
   | TaskRunEvent
   | TaskGitOperationEvent
   | TaskChangeProposalEvent

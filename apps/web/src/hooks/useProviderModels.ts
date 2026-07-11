@@ -1,14 +1,15 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { AgentProvider, ProviderModelOption } from "@agentswarm/shared-types";
-import { getModelsForProvider } from "@agentswarm/shared-types";
+import type { AgentProvider, ProviderModelOption } from "@verft/shared-types";
+import { getModelsForProvider } from "@verft/shared-types";
 import { api } from "../api/client";
 
 interface UseProviderModelsResult {
   models: ProviderModelOption[];
   loading: boolean;
   fromApi: boolean;
+  source: "api" | "cache" | "fallback";
 }
 
 export function useProviderModels(provider: AgentProvider): UseProviderModelsResult {
@@ -17,11 +18,13 @@ export function useProviderModels(provider: AgentProvider): UseProviderModelsRes
     models: ProviderModelOption[];
     loading: boolean;
     fromApi: boolean;
+    source: "api" | "cache" | "fallback";
   }>({
     provider,
     models: getModelsForProvider(provider),
     loading: true,
-    fromApi: false
+    fromApi: false,
+    source: "fallback"
   });
 
   useEffect(() => {
@@ -30,7 +33,8 @@ export function useProviderModels(provider: AgentProvider): UseProviderModelsRes
       provider,
       models: getModelsForProvider(provider),
       loading: true,
-      fromApi: false
+      fromApi: false,
+      source: "fallback"
     });
 
     void api.listModels(provider).then((response) => {
@@ -39,7 +43,8 @@ export function useProviderModels(provider: AgentProvider): UseProviderModelsRes
         provider,
         models: response.models.length > 0 ? response.models : getModelsForProvider(provider),
         loading: false,
-        fromApi: response.source === "api"
+        fromApi: response.source === "api",
+        source: response.source
       });
     }).catch(() => {
       if (!active) return;
@@ -47,7 +52,8 @@ export function useProviderModels(provider: AgentProvider): UseProviderModelsRes
         provider,
         models: getModelsForProvider(provider),
         loading: false,
-        fromApi: false
+        fromApi: false,
+        source: "fallback"
       });
     });
 
@@ -57,8 +63,8 @@ export function useProviderModels(provider: AgentProvider): UseProviderModelsRes
   }, [provider]);
 
   if (state.provider !== provider) {
-    return { models: getModelsForProvider(provider), loading: true, fromApi: false };
+    return { models: getModelsForProvider(provider), loading: true, fromApi: false, source: "fallback" };
   }
 
-  return { models: state.models, loading: state.loading, fromApi: state.fromApi };
+  return { models: state.models, loading: state.loading, fromApi: state.fromApi, source: state.source };
 }

@@ -4,8 +4,8 @@ import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import * as Sentry from "@sentry/node";
 import { Server as SocketIOServer } from "socket.io";
-import type { RealtimeEvent } from "@agentswarm/shared-types";
-import { env } from "./config/env.js";
+import type { RealtimeEvent } from "@verft/shared-types";
+import { AUTO_RUN_POSTGRES_MIGRATIONS, env } from "./config/env.js";
 import { createAuthService } from "./lib/auth.js";
 import { createPostgresPool, runPostgresMigrations } from "./lib/postgres.js";
 import { createRedisClients } from "./lib/redis.js";
@@ -14,19 +14,18 @@ import { createPostgresStores } from "./services/create-postgres-stores.js";
 import { registerAuthRoutes } from "./routes/auth.js";
 import { SpawnerService } from "./services/spawner.js";
 import { SchedulerService } from "./services/scheduler.js";
-import { GitHubImportService } from "./services/github-import-service.js";
 import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
-import { GitHubOutboundService } from "./services/github-outbound-service.js";
-import { GitHubStatusSyncService } from "./services/github-status-sync-service.js";
 import { registerRoleRoutes } from "./routes/roles.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerUserRoutes } from "./routes/users.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
-import { registerImportRoutes } from "./routes/imports.js";
+import { registerGitHubPrWebhookRoutes } from "./routes/github-pr-webhooks.js";
+import { registerSlackWebhookRoutes } from "./routes/slack-webhooks.js";
 import { registerSnippetRoutes } from "./routes/snippets.js";
-import { registerGitHubWebhookRoutes } from "./routes/github-webhooks.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
+import { attachSettingsProviderTerminalUpgrade } from "./lib/settings-provider-terminal.js";
+import { registerMcpRoutes } from "./mcp/server.js";
 
 const readHeaderValue = (value: string | string[] | undefined): string | null => {
   if (typeof value === "string") {
@@ -55,7 +54,7 @@ const bootstrap = async (): Promise<void> => {
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
-      base: { service: "agentswarm-server" }
+      base: { service: "verft-server" }
     },
     disableRequestLogging: true,
     requestIdHeader: "x-request-id",
@@ -67,6 +66,15 @@ const bootstrap = async (): Promise<void> => {
   await app.register(cors, {
     origin: env.CORS_ORIGIN,
     credentials: true
+  });
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    try {
+      done(null, rawBody.trim().length > 0 ? JSON.parse(rawBody) : {});
+    } catch (error) {
+      done(error as Error);
+    }
   });
   app.addHook("onRequest", async (request, reply) => {
     const operationId = getOperationIdFromHeaders(request.headers);
@@ -105,10 +113,10 @@ const bootstrap = async (): Promise<void> => {
       corsOrigin: env.CORS_ORIGIN,
       durableStores: "postgres",
       runtimeServices: "redis",
-      postgresAutoMigrate: env.POSTGRES_AUTO_MIGRATE,
+      postgresAutoMigrate: AUTO_RUN_POSTGRES_MIGRATIONS,
       sentryEnabled,
       taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
-      taskWorkspaceHostRoot: env.TASK_WORKSPACE_HOST_ROOT
+      taskWorkspaceDockerSource: env.TASK_WORKSPACE_DOCKER_SOURCE
     },
     "Server configuration loaded"
   );
@@ -116,7 +124,7 @@ const bootstrap = async (): Promise<void> => {
   const redisClients = createRedisClients(env.REDIS_URL);
   const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
   const postgresPool = createPostgresPool(env.DATABASE_URL);
-  if (env.POSTGRES_AUTO_MIGRATE) {
+  if (AUTO_RUN_POSTGRES_MIGRATIONS) {
     app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
     await runPostgresMigrations(postgresPool);
     app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
@@ -127,13 +135,13 @@ const bootstrap = async (): Promise<void> => {
   const {
     taskStore,
     taskQueueStore,
-    githubOutboundQueueStore,
     webhookDeliveryStore,
     snippetStore,
     repositoryStore,
     credentialStore,
     roleStore,
     userStore,
+    personalAccessTokenStore,
     sessionStore,
     settingsStore
   } = createPostgresStores(
@@ -147,14 +155,11 @@ const bootstrap = async (): Promise<void> => {
     sessionStore,
     cookieName: env.AUTH_COOKIE_NAME,
     taskStore,
-    credentialStore
+    personalAccessTokenStore
   });
-  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore);
+  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore, undefined, personalAccessTokenStore);
   const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
-  const githubImportService = new GitHubImportService(settingsStore);
   const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
-  const githubOutboundService = new GitHubOutboundService(githubOutboundQueueStore, repositoryStore, settingsStore);
-  const githubStatusSyncService = new GitHubStatusSyncService(repositoryStore, githubOutboundService);
 
   await roleStore.ensureDefaultAdminRole();
   await userStore.ensureDefaultAdminUser({
@@ -163,7 +168,7 @@ const bootstrap = async (): Promise<void> => {
     password: env.DEFAULT_ADMIN_PASSWORD
   });
 
-  registerAuthRoutes(app, { auth, userStore, sessionStore, credentialStore });
+  registerAuthRoutes(app, { auth, userStore, sessionStore, personalAccessTokenStore });
   registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
   registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
   registerTaskRoutes(app, {
@@ -179,16 +184,17 @@ const bootstrap = async (): Promise<void> => {
   });
   registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
+  registerGitHubPrWebhookRoutes(app, { repositoryStore, taskStore, taskQueueStore, scheduler, settingsStore, spawner, userStore });
+  registerSlackWebhookRoutes(app, { repositoryStore, taskStore, scheduler, settingsStore, spawner });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
-  registerImportRoutes(app, { githubImportService, repositoryStore, auth });
-  registerGitHubWebhookRoutes(app, {
+  registerMcpRoutes(app, {
+    auth,
     repositoryStore,
-    githubImportService,
+    settingsStore,
     taskStore,
-    userStore,
+    taskQueueStore,
     scheduler,
-    spawner,
-    snippetStore
+    spawner
   });
 
   app.get("/health", async () => ({ ok: true }));
@@ -230,6 +236,7 @@ const bootstrap = async (): Promise<void> => {
     userStore,
     repositoryStore
   });
+  attachSettingsProviderTerminalUpgrade(app.server, { auth, settingsStore });
 
   const io = new SocketIOServer(app.server, {
     cors: {
@@ -249,7 +256,6 @@ const bootstrap = async (): Promise<void> => {
     try {
       const event = JSON.parse(message) as RealtimeEvent;
       void webhookDeliveryService.handleRealtimeEvent(event);
-      void githubStatusSyncService.handleRealtimeEvent(event);
       void auth.emitScopedRealtimeEvent(io, event);
     } catch (error) {
       app.log.error({ error }, "Failed to parse event message");
@@ -257,7 +263,6 @@ const bootstrap = async (): Promise<void> => {
   });
 
   webhookDeliveryService.start();
-  githubOutboundService.start();
   await scheduler.bootstrap();
 
   let closeStarted = false;
@@ -268,7 +273,6 @@ const bootstrap = async (): Promise<void> => {
     closeStarted = true;
     scheduler.stop();
     webhookDeliveryService.stop();
-    githubOutboundService.stop();
     io.close();
     await Promise.all([
       ...(postgresPool ? [postgresPool.end()] : []),

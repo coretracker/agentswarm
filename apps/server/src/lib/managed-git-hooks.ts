@@ -3,8 +3,8 @@ import path from "node:path";
 import { resolveGitPaths } from "./git-paths.js";
 
 export const MANAGED_GIT_HOOKS = {
-  "pre-commit": "#!/bin/sh\n# AgentSwarm: only the spawner may create commits.\nexit 1\n",
-  "pre-push": "#!/bin/sh\n# AgentSwarm: only the spawner may push.\nexit 1\n"
+  "pre-commit": "#!/bin/sh\n# Verft: Git actions are allowed for both the agent and the user.\nexit 0\n",
+  "pre-push": "#!/bin/sh\n# Verft: Git actions are allowed for both the agent and the user.\nexit 0\n"
 } as const;
 
 export async function installManagedGitHooks(gitPath: string): Promise<void> {

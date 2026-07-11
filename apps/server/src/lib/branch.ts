@@ -6,7 +6,7 @@ const sanitizeBranchPrefix = (branchPrefix: string): string => {
     .replace(/\/+/g, "/")
     .replace(/^\/+|\/+$/g, "");
 
-  return cleaned || "agentswarm";
+  return cleaned || "verft";
 };
 
 export const makeBranchName = (title: string, taskId: string, branchPrefix: string): string => {

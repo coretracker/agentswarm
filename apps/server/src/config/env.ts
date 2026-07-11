@@ -1,61 +1,108 @@
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { hostname } from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
+
+const booleanEnv = z.preprocess((value) => {
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["true", "1", "yes", "on"].includes(normalized)) {
+      return true;
+    }
+    if (["false", "0", "no", "off", ""].includes(normalized)) {
+      return false;
+    }
+  }
+  return value;
+}, z.boolean());
 
 const envSchema = z.object({
   PORT: z.coerce.number().default(4000),
   REDIS_URL: z.string().default("redis://localhost:6379"),
-  DATABASE_URL: z.string().default("postgres://postgres:postgres@localhost:5432/agentswarm"),
-  POSTGRES_AUTO_MIGRATE: z.coerce.boolean().default(true),
-  EVENT_CHANNEL: z.string().default("agentswarm:events"),
-  GIT_USER_NAME: z.string().default("AgentSwarm Bot"),
-  GIT_USER_EMAIL: z.string().default("agentswarm@local.dev"),
-  LOCAL_PLANS_ROOT: z.string().default("/plans"),
+  DATABASE_URL: z.string().default("postgres://postgres:postgres@localhost:5432/verft"),
+  EVENT_CHANNEL: z.string().default("verft:events"),
   REPO_CACHE_ROOT: z.string().default("/repo-cache"),
-  REPO_CACHE_VOLUME: z.string().default("agentswarm_repo_cache"),
+  REPO_CACHE_VOLUME: z.string().default("verft_repo_cache"),
+  VERFT_BASE_VOLUME: z.string().default("verft_base"),
   RUNTIME_PAYLOAD_ROOT: z.string().default("/runtime-payloads"),
-  RUNTIME_PAYLOAD_VOLUME: z.string().default("agentswarm_runtime_payloads"),
+  RUNTIME_PAYLOAD_VOLUME: z.string().default("verft_runtime_payloads"),
   REPOSITORY_ENV_FILE_STORE_ROOT: z.string().default("/secrets/repository-env-files"),
   TASK_WORKSPACE_ROOT: z.string().default("/task-workspaces"),
-  TASK_WORKSPACE_HOST_ROOT: z.string().default("/tmp/agentswarm-task-workspaces"),
-  SECRET_KEY_PATH: z.string().default("/secrets/agentswarm.key"),
+  TASK_WORKSPACE_DOCKER_SOURCE: z.string().optional(),
+  AGENT_RUNTIME_IMAGE: z
+    .string()
+    .default(
+      process.env.CODEX_RUNTIME_IMAGE?.trim() ||
+        process.env.CLAUDE_RUNTIME_IMAGE?.trim() ||
+        "verft-agent-toolbox:latest"
+    ),
+  SECRET_KEY_PATH: z.string().default("/secrets/verft.key"),
   CORS_ORIGIN: z.string().default("http://localhost:3217"),
   DEFAULT_ADMIN_NAME: z.string().default("Administrator"),
-  DEFAULT_ADMIN_EMAIL: z.string().email().default("admin@agentswarm.local"),
+  DEFAULT_ADMIN_EMAIL: z.string().email().default("admin@verft.local"),
   DEFAULT_ADMIN_PASSWORD: z.string().min(8).default("admin123!"),
-  AUTH_COOKIE_NAME: z.string().default("agentswarm_session"),
+  AUTH_COOKIE_NAME: z.string().default("verft_session"),
   AUTH_SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(7),
-  SENTRY_ENABLED: z.coerce.boolean().default(true),
+  SENTRY_ENABLED: booleanEnv.default(true),
   SENTRY_DSN: z.string().default("https://464566b3787dde0e2da9f69760ef8f40@o4511433840525312.ingest.de.sentry.io/4511433841901649"),
-  /** Logical deployment environment label for runtime logs/analytics (for example: local, staging, production). */
-  APP_ENVIRONMENT: z.string().default("local"),
-  /** Opt-in flag: when true, Codex/Claude runtime containers can receive Docker socket access. */
-  DOCKER_SOCKET_ACCESS_ENABLED: z.coerce.boolean().default(false),
+  /** When true, toolbox runtime containers can receive Docker socket access. */
+  DOCKER_SOCKET_ACCESS_ENABLED: booleanEnv.default(true),
   /** Host path for docker.sock mount source. */
   DOCKER_SOCKET_HOST_PATH: z.string().default("/var/run/docker.sock"),
   /** Container path for docker.sock mount target in Codex runtime containers. */
   DOCKER_SOCKET_CONTAINER_PATH_CODEX: z.string().default("/var/run/docker.sock"),
   /** Container path for docker.sock mount target in Claude runtime containers. */
-  DOCKER_SOCKET_CONTAINER_PATH_CLAUDE: z.string().default("/var/run/docker.sock"),
-  /** Docker image for the restricted in-browser Git terminal (see tools/codex-web-terminal/Dockerfile.git). Empty disables Git terminals. */
-  GIT_TERMINAL_IMAGE: z.string().default(""),
-  /** Docker image for in-browser interactive Codex (see tools/codex-web-terminal/Dockerfile.codex). Empty disables Codex interactive terminals. */
-  CODEX_INTERACTIVE_IMAGE: z.string().default(""),
-  /** Docker image for in-browser interactive Claude Code (see tools/codex-web-terminal/Dockerfile.claude). Empty disables Claude interactive terminals. */
-  CLAUDE_INTERACTIVE_IMAGE: z.string().default("")
+  DOCKER_SOCKET_CONTAINER_PATH_CLAUDE: z.string().default("/var/run/docker.sock")
 });
 
 const parsed = envSchema.parse(process.env);
 
-/**
- * Paths the server reads/writes via Node (clone, commit, status) live under TASK_WORKSPACE_ROOT.
- * `docker run -v …` for agents + interactive terminal sessions must bind the *same host directory*, or edits in
- * containers land in the wrong place and push / local git state will not match what you see in the UI.
- *
- * When unset, default HOST_ROOT is /tmp/… (wrong for most setups). If TASK_WORKSPACE_ROOT is not the
- * in-container default (/task-workspaces), assume it is already an absolute host path and reuse it.
- * Docker Compose should still set TASK_WORKSPACE_HOST_ROOT explicitly (e.g. ${PWD}/task-workspaces).
- */
-const taskWorkspaceHostRoot =
-  process.env.TASK_WORKSPACE_HOST_ROOT?.trim() ||
-  (parsed.TASK_WORKSPACE_ROOT !== "/task-workspaces" ? parsed.TASK_WORKSPACE_ROOT : parsed.TASK_WORKSPACE_HOST_ROOT);
+type DockerMount = {
+  Type?: string;
+  Source?: string;
+  Destination?: string;
+  Name?: string;
+};
 
-export const env = { ...parsed, TASK_WORKSPACE_HOST_ROOT: taskWorkspaceHostRoot };
+function resolveOwnDockerMountSource(containerPath: string): string | null {
+  try {
+    const output = execFileSync("docker", ["inspect", hostname(), "--format", "{{json .Mounts}}"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 2000
+    }).trim();
+    const mounts = JSON.parse(output) as DockerMount[];
+    const mount = mounts.find((candidate) => candidate.Destination === containerPath);
+    if (mount?.Type === "bind" && mount.Source) {
+      return mount.Source;
+    }
+    if (mount?.Type === "volume" && mount.Name) {
+      return mount.Name;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
+const configuredTaskWorkspaceDockerSource = parsed.TASK_WORKSPACE_DOCKER_SOURCE?.trim();
+const taskWorkspaceDockerSource =
+  configuredTaskWorkspaceDockerSource ||
+  (existsSync("/.dockerenv")
+    ? (resolveOwnDockerMountSource(parsed.TASK_WORKSPACE_ROOT) ?? "verft_task_workspaces")
+    : parsed.TASK_WORKSPACE_ROOT !== "/task-workspaces"
+      ? parsed.TASK_WORKSPACE_ROOT
+      : path.join(repoRoot, "task-workspaces"));
+
+export const AUTO_RUN_POSTGRES_MIGRATIONS = true;
+export const DEPLOYMENT_ENVIRONMENT_LABEL = "local";
+export const DEFAULT_GIT_COMMIT_IDENTITY = {
+  name: "Verft Bot",
+  email: "verft@local.dev"
+} as const;
+export const AGENT_RUNTIME_IMAGE = parsed.AGENT_RUNTIME_IMAGE;
+
+export const env = { ...parsed, TASK_WORKSPACE_DOCKER_SOURCE: taskWorkspaceDockerSource };

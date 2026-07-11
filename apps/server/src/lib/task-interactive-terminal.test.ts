@@ -5,39 +5,87 @@ import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { buildGitTerminalDockerEnvEntries, buildGitTerminalEnvEntries } from "./task-interactive-terminal-git-env.js";
-import { buildGitTerminalStartScript } from "./task-interactive-terminal-start-script.js";
+import { buildTerminalDockerEnvEntries, buildTerminalEnvEntries, buildTaskRuntimeGitEnvEntries } from "./task-interactive-terminal-git-env.js";
+import { buildTerminalStartScript } from "./task-interactive-terminal-start-script.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
-const gitTerminalShellPath = path.join(repoRoot, "tools/codex-web-terminal/git-terminal-shell.sh");
-const gitTerminalDockerfilePath = path.join(repoRoot, "tools/codex-web-terminal/Dockerfile.git");
+const runtimeDockerfilePath = path.join(repoRoot, "agent-runtime/Dockerfile");
 
-describe("buildGitTerminalStartScript", () => {
+describe("buildTerminalStartScript", () => {
   it("generates shell syntax that parses under sh", () => {
-    const script = buildGitTerminalStartScript();
+    const script = buildTerminalStartScript();
     const result = spawnSync("sh", ["-n", "-c", script], { encoding: "utf8" });
 
-    assert.equal(result.status, 0, result.stderr || "expected sh -n to accept git terminal start script");
+    assert.equal(result.status, 0, result.stderr || "expected sh -n to accept terminal start script");
     assert.match(script, /\n\s+printf '%s\\n'/);
     assert.doesNotMatch(script, /then;\s/);
-    assert.match(script, /exec git-terminal-shell$/);
+    assert.match(script, /Full toolbox shell available/);
+    assert.match(script, /mkdir -p "\$HOME\/\.codex" "\$HOME\/\.claude"/);
+    assert.match(script, /\$\{VERFT_BASE_ROOT:-\/verft-base\}\/codex\/auth\.json/);
+    assert.match(script, /chown -R agent:agent "\$HOME" "\$TASK_INTERACTIVE_WORKSPACE"/);
+    assert.match(script, /\$HOME\/\.claude\/mcp-config\.json/);
+    assert.match(script, /\/tmp\/verft-bin\/claude/);
+    assert.match(script, /chown -R agent:agent \/tmp\/verft-bin/);
+    assert.match(script, /chmod 755 \/tmp\/verft-bin \/tmp\/verft-bin\/claude/);
+    assert.match(script, /HOSTEXEC_BIN_PATH/);
+    assert.match(script, /export PATH="\$\{HOSTEXEC_BIN_PATH\}:\$PATH"/);
+    assert.match(script, /su-exec agent:agent bash -lc/);
+    assert.match(script, /exec bash -i/);
+    assert.match(script, /su-exec agent:agent sh -lc/);
+    assert.match(script, /exec sh -i'$/);
   });
 
-  it("ships the git terminal wrapper with a restricted bash shell", () => {
-    const shellScript = readFileSync(gitTerminalShellPath, "utf8");
-    const dockerfile = readFileSync(gitTerminalDockerfilePath, "utf8");
-    const result = spawnSync("sh", ["-n", gitTerminalShellPath], { encoding: "utf8" });
+  it("ships the unified runtime toolbox with shell and git tooling", () => {
+    const dockerfile = readFileSync(runtimeDockerfilePath, "utf8");
 
-    assert.equal(result.status, 0, result.stderr || "expected sh -n to accept git terminal shell wrapper");
-    assert.match(shellScript, /exec \/bin\/bash --noprofile --norc --restricted -i/);
-    assert.match(dockerfile, /\bapk add --no-cache bash git vim( neovim)? diffutils ca-certificates\b/);
+    assert.match(dockerfile, /FROM node:20-bookworm/);
+    assert.match(dockerfile, /\bgh\b/);
+    assert.match(dockerfile, /https:\/\/download\.docker\.com\/linux\/debian/);
+    assert.match(dockerfile, /\bdocker-ce-cli\b/);
+    assert.match(dockerfile, /\bdocker-buildx-plugin\b/);
+    assert.match(dockerfile, /\bdocker-compose-plugin\b/);
+    assert.doesNotMatch(dockerfile, /\bdocker\.io\b/);
+    assert.match(dockerfile, /COPY run-task-codex\.mjs/);
+    assert.match(dockerfile, /COPY run-task-claude\.mjs/);
+    assert.match(dockerfile, /COPY verft-base-state\.mjs/);
+    assert.match(dockerfile, /COPY hostexec-proxy\.mjs/);
   });
 });
 
-describe("buildGitTerminalEnvEntries", () => {
+describe("buildTerminalEnvEntries", () => {
+  it("builds Git runtime env entries for automated task containers", () => {
+    const env = Object.fromEntries(
+      buildTaskRuntimeGitEnvEntries({
+        workspacePath: "/workspace",
+        githubToken: "secret-token",
+        gitUsername: "octocat",
+        gitIdentity: {
+          name: "Ada Lovelace",
+          email: "ada@example.com"
+        }
+      })
+    );
+
+    assert.equal(env.GIT_OPTIONAL_LOCKS, "0");
+    assert.equal(env.GIT_CONFIG_COUNT, "3");
+    assert.equal(env.GIT_CONFIG_KEY_0, "safe.directory");
+    assert.equal(env.GIT_CONFIG_VALUE_0, "/workspace");
+    assert.equal(env.GIT_CONFIG_KEY_1, "user.name");
+    assert.equal(env.GIT_CONFIG_VALUE_1, "Ada Lovelace");
+    assert.equal(env.GIT_CONFIG_KEY_2, "user.email");
+    assert.equal(env.GIT_CONFIG_VALUE_2, "ada@example.com");
+    assert.equal(env.GIT_TOKEN, "secret-token");
+    assert.equal(env.GH_TOKEN, "secret-token");
+    assert.equal(env.GIT_USERNAME, "octocat");
+    assert.equal(env.GIT_AUTHOR_NAME, "Ada Lovelace");
+    assert.equal(env.GIT_COMMITTER_EMAIL, "ada@example.com");
+    assert.equal(env.TERM, undefined);
+    assert.equal(env.HOME, undefined);
+  });
+
   it("injects git identity as transient config for interactive commits", () => {
     const env = Object.fromEntries(
-      buildGitTerminalEnvEntries({
+      buildTerminalEnvEntries({
         workspacePath: "/workspace",
         gitIdentity: {
           name: "Ada Lovelace",
@@ -57,11 +105,12 @@ describe("buildGitTerminalEnvEntries", () => {
     assert.equal(env.GIT_AUTHOR_EMAIL, "ada@example.com");
     assert.equal(env.GIT_COMMITTER_NAME, "Ada Lovelace");
     assert.equal(env.GIT_COMMITTER_EMAIL, "ada@example.com");
+    assert.equal(env.HOME, "/home/agent");
   });
 
   it("keeps token auth and safe.directory when identity is unavailable", () => {
     const env = Object.fromEntries(
-      buildGitTerminalEnvEntries({
+      buildTerminalEnvEntries({
         workspacePath: "/workspace",
         githubToken: "secret-token",
         gitUsername: "octocat"
@@ -72,6 +121,7 @@ describe("buildGitTerminalEnvEntries", () => {
     assert.equal(env.GIT_CONFIG_KEY_0, "safe.directory");
     assert.equal(env.GIT_CONFIG_VALUE_0, "/workspace");
     assert.equal(env.GIT_TOKEN, "secret-token");
+    assert.equal(env.GH_TOKEN, "secret-token");
     assert.equal(env.GIT_USERNAME, "octocat");
     assert.equal(env.GIT_AUTHOR_NAME, undefined);
     assert.equal(env.GIT_AUTHOR_EMAIL, undefined);
@@ -80,9 +130,9 @@ describe("buildGitTerminalEnvEntries", () => {
   });
 });
 
-describe("buildGitTerminalDockerEnvEntries", () => {
-  it("appends repository runtime env entries to git terminal runtime env entries", () => {
-    const envEntries = buildGitTerminalDockerEnvEntries({
+describe("buildTerminalDockerEnvEntries", () => {
+  it("appends repository runtime env entries to terminal runtime env entries", () => {
+    const envEntries = buildTerminalDockerEnvEntries({
       runtimeEnvEntries: [
         ["TERM", "xterm-256color"],
         ["TASK_INTERACTIVE_WORKSPACE", "/workspace"]

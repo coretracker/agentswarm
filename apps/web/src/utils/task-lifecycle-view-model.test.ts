@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import type { Task } from "@agentswarm/shared-types";
+import type { Task } from "@verft/shared-types";
 import { buildTaskLifecycleViewModel } from "./task-lifecycle-view-model";
 
 const createTask = (overrides: Partial<Task> = {}): Task =>
@@ -10,6 +10,7 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     deadline: null,
     pinned: false,
     hasPendingCheckpoint: false,
+    autoApplyCheckpoints: false,
     activeInteractiveSession: false,
     activeTerminalSessionMode: null,
     ownerUserId: null,
@@ -29,7 +30,6 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     branchName: "feature/task-1",
     workspaceBaseRef: null,
     prompt: "Do the work",
-    notes: "",
     executionSummary: "",
     resultMarkdown: null,
     branchDiff: null,

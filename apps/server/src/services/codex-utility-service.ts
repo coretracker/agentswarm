@@ -2,9 +2,11 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { ProviderProfile } from "@agentswarm/shared-types";
-import { env } from "../config/env.js";
+import type { ProviderProfile } from "@verft/shared-types";
+import { AGENT_RUNTIME_IMAGE, env } from "../config/env.js";
+import { resolveDockerSocketAccessPolicy, resolveDockerSocketRunArgs } from "../lib/docker-socket-access.js";
 import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
+import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "../lib/verft-base-mounts.js";
 import type { SettingsRuntimeCredentials } from "./settings-store.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -12,6 +14,8 @@ const DEFAULT_OUTPUT_MAX_CHARS = 12_000;
 const CODEX_UTILITY_DIR_NAME = "codex-utility";
 
 export class CodexUtilityUnavailableError extends Error {
+  readonly statusCode = 400;
+
   constructor(message: string) {
     super(message);
     this.name = "CodexUtilityUnavailableError";
@@ -31,6 +35,7 @@ export class CodexUtilityError extends Error {
 const codexUtilityScript = `
 set -eu
 mkdir -p "$HOME/.codex"
+[ -f "\${VERFT_BASE_ROOT:-/verft-base}/codex/auth.json" ] && cp "\${VERFT_BASE_ROOT:-/verft-base}/codex/auth.json" "$HOME/.codex/auth.json"
 cat > "$HOME/.codex/config.toml" <<'EOF'
 sandbox_mode = "read-only"
 approval_policy = "never"
@@ -40,15 +45,17 @@ hide_rate_limit_model_nudge = true
 hide_gpt5_1_migration_prompt = true
 "hide_gpt-5.1-codex-max_migration_prompt" = true
 EOF
-if [ -n "\${CODEX_AUTH_JSON_B64:-}" ]; then
-  printf %s "$CODEX_AUTH_JSON_B64" | base64 -d > "$HOME/.codex/auth.json"
-elif [ -n "\${OPENAI_API_KEY:-}" ]; then
-  printf %s "$OPENAI_API_KEY" | codex login --with-api-key -c cli_auth_credentials_store=file
-else
-  echo "Codex credentials are not configured." >&2
+if [ -n "\${OPENAI_API_KEY:-}" ]; then
+  chown -R agent:agent "$HOME" "$CODEX_UTILITY_WORKDIR" 2>/dev/null || true
+  printf %s "$OPENAI_API_KEY" | su-exec agent:agent codex login --with-api-key -c cli_auth_credentials_store=file
+elif [ ! -f "$HOME/.codex/auth.json" ]; then
+  echo "OpenAI API key or Codex auth.json is not configured." >&2
   exit 64
+else
+  :
 fi
-codex exec \\
+chown -R agent:agent "$HOME" "$CODEX_UTILITY_WORKDIR" 2>/dev/null || true
+su-exec agent:agent codex exec \\
   --ephemeral \\
   --skip-git-repo-check \\
   --ignore-rules \\
@@ -86,13 +93,8 @@ export async function executeCodexUtility(input: {
   timeoutMs?: number;
   outputMaxChars?: number;
 }): Promise<string> {
-  const image = env.CODEX_INTERACTIVE_IMAGE?.trim();
-  if (!image) {
-    throw new CodexUtilityUnavailableError("Codex utility runner is not configured (set CODEX_INTERACTIVE_IMAGE).");
-  }
-  if (!input.credentials.openaiApiKey && !input.credentials.codexAuthJson) {
-    throw new CodexUtilityUnavailableError("Codex credentials are not configured.");
-  }
+  const image = AGENT_RUNTIME_IMAGE;
+  const dockerSocketRunArgs = resolveDockerSocketRunArgs(resolveDockerSocketAccessPolicy("codex"));
 
   const tempDir = path.join(env.RUNTIME_PAYLOAD_ROOT, CODEX_UTILITY_DIR_NAME, randomUUID());
   await mkdir(tempDir, { recursive: true });
@@ -102,7 +104,7 @@ export async function executeCodexUtility(input: {
     "run",
     "--rm",
     "-e",
-    "HOME=/root",
+    "HOME=/home/agent",
     "-e",
     `CODEX_MODEL=${input.model}`,
     "-e",
@@ -110,12 +112,12 @@ export async function executeCodexUtility(input: {
     "-e",
     `CODEX_UTILITY_WORKDIR=${tempDir}`,
     ...(input.credentials.openaiApiKey ? ["-e", `OPENAI_API_KEY=${input.credentials.openaiApiKey}`] : []),
-    ...(input.credentials.codexAuthJson
-      ? ["-e", `CODEX_AUTH_JSON_B64=${Buffer.from(input.credentials.codexAuthJson, "utf8").toString("base64")}`]
-      : []),
     ...(input.credentials.openaiBaseUrl ? ["-e", `OPENAI_BASE_URL=${input.credentials.openaiBaseUrl}`] : []),
+    ...dockerSocketRunArgs,
+    ...buildVerftBaseEnvArgs(),
     "-v",
     `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
+    ...buildVerftBaseVolumeMountArgs(),
     "-w",
     tempDir,
     image,

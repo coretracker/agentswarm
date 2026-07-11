@@ -115,7 +115,7 @@ wss.on("connection", (ws) => {
     "-e",
     "TERM=xterm-256color",
     "-e",
-    "HOME=/root",
+    "HOME=/home/agent",
     "-e",
     `CODEX_TRUST_WORKSPACE=${CODEX_TRUST_WORKSPACE}`,
   ];

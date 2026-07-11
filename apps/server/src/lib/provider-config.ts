@@ -1,4 +1,4 @@
-import type { AgentProvider, ProviderProfile, TaskReasoningEffort } from "@agentswarm/shared-types";
+import type { AgentProvider, ProviderProfile, TaskReasoningEffort } from "@verft/shared-types";
 
 export const DEFAULT_PROVIDER: AgentProvider = "codex";
 export const DEFAULT_PROVIDER_PROFILE: ProviderProfile = "high";
@@ -51,10 +51,10 @@ export const normalizeModelOverride = (
 
 export const defaultModelForProvider = (provider: AgentProvider, profile: ProviderProfile): string | null => {
   if (provider === "claude") {
-    return profile === "low" || profile === "medium" ? "claude-sonnet-4-5" : "claude-opus-4-5";
+    return profile === "low" || profile === "medium" ? "claude-sonnet-4-6" : "claude-opus-4-8";
   }
 
-  return "gpt-5.4";
+  return "gpt-5.5";
 };
 
 /** Codex CLI accepts "low", "medium", "high" natively; "max" is not supported — fall back to "high". */

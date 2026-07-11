@@ -3,15 +3,18 @@
 import { useEffect, useRef } from "react";
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
-import { getTaskTerminalSessionLabel, getTaskTerminalSessionSentenceLabel, type TaskTerminalSessionMode } from "@agentswarm/shared-types";
+import type { ILink } from "@xterm/xterm";
+import { getTaskTerminalSessionLabel, getTaskTerminalSessionSentenceLabel, type TaskTerminalSessionMode } from "@verft/shared-types";
 import "@xterm/xterm/css/xterm.css";
 
 import { api } from "../src/api/client";
 import { buildWebSocketUrl } from "../src/lib/public-url";
 
-const FONT_SIZE_STORAGE_KEY = "agentswarm-interactive-terminal-font-size";
+const FONT_SIZE_STORAGE_KEY = "verft-interactive-terminal-font-size";
 const FONT_MIN = 10;
 const FONT_MAX = 28;
+const TERMINAL_URL_PATTERN = /https?:\/\/[^\s<>"'`]+/g;
+const TRAILING_URL_PUNCTUATION = /[),.;:!?]+$/;
 
 /** Default xterm font size (px) when no session zoom is stored. */
 export const DEFAULT_INTERACTIVE_TERMINAL_FONT_SIZE = 14;
@@ -35,12 +38,44 @@ function readStoredFontSize(fallback: number): number {
   }
 }
 
+function createTerminalLinks(term: Terminal, bufferLineNumber: number): ILink[] | undefined {
+  const line = term.buffer.active.getLine(bufferLineNumber - 1);
+  const text = line?.translateToString(true);
+  if (!text) {
+    return undefined;
+  }
+
+  const links: ILink[] = [];
+  for (const match of text.matchAll(TERMINAL_URL_PATTERN)) {
+    const rawUrl = match[0] ?? "";
+    const url = rawUrl.replace(TRAILING_URL_PUNCTUATION, "");
+    const startIndex = match.index ?? 0;
+    if (!url) {
+      continue;
+    }
+    links.push({
+      text: url,
+      range: {
+        start: { x: startIndex + 1, y: bufferLineNumber },
+        end: { x: startIndex + url.length, y: bufferLineNumber }
+      },
+      activate: (_event, linkText) => {
+        window.open(linkText, "_blank", "noopener,noreferrer");
+      }
+    });
+  }
+
+  return links.length > 0 ? links : undefined;
+}
+
 export interface TaskInteractiveTerminalViewProps {
-  taskId: string;
+  taskId?: string;
+  webSocketPath?: string;
   mode?: TaskTerminalSessionMode;
   /** Initial / reset font size (px) before any session zoom. Default 14. */
   defaultFontSize?: number;
   disconnectHint?: string;
+  showDisconnectHintOnCleanClose?: boolean;
   onConnected?: () => void;
   onDisconnected?: (event: { code: number; reason: string; opened: boolean }) => void;
 }
@@ -50,9 +85,11 @@ export interface TaskInteractiveTerminalViewProps {
  */
 export function TaskInteractiveTerminalView({
   taskId,
-  mode = "interactive",
+  webSocketPath,
+  mode = "terminal",
   defaultFontSize = DEFAULT_INTERACTIVE_TERMINAL_FONT_SIZE,
   disconnectHint = "Open the terminal again to start a new session.",
+  showDisconnectHintOnCleanClose = false,
   onConnected,
   onDisconnected
 }: TaskInteractiveTerminalViewProps) {
@@ -75,7 +112,6 @@ export function TaskInteractiveTerminalView({
     const term = new Terminal({
       cursorBlink: true,
       fontSize: initialFont,
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       theme: {
         background: "#1e1e1e",
         foreground: "#d4d4d4"
@@ -84,11 +120,16 @@ export function TaskInteractiveTerminalView({
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.open(el);
+    term.registerLinkProvider({
+      provideLinks: (bufferLineNumber, callback) => {
+        callback(createTerminalLinks(term, bufferLineNumber));
+      }
+    });
     term.writeln("\x1b[90mConnecting…\x1b[0m");
 
     const terminalSentenceLabel = getTaskTerminalSessionSentenceLabel(mode);
     const wsUrl = buildWebSocketUrl(
-      `/tasks/${encodeURIComponent(taskId)}/interactive-terminal${mode === "git" ? "?mode=git" : ""}`
+      webSocketPath ?? `/tasks/${encodeURIComponent(taskId ?? "")}/terminal?mode=terminal`
     );
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
@@ -172,9 +213,10 @@ export function TaskInteractiveTerminalView({
           const msg = JSON.parse(ev.data) as { type?: string; message?: string };
           if (msg.type === "error") {
             term.writeln(`\r\n\x1b[31m${msg.message ?? "Error"}\x1b[0m`);
+            return;
           }
         } catch {
-          /* ignore */
+          term.write(ev.data);
         }
       }
     };
@@ -184,6 +226,10 @@ export function TaskInteractiveTerminalView({
         return;
       }
       connectFailureHandled = true;
+      if (!taskId) {
+        term.writeln(`\r\n\x1b[31mWebSocket error while starting the terminal session.\x1b[0m`);
+        return;
+      }
       void api
         .getTaskInteractiveTerminalStatus(taskId, { mode })
         .then((status) => {
@@ -205,7 +251,7 @@ export function TaskInteractiveTerminalView({
       }
       const details = event.reason?.trim() || (event.code > 0 ? `code ${event.code}` : "");
       term.writeln(`\r\n\x1b[33m[disconnected${details ? `: ${details}` : ""}]\x1b[0m`);
-      if (event.code !== 1000) {
+      if (event.code !== 1000 || showDisconnectHintOnCleanClose) {
         term.writeln(`\r\n\x1b[90m${disconnectHint}\x1b[0m`);
       }
       onDisconnectedRef.current?.({
@@ -253,7 +299,7 @@ export function TaskInteractiveTerminalView({
       }
       term.dispose();
     };
-  }, [taskId, mode, defaultFontSize, disconnectHint]);
+  }, [taskId, webSocketPath, mode, defaultFontSize, disconnectHint, showDisconnectHintOnCleanClose]);
 
   return (
     <div

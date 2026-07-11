@@ -3,18 +3,18 @@ import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
-import type { UpdateCredentialSettingsInput } from "@agentswarm/shared-types";
+import type { UpdateCredentialSettingsInput } from "@verft/shared-types";
 import { env } from "../config/env.js";
 
-const CREDENTIALS_KEY = "agentswarm:credential_settings";
+const CREDENTIALS_KEY = "verft:credential_settings";
 const nowIso = (): string => new Date().toISOString();
 
 interface StoredCredentials {
   githubToken: string | null;
   openaiApiKey: string | null;
-  codexAuthJson: string | null;
   anthropicApiKey: string | null;
-  codexAuthJsonByUserId: Record<string, string>;
+  slackSigningSecret: string | null;
+  slackBotToken: string | null;
 }
 
 interface EncryptedPayload {
@@ -28,23 +28,22 @@ export interface RuntimeCredentials {
   githubToken: string | null;
   openaiApiKey: string | null;
   anthropicApiKey: string | null;
-  codexAuthJson?: string | null;
+  slackSigningSecret: string | null;
+  slackBotToken: string | null;
 }
 
 export interface CredentialStatus {
   githubTokenConfigured: boolean;
   openaiApiKeyConfigured: boolean;
-  codexAuthJsonConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
+  slackSigningSecretConfigured: boolean;
+  slackBotTokenConfigured: boolean;
 }
 
 export interface CredentialStore {
   getCredentials(): Promise<RuntimeCredentials>;
   getCredentialStatus(): Promise<CredentialStatus>;
   updateCredentials(input: UpdateCredentialSettingsInput): Promise<CredentialStatus>;
-  getCodexAuthJsonForUser(userId: string): Promise<string | null>;
-  setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void>;
-  hasCodexAuthJsonForUser(userId: string): Promise<boolean>;
 }
 
 export class RedisCredentialStore implements CredentialStore {
@@ -105,56 +104,41 @@ export class RedisCredentialStore implements CredentialStore {
     return plaintext.toString("utf8");
   }
 
-  private normalizeCodexAuthJsonByUserId(value: Record<string, unknown> | undefined): Record<string, string> {
-    const next: Record<string, string> = {};
-    for (const [key, raw] of Object.entries(value ?? {})) {
-      const userId = key.trim();
-      const authJson = typeof raw === "string" ? raw.trim() : "";
-      if (!userId || !authJson) {
-        continue;
-      }
-      next[userId] = authJson;
-    }
-    return next;
-  }
-
   private async readStoredCredentials(): Promise<StoredCredentials> {
     const raw = await this.redis.get(CREDENTIALS_KEY);
     if (!raw) {
       return {
         githubToken: null,
         openaiApiKey: null,
-        codexAuthJson: null,
         anthropicApiKey: null,
-        codexAuthJsonByUserId: {}
+        slackSigningSecret: null,
+        slackBotToken: null
       };
     }
 
     try {
       const decrypted = await this.decrypt(raw);
-      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials> & {
-        codexAuthJsonByUserId?: Record<string, unknown>;
-      };
+      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials>;
       return {
         githubToken: parsed.githubToken?.trim() || null,
         openaiApiKey: parsed.openaiApiKey?.trim() || null,
-        codexAuthJson: parsed.codexAuthJson?.trim() || null,
         anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
-        codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
+        slackSigningSecret: parsed.slackSigningSecret?.trim() || null,
+        slackBotToken: parsed.slackBotToken?.trim() || null
       };
     } catch {
       return {
         githubToken: null,
         openaiApiKey: null,
-        codexAuthJson: null,
         anthropicApiKey: null,
-        codexAuthJsonByUserId: {}
+        slackSigningSecret: null,
+        slackBotToken: null
       };
     }
   }
 
   private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
-    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
+    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey && !next.slackSigningSecret && !next.slackBotToken) {
       await this.redis.del(CREDENTIALS_KEY);
       return;
     }
@@ -169,7 +153,8 @@ export class RedisCredentialStore implements CredentialStore {
       githubToken: current.githubToken,
       openaiApiKey: current.openaiApiKey,
       anthropicApiKey: current.anthropicApiKey,
-      codexAuthJson: current.codexAuthJson
+      slackSigningSecret: current.slackSigningSecret,
+      slackBotToken: current.slackBotToken
     };
   }
 
@@ -178,8 +163,9 @@ export class RedisCredentialStore implements CredentialStore {
     return {
       githubTokenConfigured: Boolean(credentials.githubToken),
       openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
-      codexAuthJsonConfigured: Boolean(credentials.codexAuthJson),
-      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
+      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey),
+      slackSigningSecretConfigured: Boolean(credentials.slackSigningSecret),
+      slackBotTokenConfigured: Boolean(credentials.slackBotToken)
     };
   }
 
@@ -196,53 +182,25 @@ export class RedisCredentialStore implements CredentialStore {
         : input.openaiApiKey?.trim()
           ? input.openaiApiKey.trim()
           : current.openaiApiKey,
-      codexAuthJson: input.clearCodexAuthJson
-        ? null
-        : input.codexAuthJson?.trim()
-          ? input.codexAuthJson.trim()
-          : current.codexAuthJson,
       anthropicApiKey: input.clearAnthropicApiKey
         ? null
         : input.anthropicApiKey?.trim()
           ? input.anthropicApiKey.trim()
           : current.anthropicApiKey,
-      codexAuthJsonByUserId: current.codexAuthJsonByUserId
+      slackSigningSecret: input.clearSlackSigningSecret
+        ? null
+        : input.slackSigningSecret?.trim()
+          ? input.slackSigningSecret.trim()
+          : current.slackSigningSecret,
+      slackBotToken: input.clearSlackBotToken
+        ? null
+        : input.slackBotToken?.trim()
+          ? input.slackBotToken.trim()
+          : current.slackBotToken
     };
     await this.writeStoredCredentials(next);
 
     return this.getCredentialStatus();
-  }
-
-  async getCodexAuthJsonForUser(userId: string): Promise<string | null> {
-    const key = userId.trim();
-    if (!key) {
-      return null;
-    }
-    const current = await this.readStoredCredentials();
-    return current.codexAuthJsonByUserId[key]?.trim() || null;
-  }
-
-  async setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void> {
-    const key = userId.trim();
-    if (!key) {
-      return;
-    }
-    const current = await this.readStoredCredentials();
-    const nextByUserId = { ...current.codexAuthJsonByUserId };
-    const normalized = codexAuthJson?.trim() || null;
-    if (normalized) {
-      nextByUserId[key] = normalized;
-    } else {
-      delete nextByUserId[key];
-    }
-    await this.writeStoredCredentials({
-      ...current,
-      codexAuthJsonByUserId: nextByUserId
-    });
-  }
-
-  async hasCodexAuthJsonForUser(userId: string): Promise<boolean> {
-    return Boolean(await this.getCodexAuthJsonForUser(userId));
   }
 }
 
@@ -304,19 +262,6 @@ export class PostgresCredentialStore implements CredentialStore {
     return plaintext.toString("utf8");
   }
 
-  private normalizeCodexAuthJsonByUserId(value: Record<string, unknown> | undefined): Record<string, string> {
-    const next: Record<string, string> = {};
-    for (const [key, raw] of Object.entries(value ?? {})) {
-      const userId = key.trim();
-      const authJson = typeof raw === "string" ? raw.trim() : "";
-      if (!userId || !authJson) {
-        continue;
-      }
-      next[userId] = authJson;
-    }
-    return next;
-  }
-
   private async readStoredCredentials(): Promise<StoredCredentials> {
     const result = await this.pool.query<{ payload_encrypted: string }>(
       "SELECT payload_encrypted FROM credentials WHERE singleton_id = 1"
@@ -327,37 +272,35 @@ export class PostgresCredentialStore implements CredentialStore {
       return {
         githubToken: null,
         openaiApiKey: null,
-        codexAuthJson: null,
         anthropicApiKey: null,
-        codexAuthJsonByUserId: {}
+        slackSigningSecret: null,
+        slackBotToken: null
       };
     }
 
     try {
       const decrypted = await this.decrypt(row.payload_encrypted);
-      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials> & {
-        codexAuthJsonByUserId?: Record<string, unknown>;
-      };
+      const parsed = JSON.parse(decrypted) as Partial<StoredCredentials>;
       return {
         githubToken: parsed.githubToken?.trim() || null,
         openaiApiKey: parsed.openaiApiKey?.trim() || null,
-        codexAuthJson: parsed.codexAuthJson?.trim() || null,
         anthropicApiKey: parsed.anthropicApiKey?.trim() || null,
-        codexAuthJsonByUserId: this.normalizeCodexAuthJsonByUserId(parsed.codexAuthJsonByUserId)
+        slackSigningSecret: parsed.slackSigningSecret?.trim() || null,
+        slackBotToken: parsed.slackBotToken?.trim() || null
       };
     } catch {
       return {
         githubToken: null,
         openaiApiKey: null,
-        codexAuthJson: null,
         anthropicApiKey: null,
-        codexAuthJsonByUserId: {}
+        slackSigningSecret: null,
+        slackBotToken: null
       };
     }
   }
 
   private async writeStoredCredentials(next: StoredCredentials): Promise<void> {
-    if (!next.githubToken && !next.openaiApiKey && !next.codexAuthJson && !next.anthropicApiKey && Object.keys(next.codexAuthJsonByUserId).length === 0) {
+    if (!next.githubToken && !next.openaiApiKey && !next.anthropicApiKey && !next.slackSigningSecret && !next.slackBotToken) {
       await this.pool.query("DELETE FROM credentials WHERE singleton_id = 1");
       return;
     }
@@ -386,7 +329,8 @@ export class PostgresCredentialStore implements CredentialStore {
       githubToken: current.githubToken,
       openaiApiKey: current.openaiApiKey,
       anthropicApiKey: current.anthropicApiKey,
-      codexAuthJson: current.codexAuthJson
+      slackSigningSecret: current.slackSigningSecret,
+      slackBotToken: current.slackBotToken
     };
   }
 
@@ -395,8 +339,9 @@ export class PostgresCredentialStore implements CredentialStore {
     return {
       githubTokenConfigured: Boolean(credentials.githubToken),
       openaiApiKeyConfigured: Boolean(credentials.openaiApiKey),
-      codexAuthJsonConfigured: Boolean(credentials.codexAuthJson),
-      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey)
+      anthropicApiKeyConfigured: Boolean(credentials.anthropicApiKey),
+      slackSigningSecretConfigured: Boolean(credentials.slackSigningSecret),
+      slackBotTokenConfigured: Boolean(credentials.slackBotToken)
     };
   }
 
@@ -413,52 +358,24 @@ export class PostgresCredentialStore implements CredentialStore {
         : input.openaiApiKey?.trim()
           ? input.openaiApiKey.trim()
           : current.openaiApiKey,
-      codexAuthJson: input.clearCodexAuthJson
-        ? null
-        : input.codexAuthJson?.trim()
-          ? input.codexAuthJson.trim()
-          : current.codexAuthJson,
       anthropicApiKey: input.clearAnthropicApiKey
         ? null
         : input.anthropicApiKey?.trim()
           ? input.anthropicApiKey.trim()
           : current.anthropicApiKey,
-      codexAuthJsonByUserId: current.codexAuthJsonByUserId
+      slackSigningSecret: input.clearSlackSigningSecret
+        ? null
+        : input.slackSigningSecret?.trim()
+          ? input.slackSigningSecret.trim()
+          : current.slackSigningSecret,
+      slackBotToken: input.clearSlackBotToken
+        ? null
+        : input.slackBotToken?.trim()
+          ? input.slackBotToken.trim()
+          : current.slackBotToken
     };
     await this.writeStoredCredentials(next);
 
     return this.getCredentialStatus();
-  }
-
-  async getCodexAuthJsonForUser(userId: string): Promise<string | null> {
-    const key = userId.trim();
-    if (!key) {
-      return null;
-    }
-    const current = await this.readStoredCredentials();
-    return current.codexAuthJsonByUserId[key]?.trim() || null;
-  }
-
-  async setCodexAuthJsonForUser(userId: string, codexAuthJson: string | null): Promise<void> {
-    const key = userId.trim();
-    if (!key) {
-      return;
-    }
-    const current = await this.readStoredCredentials();
-    const nextByUserId = { ...current.codexAuthJsonByUserId };
-    const normalized = codexAuthJson?.trim() || null;
-    if (normalized) {
-      nextByUserId[key] = normalized;
-    } else {
-      delete nextByUserId[key];
-    }
-    await this.writeStoredCredentials({
-      ...current,
-      codexAuthJsonByUserId: nextByUserId
-    });
-  }
-
-  async hasCodexAuthJsonForUser(userId: string): Promise<boolean> {
-    return Boolean(await this.getCodexAuthJsonForUser(userId));
   }
 }

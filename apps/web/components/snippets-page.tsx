@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import dayjs from "dayjs";
-import type { Snippet } from "@agentswarm/shared-types";
+import type { Snippet } from "@verft/shared-types";
 import { CopyOutlined } from "@ant-design/icons";
 import { Button, Card, Flex, Popconfirm, Space, Table, Typography, message } from "antd";
 import { api } from "../src/api/client";

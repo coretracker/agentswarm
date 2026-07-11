@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type Redis from "ioredis";
 
-const WEBHOOK_QUEUE_KEY = "agentswarm:webhook_delivery_queue";
-const WEBHOOK_JOB_KEY_PREFIX = "agentswarm:webhook_delivery:";
-const WEBHOOK_LAST_TASK_STATUS_KEY_PREFIX = "agentswarm:webhook_task_status:";
+const WEBHOOK_QUEUE_KEY = "verft:webhook_delivery_queue";
+const WEBHOOK_JOB_KEY_PREFIX = "verft:webhook_delivery:";
+const WEBHOOK_LAST_TASK_STATUS_KEY_PREFIX = "verft:webhook_task_status:";
 
 export type WebhookEventType = "created" | "updated" | "deleted" | "pushed" | "merged";
 

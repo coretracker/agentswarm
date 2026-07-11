@@ -1,21 +1,20 @@
 # Testing
 
 ## Canonical Test Command
-- `./scripts/harness/test.sh`
+- `npm run ci`
 
-This is the single recommended test entry point for agents and local development.
+This is the recommended verification entry point for agents and local development. It runs dependency install, lint, build, and tests inside a single Node Docker container, removes the container and image when done, and does not start Docker Compose.
 
 ## Test Levels
-The harness separates tests into:
-- Unit: focused logic tests in `apps/server/src/lib` and `apps/web/src/utils`.
-- Integration: server/service tests that touch more app behavior.
-- E2E (browser): Playwright tests in `apps/web/e2e`.
+The root test command runs the server and web workspace test scripts:
+- Server tests: `npm run test -w @verft/server`
+- Web tests: `npm run test -w @verft/web`
 
 ## Scope Selection
-- All tests: `./scripts/harness/test.sh`
-- Unit only: `TEST_SCOPE=unit ./scripts/harness/test.sh`
-- Integration only: `TEST_SCOPE=integration ./scripts/harness/test.sh`
-- Browser E2E only: `TEST_SCOPE=e2e ./scripts/harness/test.sh`
+- All current tests: `npm test`
+- Server only: `npm run test -w @verft/server`
+- Web only: `npm run test -w @verft/web`
+- Legacy scoped harness runner: `TEST_SCOPE=unit|integration|e2e ./scripts/harness/test.sh`
 
 ## UI Test Harness (Playwright)
 Added files:
@@ -32,16 +31,16 @@ Stable selectors used:
 - `data-testid="login-submit-button"`
 
 ## UI Test Prerequisites
-`test.sh` handles most setup automatically for E2E:
+The legacy `test.sh` runner handles most setup automatically for E2E:
 1. Checks app health at `/api/health`.
 2. Starts the app stack via `./scripts/harness/start.sh` if needed.
 3. Installs Chromium headless shell for Playwright unless skipped.
 4. In remote mode on musl-based runners, auto-runs Playwright in a container fallback (`mcr.microsoft.com/playwright:v1.60.0-noble` by default).
 
 Useful environment options:
-- `AGENTSWARM_UI_BASE_URL` (default: `http://localhost:3217`)
-- `AGENTSWARM_E2E_EMAIL` (default: `admin@agentswarm.local`)
-- `AGENTSWARM_E2E_PASSWORD` (default: `admin123!`)
+- `VERFT_UI_BASE_URL` (default: `http://localhost:3217`)
+- `VERFT_E2E_EMAIL` (default: `admin@verft.local`)
+- `VERFT_E2E_PASSWORD` (default: `admin123!`)
 - `PLAYWRIGHT_CAPTURE_VIDEO=1` to keep video on failures
 - `PLAYWRIGHT_SKIP_INSTALL=1` to skip browser install step
 - `PLAYWRIGHT_DOCKER_IMAGE` to override the Playwright fallback container image in remote mode
@@ -57,13 +56,13 @@ Artifact locations:
 - `playwright-report/`
 
 ## Deterministic Behavior
-The harness sets stable defaults for repeatable runs:
+The legacy harness runner sets stable defaults for repeatable runs:
 - `CI=1`
 - `NODE_ENV=test`
 - `TZ=UTC`
 - `LANG=C`, `LC_ALL=C`
 - `NO_COLOR=1`, `FORCE_COLOR=0`
-- `AGENTSWARM_TEST_SEED`
+- `VERFT_TEST_SEED`
 
 ## Troubleshooting
 - If E2E cannot boot app: run `./scripts/harness/start.sh` directly and inspect logs.

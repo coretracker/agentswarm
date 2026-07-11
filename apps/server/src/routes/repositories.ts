@@ -1,6 +1,6 @@
 import { z } from "zod";
 import type { FastifyInstance } from "fastify";
-import type { CreateRepositoryInput, GitHubAutomationRule, UpdateRepositoryInput } from "@agentswarm/shared-types";
+import type { AuthSessionUser, CreateRepositoryInput, UpdateRepositoryInput } from "@verft/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import { sendHttpError } from "../lib/http-error.js";
 import { canUserAccessRepository } from "../lib/task-ownership.js";
@@ -17,6 +17,94 @@ const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
 const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
 const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
 const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
+const GITHUB_ALLOWED_USERS_MAX_COUNT = 100;
+const GITHUB_LOGIN_PATTERN = /^@?[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+const SLACK_CHANNEL_ID_PATTERN = /^[CG][A-Z0-9]{2,}$/;
+const HOST_COMMAND_MAX_COUNT = 80;
+const HOST_COMMAND_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
+
+const normalizeMcpServerNameForComparison = (value: string): string =>
+  value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const mcpServerSchema = z.discriminatedUnion("transport", [
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("stdio"),
+    command: z.string().trim().min(1).max(300),
+    args: z.array(z.string().trim().min(1).max(300)).max(40).optional()
+  }),
+  z.object({
+    name: z.string().trim().min(1).max(120),
+    enabled: z.boolean(),
+    transport: z.literal("http"),
+    url: z.string().trim().url(),
+    bearerTokenEnvVar: z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
+      .nullable()
+      .optional()
+  })
+]);
+
+const mcpServersSchema = z
+  .array(mcpServerSchema)
+  .max(25)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const normalized = normalizeMcpServerNameForComparison(entries[index]?.name ?? "");
+      if (!normalized) {
+        continue;
+      }
+      if (seen.has(normalized)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index, "name"],
+          message: `Duplicate MCP server name: ${entries[index]?.name}`
+        });
+      } else {
+        seen.add(normalized);
+      }
+    }
+  });
+
+const hostCommandsSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(120)
+      .regex(HOST_COMMAND_PATTERN, "Host command names must be simple command names, not paths.")
+  )
+  .max(HOST_COMMAND_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const normalized = entries[index]?.trim().toLowerCase();
+      if (!normalized) {
+        continue;
+      }
+      if (seen.has(normalized)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index],
+          message: `Duplicate host command: ${entries[index]}`
+        });
+      } else {
+        seen.add(normalized);
+      }
+    }
+  });
 
 const repositoryEnvKeySchema = z
   .string()
@@ -101,105 +189,82 @@ const repositoryEnvSecretsSchema = z
     }
   });
 
+const githubAllowedUsersSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(40)
+      .regex(GITHUB_LOGIN_PATTERN, "GitHub usernames may include alphanumeric characters or hyphens.")
+  )
+  .max(GITHUB_ALLOWED_USERS_MAX_COUNT)
+  .superRefine((entries, ctx) => {
+    const seen = new Set<string>();
+    for (let index = 0; index < entries.length; index += 1) {
+      const normalized = entries[index]?.trim().replace(/^@+/, "").toLowerCase();
+      if (!normalized) {
+        continue;
+      }
+      if (seen.has(normalized)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [index],
+          message: `Duplicate GitHub user: ${entries[index]}`
+        });
+      } else {
+        seen.add(normalized);
+      }
+    }
+  });
+
 const createRepositorySchema = z.object({
   name: z.string().min(1),
   url: z.string().min(1),
   defaultBranch: z.string().min(1).optional(),
-  syncStatusEnabled: z.boolean().optional(),
+  defaultProvider: z.enum(["codex", "claude"]).nullable().optional(),
+  defaultModel: z.string().trim().min(1).max(120).nullable().optional(),
+  defaultProviderProfile: z.enum(["low", "medium", "high", "max"]).nullable().optional(),
   envVars: repositoryEnvVarsSchema.optional(),
   envSecrets: repositoryEnvSecretsSchema.optional(),
+  mcpServers: mcpServersSchema.optional(),
+  hostCommands: hostCommandsSchema.optional(),
   webhookUrl: z.string().trim().url().nullable().optional(),
   webhookEnabled: z.boolean().optional(),
   webhookSecret: z.string().trim().min(1).optional(),
-  githubWebhookSecret: z.string().trim().min(1).optional(),
-  githubAutomations: z
-    .array(
-      z.object({
-        id: z.string().trim().min(1),
-        name: z.string().trim().min(1).max(160),
-        enabled: z.boolean().optional(),
-        trigger: z.enum(["issue_opened", "pull_request_opened"]),
-        syncStatusEnabled: z.boolean().optional(),
-        automationEnabled: z.boolean().optional(),
-        allowedTriggers: z.array(z.enum(["emoji_reaction", "slash_command", "bot_mention"])).optional(),
-        allowedReactions: z.array(z.string().trim().min(1)).optional(),
-        allowedCommands: z.array(z.string().trim().min(1)).optional(),
-        allowedActorLogins: z.array(z.string().trim().min(1)).optional(),
-        labelFilter: z
-          .object({
-            labelsAny: z.array(z.string().trim().min(1)).optional(),
-            labelsAll: z.array(z.string().trim().min(1)).optional(),
-            labelsNone: z.array(z.string().trim().min(1)).optional()
-          })
-          .optional(),
-        task: z
-          .object({
-            assigneeEmail: z.string().trim().email().optional(),
-            codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-            taskType: z.enum(["build", "ask"]).optional(),
-            includeComments: z.boolean().optional(),
-            titleTemplate: z.string().optional(),
-            notes: z.string().optional(),
-            provider: z.enum(["codex", "claude"]).optional(),
-            providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-            modelOverride: z.string().nullable().optional(),
-            baseBranch: z.string().optional(),
-            branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
-            snippetId: z.string().optional()
-          })
-          .strict()
-      })
-    )
-    .optional()
+  githubPrWebhookSecret: z.string().trim().min(1).optional(),
+  githubIntegrationBotLogin: z.string().trim().max(255).nullable().optional(),
+  githubPrAllowedUsers: githubAllowedUsersSchema.optional(),
+  githubPrRequireBotMention: z.boolean().optional(),
+  githubPrAutoArchiveOnMerge: z.boolean().optional(),
+  githubPrInitialInstructions: z.string().trim().max(8000).nullable().optional(),
+  githubPrFeedbackInstructions: z.string().trim().max(8000).nullable().optional(),
+  githubPrReviewInstructions: z.string().trim().max(8000).nullable().optional(),
+  githubPrTaskCreatedCommentTemplate: z.string().trim().max(8000).nullable().optional(),
+  githubPrTaskOwnerUserId: z.string().trim().min(1).nullable().optional(),
+  slackChannelId: z.string().trim().regex(SLACK_CHANNEL_ID_PATTERN, "Slack channel ID must look like C... or G...").nullable().optional(),
+  slackInitialInstructions: z.string().trim().max(8000).nullable().optional(),
+  slackFeedbackInstructions: z.string().trim().max(8000).nullable().optional(),
+  slackTaskCreatedReplyTemplate: z.string().trim().max(8000).nullable().optional(),
+  slackTaskOwnerUserId: z.string().trim().min(1).nullable().optional(),
+  harnessWhatExists: z.string().trim().max(8000).nullable().optional(),
+  harnessAllowedActions: z.string().trim().max(8000).nullable().optional(),
+  harnessNotAllowedActions: z.string().trim().max(8000).nullable().optional(),
+  harnessHowToWork: z.string().trim().max(8000).nullable().optional(),
+  harnessDefinitionOfDone: z.string().trim().max(8000).nullable().optional(),
+  harnessEvidenceExpectations: z.string().trim().max(8000).nullable().optional()
 });
 
 const updateRepositorySchema = createRepositorySchema.partial().extend({
   clearWebhookSecret: z.boolean().optional(),
-  clearGithubWebhookSecret: z.boolean().optional()
+  clearGithubPrWebhookSecret: z.boolean().optional()
 });
 
 type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;
 type ParsedRepositoryUpdateInput = z.infer<typeof updateRepositorySchema>;
-type ParsedGitHubAutomationRule = NonNullable<ParsedRepositoryInput["githubAutomations"]>[number];
+const toCreateRepositoryInput = (input: ParsedRepositoryInput): CreateRepositoryInput => input;
 
-const nowIso = (): string => new Date().toISOString();
-
-const toGitHubAutomationRule = (rule: ParsedGitHubAutomationRule, now: string): GitHubAutomationRule => ({
-  id: rule.id,
-  name: rule.name,
-  enabled: rule.enabled ?? true,
-  trigger: rule.trigger,
-  syncStatusEnabled: rule.syncStatusEnabled,
-  automationEnabled: rule.automationEnabled,
-  allowedTriggers: rule.allowedTriggers,
-  allowedReactions: rule.allowedReactions,
-  allowedCommands: rule.allowedCommands,
-  allowedActorLogins: rule.allowedActorLogins,
-  labelFilter: rule.labelFilter,
-  task: rule.task,
-  createdAt: now,
-  updatedAt: now
-});
-
-const normalizeGitHubAutomations = (
-  rules: ParsedRepositoryInput["githubAutomations"] | ParsedRepositoryUpdateInput["githubAutomations"]
-): GitHubAutomationRule[] | undefined => {
-  if (!rules) {
-    return undefined;
-  }
-  const now = nowIso();
-  return rules.map((rule) => toGitHubAutomationRule(rule, now));
-};
-
-const toCreateRepositoryInput = (input: ParsedRepositoryInput): CreateRepositoryInput => ({
-  ...input,
-  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
-});
-
-const toUpdateRepositoryInput = (input: ParsedRepositoryUpdateInput): UpdateRepositoryInput => ({
-  ...input,
-  githubAutomations: normalizeGitHubAutomations(input.githubAutomations)
-});
+const toUpdateRepositoryInput = (input: ParsedRepositoryUpdateInput): UpdateRepositoryInput => input;
 
 export const registerRepositoryRoutes = (
   app: FastifyInstance,
@@ -209,6 +274,68 @@ export const registerRepositoryRoutes = (
     userStore: UserStore;
   }
 ): void => {
+  const addRepositoryAccessForUser = async (userId: string, repositoryId: string): Promise<void> => {
+    const user = await deps.userStore.getUser(userId);
+    if (!user) {
+      return;
+    }
+
+    const resolvedRepositoryIds = await Promise.all(
+      user.repositoryIds.map(async (currentRepositoryId) =>
+        (await deps.repositoryStore.getRepository(currentRepositoryId)) ? currentRepositoryId : null
+      )
+    );
+    const nextRepositoryIds = resolvedRepositoryIds.filter((currentRepositoryId): currentRepositoryId is string =>
+      Boolean(currentRepositoryId)
+    );
+    if (!nextRepositoryIds.includes(repositoryId)) {
+      nextRepositoryIds.push(repositoryId);
+    }
+    await deps.userStore.updateUser(user.id, {
+      repositoryIds: nextRepositoryIds
+    });
+  };
+
+  const validateIntegrationTaskOwner = async (
+    ownerUserId: string | null | undefined,
+    repositoryId: string | null,
+    label: string
+  ): Promise<{ ok: true } | { ok: false; statusCode: 400 | 404; message: string }> => {
+    const normalizedOwnerUserId = ownerUserId?.trim() || null;
+    if (!normalizedOwnerUserId) {
+      return { ok: true };
+    }
+
+    const owner = await deps.userStore.getUser(normalizedOwnerUserId);
+    if (!owner) {
+      return { ok: false, statusCode: 400, message: `${label} task owner was not found.` };
+    }
+    if (!owner.active) {
+      return { ok: false, statusCode: 400, message: `${label} task owner must be active.` };
+    }
+    if (repositoryId && !canUserAccessRepository(owner, repositoryId)) {
+      return { ok: false, statusCode: 400, message: `${label} task owner must have access to this repository.` };
+    }
+
+    return { ok: true };
+  };
+
+  const validateIntegrationTaskOwnerForCreate = async (
+    ownerUserId: string | null | undefined,
+    authUser: AuthSessionUser | null | undefined,
+    label: string
+  ): Promise<{ ok: true } | { ok: false; statusCode: 400 | 404; message: string }> => {
+    const normalizedOwnerUserId = ownerUserId?.trim() || null;
+    if (!normalizedOwnerUserId) {
+      return { ok: true };
+    }
+    if (!authUser || normalizedOwnerUserId !== authUser.id) {
+      return { ok: false, statusCode: 400, message: `${label} task owner must have access to this repository.` };
+    }
+
+    return validateIntegrationTaskOwner(normalizedOwnerUserId, null, label);
+  };
+
   app.get("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:list"]) }, async (request) => {
     const repositories = await deps.repositoryStore.listRepositories();
     return repositories.filter((repository) => canUserAccessRepository(request.auth?.user, repository.id));
@@ -230,25 +357,20 @@ export const registerRepositoryRoutes = (
     }
 
     try {
+      const authUser = request.auth?.user;
+      for (const ownerValidation of [
+        await validateIntegrationTaskOwnerForCreate(parsed.data.githubPrTaskOwnerUserId, authUser, "GitHub-created"),
+        await validateIntegrationTaskOwnerForCreate(parsed.data.slackTaskOwnerUserId, authUser, "Slack-created")
+      ]) {
+        if (!ownerValidation.ok) {
+          return reply.status(ownerValidation.statusCode).send({ message: ownerValidation.message });
+        }
+      }
+
       const createInput: CreateRepositoryInput = toCreateRepositoryInput(parsed.data);
       const repository = await deps.repositoryStore.createRepository(createInput);
-      const authUser = request.auth?.user;
       if (authUser) {
-        const creator = await deps.userStore.getUser(authUser.id);
-        if (creator) {
-          const resolvedRepositoryIds = await Promise.all(
-            creator.repositoryIds.map(async (repositoryId) =>
-              (await deps.repositoryStore.getRepository(repositoryId)) ? repositoryId : null
-            )
-          );
-          const nextRepositoryIds = resolvedRepositoryIds.filter((repositoryId): repositoryId is string => Boolean(repositoryId));
-          if (!nextRepositoryIds.includes(repository.id)) {
-            nextRepositoryIds.push(repository.id);
-          }
-          await deps.userStore.updateUser(creator.id, {
-            repositoryIds: nextRepositoryIds
-          });
-        }
+        await addRepositoryAccessForUser(authUser.id, repository.id);
       }
       return reply.status(201).send(repository);
     } catch (error) {
@@ -270,6 +392,14 @@ export const registerRepositoryRoutes = (
       const current = await deps.repositoryStore.getRepository(request.params.id);
       if (!current || !canUserAccessRepository(request.auth?.user, request.params.id)) {
         return reply.status(404).send({ message: "Repository not found" });
+      }
+      for (const ownerValidation of [
+        await validateIntegrationTaskOwner(parsed.data.githubPrTaskOwnerUserId, request.params.id, "GitHub-created"),
+        await validateIntegrationTaskOwner(parsed.data.slackTaskOwnerUserId, request.params.id, "Slack-created")
+      ]) {
+        if (!ownerValidation.ok) {
+          return reply.status(ownerValidation.statusCode).send({ message: ownerValidation.message });
+        }
       }
 
       const updateInput: UpdateRepositoryInput = toUpdateRepositoryInput(parsed.data);

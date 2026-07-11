@@ -8,6 +8,8 @@ source "${SCRIPT_DIR}/lib/remote-build.sh"
 ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/setup.sh" "$@"
 
 cd "$REPO_ROOT"
+TASK_WORKSPACE_DOCKER_SOURCE="${TASK_WORKSPACE_DOCKER_SOURCE:-$REPO_ROOT/task-workspaces}"
+export TASK_WORKSPACE_DOCKER_SOURCE
 
 log() {
   echo "[harness:setup] $1"
@@ -42,8 +44,8 @@ else
   log ".env already exists"
 fi
 
-mkdir -p local-plans task-workspaces
-log "ensured local runtime directories exist (local-plans, task-workspaces)"
+mkdir -p task-workspaces
+log "ensured local runtime directory exists (task-workspaces)"
 
 if [[ "${HARNESS_INSTALL_NPM_DEPS:-0}" == "1" ]]; then
   require_cmd npm
@@ -71,7 +73,7 @@ if [[ "${HARNESS_DB_RESET:-0}" == "1" ]]; then
 fi
 
 log "running first-time stack initialization (build + start)"
-./agentswarm.sh init
+./verft init
 
 log "setup complete"
 log "admin seed is created on first boot from .env defaults (DEFAULT_ADMIN_*)"

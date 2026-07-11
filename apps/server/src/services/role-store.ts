@@ -3,19 +3,20 @@ import type Redis from "ioredis";
 import type { Pool } from "pg";
 import {
   ALL_PERMISSION_SCOPES,
+  normalizePermissionScope,
   type AgentProvider,
   type CreateRoleInput,
   type PermissionScope,
   type ProviderProfile,
   type Role,
   type UpdateRoleInput
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { HttpError } from "../lib/http-error.js";
 import { parseJsonColumn, type PostgresQueryable } from "../lib/postgres.js";
 
-const ROLE_KEY_PREFIX = "agentswarm:role:";
-const ROLE_IDS_KEY = "agentswarm:role_ids";
-const ROLE_NAME_KEY_PREFIX = "agentswarm:role_name:";
+const ROLE_KEY_PREFIX = "verft:role:";
+const ROLE_IDS_KEY = "verft:role_ids";
+const ROLE_NAME_KEY_PREFIX = "verft:role_name:";
 
 export const SYSTEM_ADMIN_ROLE_ID = "admin";
 const SYSTEM_ADMIN_ROLE_NAME = "Admin";
@@ -60,10 +61,14 @@ const normalizeAllowedModels = (models: string[] | undefined): string[] =>
 
 const expandLegacyTaskModeScopes = (scopes: string[]): string[] => {
   const expanded = new Set(scopes);
+  if (expanded.has("task:interactive")) {
+    expanded.delete("task:interactive");
+    expanded.add("task:terminal");
+  }
   if (expanded.has("task:create") || expanded.has("task:edit")) {
     expanded.add("task:build");
     expanded.add("task:ask");
-    expanded.add("task:interactive");
+    expanded.add("task:terminal");
   }
   return Array.from(expanded);
 };
@@ -80,7 +85,10 @@ const normalizeScopes = (
     )
   );
   const expandedScopes = options?.legacyTaskModes ? expandLegacyTaskModeScopes(uniqueScopesRaw) : uniqueScopesRaw;
-  const uniqueScopes = options?.legacyTaskModes ? expandedScopes.filter((scope) => !deprecatedPermissionScopes.has(scope)) : expandedScopes;
+  const migratedScopes = expandedScopes.map((scope) => normalizePermissionScope(scope) ?? scope);
+  const uniqueScopes = Array.from(
+    new Set(options?.legacyTaskModes ? migratedScopes.filter((scope) => !deprecatedPermissionScopes.has(scope)) : migratedScopes)
+  );
   if (uniqueScopes.length === 0) {
     if (options?.legacyTaskModes && uniqueScopesRaw.some((scope) => deprecatedPermissionScopes.has(scope))) {
       return [];

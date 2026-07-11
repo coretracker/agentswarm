@@ -61,12 +61,6 @@ APP_URL="http://localhost:${PUBLIC_PORT}/login"
 
 log "repo root: $REPO_ROOT"
 
-if [[ "${HARNESS_REMOTE_EXECUTING:-0}" == "1" && -n "${TASK_WORKSPACE_PATH:-}" ]]; then
-  export TASK_WORKSPACE_HOST_ROOT="${TASK_WORKSPACE_HOST_ROOT:-${TASK_WORKSPACE_PATH%/}/task-workspaces}"
-  export LOCAL_PLANS_HOST_ROOT="${LOCAL_PLANS_HOST_ROOT:-${TASK_WORKSPACE_PATH%/}/local-plans}"
-  export NGINX_CONF_HOST_PATH="${NGINX_CONF_HOST_PATH:-${TASK_WORKSPACE_PATH%/}/deploy/nginx.conf}"
-fi
-
 if ! command -v docker >/dev/null 2>&1; then
   echo "[harness:start] error: docker is required but not installed." >&2
   echo "[harness:start] fix: install Docker and re-run ./scripts/harness/doctor.sh" >&2
@@ -79,7 +73,7 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 log "starting stack"
-./agentswarm.sh start
+./verft start
 
 log "waiting for health endpoint: $HEALTH_URL"
 for attempt in $(seq 1 60); do

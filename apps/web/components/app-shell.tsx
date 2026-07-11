@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useEffect, useRef, useState, type ReactNode } from "react";
-import { App, Button, Card, Divider, Drawer, Flex, Form, Grid, Input, Layout, Menu, Modal, Result, Select, Skeleton, Spin, Typography, message, theme as antTheme } from "antd";
+import { App, Button, Drawer, Flex, Grid, Layout, Menu, Result, Select, Skeleton, Spin, Typography, message, theme as antTheme } from "antd";
 import {
   AppstoreOutlined,
   CopyOutlined,
@@ -18,7 +18,6 @@ import { usePathname, useRouter } from "next/navigation";
 import { AppLogo } from "./app-logo";
 import { AppSidebar } from "./app-sidebar";
 import { AppFooterNote } from "./app-footer-note";
-import { ResponsePolicyFields } from "./response-policy-fields";
 import { useAuth } from "./auth-provider";
 import { TaskBrowserNotifications } from "./task-browser-notifications";
 import { useThemeMode } from "./theme-provider";
@@ -28,19 +27,13 @@ import { trackEvent } from "../src/utils/analytics";
 import { AppRightPanelProvider, type AppRightPanelConfig } from "./app-right-panel-context";
 import { NotesMarkdownEditor } from "./notes-markdown-editor";
 import type {
-  AgentClarifyBehavior,
-  AgentCodePreference,
-  AgentExplanationDepth,
-  AgentFormattingStyle,
-  AgentJargonLevel,
-  AudienceType,
   UserNotes
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
   isPublicPathname,
-  isTaskInteractiveFullscreenPath,
+  isTerminalFullscreenPath,
   navigationRoutes,
   resolveDefaultPath
 } from "../src/auth/access";
@@ -54,16 +47,15 @@ const menuIconByPath: Record<string, ReactNode> = {
   "/users": <TeamOutlined />
 };
 
-const NOTES_PANEL_STATE_STORAGE_KEY_PREFIX = "agentswarm:notes-sidebar-state:v1";
+const NOTES_PANEL_STATE_STORAGE_KEY_PREFIX = "verft:notes-sidebar-state:v1";
 const DEFAULT_NOTES_PANEL_WIDTH = 420;
 const NOTES_PANEL_MIN_WIDTH = 320;
 const NOTES_PANEL_MAX_WIDTH = 720;
 const NOTES_PANEL_COLLAPSED_RAIL_WIDTH = 56;
-
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
-  const { canAll, loading, logout, session, setSessionUser } = useAuth();
+  const { canAll, loading, logout, session } = useAuth();
   const { mode, setMode } = useThemeMode();
   const contentMaxWidth = 1760;
   const headerHeight = 64;
@@ -75,10 +67,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const { token } = antTheme.useToken();
   const screens = Grid.useBreakpoint();
   const [loggingOut, setLoggingOut] = useState(false);
-  const [profileOpen, setProfileOpen] = useState(false);
-  const [savingProfile, setSavingProfile] = useState(false);
-  const [profileLoading, setProfileLoading] = useState(false);
-  const [profileCodexConfigured, setProfileCodexConfigured] = useState(false);
   const [rightPanel, setRightPanel] = useState<AppRightPanelConfig | null>(null);
   const [workspaceNotes, setWorkspaceNotes] = useState<UserNotes | null>(null);
   const [workspaceNotesDraft, setWorkspaceNotesDraft] = useState("");
@@ -87,19 +75,6 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [workspaceNotesStatus, setWorkspaceNotesStatus] = useState<"saved" | "saving" | "error">("saved");
   const workspaceNotesAutosaveTimeoutRef = useRef<number | null>(null);
   const workspaceNotesSaveRequestIdRef = useRef(0);
-  const [profileForm] = Form.useForm<{
-    name: string;
-    gitAuthorName?: string;
-    gitAuthorEmail?: string;
-    codexAuthJson?: string;
-    audience?: AudienceType;
-    explanationDepth?: AgentExplanationDepth;
-    jargonLevel?: AgentJargonLevel;
-    codePreference?: AgentCodePreference;
-    clarifyBehavior?: AgentClarifyBehavior;
-    formattingStyle?: AgentFormattingStyle;
-    extraInstructions?: string;
-  }>();
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const publicPath = isPublicPathname(pathname);
   const desktopSidebar = screens.lg ?? false;
@@ -289,90 +264,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     return <Spin fullscreen tip="Loading session" />;
   }
 
-  const openProfile = async (): Promise<void> => {
-    setProfileOpen(true);
-    setProfileLoading(true);
-    try {
-      const profile = await api.getProfile();
-      profileForm.setFieldsValue({
-        name: profile.name,
-        gitAuthorName: profile.gitAuthorName ?? "",
-        gitAuthorEmail: profile.gitAuthorEmail ?? "",
-        codexAuthJson: "",
-        audience: profile.agentResponsePreference.audience,
-        explanationDepth: profile.agentResponsePreference.explanationDepth,
-        jargonLevel: profile.agentResponsePreference.jargonLevel,
-        codePreference: profile.agentResponsePreference.codePreference,
-        clarifyBehavior: profile.agentResponsePreference.clarifyBehavior,
-        formattingStyle: profile.agentResponsePreference.formattingStyle,
-        extraInstructions: profile.agentResponsePreference.extraInstructions ?? ""
-      });
-      setProfileCodexConfigured(profile.codexAuthJsonConfigured);
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to load profile");
-    } finally {
-      setProfileLoading(false);
-    }
-  };
-
-  const saveProfile = async (): Promise<void> => {
-    try {
-      const values = await profileForm.validateFields();
-      setSavingProfile(true);
-      const next = await api.updateProfile({
-        name: values.name,
-        gitAuthorName: values.gitAuthorName?.trim() || null,
-        gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
-        codexAuthJson: values.codexAuthJson?.trim() || undefined,
-        agentResponsePreference: {
-          audience: values.audience,
-          explanationDepth: values.explanationDepth,
-          jargonLevel: values.jargonLevel,
-          codePreference: values.codePreference,
-          clarifyBehavior: values.clarifyBehavior,
-          formattingStyle: values.formattingStyle,
-          extraInstructions: values.extraInstructions?.trim() || undefined
-        }
-      });
-      setProfileCodexConfigured(next.codexAuthJsonConfigured);
-      profileForm.setFieldValue("codexAuthJson", "");
-      setSessionUser({
-        name: next.name,
-        gitAuthorName: next.gitAuthorName,
-        gitAuthorEmail: next.gitAuthorEmail,
-        agentResponsePreference: next.agentResponsePreference,
-        codexAuthJsonConfigured: next.codexAuthJsonConfigured
-      });
-      message.success("Profile updated");
-    } catch (error) {
-      if (error && typeof error === "object" && "errorFields" in error) {
-        return;
-      }
-      message.error(error instanceof Error ? error.message : "Failed to update profile");
-    } finally {
-      setSavingProfile(false);
-    }
-  };
-
-  const clearCodexAuthJson = async (): Promise<void> => {
-    setSavingProfile(true);
-    try {
-      const next = await api.updateProfile({ clearCodexAuthJson: true });
-      setProfileCodexConfigured(next.codexAuthJsonConfigured);
-      profileForm.setFieldValue("codexAuthJson", "");
-      setSessionUser({
-        agentResponsePreference: next.agentResponsePreference,
-        codexAuthJsonConfigured: next.codexAuthJsonConfigured
-      });
-      message.success("Codex auth.json cleared");
-    } catch (error) {
-      message.error(error instanceof Error ? error.message : "Failed to clear Codex auth.json");
-    } finally {
-      setSavingProfile(false);
-    }
-  };
-
-  if (isTaskInteractiveFullscreenPath(pathname)) {
+  if (isTerminalFullscreenPath(pathname)) {
     return (
       <App>
         {hasRouteAccess ? (
@@ -424,12 +316,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                   onClick={() => setMobileSidebarOpen(true)}
                 />
               ) : null}
-              <AppLogo width={28} height={40} />
-              <Flex vertical gap={0}>
-                <Typography.Title level={4} style={{ margin: 0, color: token.colorText }}>
-                  AgentSwarm
-                </Typography.Title>
-              </Flex>
+              <AppLogo width={100} height={26} />
             </Flex>
             <Menu
               mode="horizontal"
@@ -442,7 +329,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Flex align="center" gap={12}>
               <TaskBrowserNotifications />
               <Flex vertical gap={0} style={{ minWidth: 0 }}>
-                <Button type="text" style={{ paddingInline: 6 }} onClick={() => { void openProfile(); }}>
+                <Button type="text" style={{ paddingInline: 6 }} onClick={() => router.push("/profile")}>
                   <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>
                 </Button>
               </Flex>
@@ -649,82 +536,6 @@ export function AppShell({ children }: { children: ReactNode }) {
           }}
         />
       </Drawer>
-      <Modal
-        title="Profile"
-        open={profileOpen}
-        onCancel={() => setProfileOpen(false)}
-        onOk={() => {
-          void saveProfile();
-        }}
-        okText="Save"
-        confirmLoading={savingProfile}
-        destroyOnClose
-      >
-        <Spin spinning={profileLoading}>
-          <Form
-            form={profileForm}
-            layout="vertical"
-            initialValues={{
-              name: session.user.name,
-              gitAuthorName: session.user.gitAuthorName ?? "",
-              gitAuthorEmail: session.user.gitAuthorEmail ?? "",
-              codexAuthJson: "",
-              audience: session.user.agentResponsePreference.audience,
-              explanationDepth: session.user.agentResponsePreference.explanationDepth,
-              jargonLevel: session.user.agentResponsePreference.jargonLevel,
-              codePreference: session.user.agentResponsePreference.codePreference,
-              clarifyBehavior: session.user.agentResponsePreference.clarifyBehavior,
-              formattingStyle: session.user.agentResponsePreference.formattingStyle,
-              extraInstructions: session.user.agentResponsePreference.extraInstructions ?? ""
-            }}
-          >
-            <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
-              <Input />
-            </Form.Item>
-            <Divider orientation="left" plain>
-              Git Commit Identity
-            </Divider>
-            <Form.Item
-              name="gitAuthorName"
-              label="Git Author Name"
-              extra="Leave blank to use your profile name."
-            >
-              <Input placeholder={session.user.name} />
-            </Form.Item>
-            <Form.Item
-              name="gitAuthorEmail"
-              label="Git Author Email"
-              rules={[{ type: "email", message: "Enter a valid email address" }]}
-              extra="Leave blank to use your profile email."
-            >
-              <Input placeholder={session.user.email} />
-            </Form.Item>
-            <Divider orientation="left" plain>
-              Response Format Preferences
-            </Divider>
-            <Card size="small">
-              <ResponsePolicyFields />
-            </Card>
-            <Divider orientation="left" plain>
-              Credentials
-            </Divider>
-            <Form.Item name="codexAuthJson" label="Codex auth.json">
-              <Input.TextArea
-                autoSize={{ minRows: 6, maxRows: 14 }}
-                placeholder={profileCodexConfigured ? "Configured. Paste new JSON to replace." : "{\"...\": \"...\"}"}
-              />
-            </Form.Item>
-            <Typography.Text type="secondary">
-              Stored write-only and encrypted. Existing value is never returned.
-            </Typography.Text>
-            <div style={{ marginTop: 12 }}>
-              <Button danger onClick={() => { void clearCodexAuthJson(); }} loading={savingProfile}>
-                Clear Codex auth.json
-              </Button>
-            </div>
-          </Form>
-        </Spin>
-      </Modal>
     </>
   );
 

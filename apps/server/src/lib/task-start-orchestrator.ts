@@ -1,4 +1,4 @@
-import { isActiveTaskStatus, type Task, type TaskAction, type TaskExecutionInput } from "@agentswarm/shared-types";
+import { isActiveTaskStatus, type Task, type TaskAction, type TaskExecutionInput } from "@verft/shared-types";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskStore } from "../services/task-store.js";
@@ -12,7 +12,9 @@ export interface TaskStartOrchestratorDeps {
 
 export interface OrchestrateTaskStartOptions {
   task: Task;
+  action?: TaskAction;
   input?: TaskExecutionInput;
+  promptMessageId?: string | null;
   fallbackMessage: string;
 }
 
@@ -20,13 +22,15 @@ export type OrchestratedTaskStartResult =
   | { ok: true; task: Task }
   | { ok: false; message: string; statusCode: 409 | 500 };
 
+export type BegunTaskStartResult =
+  | { ok: true; task: Task }
+  | { ok: false; message: string; statusCode: 409 | 500 };
+
 export interface OrchestrateTaskActionOptions {
   task: Task;
   action: TaskAction;
   input?: TaskExecutionInput;
-  allowParallelAsk?: boolean;
   busyMessage?: string;
-  capacityMessage?: string;
   triggerRejectedMessage?: string;
 }
 
@@ -53,13 +57,24 @@ export async function orchestrateTaskStart(
   deps: TaskStartOrchestratorDeps,
   options: OrchestrateTaskStartOptions
 ): Promise<OrchestratedTaskStartResult> {
+  const action = options.action ?? getTriggerActionForNewTask(options.task);
   try {
+    await deps.taskStore.setExecutionState(options.task.id, "preparing", {
+      executionAction: action,
+      errorMessage: null,
+      startedAt: null,
+      finishedAt: null,
+      enqueued: false
+    });
     await deps.spawner.prepareTaskWorkspaceOnly(options.task);
-    const accepted = await deps.scheduler.triggerAction(
-      options.task.id,
-      getTriggerActionForNewTask(options.task),
-      options.input
-    );
+    await deps.taskStore.setExecutionState(options.task.id, "idle", {
+      executionAction: action,
+      errorMessage: null,
+      enqueued: false
+    });
+    const accepted = await deps.scheduler.triggerAction(options.task.id, action, options.input, {
+      promptMessageId: options.promptMessageId ?? null
+    });
     if (!accepted) {
       throw new Error("Task execution could not be started");
     }
@@ -72,6 +87,50 @@ export async function orchestrateTaskStart(
       statusCode: 409
     };
   }
+}
+
+export async function beginTaskStart(
+  deps: TaskStartOrchestratorDeps,
+  options: OrchestrateTaskStartOptions
+): Promise<BegunTaskStartResult> {
+  const action = options.action ?? getTriggerActionForNewTask(options.task);
+  const preparingTask =
+    (await deps.taskStore.setExecutionState(options.task.id, "preparing", {
+      executionAction: action,
+      errorMessage: null,
+      startedAt: null,
+      finishedAt: null,
+      enqueued: false
+    })) ?? options.task;
+
+  void (async () => {
+    try {
+      await deps.spawner.prepareTaskWorkspaceOnly(preparingTask);
+      await deps.taskStore.setExecutionState(preparingTask.id, "idle", {
+        executionAction: action,
+        errorMessage: null,
+        enqueued: false
+      });
+      const accepted = await deps.scheduler.triggerAction(preparingTask.id, action, options.input, {
+        promptMessageId: options.promptMessageId ?? null
+      });
+      if (!accepted) {
+        throw new Error("Task execution could not be started");
+      }
+    } catch (error) {
+      const message = toErrorMessage(error, options.fallbackMessage);
+      const finishedAt = new Date().toISOString();
+      await deps.taskStore.setExecutionState(preparingTask.id, "failed", {
+        executionAction: action,
+        errorMessage: message,
+        finishedAt,
+        enqueued: false
+      });
+      await deps.taskStore.appendLog(preparingTask.id, `Task start failed during workspace preparation: ${message}`);
+    }
+  })();
+
+  return { ok: true, task: preparingTask };
 }
 
 export async function orchestrateTaskActionStart(
@@ -90,21 +149,12 @@ export async function orchestrateTaskActionStart(
 
   if (
     ((options.task.executionStatus === "queued" || options.task.executionStatus === "preparing" || options.task.executionStatus === "running") ||
-      isActiveTaskStatus(options.task.status)) &&
-    options.allowParallelAsk !== true
+      isActiveTaskStatus(options.task.status))
   ) {
     return {
       ok: false,
       statusCode: 409,
       message: options.busyMessage ?? "Task is already running"
-    };
-  }
-
-  if (options.allowParallelAsk === true && !(await deps.scheduler.hasExecutionCapacity())) {
-    return {
-      ok: false,
-      statusCode: 409,
-      message: options.capacityMessage ?? "No agent capacity is available for a parallel ask right now."
     };
   }
 

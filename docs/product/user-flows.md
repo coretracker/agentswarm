@@ -13,24 +13,61 @@ Notes:
 ## TODO
 - Task flows are documented below.
 - TODO: Document repository connect/sync flow.
-- TODO: Document settings and credentials flow.
 
 ## Repository Configuration Flow (Current)
 1. Open `/repositories`.
 2. Create or edit a repository.
 3. Add environment variables (plaintext key/value).
 4. Add environment secrets (write-only values).
-5. Save.
+5. Add MCP servers that should be available to task runs and interactive terminals for this repository.
+6. Add host command names that should be mounted through hostexec when enabled.
+7. Save.
 
 Notes:
 - Existing secrets are shown as configured placeholders only; values are never shown again after save.
 - Editing can keep an existing secret by leaving its value blank, replace it by entering a new value, or delete it by removing the row.
+- Repository MCP servers are scoped to the repository being edited. They are not inherited from Settings and are not shared with other repositories.
+- MCP bearer token environment variable names resolve from the Verft server process environment. Missing values are reported in task runtime logs.
+- Repository host commands are simple command names only. Verft mounts generated shims read-only under `/hostexec/bin` and prepends that directory to `PATH`; existing container bin directories are not overwritten.
+- Repository default agent provider/model/effort values are fallback values. Task payload values win first, then matching user profile defaults, then repository defaults, then system settings.
+- Installations that previously used global MCP server settings must recreate the intended MCP servers on each repository that should expose them.
+- GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
+- GitHub Integration can optionally archive linked tasks when a GitHub pull request webhook reports the PR as merged.
+- Archived tasks are automatically deleted after the configured retention window; the setting defaults to 7 days and can be disabled.
+- GitHub Integration creates or queues build-mode tasks when a `pull_request.review_requested` webhook targets the configured integration bot.
+- GitHub Integration processes created or edited issue comments, pull request conversation comments, and inline pull request review comments when the comment body passes the configured bot mention and user filters.
+- When a GitHub webhook author matches an active Verft user's configured GitHub username, new tasks and linked-task continuations use that user's provider, model, and effort defaults.
+- New tasks created from GitHub issues use the first linked development branch as their base branch, falling back to the repository default branch when no linked branch is available.
+- GitHub Integration adds an `eyes` reaction to accepted issue comments, pull request conversation comments, and inline pull request review comments, but skips the hidden task-created comment that Verft posts after opening a task.
+- GitHub Integration supports separate editable agent templates for newly created GitHub tasks, feedback comments on linked tasks, and requested PR reviews. Templates can include markers such as `{{target_ref}}`, `{{title}}`, `{{title_line}}`, `{{author}}`, `{{requested_reviewer}}`, `{{url_line}}`, and `{{feedback_body}}`.
+- GitHub Integration supports an editable task-created comment template for the public GitHub reply posted after Verft creates a new task. The server appends the hidden duplicate-detection marker automatically.
+
+## Settings And Credentials Flow (Current)
+1. Open `/settings`.
+2. Use `General` to set the default provider, concurrent agents, access roles, and response presets.
+3. Use `Harness` to define standing guidance applied to every task.
+4. Use `Credentials` to set the GitHub token, OpenAI API key, and Anthropic API key. Stored credential values are write-only.
+5. Use `Git` to set the Git username, optional commit author identity, and feature branch prefix. Default GitHub PAT HTTPS auth uses `x-access-token`.
+6. Start the host daemon with `npm run hostexec`, then use `Hostexec` to check availability and optionally set the bearer token env var reference. Verft autodetects the default daemon URLs; repository Host Commands restrict mounted shims.
+7. Use `Codex` to set default effort/model, model list, prompt magic settings, and base URL override.
+8. Use `Claude Code` to set default effort/model, model list, and base URL override.
+9. Open your profile to manage GitHub username linking, personal default agent settings, and personal access tokens.
+10. Administrators can edit another user's default provider, model, and effort from the user's edit form.
+
+Notes:
+- Global and repository Harness sections display as read-only, content-sized textareas. Use the `Edit` link below a section to edit its Markdown in a right-side drawer, then apply the draft before saving the containing settings or repository form.
+- The GitHub token is used for both server-side Git actions and in-agent `git pull` / `git push` inside Codex and Claude runtimes.
+- Stored credential values are write-only and never returned in plaintext by the API/UI.
+- Agent-created commit identity resolves from system Git author settings when configured, otherwise from the built-in Verft fallback identity.
+- Codex runs use system/global OpenAI API key or Codex `auth.json`; user profiles do not store per-user Codex `auth.json`.
+- Hostexec tokens are referenced by environment variable name; token values are not stored in settings. Bridge commands execute on the host with the task workspace as `cwd` and are rejected if the resolved directory escapes the workspace.
+- Task runtimes receive one generated `.verft-runtime/harness.md`. Populated global harness sections appear first, followed by populated repository harness sections; both scopes are preserved.
 
 ## Task Flows (New + Existing)
 
 Notes:
 - `/tasks/board` shows saved task drafts in Backlog and active tasks in Ready, In Progress, Review, and Done columns.
-- Saving a draft stores the same task definition fields used by the new task form; opening a draft reuses the same form and can create the runnable task.
+- Saving a draft stores the same task definition fields used by the new task form; opening a draft reuses the same form and can create the runnable task. Task definitions do not include task-specific notes.
 
 ```mermaid
 flowchart TD
@@ -41,10 +78,7 @@ flowchart TD
     A4[POST /tasks/prompt-magic]
     A5[Prompt returned + textarea/title updated]
     A6[Submit create form]
-    A7{Source type}
-    A8[Blank/Snippet -> POST /tasks]
-    A9[Issue -> POST /imports/issue]
-    A10[PR -> POST /imports/pull-request]
+    A7[POST /tasks]
     A11[Task row created in store]
     A12[Workspace prepared]
     A13[Action enqueued via Scheduler]
@@ -54,10 +88,7 @@ flowchart TD
   A1 --> A2 --> A3
   A3 -- Yes --> A4 --> A5 --> A6
   A3 -- No --> A6
-  A6 --> A7
-  A7 --> A8 --> A11
-  A7 --> A9 --> A11
-  A7 --> A10 --> A11
+  A6 --> A7 --> A11
   A11 --> A12 --> A13 --> A14
 
   subgraph B[Existing Build Flow]
@@ -112,11 +143,8 @@ flowchart TD
     N1[web: task-create-page.tsx submit]
     N2[web: buildTaskDefinitionInput]
     N3[web: createTaskFromDefinition]
-    N4{sourceType}
-    N5[web api: POST /tasks]
-    N6[web api: POST /imports/issue]
-    N7[web api: POST /imports/pull-request]
-    N8[server route: routes/tasks.ts or routes/imports.ts]
+    N4[web api: POST /tasks]
+    N8[server route: routes/tasks.ts]
     N9[server: taskStore.createTask]
     N10[server: orchestrateTaskStart]
     N11[spawner.prepareWorkspace]
@@ -124,10 +152,7 @@ flowchart TD
     N14[task persisted + events published]
   end
 
-  N1 --> N2 --> N3 --> N4
-  N4 -- blank/snippet --> N5 --> N8
-  N4 -- issue --> N6 --> N8
-  N4 -- pull_request --> N7 --> N8
+  N1 --> N2 --> N3 --> N4 --> N8
   N8 --> N9 --> N10 --> N11 --> N12 --> N14
 
   subgraph B[Existing Build - Code Path]

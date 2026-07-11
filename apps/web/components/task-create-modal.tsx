@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import dayjs from "dayjs";
-import { getDefaultModelForProvider, type Task, type UpdateTaskDraftInput } from "@agentswarm/shared-types";
+import { getDefaultModelForProvider, type Task, type UpdateTaskDraftInput } from "@verft/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
 import { trackEvent } from "../src/utils/analytics";
@@ -29,7 +29,6 @@ const getDraftTaskInitialValues = (task: Task): Partial<TaskDefinitionFormValues
   deadline: task.deadline ? dayjs(task.deadline) : null,
   repoId: task.repoId,
   prompt: task.prompt === "(No prompt provided.)" ? "" : task.prompt,
-  notes: task.notes ?? "",
   taskType: task.taskType,
   provider: task.provider,
   model: task.modelOverride ?? getDefaultModelForProvider(task.provider),
@@ -43,7 +42,6 @@ const buildDraftUpdateInput = (values: TaskDefinitionFormValues): UpdateTaskDraf
   title: values.title?.trim() ?? "",
   deadline: values.deadline ? dayjs(values.deadline).toISOString() : null,
   prompt: values.prompt?.trim() ?? "",
-  notes: values.notes?.trim() ?? "",
   taskType: values.taskType ?? "build",
   provider: values.provider ?? "codex",
   providerProfile: values.providerProfile ?? "high",

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, type ChangeEvent, type ReactNode } from "react";
-import { TASK_PROMPT_ATTACHMENT_MAX_COUNT } from "@agentswarm/shared-types";
+import { TASK_PROMPT_ATTACHMENT_MAX_COUNT } from "@verft/shared-types";
 import { Button, Card, Flex, Typography } from "antd";
 import { formatAttachmentSize, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 

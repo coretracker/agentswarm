@@ -2,22 +2,35 @@ import { nanoid } from "nanoid";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
 import type {
+  AgentProvider,
   CreateRepositoryInput,
-  GitHubAutomationRule,
+  McpServerConfig,
+  ProviderProfile,
   Repository,
   RepositoryEnvVarInput,
   RepositoryEnvSecret,
   RepositoryEnvSecretInput,
   UpdateRepositoryInput
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
+import {
+  DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS,
+  DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
+  DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
+  DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
+  DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE,
+  DEFAULT_SLACK_INITIAL_INSTRUCTIONS,
+  DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE
+} from "@verft/shared-types";
 import { EventBus } from "../lib/events.js";
+import { normalizeHostCommands } from "../lib/hostexec-config.js";
 import { HttpError } from "../lib/http-error.js";
+import { normalizeMcpServers } from "../lib/mcp-config.js";
 import { RepositoryEnvFileStore } from "./repository-env-file-store.js";
 
-const REPO_KEY_PREFIX = "agentswarm:repo:";
-const REPO_IDS_KEY = "agentswarm:repo_ids";
-const USER_KEY_PREFIX = "agentswarm:user:";
-const USER_IDS_KEY = "agentswarm:user_ids";
+const REPO_KEY_PREFIX = "verft:repo:";
+const REPO_IDS_KEY = "verft:repo_ids";
+const USER_KEY_PREFIX = "verft:user:";
+const USER_IDS_KEY = "verft:user_ids";
 const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
 const REPOSITORY_ENV_VAR_KEY_MAX_LENGTH = 128;
@@ -31,6 +44,67 @@ const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
 const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
 
 const nowIso = (): string => new Date().toISOString();
+
+const normalizeGitHubLogin = (login: string | null | undefined): string | null => {
+  const normalized = (login ?? "").trim().replace(/^@+/, "");
+  return normalized.length > 0 ? normalized : null;
+};
+
+const normalizeGitHubAllowedUsers = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const users: string[] = [];
+  const seen = new Set<string>();
+  for (const rawUser of value) {
+    if (typeof rawUser !== "string") {
+      continue;
+    }
+    const normalized = rawUser.trim().replace(/^@+/, "");
+    const comparable = normalized.toLowerCase();
+    if (!normalized || seen.has(comparable)) {
+      continue;
+    }
+    users.push(normalized);
+    seen.add(comparable);
+  }
+  return users;
+};
+
+const normalizeGitHubInstructions = (value: string | null | undefined, defaultValue: string): string | null => {
+  const normalized = (value ?? "").trim();
+  return normalized.length > 0 && normalized !== defaultValue ? normalized : null;
+};
+
+const normalizeSlackInstructions = normalizeGitHubInstructions;
+
+const normalizeSlackChannelId = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const normalizeRepositoryHarnessValue = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
+const normalizeRepositoryDefaultProvider = (value: unknown): AgentProvider | null =>
+  value === "codex" || value === "claude" ? value : null;
+
+const normalizeRepositoryDefaultProviderProfile = (value: unknown): ProviderProfile | null =>
+  value === "low" || value === "medium" || value === "high" || value === "max" ? value : null;
+
+const normalizeRepositoryDefaultModel = (value: unknown): string | null => {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  return normalized.length > 0 ? normalized : null;
+};
+
+const normalizeUserId = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim();
+  return normalized.length > 0 ? normalized : null;
+};
+
 export type RepositoryRuntimeEnvEntry =
   | {
       key: string;
@@ -60,13 +134,18 @@ interface StoredRepositoryEnvFileValue {
 
 type StoredRepositoryEnvValue = StoredRepositoryEnvTextValue | StoredRepositoryEnvFileValue;
 
-type StoredRepository = Omit<Repository, "webhookSecretConfigured" | "githubWebhookSecretConfigured" | "envVars" | "envSecrets"> & {
+type StoredRepository = Omit<
+  Repository,
+  "webhookSecretConfigured" | "githubPrWebhookSecretConfigured" | "envVars" | "envSecrets"
+> & {
   envVars: StoredRepositoryEnvValue[];
   envSecrets: StoredRepositoryEnvValue[];
   webhookSecret: string | null;
-  githubWebhookSecret: string | null;
+  githubPrWebhookSecret: string | null;
+  slackSigningSecret: string | null;
+  slackBotToken: string | null;
   webhookSecretConfigured?: boolean;
-  githubWebhookSecretConfigured?: boolean;
+  githubPrWebhookSecretConfigured?: boolean;
 } & Record<string, unknown>;
 
 const normalizeRepositoryEnvFileName = (value: unknown): string | null => {
@@ -507,101 +586,6 @@ const normalizeRepositoryEnvVars = (value: unknown): StoredRepositoryEnvValue[] 
 const normalizeRepositoryEnvSecretValues = (value: unknown): StoredRepositoryEnvValue[] =>
   normalizeStoredRepositoryEnvValues(value, { secret: true });
 
-const normalizeLabels = (value: unknown): string[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  const labels = value
-    .filter((entry): entry is string => typeof entry === "string")
-    .map((entry) => entry.trim().toLowerCase())
-    .filter(Boolean);
-  return Array.from(new Set(labels));
-};
-
-const normalizeStringList = (value: unknown, options?: { lowercase?: boolean }): string[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  const entries = value
-    .filter((entry): entry is string => typeof entry === "string")
-    .map((entry) => entry.trim())
-    .filter(Boolean)
-    .map((entry) => (options?.lowercase ? entry.toLowerCase() : entry));
-  return Array.from(new Set(entries));
-};
-
-const normalizeGitHubAutomations = (value: unknown): GitHubAutomationRule[] => {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  const now = nowIso();
-  const rules: GitHubAutomationRule[] = [];
-  const seenIds = new Set<string>();
-  for (const entry of value) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-    const record = entry as Record<string, unknown>;
-    const id = typeof record.id === "string" ? record.id.trim() : "";
-    if (!id || seenIds.has(id)) {
-      continue;
-    }
-    const trigger = record.trigger === "pull_request_opened" ? "pull_request_opened" : "issue_opened";
-    const taskRaw = (record.task && typeof record.task === "object") ? (record.task as Record<string, unknown>) : {};
-    const labelFilterRaw =
-      (record.labelFilter && typeof record.labelFilter === "object") ? (record.labelFilter as Record<string, unknown>) : {};
-    rules.push({
-      id,
-      name: typeof record.name === "string" && record.name.trim() ? record.name.trim() : id,
-      enabled: record.enabled !== false,
-      trigger,
-      syncStatusEnabled: record.syncStatusEnabled === true,
-      automationEnabled: record.automationEnabled === true,
-      allowedTriggers: normalizeStringList(record.allowedTriggers).filter((entry): entry is "emoji_reaction" | "slash_command" | "bot_mention" =>
-        entry === "emoji_reaction" || entry === "slash_command" || entry === "bot_mention"
-      ),
-      allowedReactions: normalizeStringList(record.allowedReactions),
-      allowedCommands: normalizeStringList(record.allowedCommands),
-      allowedActorLogins: normalizeStringList(record.allowedActorLogins, { lowercase: true }),
-      labelFilter: {
-        labelsAny: normalizeLabels(labelFilterRaw.labelsAny),
-        labelsAll: normalizeLabels(labelFilterRaw.labelsAll),
-        labelsNone: normalizeLabels(labelFilterRaw.labelsNone)
-      },
-      task: {
-        assigneeEmail: typeof taskRaw.assigneeEmail === "string" && taskRaw.assigneeEmail.trim() ? taskRaw.assigneeEmail.trim().toLowerCase() : undefined,
-        codexCredentialSource:
-          taskRaw.codexCredentialSource === "profile" || taskRaw.codexCredentialSource === "global" || taskRaw.codexCredentialSource === "auto"
-            ? taskRaw.codexCredentialSource
-            : undefined,
-        taskType: taskRaw.taskType === "ask" ? "ask" : "build",
-        includeComments: taskRaw.includeComments === true,
-        titleTemplate: typeof taskRaw.titleTemplate === "string" ? taskRaw.titleTemplate.trim() : undefined,
-        notes: typeof taskRaw.notes === "string" ? taskRaw.notes : undefined,
-        provider: taskRaw.provider === "claude" ? "claude" : taskRaw.provider === "codex" ? "codex" : undefined,
-        providerProfile:
-          taskRaw.providerProfile === "low" ||
-          taskRaw.providerProfile === "medium" ||
-          taskRaw.providerProfile === "high" ||
-          taskRaw.providerProfile === "max"
-            ? taskRaw.providerProfile
-            : undefined,
-        modelOverride: typeof taskRaw.modelOverride === "string" && taskRaw.modelOverride.trim() ? taskRaw.modelOverride.trim() : undefined,
-        baseBranch: typeof taskRaw.baseBranch === "string" && taskRaw.baseBranch.trim() ? taskRaw.baseBranch.trim() : undefined,
-        branchStrategy:
-          taskRaw.branchStrategy === "work_on_branch" || taskRaw.branchStrategy === "feature_branch"
-            ? taskRaw.branchStrategy
-            : undefined,
-        snippetId: typeof taskRaw.snippetId === "string" && taskRaw.snippetId.trim() ? taskRaw.snippetId.trim() : undefined
-      },
-      createdAt: typeof record.createdAt === "string" ? record.createdAt : now,
-      updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : now
-    });
-    seenIds.add(id);
-  }
-  return rules;
-};
-
 export interface RepositoryWebhookTarget {
   repository: Repository;
   webhookUrl: string;
@@ -613,9 +597,11 @@ export interface RepositoryStore {
   listRepositories(): Promise<Repository[]>;
   getRepository(repositoryId: string): Promise<Repository | null>;
   getRepositoryRuntimeEnvEntries(repositoryId: string): Promise<RepositoryRuntimeEnvEntry[]>;
+  getRepositoryMcpServers(repositoryId: string): Promise<McpServerConfig[]>;
+  getRepositoryHostCommands(repositoryId: string): Promise<string[]>;
   updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null>;
-  getRepositoryGitHubWebhookSecret(repositoryId: string): Promise<string | null>;
   getRepositoryWebhookTarget(repositoryId: string): Promise<RepositoryWebhookTarget | null>;
+  getRepositoryGitHubPrWebhookSecret(repositoryId: string): Promise<string | null>;
   recordWebhookDeliveryResult(
     repositoryId: string,
     input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
@@ -708,11 +694,6 @@ export class RedisRepositoryStore implements RepositoryStore {
     return normalized.length > 0 ? normalized : null;
   }
 
-  private normalizeGitHubWebhookSecret(secret: string | null | undefined): string | null {
-    const normalized = (secret ?? "").trim();
-    return normalized.length > 0 ? normalized : null;
-  }
-
   private assertValidWebhookConfiguration(input: { webhookEnabled: boolean; webhookUrl: string | null; webhookSecret: string | null }): void {
     if (!input.webhookEnabled) {
       return;
@@ -729,25 +710,96 @@ export class RedisRepositoryStore implements RepositoryStore {
 
   private normalizeStoredRepository(repository: StoredRepository): StoredRepository {
     const webhookSecret = this.normalizeWebhookSecret(repository.webhookSecret);
-    const githubWebhookSecret = this.normalizeGitHubWebhookSecret(repository.githubWebhookSecret);
+    const githubPrWebhookSecret = this.normalizeWebhookSecret(repository.githubPrWebhookSecret);
+    const githubIntegrationBotLogin = normalizeGitHubLogin(repository.githubIntegrationBotLogin);
+    const githubPrAllowedUsers = normalizeGitHubAllowedUsers(repository.githubPrAllowedUsers);
+    const githubPrInitialInstructions = normalizeGitHubInstructions(
+      repository.githubPrInitialInstructions,
+      DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS
+    );
+    const githubPrFeedbackInstructions = normalizeGitHubInstructions(
+      repository.githubPrFeedbackInstructions,
+      DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS
+    );
+    const githubPrReviewInstructions = normalizeGitHubInstructions(
+      repository.githubPrReviewInstructions,
+      DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS
+    );
+    const githubPrTaskCreatedCommentTemplate = normalizeGitHubInstructions(
+      repository.githubPrTaskCreatedCommentTemplate,
+      DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
+    );
+    const githubPrTaskOwnerUserId = normalizeUserId(repository.githubPrTaskOwnerUserId);
+    const slackSigningSecret = null;
+    const slackBotToken = null;
+    const slackChannelId = normalizeSlackChannelId(repository.slackChannelId);
+    const slackInitialInstructions = normalizeSlackInstructions(
+      repository.slackInitialInstructions,
+      DEFAULT_SLACK_INITIAL_INSTRUCTIONS
+    );
+    const slackFeedbackInstructions = normalizeSlackInstructions(
+      repository.slackFeedbackInstructions,
+      DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS
+    );
+    const slackTaskCreatedReplyTemplate = normalizeSlackInstructions(
+      repository.slackTaskCreatedReplyTemplate,
+      DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE
+    );
+    const slackTaskOwnerUserId = normalizeUserId(repository.slackTaskOwnerUserId);
+    const harnessWhatExists = normalizeRepositoryHarnessValue(repository.harnessWhatExists);
+    const harnessAllowedActions = normalizeRepositoryHarnessValue(repository.harnessAllowedActions);
+    const harnessNotAllowedActions = normalizeRepositoryHarnessValue(repository.harnessNotAllowedActions);
+    const harnessHowToWork = normalizeRepositoryHarnessValue(repository.harnessHowToWork);
+    const harnessDefinitionOfDone = normalizeRepositoryHarnessValue(repository.harnessDefinitionOfDone);
+    const harnessEvidenceExpectations = normalizeRepositoryHarnessValue(repository.harnessEvidenceExpectations);
+    const defaultProvider = normalizeRepositoryDefaultProvider(repository.defaultProvider);
+    const defaultModel = normalizeRepositoryDefaultModel(repository.defaultModel);
+    const defaultProviderProfile = normalizeRepositoryDefaultProviderProfile(repository.defaultProviderProfile);
     const webhookUrl = this.normalizeWebhookUrl(repository.webhookUrl as string | null | undefined);
     const webhookEnabled = repository.webhookEnabled === true;
     const envVars = normalizeRepositoryEnvVars(repository.envVars);
     const envSecrets = normalizeRepositoryEnvSecretValues(repository.envSecrets);
-    const githubAutomations = normalizeGitHubAutomations(repository.githubAutomations);
+    const mcpServers = normalizeMcpServers(
+      Array.isArray(repository.mcpServers) ? (repository.mcpServers as McpServerConfig[]) : undefined
+    );
+    const hostCommands = normalizeHostCommands(repository.hostCommands);
     return {
       ...repository,
       name: String(repository.name ?? "").trim(),
       url: String(repository.url ?? "").trim(),
       defaultBranch: String(repository.defaultBranch ?? "").trim() || "develop",
-      syncStatusEnabled: repository.syncStatusEnabled === true,
+      defaultProvider,
+      defaultModel,
+      defaultProviderProfile,
       envVars,
       envSecrets,
+      mcpServers,
+      hostCommands,
       webhookUrl,
       webhookEnabled,
       webhookSecret,
-      githubWebhookSecret,
-      githubAutomations,
+      githubPrWebhookSecret,
+      githubIntegrationBotLogin,
+      githubPrAllowedUsers,
+      githubPrInitialInstructions,
+      githubPrFeedbackInstructions,
+      githubPrReviewInstructions,
+      githubPrTaskCreatedCommentTemplate,
+      githubPrTaskOwnerUserId,
+      slackSigningSecret,
+      slackBotToken,
+      slackChannelId,
+      slackInitialInstructions,
+      slackFeedbackInstructions,
+      slackTaskCreatedReplyTemplate,
+      slackTaskOwnerUserId,
+      harnessWhatExists,
+      harnessAllowedActions,
+      harnessNotAllowedActions,
+      harnessHowToWork,
+      harnessDefinitionOfDone,
+      harnessEvidenceExpectations,
+      githubPrAutoArchiveOnMerge: repository.githubPrAutoArchiveOnMerge === true,
       webhookLastAttemptAt: typeof repository.webhookLastAttemptAt === "string" ? repository.webhookLastAttemptAt : null,
       webhookLastStatus: repository.webhookLastStatus === "success" || repository.webhookLastStatus === "failed" ? repository.webhookLastStatus : null,
       webhookLastError: typeof repository.webhookLastError === "string" && repository.webhookLastError.trim().length > 0
@@ -763,14 +815,37 @@ export class RedisRepositoryStore implements RepositoryStore {
       name: normalized.name,
       url: normalized.url,
       defaultBranch: normalized.defaultBranch,
-      syncStatusEnabled: normalized.syncStatusEnabled === true,
+      defaultProvider: normalized.defaultProvider ?? null,
+      defaultModel: normalized.defaultModel ?? null,
+      defaultProviderProfile: normalized.defaultProviderProfile ?? null,
       envVars: toRepositoryEnvVars(normalized.envVars),
       envSecrets: toConfiguredRepositoryEnvSecrets(normalized.envSecrets),
+      mcpServers: normalized.mcpServers,
+      hostCommands: normalized.hostCommands,
       webhookUrl: normalized.webhookUrl,
       webhookEnabled: normalized.webhookEnabled,
       webhookSecretConfigured: Boolean(normalized.webhookSecret),
-      githubWebhookSecretConfigured: Boolean(normalized.githubWebhookSecret),
-      githubAutomations: normalizeGitHubAutomations(normalized.githubAutomations),
+      githubPrWebhookSecretConfigured: Boolean(normalized.githubPrWebhookSecret),
+      githubIntegrationBotLogin: normalized.githubIntegrationBotLogin ?? null,
+      githubPrAllowedUsers: normalized.githubPrAllowedUsers,
+      githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
+      githubPrAutoArchiveOnMerge: normalized.githubPrAutoArchiveOnMerge === true,
+      githubPrInitialInstructions: normalized.githubPrInitialInstructions ?? null,
+      githubPrFeedbackInstructions: normalized.githubPrFeedbackInstructions ?? null,
+      githubPrReviewInstructions: normalized.githubPrReviewInstructions ?? null,
+      githubPrTaskCreatedCommentTemplate: normalized.githubPrTaskCreatedCommentTemplate ?? null,
+      githubPrTaskOwnerUserId: normalized.githubPrTaskOwnerUserId ?? null,
+      slackChannelId: normalized.slackChannelId ?? null,
+      slackInitialInstructions: normalized.slackInitialInstructions ?? null,
+      slackFeedbackInstructions: normalized.slackFeedbackInstructions ?? null,
+      slackTaskCreatedReplyTemplate: normalized.slackTaskCreatedReplyTemplate ?? null,
+      slackTaskOwnerUserId: normalized.slackTaskOwnerUserId ?? null,
+      harnessWhatExists: normalized.harnessWhatExists ?? null,
+      harnessAllowedActions: normalized.harnessAllowedActions ?? null,
+      harnessNotAllowedActions: normalized.harnessNotAllowedActions ?? null,
+      harnessHowToWork: normalized.harnessHowToWork ?? null,
+      harnessDefinitionOfDone: normalized.harnessDefinitionOfDone ?? null,
+      harnessEvidenceExpectations: normalized.harnessEvidenceExpectations ?? null,
       webhookLastAttemptAt: normalized.webhookLastAttemptAt ?? null,
       webhookLastStatus: normalized.webhookLastStatus ?? null,
       webhookLastError: normalized.webhookLastError ?? null,
@@ -792,11 +867,44 @@ export class RedisRepositoryStore implements RepositoryStore {
     const timestamp = nowIso();
     const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
-    const githubWebhookSecret = this.normalizeGitHubWebhookSecret(input.githubWebhookSecret);
+    const githubPrWebhookSecret = this.normalizeWebhookSecret(input.githubPrWebhookSecret);
+    const githubIntegrationBotLogin = normalizeGitHubLogin(input.githubIntegrationBotLogin);
+    const githubPrAllowedUsers = normalizeGitHubAllowedUsers(input.githubPrAllowedUsers);
+    const githubPrInitialInstructions = normalizeGitHubInstructions(
+      input.githubPrInitialInstructions,
+      DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS
+    );
+    const githubPrFeedbackInstructions = normalizeGitHubInstructions(input.githubPrFeedbackInstructions, DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS);
+    const githubPrReviewInstructions = normalizeGitHubInstructions(input.githubPrReviewInstructions, DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS);
+    const githubPrTaskCreatedCommentTemplate = normalizeGitHubInstructions(
+      input.githubPrTaskCreatedCommentTemplate,
+      DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
+    );
+    const githubPrTaskOwnerUserId = normalizeUserId(input.githubPrTaskOwnerUserId);
+    const slackSigningSecret = null;
+    const slackBotToken = null;
+    const slackChannelId = normalizeSlackChannelId(input.slackChannelId);
+    const slackInitialInstructions = normalizeSlackInstructions(input.slackInitialInstructions, DEFAULT_SLACK_INITIAL_INSTRUCTIONS);
+    const slackFeedbackInstructions = normalizeSlackInstructions(input.slackFeedbackInstructions, DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS);
+    const slackTaskCreatedReplyTemplate = normalizeSlackInstructions(
+      input.slackTaskCreatedReplyTemplate,
+      DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE
+    );
+    const slackTaskOwnerUserId = normalizeUserId(input.slackTaskOwnerUserId);
+    const harnessWhatExists = normalizeRepositoryHarnessValue(input.harnessWhatExists);
+    const harnessAllowedActions = normalizeRepositoryHarnessValue(input.harnessAllowedActions);
+    const harnessNotAllowedActions = normalizeRepositoryHarnessValue(input.harnessNotAllowedActions);
+    const harnessHowToWork = normalizeRepositoryHarnessValue(input.harnessHowToWork);
+    const harnessDefinitionOfDone = normalizeRepositoryHarnessValue(input.harnessDefinitionOfDone);
+    const harnessEvidenceExpectations = normalizeRepositoryHarnessValue(input.harnessEvidenceExpectations);
+    const defaultProvider = normalizeRepositoryDefaultProvider(input.defaultProvider);
+    const defaultModel = normalizeRepositoryDefaultModel(input.defaultModel);
+    const defaultProviderProfile = normalizeRepositoryDefaultProviderProfile(input.defaultProviderProfile);
     const webhookEnabled = input.webhookEnabled === true;
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
-    const githubAutomations = normalizeGitHubAutomations(input.githubAutomations);
+    const mcpServers = normalizeMcpServers(input.mcpServers);
+    const hostCommands = normalizeHostCommands(input.hostCommands);
     this.assertValidWebhookConfiguration({
       webhookEnabled,
       webhookUrl,
@@ -808,14 +916,39 @@ export class RedisRepositoryStore implements RepositoryStore {
       name: input.name.trim(),
       url: input.url.trim(),
       defaultBranch: input.defaultBranch?.trim() || "develop",
-      syncStatusEnabled: input.syncStatusEnabled === true,
+      defaultProvider,
+      defaultModel,
+      defaultProviderProfile,
       envVars: resolvedEnvVars.entries,
       envSecrets: resolvedEnvSecrets.entries,
+      mcpServers,
+      hostCommands,
       webhookUrl,
       webhookEnabled,
       webhookSecret,
-      githubWebhookSecret,
-      githubAutomations,
+      githubPrWebhookSecret,
+      githubIntegrationBotLogin,
+      githubPrAllowedUsers,
+      githubPrRequireBotMention: input.githubPrRequireBotMention === true,
+      githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge === true,
+      githubPrInitialInstructions,
+      githubPrFeedbackInstructions,
+      githubPrReviewInstructions,
+      githubPrTaskCreatedCommentTemplate,
+      githubPrTaskOwnerUserId,
+      slackSigningSecret,
+      slackBotToken,
+      slackChannelId,
+      slackInitialInstructions,
+      slackFeedbackInstructions,
+      slackTaskCreatedReplyTemplate,
+      slackTaskOwnerUserId,
+      harnessWhatExists,
+      harnessAllowedActions,
+      harnessNotAllowedActions,
+      harnessHowToWork,
+      harnessDefinitionOfDone,
+      harnessEvidenceExpectations,
       webhookLastAttemptAt: null,
       webhookLastStatus: null,
       webhookLastError: null,
@@ -883,9 +1016,14 @@ export class RedisRepositoryStore implements RepositoryStore {
     return toRuntimeRepositoryEnvEntries(stored.envVars, stored.envSecrets);
   }
 
-  async getRepositoryGitHubWebhookSecret(repositoryId: string): Promise<string | null> {
+  async getRepositoryMcpServers(repositoryId: string): Promise<McpServerConfig[]> {
     const stored = await this.getStoredRepository(repositoryId);
-    return stored?.githubWebhookSecret ?? null;
+    return stored?.mcpServers ?? [];
+  }
+
+  async getRepositoryHostCommands(repositoryId: string): Promise<string[]> {
+    const stored = await this.getStoredRepository(repositoryId);
+    return stored?.hostCommands ?? [];
   }
 
   async updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null> {
@@ -900,12 +1038,92 @@ export class RedisRepositoryStore implements RepositoryStore {
         : input.webhookSecret !== undefined
           ? this.normalizeWebhookSecret(input.webhookSecret)
           : current.webhookSecret;
-    const nextGitHubWebhookSecret =
-      input.clearGithubWebhookSecret === true
+    const nextGithubPrWebhookSecret =
+      input.clearGithubPrWebhookSecret === true
         ? null
-        : input.githubWebhookSecret !== undefined
-          ? this.normalizeGitHubWebhookSecret(input.githubWebhookSecret)
-          : current.githubWebhookSecret;
+        : input.githubPrWebhookSecret !== undefined
+          ? this.normalizeWebhookSecret(input.githubPrWebhookSecret)
+          : current.githubPrWebhookSecret;
+    const nextGithubIntegrationBotLogin =
+      input.githubIntegrationBotLogin !== undefined
+        ? normalizeGitHubLogin(input.githubIntegrationBotLogin)
+        : current.githubIntegrationBotLogin ?? null;
+    const nextGithubPrAllowedUsers =
+      input.githubPrAllowedUsers !== undefined
+        ? normalizeGitHubAllowedUsers(input.githubPrAllowedUsers)
+        : normalizeGitHubAllowedUsers(current.githubPrAllowedUsers);
+    const nextGithubPrFeedbackInstructions =
+      input.githubPrFeedbackInstructions !== undefined
+        ? normalizeGitHubInstructions(input.githubPrFeedbackInstructions, DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS)
+        : current.githubPrFeedbackInstructions ?? null;
+    const nextGithubPrInitialInstructions =
+      input.githubPrInitialInstructions !== undefined
+        ? normalizeGitHubInstructions(input.githubPrInitialInstructions, DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS)
+        : current.githubPrInitialInstructions ?? null;
+    const nextGithubPrReviewInstructions =
+      input.githubPrReviewInstructions !== undefined
+        ? normalizeGitHubInstructions(input.githubPrReviewInstructions, DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS)
+        : current.githubPrReviewInstructions ?? null;
+    const nextGithubPrTaskCreatedCommentTemplate =
+      input.githubPrTaskCreatedCommentTemplate !== undefined
+        ? normalizeGitHubInstructions(input.githubPrTaskCreatedCommentTemplate, DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE)
+        : current.githubPrTaskCreatedCommentTemplate ?? null;
+    const nextGithubPrTaskOwnerUserId =
+      input.githubPrTaskOwnerUserId !== undefined
+        ? normalizeUserId(input.githubPrTaskOwnerUserId)
+        : current.githubPrTaskOwnerUserId ?? null;
+    const nextSlackSigningSecret = current.slackSigningSecret;
+    const nextSlackBotToken = current.slackBotToken;
+    const nextSlackChannelId =
+      input.slackChannelId !== undefined ? normalizeSlackChannelId(input.slackChannelId) : current.slackChannelId ?? null;
+    const nextSlackInitialInstructions =
+      input.slackInitialInstructions !== undefined
+        ? normalizeSlackInstructions(input.slackInitialInstructions, DEFAULT_SLACK_INITIAL_INSTRUCTIONS)
+        : current.slackInitialInstructions ?? null;
+    const nextSlackFeedbackInstructions =
+      input.slackFeedbackInstructions !== undefined
+        ? normalizeSlackInstructions(input.slackFeedbackInstructions, DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS)
+        : current.slackFeedbackInstructions ?? null;
+    const nextSlackTaskCreatedReplyTemplate =
+      input.slackTaskCreatedReplyTemplate !== undefined
+        ? normalizeSlackInstructions(input.slackTaskCreatedReplyTemplate, DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE)
+        : current.slackTaskCreatedReplyTemplate ?? null;
+    const nextSlackTaskOwnerUserId =
+      input.slackTaskOwnerUserId !== undefined ? normalizeUserId(input.slackTaskOwnerUserId) : current.slackTaskOwnerUserId ?? null;
+    const nextDefaultProvider =
+      input.defaultProvider !== undefined ? normalizeRepositoryDefaultProvider(input.defaultProvider) : current.defaultProvider ?? null;
+    const nextDefaultModel =
+      input.defaultModel !== undefined ? normalizeRepositoryDefaultModel(input.defaultModel) : current.defaultModel ?? null;
+    const nextDefaultProviderProfile =
+      input.defaultProviderProfile !== undefined
+        ? normalizeRepositoryDefaultProviderProfile(input.defaultProviderProfile)
+        : current.defaultProviderProfile ?? null;
+    const nextHarnessWhatExists =
+      input.harnessWhatExists !== undefined ? normalizeRepositoryHarnessValue(input.harnessWhatExists) : current.harnessWhatExists ?? null;
+    const nextHarnessAllowedActions =
+      input.harnessAllowedActions !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessAllowedActions)
+        : current.harnessAllowedActions ?? null;
+    const nextHarnessNotAllowedActions =
+      input.harnessNotAllowedActions !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessNotAllowedActions)
+        : current.harnessNotAllowedActions ?? null;
+    const nextHarnessHowToWork =
+      input.harnessHowToWork !== undefined ? normalizeRepositoryHarnessValue(input.harnessHowToWork) : current.harnessHowToWork ?? null;
+    const nextHarnessDefinitionOfDone =
+      input.harnessDefinitionOfDone !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessDefinitionOfDone)
+        : current.harnessDefinitionOfDone ?? null;
+    const nextHarnessEvidenceExpectations =
+      input.harnessEvidenceExpectations !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessEvidenceExpectations)
+        : current.harnessEvidenceExpectations ?? null;
+    const nextGithubPrRequireBotMention =
+      input.githubPrRequireBotMention !== undefined ? input.githubPrRequireBotMention === true : current.githubPrRequireBotMention === true;
+    const nextGithubPrAutoArchiveOnMerge =
+      input.githubPrAutoArchiveOnMerge !== undefined
+        ? input.githubPrAutoArchiveOnMerge === true
+        : current.githubPrAutoArchiveOnMerge === true;
     const nextWebhookUrl =
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
@@ -916,8 +1134,10 @@ export class RedisRepositoryStore implements RepositoryStore {
       current.envSecrets,
       input.envSecrets
     );
-    const nextGitHubAutomations =
-      input.githubAutomations !== undefined ? normalizeGitHubAutomations(input.githubAutomations) : normalizeGitHubAutomations(current.githubAutomations);
+    const nextMcpServers =
+      input.mcpServers === undefined ? normalizeMcpServers(current.mcpServers) : normalizeMcpServers(input.mcpServers);
+    const nextHostCommands =
+      input.hostCommands === undefined ? normalizeHostCommands(current.hostCommands) : normalizeHostCommands(input.hostCommands);
 
     this.assertValidWebhookConfiguration({
       webhookEnabled: nextWebhookEnabled,
@@ -930,14 +1150,39 @@ export class RedisRepositoryStore implements RepositoryStore {
       name: input.name?.trim() || current.name,
       url: input.url?.trim() || current.url,
       defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
-      syncStatusEnabled: input.syncStatusEnabled !== undefined ? input.syncStatusEnabled === true : current.syncStatusEnabled === true,
+      defaultProvider: nextDefaultProvider,
+      defaultModel: nextDefaultModel,
+      defaultProviderProfile: nextDefaultProviderProfile,
       envVars: resolvedEnvVars.entries,
       envSecrets: resolvedEnvSecrets.entries,
+      mcpServers: nextMcpServers,
+      hostCommands: nextHostCommands,
       webhookUrl: nextWebhookUrl,
       webhookEnabled: nextWebhookEnabled,
       webhookSecret: nextWebhookSecret,
-      githubWebhookSecret: nextGitHubWebhookSecret,
-      githubAutomations: nextGitHubAutomations,
+      githubPrWebhookSecret: nextGithubPrWebhookSecret,
+      githubIntegrationBotLogin: nextGithubIntegrationBotLogin,
+      githubPrAllowedUsers: nextGithubPrAllowedUsers,
+      githubPrRequireBotMention: nextGithubPrRequireBotMention,
+      githubPrAutoArchiveOnMerge: nextGithubPrAutoArchiveOnMerge,
+      githubPrInitialInstructions: nextGithubPrInitialInstructions,
+      githubPrFeedbackInstructions: nextGithubPrFeedbackInstructions,
+      githubPrReviewInstructions: nextGithubPrReviewInstructions,
+      githubPrTaskCreatedCommentTemplate: nextGithubPrTaskCreatedCommentTemplate,
+      githubPrTaskOwnerUserId: nextGithubPrTaskOwnerUserId,
+      slackSigningSecret: nextSlackSigningSecret,
+      slackBotToken: nextSlackBotToken,
+      slackChannelId: nextSlackChannelId,
+      slackInitialInstructions: nextSlackInitialInstructions,
+      slackFeedbackInstructions: nextSlackFeedbackInstructions,
+      slackTaskCreatedReplyTemplate: nextSlackTaskCreatedReplyTemplate,
+      slackTaskOwnerUserId: nextSlackTaskOwnerUserId,
+      harnessWhatExists: nextHarnessWhatExists,
+      harnessAllowedActions: nextHarnessAllowedActions,
+      harnessNotAllowedActions: nextHarnessNotAllowedActions,
+      harnessHowToWork: nextHarnessHowToWork,
+      harnessDefinitionOfDone: nextHarnessDefinitionOfDone,
+      harnessEvidenceExpectations: nextHarnessEvidenceExpectations,
       updatedAt: nowIso()
     };
     const next = this.normalizeRepository(nextStored);
@@ -971,6 +1216,11 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookUrl: stored.webhookUrl,
       webhookSecret: stored.webhookSecret
     };
+  }
+
+  async getRepositoryGitHubPrWebhookSecret(repositoryId: string): Promise<string | null> {
+    const stored = await this.getStoredRepository(repositoryId);
+    return stored?.githubPrWebhookSecret ?? null;
   }
 
   async recordWebhookDeliveryResult(
@@ -1034,11 +1284,6 @@ export class PostgresRepositoryStore implements RepositoryStore {
     return normalized.length > 0 ? normalized : null;
   }
 
-  private normalizeGitHubWebhookSecret(secret: string | null | undefined): string | null {
-    const normalized = (secret ?? "").trim();
-    return normalized.length > 0 ? normalized : null;
-  }
-
   private assertValidWebhookConfiguration(input: { webhookEnabled: boolean; webhookUrl: string | null; webhookSecret: string | null }): void {
     if (!input.webhookEnabled) {
       return;
@@ -1056,20 +1301,95 @@ export class PostgresRepositoryStore implements RepositoryStore {
   private mapRepositoryRow(row: Record<string, unknown>): Repository {
     const envSecrets = normalizeRepositoryEnvSecretValues(row.env_secrets);
     const envVars = normalizeRepositoryEnvVars(row.env_vars);
+    const mcpServers = normalizeMcpServers(Array.isArray(row.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined);
+    const hostCommands = normalizeHostCommands(row.host_commands);
     return {
       id: String(row.id),
       name: String(row.name ?? "").trim(),
       url: String(row.url ?? "").trim(),
       defaultBranch: String(row.default_branch ?? "").trim() || "develop",
-      syncStatusEnabled: row.sync_status_enabled === true,
+      defaultProvider: normalizeRepositoryDefaultProvider(row.default_provider),
+      defaultModel: normalizeRepositoryDefaultModel(row.default_model),
+      defaultProviderProfile: normalizeRepositoryDefaultProviderProfile(row.default_provider_profile),
       envVars: toRepositoryEnvVars(envVars),
       envSecrets: toConfiguredRepositoryEnvSecrets(envSecrets),
+      mcpServers,
+      hostCommands,
       webhookUrl: typeof row.webhook_url === "string" && row.webhook_url.trim().length > 0 ? row.webhook_url.trim() : null,
       webhookEnabled: row.webhook_enabled === true,
       webhookSecretConfigured: typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0,
-      githubWebhookSecretConfigured:
-        typeof row.github_webhook_secret === "string" && row.github_webhook_secret.trim().length > 0,
-      githubAutomations: normalizeGitHubAutomations(row.github_automations),
+      githubPrWebhookSecretConfigured:
+        typeof row.github_pr_webhook_secret === "string" && row.github_pr_webhook_secret.trim().length > 0,
+      githubIntegrationBotLogin:
+        typeof row.github_integration_bot_login === "string" && row.github_integration_bot_login.trim().length > 0
+          ? row.github_integration_bot_login.trim()
+          : null,
+      githubPrAllowedUsers: normalizeGitHubAllowedUsers(row.github_pr_allowed_users),
+      githubPrRequireBotMention: row.github_pr_require_bot_mention === true,
+      githubPrAutoArchiveOnMerge: row.github_pr_auto_archive_on_merge === true,
+      githubPrInitialInstructions:
+        typeof row.github_pr_initial_instructions === "string" && row.github_pr_initial_instructions.trim().length > 0
+          ? row.github_pr_initial_instructions.trim()
+          : null,
+      githubPrFeedbackInstructions:
+        typeof row.github_pr_feedback_instructions === "string" && row.github_pr_feedback_instructions.trim().length > 0
+          ? row.github_pr_feedback_instructions.trim()
+          : null,
+      githubPrReviewInstructions:
+        typeof row.github_pr_review_instructions === "string" && row.github_pr_review_instructions.trim().length > 0
+          ? row.github_pr_review_instructions.trim()
+          : null,
+      githubPrTaskCreatedCommentTemplate:
+        typeof row.github_pr_task_created_comment_template === "string" &&
+        row.github_pr_task_created_comment_template.trim().length > 0
+          ? row.github_pr_task_created_comment_template.trim()
+          : null,
+      githubPrTaskOwnerUserId:
+        typeof row.github_pr_task_owner_user_id === "string" && row.github_pr_task_owner_user_id.trim().length > 0
+          ? row.github_pr_task_owner_user_id.trim()
+          : null,
+      slackChannelId:
+        typeof row.slack_channel_id === "string" && row.slack_channel_id.trim().length > 0 ? row.slack_channel_id.trim() : null,
+      slackInitialInstructions:
+        typeof row.slack_initial_instructions === "string" && row.slack_initial_instructions.trim().length > 0
+          ? row.slack_initial_instructions.trim()
+          : null,
+      slackFeedbackInstructions:
+        typeof row.slack_feedback_instructions === "string" && row.slack_feedback_instructions.trim().length > 0
+          ? row.slack_feedback_instructions.trim()
+          : null,
+      slackTaskCreatedReplyTemplate:
+        typeof row.slack_task_created_reply_template === "string" && row.slack_task_created_reply_template.trim().length > 0
+          ? row.slack_task_created_reply_template.trim()
+          : null,
+      slackTaskOwnerUserId:
+        typeof row.slack_task_owner_user_id === "string" && row.slack_task_owner_user_id.trim().length > 0
+          ? row.slack_task_owner_user_id.trim()
+          : null,
+      harnessWhatExists:
+        typeof row.harness_what_exists === "string" && row.harness_what_exists.trim().length > 0
+          ? row.harness_what_exists.trim()
+          : null,
+      harnessAllowedActions:
+        typeof row.harness_allowed_actions === "string" && row.harness_allowed_actions.trim().length > 0
+          ? row.harness_allowed_actions.trim()
+          : null,
+      harnessNotAllowedActions:
+        typeof row.harness_not_allowed_actions === "string" && row.harness_not_allowed_actions.trim().length > 0
+          ? row.harness_not_allowed_actions.trim()
+          : null,
+      harnessHowToWork:
+        typeof row.harness_how_to_work === "string" && row.harness_how_to_work.trim().length > 0
+          ? row.harness_how_to_work.trim()
+          : null,
+      harnessDefinitionOfDone:
+        typeof row.harness_definition_of_done === "string" && row.harness_definition_of_done.trim().length > 0
+          ? row.harness_definition_of_done.trim()
+          : null,
+      harnessEvidenceExpectations:
+        typeof row.harness_evidence_expectations === "string" && row.harness_evidence_expectations.trim().length > 0
+          ? row.harness_evidence_expectations.trim()
+          : null,
       webhookLastAttemptAt: typeof row.webhook_last_attempt_at === "string" ? row.webhook_last_attempt_at : null,
       webhookLastStatus:
         row.webhook_last_status === "success" || row.webhook_last_status === "failed" ? row.webhook_last_status : null,
@@ -1089,11 +1409,44 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const timestamp = nowIso();
     const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
-    const githubWebhookSecret = this.normalizeGitHubWebhookSecret(input.githubWebhookSecret);
+    const githubPrWebhookSecret = this.normalizeWebhookSecret(input.githubPrWebhookSecret);
+    const githubIntegrationBotLogin = normalizeGitHubLogin(input.githubIntegrationBotLogin);
+    const githubPrAllowedUsers = normalizeGitHubAllowedUsers(input.githubPrAllowedUsers);
+    const githubPrInitialInstructions = normalizeGitHubInstructions(
+      input.githubPrInitialInstructions,
+      DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS
+    );
+    const githubPrFeedbackInstructions = normalizeGitHubInstructions(input.githubPrFeedbackInstructions, DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS);
+    const githubPrReviewInstructions = normalizeGitHubInstructions(input.githubPrReviewInstructions, DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS);
+    const githubPrTaskCreatedCommentTemplate = normalizeGitHubInstructions(
+      input.githubPrTaskCreatedCommentTemplate,
+      DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE
+    );
+    const githubPrTaskOwnerUserId = normalizeUserId(input.githubPrTaskOwnerUserId);
+    const slackSigningSecret = null;
+    const slackBotToken = null;
+    const slackChannelId = normalizeSlackChannelId(input.slackChannelId);
+    const slackInitialInstructions = normalizeSlackInstructions(input.slackInitialInstructions, DEFAULT_SLACK_INITIAL_INSTRUCTIONS);
+    const slackFeedbackInstructions = normalizeSlackInstructions(input.slackFeedbackInstructions, DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS);
+    const slackTaskCreatedReplyTemplate = normalizeSlackInstructions(
+      input.slackTaskCreatedReplyTemplate,
+      DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE
+    );
+    const slackTaskOwnerUserId = normalizeUserId(input.slackTaskOwnerUserId);
+    const harnessWhatExists = normalizeRepositoryHarnessValue(input.harnessWhatExists);
+    const harnessAllowedActions = normalizeRepositoryHarnessValue(input.harnessAllowedActions);
+    const harnessNotAllowedActions = normalizeRepositoryHarnessValue(input.harnessNotAllowedActions);
+    const harnessHowToWork = normalizeRepositoryHarnessValue(input.harnessHowToWork);
+    const harnessDefinitionOfDone = normalizeRepositoryHarnessValue(input.harnessDefinitionOfDone);
+    const harnessEvidenceExpectations = normalizeRepositoryHarnessValue(input.harnessEvidenceExpectations);
+    const defaultProvider = normalizeRepositoryDefaultProvider(input.defaultProvider);
+    const defaultModel = normalizeRepositoryDefaultModel(input.defaultModel);
+    const defaultProviderProfile = normalizeRepositoryDefaultProviderProfile(input.defaultProviderProfile);
     const webhookEnabled = input.webhookEnabled === true;
     const resolvedEnvVars = await resolveNextRepositoryEnvVars(this.repositoryEnvFileStore, [], input.envVars);
     const resolvedEnvSecrets = await resolveNextRepositoryEnvSecrets(this.repositoryEnvFileStore, [], input.envSecrets);
-    const githubAutomations = normalizeGitHubAutomations(input.githubAutomations);
+    const mcpServers = normalizeMcpServers(input.mcpServers);
+    const hostCommands = normalizeHostCommands(input.hostCommands);
     this.assertValidWebhookConfiguration({
       webhookEnabled,
       webhookUrl,
@@ -1105,14 +1458,37 @@ export class PostgresRepositoryStore implements RepositoryStore {
       name: input.name.trim(),
       url: input.url.trim(),
       defaultBranch: input.defaultBranch?.trim() || "develop",
-      syncStatusEnabled: input.syncStatusEnabled === true,
+      defaultProvider,
+      defaultModel,
+      defaultProviderProfile,
       envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
       envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
+      mcpServers,
+      hostCommands,
       webhookUrl,
       webhookEnabled,
       webhookSecretConfigured: Boolean(webhookSecret),
-      githubWebhookSecretConfigured: Boolean(githubWebhookSecret),
-      githubAutomations,
+      githubPrWebhookSecretConfigured: Boolean(githubPrWebhookSecret),
+      githubIntegrationBotLogin,
+      githubPrAllowedUsers,
+      githubPrRequireBotMention: input.githubPrRequireBotMention === true,
+      githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge === true,
+      githubPrInitialInstructions,
+      githubPrFeedbackInstructions,
+      githubPrReviewInstructions,
+      githubPrTaskCreatedCommentTemplate,
+      githubPrTaskOwnerUserId,
+      slackChannelId,
+      slackInitialInstructions,
+      slackFeedbackInstructions,
+      slackTaskCreatedReplyTemplate,
+      slackTaskOwnerUserId,
+      harnessWhatExists,
+      harnessAllowedActions,
+      harnessNotAllowedActions,
+      harnessHowToWork,
+      harnessDefinitionOfDone,
+      harnessEvidenceExpectations,
       webhookLastAttemptAt: null,
       webhookLastStatus: null,
       webhookLastError: null,
@@ -1131,35 +1507,85 @@ export class PostgresRepositoryStore implements RepositoryStore {
             name,
             url,
             default_branch,
-            sync_status_enabled,
+            default_provider,
+            default_model,
+            default_provider_profile,
             env_vars,
             env_secrets,
+            mcp_servers,
+            host_commands,
             webhook_url,
             webhook_enabled,
             webhook_secret,
-            github_webhook_secret,
-            github_automations,
+            github_pr_webhook_secret,
+            github_integration_bot_login,
+            github_pr_allowed_users,
+            github_pr_require_bot_mention,
+            github_pr_auto_archive_on_merge,
+            github_pr_initial_instructions,
+            github_pr_feedback_instructions,
+            github_pr_review_instructions,
+            github_pr_task_created_comment_template,
+            github_pr_task_owner_user_id,
+            slack_signing_secret,
+            slack_bot_token,
+            slack_channel_id,
+            slack_initial_instructions,
+            slack_feedback_instructions,
+            slack_task_created_reply_template,
+            slack_task_owner_user_id,
+            harness_what_exists,
+            harness_allowed_actions,
+            harness_not_allowed_actions,
+            harness_how_to_work,
+            harness_definition_of_done,
+            harness_evidence_expectations,
             webhook_last_attempt_at,
             webhook_last_status,
             webhook_last_error,
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16, $17::jsonb, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
         `,
         [
           repository.id,
           repository.name,
           repository.url,
           repository.defaultBranch,
-          repository.syncStatusEnabled === true,
+          repository.defaultProvider,
+          repository.defaultModel,
+          repository.defaultProviderProfile,
           JSON.stringify(resolvedEnvVars.entries),
           JSON.stringify(resolvedEnvSecrets.entries),
+          JSON.stringify(repository.mcpServers),
+          JSON.stringify(repository.hostCommands),
           repository.webhookUrl,
           repository.webhookEnabled,
           webhookSecret,
-          githubWebhookSecret,
-          JSON.stringify(repository.githubAutomations ?? []),
+          githubPrWebhookSecret,
+          repository.githubIntegrationBotLogin,
+          JSON.stringify(repository.githubPrAllowedUsers),
+          repository.githubPrRequireBotMention,
+          repository.githubPrAutoArchiveOnMerge,
+          repository.githubPrInitialInstructions,
+          repository.githubPrFeedbackInstructions,
+          repository.githubPrReviewInstructions,
+          repository.githubPrTaskCreatedCommentTemplate,
+          repository.githubPrTaskOwnerUserId,
+          slackSigningSecret,
+          slackBotToken,
+          repository.slackChannelId,
+          repository.slackInitialInstructions,
+          repository.slackFeedbackInstructions,
+          repository.slackTaskCreatedReplyTemplate,
+          repository.slackTaskOwnerUserId,
+          repository.harnessWhatExists,
+          repository.harnessAllowedActions,
+          repository.harnessNotAllowedActions,
+          repository.harnessHowToWork,
+          repository.harnessDefinitionOfDone,
+          repository.harnessEvidenceExpectations,
           repository.webhookLastAttemptAt,
           repository.webhookLastStatus,
           repository.webhookLastError,
@@ -1198,13 +1624,20 @@ export class PostgresRepositoryStore implements RepositoryStore {
     );
   }
 
-  async getRepositoryGitHubWebhookSecret(repositoryId: string): Promise<string | null> {
+  async getRepositoryMcpServers(repositoryId: string): Promise<McpServerConfig[]> {
     const row = await this.getStoredRepositoryRow(repositoryId);
     if (!row) {
-      return null;
+      return [];
     }
-    const value = row.github_webhook_secret;
-    return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+    return normalizeMcpServers(Array.isArray(row.mcp_servers) ? (row.mcp_servers as McpServerConfig[]) : undefined);
+  }
+
+  async getRepositoryHostCommands(repositoryId: string): Promise<string[]> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    if (!row) {
+      return [];
+    }
+    return normalizeHostCommands(row.host_commands);
   }
 
   async updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null> {
@@ -1216,9 +1649,17 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const current = this.mapRepositoryRow(currentRow);
     const currentWebhookSecret =
       typeof currentRow.webhook_secret === "string" && currentRow.webhook_secret.trim().length > 0 ? currentRow.webhook_secret.trim() : null;
-    const currentGitHubWebhookSecret =
-      typeof currentRow.github_webhook_secret === "string" && currentRow.github_webhook_secret.trim().length > 0
-        ? currentRow.github_webhook_secret.trim()
+    const currentGithubPrWebhookSecret =
+      typeof currentRow.github_pr_webhook_secret === "string" && currentRow.github_pr_webhook_secret.trim().length > 0
+        ? currentRow.github_pr_webhook_secret.trim()
+        : null;
+    const currentSlackSigningSecret =
+      typeof currentRow.slack_signing_secret === "string" && currentRow.slack_signing_secret.trim().length > 0
+        ? currentRow.slack_signing_secret.trim()
+        : null;
+    const currentSlackBotToken =
+      typeof currentRow.slack_bot_token === "string" && currentRow.slack_bot_token.trim().length > 0
+        ? currentRow.slack_bot_token.trim()
         : null;
     const currentEnvVars = normalizeRepositoryEnvVars(currentRow.env_vars);
     const currentEnvSecrets = normalizeRepositoryEnvSecretValues(currentRow.env_secrets);
@@ -1228,12 +1669,92 @@ export class PostgresRepositoryStore implements RepositoryStore {
         : input.webhookSecret !== undefined
           ? this.normalizeWebhookSecret(input.webhookSecret)
           : currentWebhookSecret;
-    const nextGitHubWebhookSecret =
-      input.clearGithubWebhookSecret === true
+    const nextGithubPrWebhookSecret =
+      input.clearGithubPrWebhookSecret === true
         ? null
-        : input.githubWebhookSecret !== undefined
-          ? this.normalizeGitHubWebhookSecret(input.githubWebhookSecret)
-          : currentGitHubWebhookSecret;
+        : input.githubPrWebhookSecret !== undefined
+          ? this.normalizeWebhookSecret(input.githubPrWebhookSecret)
+          : currentGithubPrWebhookSecret;
+    const nextGithubIntegrationBotLogin =
+      input.githubIntegrationBotLogin !== undefined
+        ? normalizeGitHubLogin(input.githubIntegrationBotLogin)
+        : current.githubIntegrationBotLogin ?? null;
+    const nextGithubPrAllowedUsers =
+      input.githubPrAllowedUsers !== undefined
+        ? normalizeGitHubAllowedUsers(input.githubPrAllowedUsers)
+        : normalizeGitHubAllowedUsers(current.githubPrAllowedUsers);
+    const nextGithubPrFeedbackInstructions =
+      input.githubPrFeedbackInstructions !== undefined
+        ? normalizeGitHubInstructions(input.githubPrFeedbackInstructions, DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS)
+        : current.githubPrFeedbackInstructions ?? null;
+    const nextGithubPrInitialInstructions =
+      input.githubPrInitialInstructions !== undefined
+        ? normalizeGitHubInstructions(input.githubPrInitialInstructions, DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS)
+        : current.githubPrInitialInstructions ?? null;
+    const nextGithubPrReviewInstructions =
+      input.githubPrReviewInstructions !== undefined
+        ? normalizeGitHubInstructions(input.githubPrReviewInstructions, DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS)
+        : current.githubPrReviewInstructions ?? null;
+    const nextGithubPrTaskCreatedCommentTemplate =
+      input.githubPrTaskCreatedCommentTemplate !== undefined
+        ? normalizeGitHubInstructions(input.githubPrTaskCreatedCommentTemplate, DEFAULT_GITHUB_TASK_CREATED_COMMENT_TEMPLATE)
+        : current.githubPrTaskCreatedCommentTemplate ?? null;
+    const nextGithubPrTaskOwnerUserId =
+      input.githubPrTaskOwnerUserId !== undefined
+        ? normalizeUserId(input.githubPrTaskOwnerUserId)
+        : current.githubPrTaskOwnerUserId ?? null;
+    const nextSlackSigningSecret = currentSlackSigningSecret;
+    const nextSlackBotToken = currentSlackBotToken;
+    const nextSlackChannelId =
+      input.slackChannelId !== undefined ? normalizeSlackChannelId(input.slackChannelId) : current.slackChannelId ?? null;
+    const nextSlackInitialInstructions =
+      input.slackInitialInstructions !== undefined
+        ? normalizeSlackInstructions(input.slackInitialInstructions, DEFAULT_SLACK_INITIAL_INSTRUCTIONS)
+        : current.slackInitialInstructions ?? null;
+    const nextSlackFeedbackInstructions =
+      input.slackFeedbackInstructions !== undefined
+        ? normalizeSlackInstructions(input.slackFeedbackInstructions, DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS)
+        : current.slackFeedbackInstructions ?? null;
+    const nextSlackTaskCreatedReplyTemplate =
+      input.slackTaskCreatedReplyTemplate !== undefined
+        ? normalizeSlackInstructions(input.slackTaskCreatedReplyTemplate, DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE)
+        : current.slackTaskCreatedReplyTemplate ?? null;
+    const nextSlackTaskOwnerUserId =
+      input.slackTaskOwnerUserId !== undefined ? normalizeUserId(input.slackTaskOwnerUserId) : current.slackTaskOwnerUserId ?? null;
+    const nextDefaultProvider =
+      input.defaultProvider !== undefined ? normalizeRepositoryDefaultProvider(input.defaultProvider) : current.defaultProvider ?? null;
+    const nextDefaultModel =
+      input.defaultModel !== undefined ? normalizeRepositoryDefaultModel(input.defaultModel) : current.defaultModel ?? null;
+    const nextDefaultProviderProfile =
+      input.defaultProviderProfile !== undefined
+        ? normalizeRepositoryDefaultProviderProfile(input.defaultProviderProfile)
+        : current.defaultProviderProfile ?? null;
+    const nextHarnessWhatExists =
+      input.harnessWhatExists !== undefined ? normalizeRepositoryHarnessValue(input.harnessWhatExists) : current.harnessWhatExists ?? null;
+    const nextHarnessAllowedActions =
+      input.harnessAllowedActions !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessAllowedActions)
+        : current.harnessAllowedActions ?? null;
+    const nextHarnessNotAllowedActions =
+      input.harnessNotAllowedActions !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessNotAllowedActions)
+        : current.harnessNotAllowedActions ?? null;
+    const nextHarnessHowToWork =
+      input.harnessHowToWork !== undefined ? normalizeRepositoryHarnessValue(input.harnessHowToWork) : current.harnessHowToWork ?? null;
+    const nextHarnessDefinitionOfDone =
+      input.harnessDefinitionOfDone !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessDefinitionOfDone)
+        : current.harnessDefinitionOfDone ?? null;
+    const nextHarnessEvidenceExpectations =
+      input.harnessEvidenceExpectations !== undefined
+        ? normalizeRepositoryHarnessValue(input.harnessEvidenceExpectations)
+        : current.harnessEvidenceExpectations ?? null;
+    const nextGithubPrRequireBotMention =
+      input.githubPrRequireBotMention !== undefined ? input.githubPrRequireBotMention === true : current.githubPrRequireBotMention === true;
+    const nextGithubPrAutoArchiveOnMerge =
+      input.githubPrAutoArchiveOnMerge !== undefined
+        ? input.githubPrAutoArchiveOnMerge === true
+        : current.githubPrAutoArchiveOnMerge === true;
     const nextWebhookUrl =
       input.webhookUrl !== undefined ? this.normalizeWebhookUrl(input.webhookUrl) : current.webhookUrl;
     const nextWebhookEnabled =
@@ -1244,8 +1765,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
       currentEnvSecrets,
       input.envSecrets
     );
-    const nextGitHubAutomations =
-      input.githubAutomations !== undefined ? normalizeGitHubAutomations(input.githubAutomations) : normalizeGitHubAutomations(current.githubAutomations);
+    const nextMcpServers =
+      input.mcpServers === undefined ? normalizeMcpServers(current.mcpServers) : normalizeMcpServers(input.mcpServers);
+    const nextHostCommands =
+      input.hostCommands === undefined ? normalizeHostCommands(current.hostCommands) : normalizeHostCommands(input.hostCommands);
 
     this.assertValidWebhookConfiguration({
       webhookEnabled: nextWebhookEnabled,
@@ -1258,14 +1781,37 @@ export class PostgresRepositoryStore implements RepositoryStore {
       name: input.name?.trim() || current.name,
       url: input.url?.trim() || current.url,
       defaultBranch: input.defaultBranch?.trim() || current.defaultBranch,
-      syncStatusEnabled: input.syncStatusEnabled !== undefined ? input.syncStatusEnabled === true : current.syncStatusEnabled === true,
+      defaultProvider: nextDefaultProvider,
+      defaultModel: nextDefaultModel,
+      defaultProviderProfile: nextDefaultProviderProfile,
       envVars: toRepositoryEnvVars(resolvedEnvVars.entries),
       envSecrets: toConfiguredRepositoryEnvSecrets(resolvedEnvSecrets.entries),
+      mcpServers: nextMcpServers,
+      hostCommands: nextHostCommands,
       webhookUrl: nextWebhookUrl,
       webhookEnabled: nextWebhookEnabled,
       webhookSecretConfigured: Boolean(nextWebhookSecret),
-      githubWebhookSecretConfigured: Boolean(nextGitHubWebhookSecret),
-      githubAutomations: nextGitHubAutomations,
+      githubPrWebhookSecretConfigured: Boolean(nextGithubPrWebhookSecret),
+      githubIntegrationBotLogin: nextGithubIntegrationBotLogin,
+      githubPrAllowedUsers: nextGithubPrAllowedUsers,
+      githubPrRequireBotMention: nextGithubPrRequireBotMention,
+      githubPrAutoArchiveOnMerge: nextGithubPrAutoArchiveOnMerge,
+      githubPrInitialInstructions: nextGithubPrInitialInstructions,
+      githubPrFeedbackInstructions: nextGithubPrFeedbackInstructions,
+      githubPrReviewInstructions: nextGithubPrReviewInstructions,
+      githubPrTaskCreatedCommentTemplate: nextGithubPrTaskCreatedCommentTemplate,
+      githubPrTaskOwnerUserId: nextGithubPrTaskOwnerUserId,
+      slackChannelId: nextSlackChannelId,
+      slackInitialInstructions: nextSlackInitialInstructions,
+      slackFeedbackInstructions: nextSlackFeedbackInstructions,
+      slackTaskCreatedReplyTemplate: nextSlackTaskCreatedReplyTemplate,
+      slackTaskOwnerUserId: nextSlackTaskOwnerUserId,
+      harnessWhatExists: nextHarnessWhatExists,
+      harnessAllowedActions: nextHarnessAllowedActions,
+      harnessNotAllowedActions: nextHarnessNotAllowedActions,
+      harnessHowToWork: nextHarnessHowToWork,
+      harnessDefinitionOfDone: nextHarnessDefinitionOfDone,
+      harnessEvidenceExpectations: nextHarnessEvidenceExpectations,
       updatedAt: nowIso()
     };
 
@@ -1280,19 +1826,44 @@ export class PostgresRepositoryStore implements RepositoryStore {
             name = $2,
             url = $3,
             default_branch = $4,
-            sync_status_enabled = $5,
-            env_vars = $6::jsonb,
-            env_secrets = $7::jsonb,
-            webhook_url = $8,
-            webhook_enabled = $9,
-            webhook_secret = $10,
-            github_webhook_secret = $11,
-            github_automations = $12::jsonb,
-            webhook_last_attempt_at = $13,
-            webhook_last_status = $14,
-            webhook_last_error = $15,
-            created_at = $16,
-            updated_at = $17
+            default_provider = $5,
+            default_model = $6,
+            default_provider_profile = $7,
+            env_vars = $8::jsonb,
+            env_secrets = $9::jsonb,
+            mcp_servers = $10::jsonb,
+            host_commands = $11::jsonb,
+            webhook_url = $12,
+            webhook_enabled = $13,
+            webhook_secret = $14,
+            github_pr_webhook_secret = $15,
+            github_integration_bot_login = $16,
+            github_pr_allowed_users = $17::jsonb,
+            github_pr_require_bot_mention = $18,
+            github_pr_auto_archive_on_merge = $19,
+            github_pr_initial_instructions = $20,
+            github_pr_feedback_instructions = $21,
+            github_pr_review_instructions = $22,
+            github_pr_task_created_comment_template = $23,
+            github_pr_task_owner_user_id = $24,
+            slack_signing_secret = $25,
+            slack_bot_token = $26,
+            slack_channel_id = $27,
+            slack_initial_instructions = $28,
+            slack_feedback_instructions = $29,
+            slack_task_created_reply_template = $30,
+            slack_task_owner_user_id = $31,
+            harness_what_exists = $32,
+            harness_allowed_actions = $33,
+            harness_not_allowed_actions = $34,
+            harness_how_to_work = $35,
+            harness_definition_of_done = $36,
+            harness_evidence_expectations = $37,
+            webhook_last_attempt_at = $38,
+            webhook_last_status = $39,
+            webhook_last_error = $40,
+            created_at = $41,
+            updated_at = $42
           WHERE id = $1
         `,
         [
@@ -1300,14 +1871,39 @@ export class PostgresRepositoryStore implements RepositoryStore {
           next.name,
           next.url,
           next.defaultBranch,
-          next.syncStatusEnabled === true,
+          next.defaultProvider,
+          next.defaultModel,
+          next.defaultProviderProfile,
           JSON.stringify(resolvedEnvVars.entries),
           JSON.stringify(resolvedEnvSecrets.entries),
+          JSON.stringify(next.mcpServers),
+          JSON.stringify(next.hostCommands),
           next.webhookUrl,
           next.webhookEnabled,
           nextWebhookSecret,
-          nextGitHubWebhookSecret,
-          JSON.stringify(next.githubAutomations ?? []),
+          nextGithubPrWebhookSecret,
+          next.githubIntegrationBotLogin,
+          JSON.stringify(next.githubPrAllowedUsers),
+          next.githubPrRequireBotMention,
+          next.githubPrAutoArchiveOnMerge,
+          next.githubPrInitialInstructions,
+          next.githubPrFeedbackInstructions,
+          next.githubPrReviewInstructions,
+          next.githubPrTaskCreatedCommentTemplate,
+          next.githubPrTaskOwnerUserId,
+          nextSlackSigningSecret,
+          nextSlackBotToken,
+          next.slackChannelId,
+          next.slackInitialInstructions,
+          next.slackFeedbackInstructions,
+          next.slackTaskCreatedReplyTemplate,
+          next.slackTaskOwnerUserId,
+          next.harnessWhatExists,
+          next.harnessAllowedActions,
+          next.harnessNotAllowedActions,
+          next.harnessHowToWork,
+          next.harnessDefinitionOfDone,
+          next.harnessEvidenceExpectations,
           next.webhookLastAttemptAt,
           next.webhookLastStatus,
           next.webhookLastError,
@@ -1346,6 +1942,16 @@ export class PostgresRepositoryStore implements RepositoryStore {
     };
   }
 
+  async getRepositoryGitHubPrWebhookSecret(repositoryId: string): Promise<string | null> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    if (!row) {
+      return null;
+    }
+    return typeof row.github_pr_webhook_secret === "string" && row.github_pr_webhook_secret.trim().length > 0
+      ? row.github_pr_webhook_secret.trim()
+      : null;
+  }
+
   async recordWebhookDeliveryResult(
     repositoryId: string,
     input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
@@ -1358,10 +1964,6 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const current = this.mapRepositoryRow(row);
     const webhookSecret =
       typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0 ? row.webhook_secret.trim() : null;
-    const githubWebhookSecret =
-      typeof row.github_webhook_secret === "string" && row.github_webhook_secret.trim().length > 0
-        ? row.github_webhook_secret.trim()
-        : null;
     const envVars = normalizeRepositoryEnvVars(row.env_vars);
     const envSecrets = normalizeRepositoryEnvSecretValues(row.env_secrets);
     const next: Repository = {
@@ -1379,19 +1981,16 @@ export class PostgresRepositoryStore implements RepositoryStore {
           name = $2,
           url = $3,
           default_branch = $4,
-          sync_status_enabled = $5,
-          env_vars = $6::jsonb,
-          env_secrets = $7::jsonb,
-          webhook_url = $8,
-          webhook_enabled = $9,
-          webhook_secret = $10,
-          github_webhook_secret = $11,
-          github_automations = $12::jsonb,
-          webhook_last_attempt_at = $13,
-          webhook_last_status = $14,
-          webhook_last_error = $15,
-          created_at = $16,
-          updated_at = $17
+          env_vars = $5::jsonb,
+          env_secrets = $6::jsonb,
+          webhook_url = $7,
+          webhook_enabled = $8,
+          webhook_secret = $9,
+          webhook_last_attempt_at = $10,
+          webhook_last_status = $11,
+          webhook_last_error = $12,
+          created_at = $13,
+          updated_at = $14
         WHERE id = $1
       `,
       [
@@ -1399,14 +1998,11 @@ export class PostgresRepositoryStore implements RepositoryStore {
         next.name,
         next.url,
         next.defaultBranch,
-        next.syncStatusEnabled === true,
         JSON.stringify(envVars),
         JSON.stringify(envSecrets),
         next.webhookUrl,
         next.webhookEnabled,
         webhookSecret,
-        githubWebhookSecret,
-        JSON.stringify(next.githubAutomations ?? []),
         next.webhookLastAttemptAt,
         next.webhookLastStatus,
         next.webhookLastError,

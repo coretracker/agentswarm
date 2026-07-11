@@ -2,7 +2,7 @@
 
 import dynamic from "next/dynamic";
 import { LoadingOutlined, ReloadOutlined } from "@ant-design/icons";
-import type { TaskWorkspaceFilePreview, TaskWorkspaceFileTreeEntryKind } from "@agentswarm/shared-types";
+import type { TaskWorkspaceFilePreview, TaskWorkspaceFileTreeEntryKind } from "@verft/shared-types";
 import { Alert, AutoComplete, Button, Empty, Flex, Input, Space, Spin, Tag, Tree, Typography } from "antd";
 import type { DataNode } from "antd/es/tree";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";

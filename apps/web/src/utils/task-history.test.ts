@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { TaskChangeProposal, TaskMessage, TaskRun } from "@agentswarm/shared-types";
+import type { TaskChangeProposal, TaskMessage, TaskRun } from "@verft/shared-types";
 import {
   buildTaskHistoryEntries,
   GIT_TERMINAL_END_REVIEW_MESSAGE,
@@ -99,6 +99,37 @@ test("groups a build run with its prompt, summary message, and proposal", () => 
   assert.equal(entries[0].proposal?.id, "p1");
 });
 
+test("hides applying checkpoint proposals from history", () => {
+  const run = createRun({
+    id: "r1",
+    action: "build",
+    startedAt: "2026-03-24T10:01:00.000Z",
+    finishedAt: "2026-03-24T10:02:30.000Z",
+    status: "succeeded"
+  });
+  const proposal = createProposal({
+    id: "p1",
+    sourceType: "build_run",
+    sourceId: "r1",
+    status: "applying",
+    createdAt: "2026-03-24T10:03:30.000Z",
+    diff: "diff --git a/a b/a"
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [],
+    runs: [run],
+    proposals: [proposal]
+  });
+
+  assert.equal(entries.length, 1);
+  assert.equal(entries[0]?.kind, "grouped_auto_run");
+  if (entries[0]?.kind !== "grouped_auto_run") {
+    throw new Error("Expected grouped_auto_run");
+  }
+  assert.equal(entries[0].proposal, null);
+});
+
 test("groups ask runs without forcing a diff section", () => {
   const prompt = createMessage({
     id: "m1",
@@ -135,6 +166,45 @@ test("groups ask runs without forcing a diff section", () => {
     throw new Error("Expected grouped_auto_run");
   }
   assert.equal(entries[0].proposal, null);
+});
+
+test("prefers promptMessageId over timestamp matching when grouping queued follow-ups", () => {
+  const olderPrompt = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T11:59:00.000Z",
+    role: "user",
+    action: "build",
+    content: "Older follow-up"
+  });
+  const matchedPrompt = createMessage({
+    id: "m2",
+    createdAt: "2026-03-24T12:00:00.000Z",
+    role: "user",
+    action: "build",
+    content: "Run this exact follow-up"
+  });
+  const run = createRun({
+    id: "r1",
+    action: "build",
+    promptMessageId: "m2",
+    startedAt: "2026-03-24T12:01:00.000Z",
+    status: "running"
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [olderPrompt, matchedPrompt],
+    runs: [run],
+    proposals: []
+  });
+
+  assert.equal(entries.length, 2);
+  assert.equal(entries[0]?.kind, "message");
+  assert.equal(entries[1]?.kind, "grouped_auto_run");
+  if (entries[1]?.kind !== "grouped_auto_run") {
+    throw new Error("Expected grouped_auto_run");
+  }
+  assert.equal(entries[1].promptMessage?.id, "m2");
+  assert.equal(entries[1].promptText, "Run this exact follow-up");
 });
 
 test("keeps unmatched messages and proposals as raw entries when a run has no matched prompt", () => {
@@ -179,6 +249,51 @@ test("keeps unmatched messages and proposals as raw entries when a run has no ma
   assert.equal(grouped.promptText, "No matched user prompt was found for this run.");
 });
 
+test("keeps pending queued follow-ups grouped at the bottom of history", () => {
+  const earlierQueued = createMessage({
+    id: "m1",
+    createdAt: "2026-03-24T11:58:00.000Z",
+    role: "user",
+    action: "build",
+    content: "Queued follow-up one",
+    queueState: "pending"
+  });
+  const historyMessage = createMessage({
+    id: "m2",
+    createdAt: "2026-03-24T12:00:00.000Z",
+    role: "user",
+    action: "comment",
+    content: "History comment"
+  });
+  const laterQueued = createMessage({
+    id: "m3",
+    createdAt: "2026-03-24T12:02:00.000Z",
+    role: "user",
+    action: "ask",
+    content: "Queued follow-up two",
+    queueState: "pending"
+  });
+  const proposal = createProposal({
+    id: "p1",
+    sourceType: "build_run",
+    sourceId: "missing-run",
+    status: "pending",
+    createdAt: "2026-03-24T12:01:00.000Z",
+    diff: "diff --git a/a b/a"
+  });
+
+  const entries = buildTaskHistoryEntries({
+    messages: [laterQueued, historyMessage, earlierQueued],
+    runs: [],
+    proposals: [proposal]
+  });
+
+  assert.deepEqual(
+    entries.map((entry) => entry.kind === "message" ? entry.message.id : entry.kind === "proposal" ? entry.proposal.id : entry.key),
+    ["m2", "p1", "m1", "m3"]
+  );
+});
+
 test("groups completed terminal sessions with a diff proposal", () => {
   const start = createMessage({
     id: "m1",
@@ -221,7 +336,7 @@ test("groups completed terminal sessions with a diff proposal", () => {
   assert.equal(entries[0].active, false);
 });
 
-test("groups completed git terminal sessions with a diff proposal", () => {
+test("groups completed terminal sessions with a diff proposal", () => {
   const start = createMessage({
     id: "m1",
     createdAt: "2026-03-24T13:30:00.000Z",

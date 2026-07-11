@@ -4,7 +4,8 @@ import { createContext, useContext, useEffect, useMemo, useState } from "react";
 import { ConfigProvider } from "antd";
 import { getAppAntdTheme, isDarkAppTheme, type AppThemeMode } from "../src/theme/antd-theme";
 
-const THEME_STORAGE_KEY = "agentswarm-theme-mode";
+const THEME_STORAGE_KEY = "verft-theme-mode";
+const DEFAULT_THEME_MODE: AppThemeMode = "moss-dark";
 
 interface ThemeModeContextValue {
   mode: AppThemeMode;
@@ -16,34 +17,26 @@ const ThemeModeContext = createContext<ThemeModeContextValue | null>(null);
 
 function resolveInitialThemeMode(): AppThemeMode {
   if (typeof window === "undefined") {
-    return "light";
+    return DEFAULT_THEME_MODE;
   }
 
   const storedMode = window.localStorage.getItem(THEME_STORAGE_KEY);
   if (
-    storedMode === "light" ||
-    storedMode === "dark" ||
-    storedMode === "cyber" ||
-    storedMode === "forge" ||
-    storedMode === "forge-light" ||
-    storedMode === "github" ||
-    storedMode === "github-light" ||
-    storedMode === "nord" ||
-    storedMode === "solarized-light" ||
-    storedMode === "gruvbox-dark" ||
-    storedMode === "high-contrast" ||
-    storedMode === "tokyo-night" ||
-    storedMode === "solarized-dark" ||
-    storedMode === "paper"
+    storedMode === "ember-light" ||
+    storedMode === "ember-dark" ||
+    storedMode === "moss-light" ||
+    storedMode === "moss-dark" ||
+    storedMode === "graphite-light" ||
+    storedMode === "graphite-dark"
   ) {
     return storedMode;
   }
 
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return DEFAULT_THEME_MODE;
 }
 
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
-  const [mode, setMode] = useState<AppThemeMode>("light");
+  const [mode, setMode] = useState<AppThemeMode>(DEFAULT_THEME_MODE);
 
   useEffect(() => {
     setMode(resolveInitialThemeMode());

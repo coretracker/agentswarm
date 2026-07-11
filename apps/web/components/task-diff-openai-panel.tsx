@@ -6,7 +6,7 @@ import {
   getEffortOptionsForProvider,
   type ProviderProfile,
   type TaskLiveDiff
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { Alert, Button, Card, Collapse, Flex, Input, Modal, Select, Space, Spin, Typography, message } from "antd";
 import { Diff, Hunk, getChangeKey, type ChangeData, type FileData } from "react-diff-view";
 import ReactMarkdown from "react-markdown";
@@ -15,6 +15,7 @@ import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
+import { ModelSelect } from "./model-select";
 
 function buildSnippetFromSelection(file: FileData, selectedKeys: string[]): string {
   const selected = new Set(selectedKeys);
@@ -267,9 +268,7 @@ export function TaskDiffOpenAiPanel({
   if (!diffText.trim()) {
     return (
       <Card size="small">
-        <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "\"SFMono-Regular\", Consolas, monospace" }}
-        >
+        <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}>
           {emptyMessage}
         </Typography.Paragraph>
       </Card>
@@ -285,9 +284,7 @@ export function TaskDiffOpenAiPanel({
   } catch {
     return (
       <Card size="small">
-        <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "\"SFMono-Regular\", Consolas, monospace" }}
-        >
+        <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}>
           {normalizeDiffForRendering(diffText) || diffText}
         </Typography.Paragraph>
       </Card>
@@ -356,12 +353,10 @@ export function TaskDiffOpenAiPanel({
             <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
               Model
             </Typography.Text>
-            <Select
+            <ModelSelect
               value={openAiModel}
               options={codexModels}
               loading={codexModelsLoading}
-              showSearch
-              optionFilterProp="label"
               onChange={(v) => setOpenAiModel(v)}
               style={{ width: "100%" }}
             />

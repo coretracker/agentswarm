@@ -1,28 +1,31 @@
 import path from "node:path";
-import { createReadStream } from "node:fs";
-import { rm, stat } from "node:fs/promises";
+import { constants, createReadStream } from "node:fs";
+import { access, rm, stat } from "node:fs/promises";
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
   getCheckpointMutationBlockedReason,
+  getTaskTerminalSessionLabel,
   isActiveTaskStatus,
   isQueuedTaskStatus,
   TASK_PROMPT_ATTACHMENT_MAX_COUNT,
   type Task,
   type TaskAction,
+  type TaskLinkedWorkspace,
   type TaskPromptAttachment,
   type TaskTerminalSessionMode
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SnippetStore } from "../services/snippet-store.js";
 import type { UserStore } from "../services/user-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
-import { getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
+import { beginTaskStart, getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
 import { buildDiffAssistPromptContext, executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.js";
 import { executeTaskPromptMagic } from "../services/openai-task-prompt-magic-service.js";
-import { CodexUtilityError, CodexUtilityUnavailableError, executeCodexUtility } from "../services/codex-utility-service.js";
+import { executeCodexUtility } from "../services/codex-utility-service.js";
+import { executeClaudeUtility } from "../services/claude-utility-service.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
@@ -40,7 +43,9 @@ import { canUserAccessRepository, canUserAccessTask, isAdminUser } from "../lib/
 import { writeSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
 import { env } from "../config/env.js";
 import { normalizeProvider } from "../lib/provider-config.js";
+import { resolveCreateTaskProviderConfig } from "../lib/task-create-defaults.js";
 import { resolveTaskProviderStatePaths } from "../lib/task-provider-state.js";
+import { isSafeLinkedWorkspaceAlias } from "../lib/linked-workspaces.js";
 
 const taskPromptAttachmentInputSchema = z.object({
   name: z.string().trim().min(1).max(255),
@@ -62,13 +67,12 @@ const createTaskSchema = z
     deadline: deadlineSchema.optional(),
     repoId: z.string().min(1),
     prompt: z.string().default(""),
-    notes: z.string().max(40_000).optional(),
     attachments: z.array(taskPromptAttachmentInputSchema).max(TASK_PROMPT_ATTACHMENT_MAX_COUNT).optional(),
     taskType: z.enum(["build", "ask"]).optional(),
     provider: z.enum(["codex", "claude"]).optional(),
     providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
     modelOverride: z.string().trim().min(1).optional(),
-    codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
+    codexCredentialSource: z.enum(["auto", "global"]).optional(),
     baseBranch: z.string().min(1).optional(),
     branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
     model: z.string().min(1).optional(),
@@ -93,8 +97,9 @@ const updateTaskConfigSchema = z.object({
   provider: z.enum(["codex", "claude"]),
   providerProfile: z.enum(["low", "medium", "high", "max"]),
   modelOverride: z.string().trim().nullable().optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-  branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional()
+  codexCredentialSource: z.enum(["auto", "global"]).optional(),
+  branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+  autoApplyCheckpoints: z.boolean().optional()
 });
 
 const updateTaskPinSchema = z.object({
@@ -105,27 +110,24 @@ const updateTaskTitleSchema = z.object({
   title: z.string().trim().min(1).max(500)
 });
 
-const updateTaskNotesSchema = z.object({
-  notes: z.string().max(40_000)
-});
-
 const updateTaskDeadlineSchema = z.object({
   deadline: deadlineSchema
 });
 
-const updateTaskDraftSchema = z.object({
-  title: z.string().trim().min(1).max(500),
-  deadline: deadlineSchema,
-  prompt: z.string().trim().default(""),
-  notes: z.string().max(40_000).optional(),
-  taskType: z.enum(["build", "ask"]),
-  provider: z.enum(["codex", "claude"]),
-  providerProfile: z.enum(["low", "medium", "high", "max"]),
-  modelOverride: z.string().trim().min(1).nullable().optional(),
-  codexCredentialSource: z.enum(["auto", "profile", "global"]).optional(),
-  baseBranch: z.string().trim().min(1),
-  branchStrategy: z.enum(["feature_branch", "work_on_branch"])
-});
+const updateTaskDraftSchema = z
+  .object({
+    title: z.string().trim().min(1).max(500),
+    deadline: deadlineSchema,
+    prompt: z.string().trim().default(""),
+    taskType: z.enum(["build", "ask"]),
+    provider: z.enum(["codex", "claude"]),
+    providerProfile: z.enum(["low", "medium", "high", "max"]),
+    modelOverride: z.string().trim().min(1).nullable().optional(),
+    codexCredentialSource: z.enum(["auto", "global"]).optional(),
+    baseBranch: z.string().trim().min(1),
+    branchStrategy: z.enum(["feature_branch", "work_on_branch"])
+  })
+  .strict();
 
 const updateTaskStateSchema = z.object({
   status: z.enum(["backlog", "ready", "in_progress", "review", "done"])
@@ -133,6 +135,18 @@ const updateTaskStateSchema = z.object({
 
 const updateTaskAssigneeSchema = z.object({
   ownerUserId: z.string().trim().min(1)
+});
+
+const updateTaskPullRequestSchema = z.object({
+  githubPrNumber: z.number().int().positive().nullable()
+});
+
+const updateTaskIssueSchema = z.object({
+  githubIssueNumber: z.number().int().positive().nullable()
+});
+
+const linkTaskWorkspaceSchema = z.object({
+  linkedTaskId: z.string().trim().min(1)
 });
 
 const applyTaskChangeProposalSchema = z.object({
@@ -170,6 +184,11 @@ const taskBranchCleanupBodySchema = z.object({
 const mergePreviewQuerySchema = z.object({
   targetBranch: z.string().trim().min(1).max(255)
 });
+
+const commitShaSchema = z
+  .string()
+  .trim()
+  .regex(/^[0-9a-f]{7,40}$/i, "Invalid commit SHA.");
 
 const openAiDiffAssistSchema = z.object({
   model: z.string().trim().min(1).max(256),
@@ -226,41 +245,13 @@ const historyPageQuerySchema = z.object({
 });
 
 const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
-const PROVIDER_SESSION_ID_FILE = "agentswarm-session-id.txt";
+const PROVIDER_SESSION_ID_FILE = "verft-session-id.txt";
 
 const clearTaskProviderSessionId = async (taskId: string): Promise<void> => {
   for (const provider of ["codex", "claude"] as const) {
     const providerStatePath = resolveTaskProviderStatePaths(taskId, provider).serverPath;
     await rm(path.join(providerStatePath, PROVIDER_SESSION_ID_FILE), { force: true }).catch(() => undefined);
   }
-};
-
-const applyCreateDefaultsFromSettings = <
-  T extends {
-    provider?: "codex" | "claude";
-    providerProfile?: "low" | "medium" | "high" | "max";
-    modelOverride?: string;
-    model?: string;
-  }
->(
-  payload: T,
-  settings: Awaited<ReturnType<SettingsStore["getSettings"]>>
-): T => {
-  const provider = normalizeProvider(payload.provider ?? settings.defaultProvider);
-  const providerProfile =
-    payload.providerProfile ??
-    (provider === "claude" ? settings.claudeDefaultEffort : settings.codexDefaultEffort);
-  const hasLegacyModel = Boolean(payload.model?.trim());
-  const modelOverride =
-    payload.modelOverride ??
-    (hasLegacyModel ? undefined : provider === "claude" ? settings.claudeDefaultModel : settings.codexDefaultModel);
-
-  return {
-    ...payload,
-    provider,
-    providerProfile,
-    modelOverride
-  };
 };
 
 export const withBranchSyncCounts = async (spawner: SpawnerService, task: Task): Promise<Task> => {
@@ -346,9 +337,17 @@ export const registerTaskRoutes = (
       return { ok: false, message: mutationResult.message };
     }
     const refreshedTask = (await deps.taskStore.getTask(task.id)) ?? task;
+    if (
+      refreshedTask.executionStatus === "idle" &&
+      !(await deps.taskStore.hasPendingChangeProposal(task.id)) &&
+      !(await deps.taskStore.getActiveInteractiveSession(task.id))
+    ) {
+      await deps.scheduler.triggerNextPendingAction(task.id, "auto");
+    }
+    const finalTask = (await deps.taskStore.getTask(task.id)) ?? refreshedTask;
     return {
       ok: true,
-      task: await withBranchSyncCounts(deps.spawner, refreshedTask)
+      task: await withBranchSyncCounts(deps.spawner, finalTask)
     };
   };
 
@@ -357,9 +356,8 @@ export const registerTaskRoutes = (
       await reply.status(409).send({ message: archivedTaskReadOnlyMessage });
       return false;
     }
-    const blocked = await getMutationBlocked(deps.taskStore, task.id);
-    if (blocked) {
-      await replyWithMutationBlocked(reply, blocked);
+    if (await deps.taskStore.getActiveInteractiveSession(task.id)) {
+      await reply.status(409).send({ message: "Close the terminal session before continuing." });
       return false;
     }
     return true;
@@ -406,6 +404,97 @@ export const registerTaskRoutes = (
     return withTaskCreatorName(deps.userStore, task);
   });
 
+  app.post<{ Params: { id: string } }>(
+    "/tasks/:id/linked-workspaces",
+    { preHandler: deps.auth.requireAllScopes(["task:edit", "task:read"]) },
+    async (request, reply) => {
+      const parsed = linkTaskWorkspaceSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const linkedTaskId = parsed.data.linkedTaskId;
+      if (linkedTaskId === task.id) {
+        return reply.status(400).send({ message: "A task cannot link its own workspace." });
+      }
+
+      const linkedTask = await deps.taskStore.getTask(linkedTaskId);
+      if (!linkedTask || !canUserAccessTask(request.auth?.user, linkedTask)) {
+        return reply.status(404).send({ message: "Linked task not found" });
+      }
+
+      const alias = linkedTask.id;
+      if (!isSafeLinkedWorkspaceAlias(alias)) {
+        return reply.status(400).send({ message: "Linked task id cannot be used as a workspace folder name." });
+      }
+
+      const linkedWorkspacePath = path.join(env.TASK_WORKSPACE_ROOT, linkedTask.id);
+      try {
+        await access(linkedWorkspacePath, constants.R_OK | constants.X_OK);
+      } catch {
+        return reply.status(409).send({ message: "Linked task workspace does not exist yet." });
+      }
+
+      const existing = task.linkedWorkspaces ?? [];
+      if (existing.some((link) => link.taskId === linkedTask.id || link.alias === alias)) {
+        return reply.send(await withTaskCreatorName(deps.userStore, task));
+      }
+
+      const nextLink: TaskLinkedWorkspace = {
+        taskId: linkedTask.id,
+        alias,
+        title: linkedTask.title,
+        repoName: linkedTask.repoName,
+        linkedAt: new Date().toISOString(),
+        linkedByUserId: request.auth!.user.id
+      };
+      const updated = await deps.taskStore.patchTask(task.id, {
+        linkedWorkspaces: [...existing, nextLink]
+      });
+      if (!updated) {
+        return reply.status(404).send({ message: "Task not found" });
+      }
+
+      return reply.send(await withTaskCreatorName(deps.userStore, updated));
+    }
+  );
+
+  app.delete<{ Params: { id: string; linkedTaskId: string } }>(
+    "/tasks/:id/linked-workspaces/:linkedTaskId",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const nextLinks = (task.linkedWorkspaces ?? []).filter((link) => link.taskId !== request.params.linkedTaskId);
+      if (nextLinks.length === (task.linkedWorkspaces ?? []).length) {
+        return reply.send(await withTaskCreatorName(deps.userStore, task));
+      }
+
+      const updated = await deps.taskStore.patchTask(task.id, {
+        linkedWorkspaces: nextLinks
+      });
+      if (!updated) {
+        return reply.status(404).send({ message: "Task not found" });
+      }
+
+      return reply.send(await withTaskCreatorName(deps.userStore, updated));
+    }
+  );
+
   app.get<{ Params: { id: string } }>(
     "/tasks/:id/branch-sync-counts",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
@@ -416,6 +505,33 @@ export const registerTaskRoutes = (
       }
 
       return deps.spawner.getTaskBranchSyncCounts(task);
+    }
+  );
+
+  app.get<{ Params: { id: string } }>(
+    "/tasks/:id/git-state",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const blocked = await getMutationBlocked(deps.taskStore, task.id);
+      if (blocked) {
+        return replyWithMutationBlocked(reply, blocked);
+      }
+
+      try {
+        return reply.send(await deps.spawner.getTaskGitStateSnapshot(task));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Git state could not be loaded";
+        return reply.status(400).send({ message });
+      }
     }
   );
 
@@ -433,7 +549,7 @@ export const registerTaskRoutes = (
   );
 
   app.get<{ Params: { id: string }; Querystring: { mode?: string } }>(
-    "/tasks/:id/interactive-terminal/status",
+    "/tasks/:id/terminal/status",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
       if (!requireInteractiveTerminalAccess(request, reply)) {
@@ -445,7 +561,7 @@ export const registerTaskRoutes = (
         return;
       }
 
-      const terminalMode: TaskTerminalSessionMode = request.query.mode === "git" ? "git" : "interactive";
+      const terminalMode: TaskTerminalSessionMode = "terminal";
       const status = await getTaskInteractiveTerminalStatus(
         deps.taskStore,
         deps.settingsStore,
@@ -458,7 +574,7 @@ export const registerTaskRoutes = (
   );
 
   app.post<{ Params: { id: string } }>(
-    "/tasks/:id/interactive-terminal/kill",
+    "/tasks/:id/terminal/kill",
     { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
     async (request, reply) => {
       if (!requireInteractiveTerminalAccess(request, reply)) {
@@ -483,12 +599,13 @@ export const registerTaskRoutes = (
       if (!killedLiveSession) {
         await deps.spawner.endInteractiveTerminalSession(task.id, activeSession.sessionId);
       }
+      const activeSessionLabel = getTaskTerminalSessionLabel(activeSession.mode);
 
       await deps.taskStore.appendLog(
         task.id,
         killedLiveSession
-          ? `${activeSession.mode === "git" ? "Git" : "Interactive"} terminal session terminated by user via kill switch.`
-          : `${activeSession.mode === "git" ? "Git" : "Interactive"} terminal kill requested after the live terminal process was already unreachable; cleaned up the session from server state.`
+          ? `${activeSessionLabel} session terminated by user via kill switch.`
+          : `${activeSessionLabel} kill requested after the live terminal process was already unreachable; cleaned up the session from server state.`
       );
 
       const refreshed = await deps.taskStore.getTask(task.id);
@@ -497,7 +614,7 @@ export const registerTaskRoutes = (
   );
 
   app.get<{ Params: { id: string; sessionId: string } }>(
-    "/tasks/:id/interactive-terminal/sessions/:sessionId/transcript",
+    "/tasks/:id/terminal/sessions/:sessionId/transcript",
     { preHandler: deps.auth.requireAllScopes(["task:read"]) },
     async (request, reply) => {
       const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
@@ -606,7 +723,7 @@ export const registerTaskRoutes = (
       reply.header("Content-Type", "application/x-ndjson");
       reply.header("Cache-Control", "no-store");
       reply.header("Content-Length", String(fileStats.size));
-      reply.header("Content-Disposition", `attachment; filename="agentswarm-${task.id}-${run.id}-${provider}-raw.jsonl"`);
+      reply.header("Content-Disposition", `attachment; filename="verft-${task.id}-${run.id}-${provider}-raw.jsonl"`);
       return reply.send(createReadStream(rawEventsJsonlPath));
     }
   );
@@ -957,64 +1074,38 @@ export const registerTaskRoutes = (
 
       const [settings, credentials] = await Promise.all([
         deps.settingsStore.getSettings(),
-        deps.settingsStore.getRuntimeCredentials(auth.user.id, "auto")
+        deps.settingsStore.getRuntimeCredentials(null, "auto")
       ]);
-      if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
-        return reply.status(400).send({ message: "Codex auth.json or OpenAI API key is not configured." });
-      }
-
       try {
-        if (credentials.codexAuthJson) {
-          try {
-            const context = await buildDiffAssistPromptContext({
+        const result = credentials.openaiApiKey
+          ? await executeOpenAiDiffAssist({
               taskId: task.id,
-              userPrompt: parsed.data.userPrompt,
-              filePath: parsed.data.filePath,
-              selectedSnippet: parsed.data.selectedSnippet
-            });
-            const text = await executeCodexUtility({
-              prompt: [
-                "You are a careful code assistant. Answer using the provided context. Be concise and accurate.",
-                "",
-                context,
-                "",
-                "Return only the requested answer. Do not include unrelated commentary."
-              ].join("\n"),
               model: parsed.data.model,
               providerProfile: parsed.data.providerProfile,
-              credentials
-            });
-            return reply.send({ text });
-          } catch (error) {
-            if (!credentials.openaiApiKey || !(error instanceof CodexUtilityUnavailableError)) {
-              throw error;
-            }
-          }
-        }
-
-        if (!credentials.openaiApiKey) {
-          return reply.status(400).send({ message: "OpenAI API key is not configured and Codex utility runner is unavailable." });
-        }
-
-        const result = await executeOpenAiDiffAssist({
-          taskId: task.id,
-          model: parsed.data.model,
-          providerProfile: parsed.data.providerProfile,
-          userPrompt: parsed.data.userPrompt,
-          filePath: parsed.data.filePath,
-          selectedSnippet: parsed.data.selectedSnippet,
-          openaiApiKey: credentials.openaiApiKey,
-          openaiBaseUrl: settings.openaiBaseUrl
-        });
+              userPrompt: parsed.data.userPrompt,
+              filePath: parsed.data.filePath,
+              selectedSnippet: parsed.data.selectedSnippet,
+              openaiApiKey: credentials.openaiApiKey,
+              openaiBaseUrl: settings.openaiBaseUrl
+            })
+          : {
+              text:
+                task.provider === "claude"
+                  ? await executeClaudeUtility({
+                      prompt: await buildDiffAssistPromptContext({ taskId: task.id, ...parsed.data }),
+                      model: task.modelOverride ?? settings.claudeDefaultModel,
+                      credentials
+                    })
+                  : await executeCodexUtility({
+                      prompt: await buildDiffAssistPromptContext({ taskId: task.id, ...parsed.data }),
+                      model: task.modelOverride ?? settings.codexDefaultModel,
+                      providerProfile: task.providerProfile,
+                      credentials
+                    })
+            };
 
         return reply.send(result);
       } catch (error: unknown) {
-        if (error instanceof CodexUtilityUnavailableError) {
-          return reply.status(400).send({ message: error.message });
-        }
-        if (error instanceof CodexUtilityError) {
-          return reply.status(error.statusCode).send({ message: error.message });
-        }
         if (
           error &&
           typeof error === "object" &&
@@ -1022,6 +1113,16 @@ export const registerTaskRoutes = (
           typeof (error as { status: unknown }).status === "number"
         ) {
           const status = (error as { status: number }).status;
+          const message = error instanceof Error ? error.message : "Request failed";
+          return reply.status(status).send({ message });
+        }
+        if (
+          error &&
+          typeof error === "object" &&
+          "statusCode" in error &&
+          typeof (error as { statusCode: unknown }).statusCode === "number"
+        ) {
+          const status = (error as { statusCode: number }).statusCode;
           const message = error instanceof Error ? error.message : "Request failed";
           return reply.status(status).send({ message });
         }
@@ -1041,37 +1142,13 @@ export const registerTaskRoutes = (
 
       const [settings, credentials] = await Promise.all([
         deps.settingsStore.getSettings(),
-        deps.settingsStore.getRuntimeCredentials(request.auth!.user.id, "auto")
+        deps.settingsStore.getRuntimeCredentials(null, "auto")
       ]);
-      if (!credentials.openaiApiKey && !credentials.codexAuthJson) {
-        return reply.status(400).send({ message: "Codex auth.json or OpenAI API key is not configured." });
+      if (!credentials.openaiApiKey) {
+        return reply.status(400).send({ message: "OpenAI API key is not configured." });
       }
 
       try {
-        if (credentials.codexAuthJson) {
-          try {
-            const prompt = await executeCodexUtility({
-              prompt: [
-                settings.taskPromptMagicTemplate.replaceAll("{{user_request}}", parsed.data.prompt.trim()),
-                "",
-                "Return only the rewritten prompt text. Do not include markdown fences, commentary, labels, or explanation."
-              ].join("\n"),
-              model: settings.taskPromptMagicModel,
-              providerProfile: settings.codexDefaultEffort,
-              credentials
-            });
-            return reply.send({ prompt });
-          } catch (error) {
-            if (!credentials.openaiApiKey || !(error instanceof CodexUtilityUnavailableError)) {
-              throw error;
-            }
-          }
-        }
-
-        if (!credentials.openaiApiKey) {
-          return reply.status(400).send({ message: "OpenAI API key is not configured and Codex utility runner is unavailable." });
-        }
-
         const result = await executeTaskPromptMagic({
           prompt: parsed.data.prompt,
           model: settings.taskPromptMagicModel,
@@ -1081,12 +1158,6 @@ export const registerTaskRoutes = (
         });
         return reply.send(result);
       } catch (error: unknown) {
-        if (error instanceof CodexUtilityUnavailableError) {
-          return reply.status(400).send({ message: error.message });
-        }
-        if (error instanceof CodexUtilityError) {
-          return reply.status(error.statusCode).send({ message: error.message });
-        }
         if (
           error &&
           typeof error === "object" &&
@@ -1118,7 +1189,10 @@ export const registerTaskRoutes = (
       ...rawCreatePayload
     } = parsed.data;
     const settings = await deps.settingsStore.getSettings();
-    const createPayload = applyCreateDefaultsFromSettings(rawCreatePayload, settings);
+    const createPayload = {
+      ...rawCreatePayload,
+      ...resolveCreateTaskProviderConfig(rawCreatePayload, settings, repository, request.auth!.user)
+    };
     if (
       !requireTaskCapabilityAccess(request, reply, {
         taskType: createPayload.taskType ?? "build"
@@ -1133,8 +1207,7 @@ export const registerTaskRoutes = (
     const task = await deps.taskStore.createTask(
       {
         ...createPayload,
-        prompt: createPayload.prompt.trim(),
-        notes: createPayload.notes?.trim() ?? ""
+        prompt: createPayload.prompt.trim()
       },
       repository,
       request.auth!.user.id
@@ -1170,7 +1243,7 @@ export const registerTaskRoutes = (
       const draftTask = (await deps.taskStore.getTask(createdTask.id)) ?? createdTask;
       return reply.status(201).send(await withTaskCreatorName(deps.userStore, draftTask));
     }
-    const startResult = await orchestrateTaskStart(
+    const startResult = await beginTaskStart(
       {
         taskStore: deps.taskStore,
         scheduler: deps.scheduler,
@@ -1211,10 +1284,10 @@ export const registerTaskRoutes = (
       return;
     }
 
-    const allowParallelAsk =
-      parsed.data.action === "ask" &&
-      task.executionStatus === "running" &&
-      (task.executionAction === "build" || task.executionAction === "ask");
+    if (await deps.taskStore.hasPendingActionMessage(task.id)) {
+      return reply.status(409).send({ message: "Run or remove queued follow-ups before starting another direct action." });
+    }
+
     const actionStartResult = await orchestrateTaskActionStart(
       {
         taskStore: deps.taskStore,
@@ -1223,10 +1296,8 @@ export const registerTaskRoutes = (
       {
         task,
         action: parsed.data.action,
-        allowParallelAsk,
         busyMessage: "Task is already running",
-        triggerRejectedMessage: "Task is already running",
-        capacityMessage: "No agent capacity is available for a parallel ask right now."
+        triggerRejectedMessage: "Task is already running"
       }
     );
     if (!actionStartResult.ok) {
@@ -1265,7 +1336,7 @@ export const registerTaskRoutes = (
     const startTask = promotedTask ?? task;
     const messages = await deps.taskStore.listMessages(task.id);
     const firstUserMessage = messages.find((message) => message.role === "user") ?? null;
-    const startResult = await orchestrateTaskStart(
+    const startResult = await beginTaskStart(
       {
         taskStore: deps.taskStore,
         scheduler: deps.scheduler,
@@ -1281,11 +1352,6 @@ export const registerTaskRoutes = (
       }
     );
     if (!startResult.ok) {
-      await deps.taskStore.setStatus(task.id, "draft", {
-        executionStatus: "idle",
-        executionAction: null,
-        enqueued: false
-      });
       return reply.status(startResult.statusCode).send({ message: startResult.message });
     }
 
@@ -1420,7 +1486,6 @@ export const registerTaskRoutes = (
       title,
       deadline,
       prompt,
-      notes: parsed.data.notes?.trim() ?? "",
       taskType: parsed.data.taskType,
       provider: normalizeProvider(parsed.data.provider),
       providerProfile: parsed.data.providerProfile,
@@ -1475,6 +1540,7 @@ export const registerTaskRoutes = (
       providerProfile: parsed.data.providerProfile,
       modelOverride: parsed.data.modelOverride?.trim() || null,
       codexCredentialSource: parsed.data.codexCredentialSource ?? task.codexCredentialSource,
+      autoApplyCheckpoints: parsed.data.autoApplyCheckpoints ?? task.autoApplyCheckpoints,
       branchStrategy: parsed.data.branchStrategy ?? task.branchStrategy,
       branchName:
         (parsed.data.branchStrategy ?? task.branchStrategy) === "work_on_branch"
@@ -1532,28 +1598,6 @@ export const registerTaskRoutes = (
       title,
       complexity,
       executionSummary
-    });
-
-    return reply.send(updated);
-  });
-
-  app.patch<{ Params: { id: string } }>("/tasks/:id/notes", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const parsed = updateTaskNotesSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
-    if (!task) {
-      return;
-    }
-
-    if (task.status === "archived") {
-      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
-    }
-
-    const updated = await deps.taskStore.patchTask(task.id, {
-      notes: parsed.data.notes.trim()
     });
 
     return reply.send(updated);
@@ -1656,6 +1700,68 @@ export const registerTaskRoutes = (
     return reply.send(await withTaskCreatorName(deps.userStore, updated));
   });
 
+  app.patch<{ Params: { id: string } }>("/tasks/:id/github-pr", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateTaskPullRequestSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    const updated = await deps.taskStore.patchTask(task.id, {
+      githubPrNumber: parsed.data.githubPrNumber
+    });
+    if (!updated) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    await deps.taskStore.appendLog(
+      task.id,
+      parsed.data.githubPrNumber === null
+        ? `Linked pull request cleared by ${request.auth!.user.name}.`
+        : `Linked pull request set to #${parsed.data.githubPrNumber} by ${request.auth!.user.name}.`
+    );
+    return reply.send(await withTaskCreatorName(deps.userStore, updated));
+  });
+
+  app.patch<{ Params: { id: string } }>("/tasks/:id/github-issue", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateTaskIssueSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+
+    const updated = await deps.taskStore.patchTask(task.id, {
+      githubIssueNumber: parsed.data.githubIssueNumber
+    });
+    if (!updated) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+
+    await deps.taskStore.appendLog(
+      task.id,
+      parsed.data.githubIssueNumber === null
+        ? `Linked issue cleared by ${request.auth!.user.name}.`
+        : `Linked issue set to #${parsed.data.githubIssueNumber} by ${request.auth!.user.name}.`
+    );
+    return reply.send(await withTaskCreatorName(deps.userStore, updated));
+  });
+
   app.post<{ Params: { id: string } }>("/tasks/:id/messages", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const parsed = createTaskMessageSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -1676,27 +1782,13 @@ export const registerTaskRoutes = (
       return;
     }
 
-    const allowParallelAsk =
-      action === "ask" &&
-      task.executionStatus === "running" &&
-      (task.executionAction === "build" || task.executionAction === "ask");
-
-    // comments are treated as read-only messages; ask can also run in parallel with another ask/build.
-    if (
-      action !== "comment" &&
-      (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") &&
-      !allowParallelAsk
-    ) {
-      return reply.status(409).send({ message: "Task is already running" });
-    }
-
-    if (allowParallelAsk && !(await deps.scheduler.hasExecutionCapacity())) {
-      return reply.status(409).send({ message: "No agent capacity is available for a parallel ask right now." });
-    }
-
+    const isBusy =
+      task.executionStatus === "queued" ||
+      task.executionStatus === "preparing" ||
+      task.executionStatus === "running";
     if (action !== "comment") {
       const blocked = await getMutationBlocked(deps.taskStore, task.id);
-      if (blocked) {
+      if (blocked?.code === "active_terminal_session") {
         return replyWithMutationBlocked(reply, blocked);
       }
     }
@@ -1711,10 +1803,11 @@ export const registerTaskRoutes = (
       }
     }
 
-    await deps.taskStore.appendMessage(task.id, {
+    const createdMessage = await deps.taskStore.appendMessage(task.id, {
       role: "user",
       action,
       content: parsed.data.content,
+      ...(action !== "comment" ? { queueState: "pending" as const, queueSource: "user" as const } : {}),
       attachments: persistedAttachments
     });
 
@@ -1723,17 +1816,104 @@ export const registerTaskRoutes = (
       return reply.send(refreshed);
     }
 
-    const accepted = await deps.scheduler.triggerAction(task.id, action, {
-      content: parsed.data.content,
-      ...(persistedAttachments.length > 0 ? { attachments: persistedAttachments } : {})
-    });
-    if (!accepted) {
-      return reply.status(409).send({ message: "Task execution could not be started" });
+    const canStartPendingAction =
+      task.executionStatus === "idle" &&
+      !isBusy &&
+      !(await deps.taskStore.hasPendingChangeProposal(task.id));
+
+    if (canStartPendingAction && createdMessage) {
+      await deps.scheduler.triggerNextPendingAction(task.id, "manual");
+    } else if ((task.executionStatus === "failed" || task.executionStatus === "cancelled") && !(await deps.taskStore.hasPendingChangeProposal(task.id))) {
+      await deps.scheduler.triggerNextPendingAction(task.id, "manual");
     }
 
     const refreshed = await deps.taskStore.getTask(task.id);
     return reply.send(refreshed);
   });
+
+  app.delete<{ Params: { id: string; messageId: string } }>(
+    "/tasks/:id/messages/:messageId/queue",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const nextPendingBeforeDelete = await deps.taskStore.getNextPendingActionMessage(task.id);
+      const deleted = await deps.taskStore.deletePendingActionMessage(task.id, request.params.messageId);
+      if (!deleted) {
+        return reply.status(409).send({ message: "Queued follow-up could not be removed." });
+      }
+
+      if (task.executionStatus === "queued" && nextPendingBeforeDelete?.id === request.params.messageId) {
+        await deps.taskQueueStore.removeTask(task.id);
+        await deps.taskStore.setExecutionState(task.id, "idle", {
+          enqueued: false,
+          executionAction: null,
+          errorMessage: null
+        });
+        await deps.scheduler.triggerNextPendingAction(task.id, "auto");
+      }
+
+      const refreshed = await deps.taskStore.getTask(task.id);
+      return reply.send(refreshed);
+    }
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/tasks/:id/queue/run-next",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      if (task.executionStatus !== "failed" && task.executionStatus !== "cancelled") {
+        return reply.status(409).send({ message: "The task queue is not paused after a failed or cancelled run." });
+      }
+
+      const accepted = await deps.scheduler.triggerNextPendingAction(task.id, "manual");
+      if (!accepted) {
+        return reply.status(409).send({ message: "No queued follow-up is ready to run." });
+      }
+
+      const refreshed = await deps.taskStore.getTask(task.id);
+      return reply.send(refreshed);
+    }
+  );
+
+  app.post<{ Params: { id: string } }>(
+    "/tasks/:id/queue/unstick",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+
+      const accepted = await deps.scheduler.unstickTaskQueue(task.id, "manual");
+      if (!accepted) {
+        return reply.status(409).send({ message: "No stuck queued follow-up is ready to resume." });
+      }
+
+      const refreshed = await deps.taskStore.getTask(task.id);
+      return reply.send(refreshed);
+    }
+  );
 
   app.patch<{ Params: { id: string; messageId: string } }>(
     "/tasks/:id/messages/:messageId",
@@ -1853,6 +2033,84 @@ export const registerTaskRoutes = (
     const pulledRefreshed = await deps.taskStore.patchTask(pulled.id, {});
     return reply.send(await withBranchSyncCounts(deps.spawner, pulledRefreshed ?? pulled));
   });
+
+  app.post<{ Params: { id: string } }>("/tasks/:id/reset-git", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+
+    if (!(await ensureGitMutationAllowed(reply, task))) {
+      return;
+    }
+
+    const resetResult = await runGitCommand(() => deps.spawner.resetTaskBranchLocalState(task), "Reset failed");
+    if (!resetResult.ok) {
+      return reply.status(400).send({ message: resetResult.message });
+    }
+
+    const resetTask = resetResult.value;
+    const resetRefreshed = await deps.taskStore.patchTask(resetTask.id, {});
+    return reply.send(await withBranchSyncCounts(deps.spawner, resetRefreshed ?? resetTask));
+  });
+
+  app.post<{ Params: { id: string; commitSha: string } }>(
+    "/tasks/:id/commits/:commitSha/revert",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const parsedSha = commitShaSchema.safeParse(request.params.commitSha);
+      if (!parsedSha.success) {
+        return reply.status(400).send({ message: parsedSha.error.message });
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (!(await ensureGitMutationAllowed(reply, task))) {
+        return;
+      }
+
+      const revertResult = await runGitCommand(() => deps.spawner.revertTaskCommit(task, parsedSha.data), "Revert failed");
+      if (!revertResult.ok) {
+        return reply.status(400).send({ message: revertResult.message });
+      }
+
+      const revertedTask = revertResult.value;
+      const revertedRefreshed = await deps.taskStore.patchTask(revertedTask.id, {});
+      return reply.send(await withBranchSyncCounts(deps.spawner, revertedRefreshed ?? revertedTask));
+    }
+  );
+
+  app.post<{ Params: { id: string; commitSha: string } }>(
+    "/tasks/:id/commits/:commitSha/reset",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const parsedSha = commitShaSchema.safeParse(request.params.commitSha);
+      if (!parsedSha.success) {
+        return reply.status(400).send({ message: parsedSha.error.message });
+      }
+
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+
+      if (!(await ensureGitMutationAllowed(reply, task))) {
+        return;
+      }
+
+      const resetResult = await runGitCommand(() => deps.spawner.resetTaskBranchToCommit(task, parsedSha.data), "Reset failed");
+      if (!resetResult.ok) {
+        return reply.status(400).send({ message: resetResult.message });
+      }
+
+      const resetTask = resetResult.value;
+      const resetRefreshed = await deps.taskStore.patchTask(resetTask.id, {});
+      return reply.send(await withBranchSyncCounts(deps.spawner, resetRefreshed ?? resetTask));
+    }
+  );
 
   app.get<{ Params: { id: string }; Querystring: { targetBranch: string } }>(
     "/tasks/:id/merge-preview",
@@ -2055,6 +2313,10 @@ export const registerTaskRoutes = (
     const action = getTriggerActionForNewTask(task);
     if (!requireTaskActionCapabilityAccess(request, reply, action)) {
       return;
+    }
+
+    if (await deps.taskStore.hasPendingActionMessage(task.id)) {
+      return reply.status(409).send({ message: "Run or remove queued follow-ups before starting another direct action." });
     }
 
     const accepted = await deps.scheduler.triggerAction(task.id, action);

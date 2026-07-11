@@ -28,7 +28,6 @@ export function TaskTerminalTranscriptView({
       disableStdin: true,
       cursorBlink: false,
       fontSize: 12,
-      fontFamily: 'Menlo, Monaco, "Courier New", monospace',
       scrollback: 10_000,
       theme: {
         background: "#0b0f14",

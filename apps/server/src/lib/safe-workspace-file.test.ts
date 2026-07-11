@@ -6,7 +6,7 @@ import path from "node:path";
 import { normalizeSafeWorkspaceRelativePath, resolveSafeWorkspaceFilePath } from "./safe-workspace-file.js";
 
 describe("resolveSafeWorkspaceFilePath", () => {
-  const base = mkdtempSync(path.join(tmpdir(), "agentswarm-ws-"));
+  const base = mkdtempSync(path.join(tmpdir(), "verft-ws-"));
 
   after(() => {
     rmSync(base, { recursive: true, force: true });

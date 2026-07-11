@@ -6,12 +6,12 @@
 - [Human-gated taskwise delivery flow](development/human-gated-taskwise-delivery-flow.md)
 - [Testing](development/testing.md)
 - [Debugging](development/debugging.md)
+- [Slack setup](development/slack-setup.md)
 
 ## Architecture
 - [Architecture index](architecture/index.md)
 - [Domains](architecture/domains.md)
 - [Boundaries](architecture/boundaries.md)
-- [GitHub sync ownership model](github-sync-ownership-model.md)
 
 ## Product
 - [Product index](product/index.md)

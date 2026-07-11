@@ -1,6 +1,6 @@
-import { type Task, type TaskAction, type TaskExecutionInput } from "@agentswarm/shared-types";
+import { type Task, type TaskAction, type TaskExecutionInput } from "@verft/shared-types";
 import type { TaskStore } from "./task-store.js";
-import type { QueueEntry, TaskQueueStore } from "./task-queue-store.js";
+import type { QueueEntry, QueueReason, TaskQueueStore } from "./task-queue-store.js";
 import type { SettingsStore } from "./settings-store.js";
 import { CancelledTaskError, SpawnerService } from "./spawner.js";
 
@@ -16,10 +16,17 @@ const isExecutionActive = (task: Pick<Task, "executionStatus">): boolean =>
   task.executionStatus === "preparing" || task.executionStatus === "running";
 const isExecutionBusy = (task: Pick<Task, "executionStatus">): boolean => isExecutionQueued(task) || isExecutionActive(task);
 
+interface TriggerActionOptions {
+  promptMessageId?: string | null;
+  reason?: QueueReason;
+}
+
 export class SchedulerService {
   private activeExecutionCount = 0;
   private interval: NodeJS.Timeout | null = null;
+  private archivedTaskCleanupInterval: NodeJS.Timeout | null = null;
   private draining = false;
+  private cleaningArchivedTasks = false;
 
   constructor(
     private readonly taskStore: TaskStore,
@@ -30,9 +37,13 @@ export class SchedulerService {
 
   async bootstrap(): Promise<void> {
     await this.recoverInterruptedExecutions();
+    await this.cleanupExpiredArchivedTasks();
     this.interval = setInterval(() => {
       void this.drainQueue();
     }, 1000);
+    this.archivedTaskCleanupInterval = setInterval(() => {
+      void this.cleanupExpiredArchivedTasks();
+    }, 60 * 60 * 1000);
     await this.drainQueue();
   }
 
@@ -40,6 +51,10 @@ export class SchedulerService {
     if (this.interval) {
       clearInterval(this.interval);
       this.interval = null;
+    }
+    if (this.archivedTaskCleanupInterval) {
+      clearInterval(this.archivedTaskCleanupInterval);
+      this.archivedTaskCleanupInterval = null;
     }
   }
 
@@ -49,7 +64,39 @@ export class SchedulerService {
   }
 
   async onSettingsChanged(): Promise<void> {
+    await this.cleanupExpiredArchivedTasks();
     await this.drainQueue();
+  }
+
+  async cleanupExpiredArchivedTasks(now: Date = new Date()): Promise<string[]> {
+    if (this.cleaningArchivedTasks) {
+      return [];
+    }
+    this.cleaningArchivedTasks = true;
+    try {
+      const settings = await this.settingsStore.getSettings();
+      if (!settings.archivedTaskAutoDeleteEnabled) {
+        return [];
+      }
+
+      const cutoffMs = now.getTime() - settings.archivedTaskAutoDeleteDays * 24 * 60 * 60 * 1000;
+      const archivedTasks = await this.taskStore.listTasks({ view: "archived" });
+      const deletedTaskIds: string[] = [];
+      for (const task of archivedTasks) {
+        const archivedAtMs = Date.parse(task.updatedAt);
+        if (!Number.isFinite(archivedAtMs) || archivedAtMs > cutoffMs) {
+          continue;
+        }
+        await this.spawner.cleanupTaskArtifacts(task);
+        await this.taskQueueStore.removeTask(task.id);
+        if (await this.taskStore.deleteTask(task.id)) {
+          deletedTaskIds.push(task.id);
+        }
+      }
+      return deletedTaskIds;
+    } finally {
+      this.cleaningArchivedTasks = false;
+    }
   }
 
   async hasExecutionCapacity(): Promise<boolean> {
@@ -57,14 +104,18 @@ export class SchedulerService {
     return this.activeExecutionCount < settings.maxAgents;
   }
 
-  async triggerAction(taskId: string, action: TaskAction, input?: TaskExecutionInput | string): Promise<boolean> {
+  async triggerAction(
+    taskId: string,
+    action: TaskAction,
+    input?: TaskExecutionInput | string,
+    options: TriggerActionOptions = {}
+  ): Promise<boolean> {
     const task = await this.taskStore.getTask(taskId);
     if (!task) {
       return false;
     }
 
-    const allowParallelAsk = action === "ask" && task.executionStatus === "running" && (task.executionAction === "build" || task.executionAction === "ask");
-    if ((!allowParallelAsk && isExecutionBusy(task)) || task.status === "archived" || task.status === "draft") {
+    if (isExecutionBusy(task) || task.status === "archived" || task.status === "draft") {
       return false;
     }
 
@@ -76,21 +127,11 @@ export class SchedulerService {
       return false;
     }
 
-    if (allowParallelAsk) {
-      const settings = await this.settingsStore.getSettings();
-      if (this.activeExecutionCount >= settings.maxAgents) {
-        return false;
-      }
-
-      this.activeExecutionCount += 1;
-      void this.executeTask({ taskId, reason: "manual", action, input: normalizeExecutionInput(input) }, false);
-      return true;
-    }
-
     await this.taskStore.markQueuedForAction(taskId, action);
     await this.taskQueueStore.replaceTask({
       taskId,
-      reason: "manual",
+      promptMessageId: options.promptMessageId ?? null,
+      reason: options.reason ?? "manual",
       action,
       input: normalizeExecutionInput(input)
     });
@@ -100,6 +141,66 @@ export class SchedulerService {
     await this.drainQueue();
 
     return true;
+  }
+
+  async triggerNextPendingAction(taskId: string, reason: QueueReason = "auto"): Promise<boolean> {
+    const message = await this.taskStore.getNextPendingActionMessage(taskId);
+    if (!message || (message.action !== "ask" && message.action !== "build")) {
+      return false;
+    }
+
+    return this.triggerAction(
+      taskId,
+      message.action,
+      {
+        content: message.content,
+        attachments: message.attachments ?? []
+      },
+      {
+        promptMessageId: message.id,
+        reason
+      }
+    );
+  }
+
+  async unstickTaskQueue(taskId: string, reason: QueueReason = "manual"): Promise<boolean> {
+    const task = await this.taskStore.getTask(taskId);
+    if (!task || task.status === "archived" || task.status === "draft") {
+      return false;
+    }
+
+    if (isExecutionActive(task)) {
+      return false;
+    }
+
+    if (await this.taskStore.hasPendingChangeProposal(taskId)) {
+      return false;
+    }
+
+    if (await this.taskStore.getActiveInteractiveSession(taskId)) {
+      return false;
+    }
+
+    const runningRuns = (await this.taskStore.listRuns(taskId)).filter((run) => run.status === "running");
+    if (runningRuns.length > 0) {
+      return false;
+    }
+
+    if (!(await this.taskStore.hasPendingActionMessage(taskId))) {
+      return false;
+    }
+
+    if (isExecutionQueued(task)) {
+      await this.taskQueueStore.removeTask(taskId);
+      await this.taskStore.setExecutionState(taskId, "idle", {
+        enqueued: false,
+        executionAction: null,
+        errorMessage: null
+      });
+      await this.taskStore.appendLog(taskId, "Scheduler: reset stale queued state before resuming queued follow-up.");
+    }
+
+    return this.triggerNextPendingAction(taskId, reason);
   }
 
   async triggerPostflight(taskId: string): Promise<boolean> {
@@ -231,6 +332,8 @@ export class SchedulerService {
 
   private async executeTask(queueEntry: QueueEntry, requireQueuedStatus: boolean): Promise<void> {
     const taskId = queueEntry.taskId;
+    let completedSuccessfully = false;
+    let cancelledByUser = false;
     try {
       const task = await this.taskStore.getTask(taskId);
       if (!task) {
@@ -244,10 +347,26 @@ export class SchedulerService {
         return;
       }
 
-      await this.spawner.runTask(task, queueEntry.action, queueEntry.input);
+      if (queueEntry.promptMessageId) {
+        const consumed = await this.taskStore.consumePendingActionMessage(taskId, queueEntry.promptMessageId);
+        if (!consumed) {
+          await this.taskStore.appendLog(taskId, `Scheduler: queued follow-up ${queueEntry.promptMessageId} was unavailable before execution.`);
+          await this.taskStore.setExecutionState(taskId, "idle", {
+            enqueued: false,
+            executionAction: null,
+            errorMessage: null
+          });
+          await this.triggerNextPendingAction(taskId, "auto").catch(() => false);
+          return;
+        }
+      }
+
+      await this.spawner.runTask(task, queueEntry.action, queueEntry.input, queueEntry.promptMessageId ?? null);
+      completedSuccessfully = true;
     } catch (error) {
       const task = await this.taskStore.getTask(taskId);
       if (error instanceof CancelledTaskError || task?.executionStatus === "cancelled") {
+        cancelledByUser = true;
         await this.taskStore.appendLog(taskId, "Spawner: task cancelled by user.");
       } else {
         const message = error instanceof Error ? error.message : "Unknown runtime error";
@@ -255,6 +374,9 @@ export class SchedulerService {
       }
     } finally {
       this.activeExecutionCount = Math.max(0, this.activeExecutionCount - 1);
+      if (completedSuccessfully || cancelledByUser) {
+        await this.triggerNextPendingAction(taskId, "auto").catch(() => false);
+      }
       await this.drainQueue();
     }
   }

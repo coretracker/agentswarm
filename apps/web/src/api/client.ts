@@ -10,9 +10,11 @@ import type {
   CreateRepositoryInput,
   CreateTaskInput,
   CreateUserInput,
-  GitHubBranchReference,
-  GitHubPullRequestReference,
   LoginInput,
+  CreatedPersonalAccessToken,
+  HostexecAvailability,
+  PersonalAccessToken,
+  PermissionScope,
   ProviderModelOption,
   Repository,
   Role,
@@ -24,6 +26,7 @@ import type {
   TaskPromptMagicInput,
   TaskPromptMagicResult,
   TaskLiveDiff,
+  TaskGitStateSnapshot,
   TaskWorkspaceFileSearchResult,
   TaskWorkspaceFileTree,
   TaskWorkspaceFilePreview,
@@ -45,7 +48,6 @@ import type {
   UpdateRoleInput,
   UpdateSnippetInput,
   UpdateTaskPinInput,
-  UpdateTaskNotesInput,
   UpdateTaskDeadlineInput,
   UpdateTaskDraftInput,
   UpdateTaskAssigneeInput,
@@ -55,18 +57,25 @@ import type {
   UpdateAuthProfileInput,
   UpdateCredentialSettingsInput,
   UpdateTaskConfigInput,
+  UpdateTaskIssueInput,
+  UpdateTaskPullRequestInput,
   UpdateRepositoryInput,
   UpdateSettingsInput,
   UpdateUserInput,
   User,
   UserNotes
-} from "@agentswarm/shared-types";
-export type { TaskWorkspaceFilePreview } from "@agentswarm/shared-types";
+} from "@verft/shared-types";
+export type { TaskWorkspaceFilePreview } from "@verft/shared-types";
 import { buildApiUrl } from "../lib/public-url";
 
 export interface ProviderModelsResponse {
   models: ProviderModelOption[];
-  source: "api" | "static";
+  source: "api" | "cache" | "fallback";
+}
+
+export interface ProviderBaseStateStatus {
+  volume: string;
+  files: Record<string, boolean>;
 }
 
 export interface TaskInteractiveTerminalStatus {
@@ -78,10 +87,7 @@ export interface TaskInteractiveTerminalStatus {
   terminalMode?: TaskTerminalSessionMode;
 }
 
-export interface TaskBranchSyncCounts {
-  pullCount: number;
-  pushCount: number;
-}
+export type TaskBranchSyncCounts = Pick<TaskGitStateSnapshot, "pullCount" | "pushCount">;
 
 export interface ListTasksOptions {
   view?: "all" | "active" | "archived";
@@ -158,6 +164,16 @@ export const api = {
     request<void>("/auth/logout", {
       method: "POST"
     }),
+  listPersonalAccessTokens: () => request<PersonalAccessToken[]>("/auth/personal-access-tokens"),
+  createPersonalAccessToken: (input: { name: string; scopes?: PermissionScope[]; expiresAt?: string | null }) =>
+    request<CreatedPersonalAccessToken>("/auth/personal-access-tokens", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  revokePersonalAccessToken: (id: string) =>
+    request<PersonalAccessToken>(`/auth/personal-access-tokens/${encodeURIComponent(id)}`, {
+      method: "DELETE"
+    }),
   getSession: () => request<AuthSession>("/auth/session"),
   listUsers: () => request<User[]>("/users"),
   getUser: (id: string) => request<User>(`/users/${id}`),
@@ -223,11 +239,21 @@ export const api = {
     return request<Task[]>(`/tasks${query ? `?${query}` : ""}`);
   },
   getTask: (id: string) => request<Task>(`/tasks/${id}`),
+  linkTaskWorkspace: (id: string, linkedTaskId: string) =>
+    request<Task>(`/tasks/${id}/linked-workspaces`, {
+      method: "POST",
+      body: JSON.stringify({ linkedTaskId })
+    }),
+  unlinkTaskWorkspace: (id: string, linkedTaskId: string) =>
+    request<Task>(`/tasks/${id}/linked-workspaces/${encodeURIComponent(linkedTaskId)}`, {
+      method: "DELETE"
+    }),
   startTask: (id: string) =>
     request<Task>(`/tasks/${id}/start`, {
       method: "POST"
     }),
   getTaskBranchSyncCounts: (id: string) => request<TaskBranchSyncCounts>(`/tasks/${id}/branch-sync-counts`),
+  getTaskGitState: (id: string) => request<TaskGitStateSnapshot>(`/tasks/${id}/git-state`),
   getTaskGitOperation: (id: string) => request<TaskGitOperation | null>(`/tasks/${id}/git-operation`),
   getTaskInteractiveTerminalStatus: (id: string, options?: { mode?: TaskTerminalSessionMode }) => {
     const params = new URLSearchParams();
@@ -235,12 +261,12 @@ export const api = {
       params.set("mode", options.mode);
     }
     const query = params.toString();
-    return request<TaskInteractiveTerminalStatus>(`/tasks/${id}/interactive-terminal/status${query ? `?${query}` : ""}`);
+    return request<TaskInteractiveTerminalStatus>(`/tasks/${id}/terminal/status${query ? `?${query}` : ""}`);
   },
   getTaskInteractiveTerminalTranscript: (taskId: string, sessionId: string) =>
-    request<TaskInteractiveTerminalTranscript>(`/tasks/${taskId}/interactive-terminal/sessions/${encodeURIComponent(sessionId)}/transcript`),
+    request<TaskInteractiveTerminalTranscript>(`/tasks/${taskId}/terminal/sessions/${encodeURIComponent(sessionId)}/transcript`),
   killTaskInteractiveTerminal: (id: string) =>
-    request<Task>(`/tasks/${id}/interactive-terminal/kill`, {
+    request<Task>(`/tasks/${id}/terminal/kill`, {
       method: "POST"
     }),
   resetTaskSession: (id: string) =>
@@ -404,10 +430,6 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
-  listGitHubPullRequests: (repoId: string) =>
-    request<GitHubPullRequestReference[]>(`/imports/github/pull-requests?repoId=${encodeURIComponent(repoId)}`),
-  listGitHubBranches: (repoId: string) =>
-    request<GitHubBranchReference[]>(`/imports/github/branches?repoId=${encodeURIComponent(repoId)}`),
   triggerTaskAction: (id: string, action: TaskAction) =>
     request<Task>(`/tasks/${id}/actions`, {
       method: "POST",
@@ -422,12 +444,36 @@ export const api = {
       method: "POST",
       body: JSON.stringify(input)
     }),
+  deletePendingTaskMessage: (taskId: string, messageId: string) =>
+    request<Task>(`/tasks/${taskId}/messages/${encodeURIComponent(messageId)}/queue`, {
+      method: "DELETE"
+    }),
+  runNextQueuedTaskMessage: (taskId: string) =>
+    request<Task>(`/tasks/${taskId}/queue/run-next`, {
+      method: "POST"
+    }),
+  unstickTaskQueue: (taskId: string) =>
+    request<Task>(`/tasks/${taskId}/queue/unstick`, {
+      method: "POST"
+    }),
   cancelTask: (id: string) =>
     request<Task>(`/tasks/${id}/cancel`, {
       method: "POST"
     }),
   pullTask: (id: string) =>
     request<Task>(`/tasks/${id}/pull`, {
+      method: "POST"
+    }),
+  resetTaskGit: (id: string) =>
+    request<Task>(`/tasks/${id}/reset-git`, {
+      method: "POST"
+    }),
+  revertTaskCommit: (id: string, commitSha: string) =>
+    request<Task>(`/tasks/${id}/commits/${encodeURIComponent(commitSha)}/revert`, {
+      method: "POST"
+    }),
+  resetTaskCommit: (id: string, commitSha: string) =>
+    request<Task>(`/tasks/${id}/commits/${encodeURIComponent(commitSha)}/reset`, {
       method: "POST"
     }),
   getTaskMergePreview: (id: string, targetBranch: string) =>
@@ -468,11 +514,6 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
-  updateTaskNotes: (id: string, input: UpdateTaskNotesInput) =>
-    request<Task>(`/tasks/${id}/notes`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
   updateTaskDeadline: (id: string, input: UpdateTaskDeadlineInput) =>
     request<Task>(`/tasks/${id}/deadline`, {
       method: "PATCH",
@@ -493,6 +534,16 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(input)
     }),
+  updateTaskPullRequest: (id: string, input: UpdateTaskPullRequestInput) =>
+    request<Task>(`/tasks/${id}/github-pr`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskIssue: (id: string, input: UpdateTaskIssueInput) =>
+    request<Task>(`/tasks/${id}/github-issue`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
   listRepositories: () => request<Repository[]>("/repositories"),
   getRepository: (id: string) => request<Repository>(`/repositories/${id}`),
   createRepository: (input: CreateRepositoryInput) =>
@@ -510,8 +561,10 @@ export const api = {
       method: "DELETE"
     }),
   getSettings: () => request<SystemSettings>("/settings"),
-  listModels: (provider: AgentProvider) =>
-    request<ProviderModelsResponse>(`/settings/models?provider=${encodeURIComponent(provider)}`),
+  getProviderBaseStateStatus: () => request<ProviderBaseStateStatus>("/settings/provider-base-state"),
+  checkHostexec: () => request<HostexecAvailability>("/settings/hostexec/check"),
+  listModels: (provider: AgentProvider, options?: { refresh?: boolean }) =>
+    request<ProviderModelsResponse>(`/settings/models?provider=${encodeURIComponent(provider)}${options?.refresh ? "&refresh=1" : ""}`),
   updateSettings: (input: UpdateSettingsInput) =>
     request<SystemSettings>("/settings", {
       method: "PATCH",

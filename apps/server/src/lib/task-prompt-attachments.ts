@@ -7,7 +7,7 @@ import {
   TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES,
   type CreateTaskPromptAttachmentInput,
   type TaskPromptAttachment
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import { env } from "../config/env.js";
 
 const ATTACHMENT_ROOT_DIRNAME = ".prompt-attachments";

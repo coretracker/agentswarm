@@ -26,8 +26,6 @@ import {
   type ProviderProfile,
   type SystemSettings,
   type Snippet,
-  type GitHubBranchReference,
-  type GitHubPullRequestReference,
   type TaskMergePreview,
   type TaskPushPreview,
   type TaskChangeProposal,
@@ -39,7 +37,7 @@ import {
   type TaskGitOperation,
   type CodexCredentialSource,
   type User
-} from "@agentswarm/shared-types";
+} from "@verft/shared-types";
 import {
   Alert,
   Button,
@@ -65,6 +63,7 @@ import {
   Spin,
   Select,
   Space,
+  Switch,
   Tag,
   Tabs,
   Tooltip,
@@ -107,6 +106,7 @@ import {
 import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { buildTaskLifecycleViewModel } from "../src/utils/task-lifecycle-view-model";
+import { buildTimelineDisplayItems, type TimelineDisplayItem } from "../src/utils/task-run-timeline";
 import { trackEvent } from "../src/utils/analytics";
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
@@ -128,7 +128,7 @@ const runStatusColor: Record<TaskRun["status"], string> = {
   cancelled: "default"
 };
 
-type ComposerAction = TaskMessageAction | "interactive" | "terminal";
+type ComposerAction = TaskMessageAction | "terminal";
 type SnippetVariableFormValues = Record<string, string>;
 
 const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
@@ -136,7 +136,7 @@ const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
 const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
 const SYSTEM_ADMIN_ROLE_ID = "admin";
 const HISTORY_PAGE_SIZE = 5;
-const getComposerDraftStorageKey = (taskId: string): string => `agentswarm:task:${taskId}:composerDraft`;
+const getComposerDraftStorageKey = (taskId: string): string => `verft:task:${taskId}:composerDraft`;
 
 function normalizeAiCommitSubject(raw: string): string {
   const firstLine = raw
@@ -161,7 +161,6 @@ const taskActionLabel: Record<ComposerAction | TaskAction, string> = {
   build: "Build",
   ask: "Ask",
   comment: "Comment",
-  interactive: "Interactive",
   terminal: "Terminal"
 };
 
@@ -178,7 +177,6 @@ function getAllowedComposerActions(
     actions.push("ask");
   }
   if (canUseInteractiveTerminal) {
-    actions.push("interactive");
     actions.push("terminal");
   }
   actions.push("comment");
@@ -186,7 +184,7 @@ function getAllowedComposerActions(
 }
 
 function getDefaultComposerAction(task: Task | null, allowedActions: ComposerAction[]): ComposerAction {
-  const defaultAction = allowedActions.find((action) => action !== "comment" && action !== "interactive" && action !== "terminal") ?? "comment";
+  const defaultAction = allowedActions.find((action) => action !== "comment" && action !== "terminal") ?? "comment";
 
   if (!task) {
     return defaultAction;
@@ -203,6 +201,11 @@ function getProviderDefaultModel(provider: AgentProvider, settings?: SystemSetti
   return provider === "claude"
     ? settings?.claudeDefaultModel ?? getDefaultModelForProvider(provider)
     : settings?.codexDefaultModel ?? getDefaultModelForProvider(provider);
+}
+
+function getProviderConfiguredModels(provider: AgentProvider, settings?: SystemSettings | null) {
+  const models = provider === "claude" ? settings?.claudeModels : settings?.codexModels;
+  return models && models.length > 0 ? models : getModelsForProvider(provider);
 }
 
 function formatRunDuration(startedAt: string, finishedAt: string | null): string {
@@ -225,8 +228,7 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
 ];
 
 const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
-  { label: "Auto (Profile then Global)", value: "auto" },
-  { label: "Profile auth.json only", value: "profile" },
+  { label: "Auto (System credentials)", value: "auto" },
   { label: "Global OpenAI key or auth.json", value: "global" }
 ];
 
@@ -260,6 +262,8 @@ function checkpointStatusLabel(status: TaskChangeProposal["status"]): string {
   switch (status) {
     case "pending":
       return "Pending";
+    case "applying":
+      return "Applying";
     case "applied":
       return "Applied";
     case "rejected":
@@ -275,6 +279,8 @@ function checkpointStatusColor(status: TaskChangeProposal["status"]): string {
   switch (status) {
     case "pending":
       return "orange";
+    case "applying":
+      return "processing";
     case "applied":
       return "green";
     case "reverted":
@@ -291,14 +297,12 @@ function changeProposalSourceLabel(sourceType: TaskChangeProposal["sourceType"])
 }
 
 function getTerminalSessionModeFromMessage(message: Pick<TaskMessage, "content">): TaskTerminalSessionMode {
-  return message.content.startsWith("Git terminal") || message.content.startsWith("Terminal session")
-    ? "git"
-    : "interactive";
+  return "terminal";
 }
 
 function getTaskWorkingLabel(task: Pick<Task, "status" | "activeInteractiveSession" | "activeTerminalSessionMode">): string {
   if (task.activeInteractiveSession) {
-    return `${getTaskTerminalSessionLabel(task.activeTerminalSessionMode === "git" ? "git" : "interactive")} Running`;
+    return `${getTaskTerminalSessionLabel("terminal")} Running`;
   }
 
   return getTaskStatusLabel(task.status);
@@ -370,13 +374,43 @@ function renderDiffFileActions(file: FileData, renderFileActions?: (file: FileDa
   return <span onClick={(event) => event.stopPropagation()}>{actions}</span>;
 }
 
+function deriveGitHubPullRequestUrl(repoUrl: string | undefined, prNumber: number | null | undefined): string | null {
+  return deriveGitHubNumberUrl(repoUrl, prNumber, "pull");
+}
+
+function deriveGitHubIssueUrl(repoUrl: string | undefined, issueNumber: number | null | undefined): string | null {
+  return deriveGitHubNumberUrl(repoUrl, issueNumber, "issues");
+}
+
+function deriveGitHubNumberUrl(repoUrl: string | undefined, number: number | null | undefined, pathSegment: "pull" | "issues"): string | null {
+  if (!repoUrl || !number) {
+    return null;
+  }
+  const trimmed = repoUrl.trim();
+  const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/(.+?)(?:\.git)?$/);
+  if (sshMatch) {
+    return `https://github.com/${sshMatch[1]}/${sshMatch[2]}/${pathSegment}/${number}`;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.hostname !== "github.com") {
+      return null;
+    }
+    const segments = parsed.pathname.replace(/^\/+|\/+$/g, "").replace(/\.git$/, "").split("/");
+    if (segments.length < 2) {
+      return null;
+    }
+    return `https://github.com/${segments[0]}/${segments[1]}/${pathSegment}/${number}`;
+  } catch {
+    return null;
+  }
+}
+
 function renderParsedDiff(diffText: string, emptyMessage: string, options?: ParsedDiffRenderOptions): ReactNode {
   if (!diffText.trim()) {
     return (
       <Card size="small">
-        <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "\"SFMono-Regular\", Consolas, monospace" }}
-        >
+        <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}>
           {emptyMessage}
         </Typography.Paragraph>
       </Card>
@@ -467,9 +501,7 @@ function renderParsedDiff(diffText: string, emptyMessage: string, options?: Pars
   } catch {
     return (
       <Card size="small">
-        <Typography.Paragraph
-          style={{ marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "\"SFMono-Regular\", Consolas, monospace" }}
-        >
+        <Typography.Paragraph style={{ marginBottom: 0, whiteSpace: "pre-wrap" }}>
           {normalizeDiffForRendering(diffText) || diffText}
         </Typography.Paragraph>
       </Card>
@@ -491,28 +523,6 @@ function getFirstDiffFilePath(diffText: string): string | null {
   }
 }
 
-function getGitHubRepositoryBaseUrl(repoUrl: string): string | null {
-  const httpsMatch = repoUrl.match(/^https?:\/\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/?$/i);
-  if (httpsMatch) {
-    return `https://github.com/${httpsMatch[1]}/${httpsMatch[2]}`;
-  }
-
-  const sshMatch = repoUrl.match(/^git@github\.com:([^/]+)\/([^/]+?)(?:\.git)?$/i);
-  if (sshMatch) {
-    return `https://github.com/${sshMatch[1]}/${sshMatch[2]}`;
-  }
-
-  return null;
-}
-
-function getTaskGitHubTargetBranch(task: Task): string | null {
-  if (task.taskType !== "build" && task.taskType !== "ask") {
-    return null;
-  }
-
-  return task.branchName ?? task.baseBranch ?? null;
-}
-
 function canOfferRemoteBranchDeletion(task: Task): boolean {
   const branchName = task.branchName?.trim();
   return Boolean(
@@ -521,37 +531,6 @@ function canOfferRemoteBranchDeletion(task: Task): boolean {
       branchName !== task.repoDefaultBranch &&
       branchName !== task.baseBranch
   );
-}
-
-function getGitHubDiffTarget(task: Task, existingPullRequest?: GitHubPullRequestReference | null): { href: string; label: string } | null {
-  const repoBaseUrl = getGitHubRepositoryBaseUrl(task.repoUrl);
-  if (!repoBaseUrl) {
-    return null;
-  }
-
-  const targetBranch = getTaskGitHubTargetBranch(task);
-  if (!targetBranch) {
-    return null;
-  }
-
-  if (targetBranch === task.repoDefaultBranch) {
-    return {
-      href: `${repoBaseUrl}/tree/${encodeURIComponent(targetBranch)}`,
-      label: "Open Branch In GitHub"
-    };
-  }
-
-  if (existingPullRequest?.url) {
-    return {
-      href: existingPullRequest.url,
-      label: "View PR"
-    };
-  }
-
-  return {
-    href: `${repoBaseUrl}/compare/${encodeURIComponent(task.repoDefaultBranch)}...${encodeURIComponent(targetBranch)}`,
-    label: "Create PR"
-  };
 }
 
 type FollowUpMode = "continue" | null;
@@ -744,16 +723,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [liveDiffLoading, setLiveDiffLoading] = useState(false);
   const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
   const [liveDiffRefreshKey, setLiveDiffRefreshKey] = useState(0);
-  const [diffLiveKind, setDiffLiveKind] = useState<"compare" | "commits">("commits");
+  const [diffLiveKind, setDiffLiveKind] = useState<"compare" | "commits" | "working">("working");
   const [diffCompareBaseRef, setDiffCompareBaseRef] = useState<string | null>(null);
-  const [existingGitHubPullRequest, setExistingGitHubPullRequest] = useState<GitHubPullRequestReference | null>(null);
-  const [existingGitHubPullRequestChecked, setExistingGitHubPullRequestChecked] = useState(false);
   const [commitLog, setCommitLog] = useState<TaskWorkspaceCommit[]>([]);
   const [commitLogLoading, setCommitLogLoading] = useState(false);
   const [commitLogError, setCommitLogError] = useState<string | null>(null);
   const [selectedCommitSha, setSelectedCommitSha] = useState<string | null>(null);
-  const [diffBranches, setDiffBranches] = useState<GitHubBranchReference[]>([]);
-  const [diffBranchesLoading, setDiffBranchesLoading] = useState(false);
   const [assignableUsers, setAssignableUsers] = useState<User[]>([]);
   const [assignableUsersLoading, setAssignableUsersLoading] = useState(false);
   const [followUpForm] = Form.useForm();
@@ -765,10 +740,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [modelInput, setModelInput] = useState<string>("gpt-5.4");
   const [codexCredentialSourceInput, setCodexCredentialSourceInput] = useState<CodexCredentialSource>("auto");
   const [branchStrategyInput, setBranchStrategyInput] = useState<TaskBranchStrategy>("feature_branch");
+  const [autoApplyCheckpointsInput, setAutoApplyCheckpointsInput] = useState(false);
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(providerInput);
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>(null);
   const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff" | "files">("chat");
-  const [expandedRunKeys, setExpandedRunKeys] = useState<string[]>([]);
   const [expandedRunTimelineKeys, setExpandedRunTimelineKeys] = useState<string[]>([]);
   const [selectedChatAction, setSelectedChatAction] = useState<ComposerAction>("build");
   const [submitting, setSubmitting] = useState<
@@ -780,6 +755,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "config"
     | "pull"
     | "push"
+    | "resetGit"
+    | "revertCommit"
+    | "resetCommit"
     | "merge"
     | "archive"
     | "newSession"
@@ -792,6 +770,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "deadline"
     | "state"
     | "renameTitle"
+    | "linkTask"
+    | "linkPr"
+    | "linkIssue"
     | "editComment"
   >(null);
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
@@ -916,6 +897,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   );
   const selectedChatActionRef = useRef(false);
   const diffCompareBaseSyncedTaskIdRef = useRef<string | null>(null);
+  const executionConfigSyncedTaskIdRef = useRef<string | null>(null);
   const applyCheckpointAutoMagicProposalIdRef = useRef<string | null>(null);
   const mergeAutoMagicTargetRef = useRef<string | null>(null);
   const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
@@ -927,8 +909,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [pushPreviewLoading, setPushPreviewLoading] = useState(false);
   const [pushCommitMessage, setPushCommitMessage] = useState("");
   const [mergeModalOpen, setMergeModalOpen] = useState(false);
-  const [mergeBranches, setMergeBranches] = useState<GitHubBranchReference[]>([]);
-  const [mergeBranchesLoading, setMergeBranchesLoading] = useState(false);
+  const [mergeBranches, setMergeBranches] = useState<Array<{ name: string; isDefault: boolean }>>([]);
   const [mergeTargetBranch, setMergeTargetBranch] = useState<string | undefined>();
   const [mergePreview, setMergePreview] = useState<TaskMergePreview | null>(null);
   const [mergePreviewLoading, setMergePreviewLoading] = useState(false);
@@ -948,11 +929,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [editCheckpointModalState, setEditCheckpointModalState] = useState<CheckpointEditorModalState | null>(null);
   const [killTerminalConfirmOpen, setKillTerminalConfirmOpen] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [linkTaskModalOpen, setLinkTaskModalOpen] = useState(false);
+  const [linkTaskCandidates, setLinkTaskCandidates] = useState<Task[]>([]);
+  const [linkTaskCandidatesLoading, setLinkTaskCandidatesLoading] = useState(false);
+  const [selectedLinkedTaskId, setSelectedLinkedTaskId] = useState<string | undefined>();
+  const [linkPrModalOpen, setLinkPrModalOpen] = useState(false);
+  const [linkPrNumberDraft, setLinkPrNumberDraft] = useState<string>("");
+  const [linkIssueModalOpen, setLinkIssueModalOpen] = useState(false);
+  const [linkIssueNumberDraft, setLinkIssueNumberDraft] = useState<string>("");
   const [commentEditModalOpen, setCommentEditModalOpen] = useState(false);
   const [editingComment, setEditingComment] = useState<TaskMessage | null>(null);
   const [commentEditDraft, setCommentEditDraft] = useState("");
   const [interactiveTerminalStatus, setInteractiveTerminalStatus] = useState<TaskInteractiveTerminalStatus | null>(null);
-  const [gitTerminalStatus, setGitTerminalStatus] = useState<TaskInteractiveTerminalStatus | null>(null);
   const [interactiveTerminalLaunchPending, setInteractiveTerminalLaunchPending] = useState(false);
   const [interactiveTerminalTranscripts, setInteractiveTerminalTranscripts] = useState<
     Record<
@@ -1018,7 +1006,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   useEffect(() => {
     setInteractiveTerminalTranscripts({});
     setInteractiveTerminalStatus(null);
-    setGitTerminalStatus(null);
     setInteractiveTerminalLaunchPending(false);
     setSelectedPromptImageFiles([]);
     setApplyCheckpointModalProposal(null);
@@ -1096,7 +1083,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canCreateTask = can("task:create");
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
-  const canUseInteractiveTerminal = can("task:interactive");
+  const canUseInteractiveTerminal = can("task:terminal");
   const canDeleteTask = can("task:delete");
   const canListUsers = can("user:list");
   const isAdminTaskUser = Boolean(session?.user.roles.some((role) => role.id === SYSTEM_ADMIN_ROLE_ID));
@@ -1125,7 +1112,31 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canDelete = canDeleteTask && !!task && !isActive;
   const canArchive = canEditTask && !!task && !isActive && !isArchived;
   const canChangeTaskState = canEditTask && !!task && !isArchived;
+  const canLinkTaskWorkspace = canEditTask && !!task && !isArchived;
+  const canLinkPullRequest = canEditTask && !!task && !isArchived;
+  const canLinkIssue = canEditTask && !!task && !isArchived;
+  const linkedPullRequestUrl = useMemo(
+    () => deriveGitHubPullRequestUrl(task?.repoUrl, task?.githubPrNumber ?? null),
+    [task?.githubPrNumber, task?.repoUrl]
+  );
+  const linkedIssueUrl = useMemo(
+    () => deriveGitHubIssueUrl(task?.repoUrl, task?.githubIssueNumber ?? null),
+    [task?.githubIssueNumber, task?.repoUrl]
+  );
+  const hasLinkedPullRequest = Boolean(task?.githubPrNumber);
+  const hasLinkedIssue = Boolean(task?.githubIssueNumber);
   const canAssignTask = canEditTask && canListUsers && isAdminTaskUser && !!task && !isArchived;
+  const linkedWorkspaceIds = useMemo(() => new Set((task?.linkedWorkspaces ?? []).map((link) => link.taskId)), [task?.linkedWorkspaces]);
+  const linkTaskOptions = useMemo(
+    () =>
+      linkTaskCandidates
+        .filter((candidate) => candidate.id !== task?.id && candidate.status !== "archived" && !linkedWorkspaceIds.has(candidate.id))
+        .map((candidate) => ({
+          value: candidate.id,
+          label: `${candidate.title} · ${candidate.repoName}`
+        })),
+    [linkTaskCandidates, linkedWorkspaceIds, task?.id]
+  );
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
   const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
@@ -1140,35 +1151,39 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   );
   const currentTaskProvider = task?.provider ?? "codex";
   const currentTaskProviderProfile = task?.providerProfile ?? "high";
-  const currentTaskModelOverride = task?.modelOverride ?? "";
+  const currentTaskModelOverride = task?.modelOverride?.trim() ?? "";
+  const currentTaskModel = currentTaskModelOverride || getProviderDefaultModel(currentTaskProvider, settings);
   const currentTaskCodexCredentialSource = task?.codexCredentialSource ?? "auto";
+  const currentTaskAutoApplyCheckpoints = task?.autoApplyCheckpoints === true;
   const interactiveTerminalConfigDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
-    (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource);
+    modelInput !== currentTaskModel ||
+    (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource) ||
+    autoApplyCheckpointsInput !== currentTaskAutoApplyCheckpoints;
   const currentTaskBranchStrategy = task?.branchStrategy ?? "feature_branch";
   const hasExecutionContext = Boolean(task?.executionSummary?.trim());
   const configDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
+    modelInput !== currentTaskModel ||
     (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource) ||
+    autoApplyCheckpointsInput !== currentTaskAutoApplyCheckpoints ||
     (isImplementationTask && branchStrategyInput !== currentTaskBranchStrategy);
 
   const resultStatusText = lifecycle.resultStatusText;
 
   const codeTextStyle: CSSProperties = {
     marginBottom: 0,
-    whiteSpace: "pre-wrap",
-    fontFamily: "\"SFMono-Regular\", Consolas, monospace"
+    whiteSpace: "pre-wrap"
   };
   const syncExecutionConfigInputs = (nextTask: Task): void => {
     setProviderInput(nextTask.provider ?? "codex");
     setProviderProfileInput(nextTask.providerProfile ?? "high");
-    setModelInput(nextTask.modelOverride ?? getDefaultModelForProvider(nextTask.provider ?? "codex"));
+    setModelInput(nextTask.modelOverride ?? getProviderDefaultModel(nextTask.provider ?? "codex", settings));
     setCodexCredentialSourceInput(nextTask.codexCredentialSource ?? "auto");
     setBranchStrategyInput(nextTask.branchStrategy ?? "feature_branch");
+    setAutoApplyCheckpointsInput(nextTask.autoApplyCheckpoints === true);
   };
   const applyUpdatedTask = (updatedTask: Task): void => {
     setTask((current) =>
@@ -1194,10 +1209,41 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       // Ignore refresh failures; user actions can still proceed with explicit pull/push operations.
     }
   }, [setTask, task?.id]);
+  const loadTaskGitState = useCallback(async (taskIdOverride?: string): Promise<void> => {
+    const targetTaskId = taskIdOverride ?? task?.id;
+    if (!targetTaskId) {
+      return;
+    }
+
+    setPushPreviewLoading(true);
+    try {
+      const snapshot = await api.getTaskGitState(targetTaskId);
+      setTask((current) =>
+        current && current.id === targetTaskId
+          ? {
+              ...current,
+              pullCount: snapshot.pullCount,
+              pushCount: snapshot.pushCount
+            }
+          : current
+      );
+      setPushPreview(snapshot.pushPreview);
+      setPushCommitMessage((current) => (current.trim().length > 0 ? current : snapshot.pushPreview.suggestedCommitMessage));
+    } catch (error) {
+      setPushPreview(null);
+      showTaskActionError(error, "Could not load Git state");
+    } finally {
+      setPushPreviewLoading(false);
+    }
+  }, [setTask, showTaskActionError, task?.id]);
   const triggerGitRefresh = useCallback((): void => {
     setLiveDiffRefreshKey((k) => k + 1);
+    if (canPush) {
+      void loadTaskGitState();
+      return;
+    }
     void refreshBranchSyncCounts();
-  }, [refreshBranchSyncCounts]);
+  }, [canPush, loadTaskGitState, refreshBranchSyncCounts]);
   useEffect(() => {
     if (!task?.id || !gitOperation) {
       return;
@@ -1208,8 +1254,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (gitOperation.status !== "succeeded" || (gitOperation.operationType !== "pull_task_branch" && gitOperation.operationType !== "push_task_branch")) {
       return;
     }
+    if (canPush) {
+      void loadTaskGitState(task.id);
+      return;
+    }
     void refreshBranchSyncCounts(task.id);
-  }, [gitOperation, refreshBranchSyncCounts, task?.id]);
+  }, [canPush, gitOperation, loadTaskGitState, refreshBranchSyncCounts, task?.id]);
   const assigneeNameById = useMemo(() => {
     return new Map(assignableUsers.map((user) => [user.id, user.name]));
   }, [assignableUsers]);
@@ -1296,6 +1346,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     modelOverride,
     codexCredentialSource,
     branchStrategy,
+    autoApplyCheckpoints,
     notify = true,
     refreshTaskOnFailure = false
   }: {
@@ -1304,6 +1355,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     modelOverride: string;
     codexCredentialSource: CodexCredentialSource;
     branchStrategy?: TaskBranchStrategy;
+    autoApplyCheckpoints: boolean;
     notify?: boolean;
     refreshTaskOnFailure?: boolean;
   }): Promise<void> => {
@@ -1321,7 +1373,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         providerProfile,
         modelOverride: modelOverride || null,
         codexCredentialSource,
-        branchStrategy
+        branchStrategy,
+        autoApplyCheckpoints
       });
 
       if (requestId !== executionConfigSaveRequestIdRef.current) {
@@ -1377,7 +1430,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             before: liveDiff?.baseRef ?? liveDiff?.defaultBaseRef ?? null,
             after: "HEAD"
           }
-        : selectedCommitSha
+        : diffLiveKind === "commits" && selectedCommitSha
           ? {
               before: `${selectedCommitSha}^`,
               after: selectedCommitSha
@@ -1386,24 +1439,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const hasDiffTab = hasStoredDiff || canRequestLiveDiff;
   const diffBaseBranchOptions = useMemo(() => {
     const options: Array<{ value: string; label: string }> = [];
-    const seen = new Set<string>();
     const repoDefault = task?.repoDefaultBranch;
     if (repoDefault?.trim()) {
-      seen.add(repoDefault);
       options.push({ value: repoDefault, label: `${repoDefault} (repo default)` });
     }
-    for (const branch of diffBranches) {
-      if (seen.has(branch.name)) {
-        continue;
-      }
-      seen.add(branch.name);
-      options.push({
-        value: branch.name,
-        label: branch.isDefault ? `${branch.name} (repo default)` : branch.name
-      });
-    }
     return options;
-  }, [task?.repoDefaultBranch, diffBranches]);
+  }, [task?.repoDefaultBranch]);
   const allowedChatActions = useMemo(
     () => getAllowedComposerActions(canBuildTasks, canAskTasks, canUseInteractiveTerminal),
     [canAskTasks, canBuildTasks, canUseInteractiveTerminal]
@@ -1437,8 +1478,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
+    if (canPush) {
+      return;
+    }
+
     void refreshBranchSyncCounts(task.id);
-  }, [hasBranchForSync, refreshBranchSyncCounts, task?.id, task?.updatedAt]);
+  }, [canPush, hasBranchForSync, refreshBranchSyncCounts, task?.id, task?.updatedAt]);
 
   useEffect(() => {
     if (providerInputOptions.some((option) => option.value === providerInput)) {
@@ -1491,8 +1536,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
+    if (executionConfigSyncedTaskIdRef.current !== task.id) {
+      executionConfigSyncedTaskIdRef.current = task.id;
+      syncExecutionConfigInputs(task);
+      return;
+    }
+
+    if (configDirty || submitting === "config") {
+      return;
+    }
+
     syncExecutionConfigInputs(task);
-  }, [task]);
+  }, [
+    task?.id,
+    task?.provider,
+    task?.providerProfile,
+    task?.modelOverride,
+    task?.codexCredentialSource,
+    task?.branchStrategy,
+    task?.autoApplyCheckpoints,
+    configDirty,
+    submitting
+  ]);
 
   useEffect(() => {
     if (!isArchived) {
@@ -1527,6 +1592,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         modelOverride: modelInput,
         codexCredentialSource: codexCredentialSourceInput,
         branchStrategy: isImplementationTask ? branchStrategyInput : undefined,
+        autoApplyCheckpoints: autoApplyCheckpointsInput,
         notify: false,
         refreshTaskOnFailure: true
       }).catch((error) => {
@@ -1551,37 +1617,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     codexCredentialSourceInput,
     isImplementationTask,
     branchStrategyInput,
+    autoApplyCheckpointsInput,
     messageApi
   ]);
 
   useEffect(() => {
     if (!task?.id || !canEditTask || !canUseInteractiveTerminal || isArchived) {
       setInteractiveTerminalStatus(null);
-      setGitTerminalStatus(null);
       return;
     }
 
     let cancelled = false;
     const loadTerminalStatuses = () => {
       void Promise.allSettled([
-        api.getTaskInteractiveTerminalStatus(task.id, { mode: "interactive" }),
-        api.getTaskInteractiveTerminalStatus(task.id, { mode: "git" })
-      ]).then(([interactiveResult, gitResult]) => {
+        api.getTaskInteractiveTerminalStatus(task.id, { mode: "terminal" })
+      ]).then(([terminalResult]) => {
         if (cancelled) {
           return;
         }
 
         setInteractiveTerminalStatus(
-          interactiveResult.status === "fulfilled"
-            ? interactiveResult.value
-            : {
-                available: false,
-                reason: "Could not load interactive terminal status."
-              }
-        );
-        setGitTerminalStatus(
-          gitResult.status === "fulfilled"
-            ? gitResult.value
+          terminalResult.status === "fulfilled"
+            ? terminalResult.value
             : {
                 available: false,
                 reason: "Could not load terminal status."
@@ -1662,123 +1719,34 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   ]);
 
   useEffect(() => {
-    const targetBranch = task ? getTaskGitHubTargetBranch(task) : null;
-    if (!task?.repoId || !targetBranch || !task.repoDefaultBranch || targetBranch === task.repoDefaultBranch) {
-      setExistingGitHubPullRequest(null);
-      setExistingGitHubPullRequestChecked(false);
+    if (!mergeModalOpen || !task?.branchName) {
       return;
     }
 
-    let cancelled = false;
-    setExistingGitHubPullRequest(null);
-    setExistingGitHubPullRequestChecked(false);
-
-    void api
-      .listGitHubPullRequests(task.repoId)
-      .then((pullRequests) => {
-        if (cancelled) {
-          return;
-        }
-
-        setExistingGitHubPullRequest(
-          pullRequests.find((pullRequest) => pullRequest.headBranch === targetBranch) ?? null
-        );
-        setExistingGitHubPullRequestChecked(true);
-      })
-      .catch(() => {
-        if (cancelled) {
-          return;
-        }
-
-        setExistingGitHubPullRequest(null);
-        setExistingGitHubPullRequestChecked(true);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [task?.id, task?.repoId, task?.repoDefaultBranch, task?.taskType, task?.branchName, task?.baseBranch]);
-
-  useEffect(() => {
-    if (activeMainTab !== "diff" || !task?.repoId) {
-      return;
-    }
-
-    let cancelled = false;
-    setDiffBranchesLoading(true);
-    void api
-      .listGitHubBranches(task.repoId)
-      .then((branches) => {
-        if (!cancelled) {
-          setDiffBranches(branches);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setDiffBranches([]);
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setDiffBranchesLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeMainTab, task?.repoId]);
-
-  useEffect(() => {
-    if (!mergeModalOpen || !task?.repoId || !task.branchName) {
-      return;
-    }
-
-    let cancelled = false;
-    setMergeBranchesLoading(true);
     setMergePreview(null);
     setMergePreviewError(null);
     setMergeCommitMessage("");
 
-    void api
-      .listGitHubBranches(task.repoId)
-      .then((branches) => {
-        if (cancelled) {
-          return;
-        }
+    const candidateNames = Array.from(
+      new Set(
+        [task.repoDefaultBranch, task.baseBranch]
+          .map((branch) => branch?.trim())
+          .filter((branch): branch is string => Boolean(branch && branch !== task.branchName))
+      )
+    );
+    const availableBranches = candidateNames.map((name) => ({
+      name,
+      isDefault: name === task.repoDefaultBranch
+    }));
+    setMergeBranches(availableBranches);
+    setMergeTargetBranch((current) => {
+      if (current && availableBranches.some((branch) => branch.name === current)) {
+        return current;
+      }
 
-        const availableBranches = branches.filter((branch) => branch.name !== task.branchName);
-        setMergeBranches(availableBranches);
-        setMergeTargetBranch((current) => {
-          if (current && availableBranches.some((branch) => branch.name === current)) {
-            return current;
-          }
-
-          return (
-            availableBranches.find((branch) => branch.name === task.repoDefaultBranch)?.name ??
-            availableBranches[0]?.name
-          );
-        });
-      })
-      .catch((error) => {
-        if (cancelled) {
-          return;
-        }
-
-        setMergeBranches([]);
-        setMergeTargetBranch(undefined);
-        setMergePreviewError(error instanceof Error ? error.message : "Failed to load merge branches");
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setMergeBranchesLoading(false);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [mergeModalOpen, task?.repoId, task?.branchName, task?.repoDefaultBranch]);
+      return availableBranches.find((branch) => branch.isDefault)?.name ?? availableBranches[0]?.name;
+    });
+  }, [mergeModalOpen, task?.branchName, task?.baseBranch, task?.repoDefaultBranch]);
 
   useEffect(() => {
     if (!mergeModalOpen || !task?.id || !mergeTargetBranch) {
@@ -1826,7 +1794,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   }, [diffLiveKind]);
 
   useEffect(() => {
-    if (activeMainTab !== "diff" || !task || !canRequestLiveDiff || diffLiveKind !== "commits") {
+    if (activeMainTab !== "diff" || !task || !canRequestLiveDiff) {
+      return;
+    }
+
+    if (diffLiveKind !== "commits") {
+      setCommitLog([]);
+      setCommitLogError(null);
+      setCommitLogLoading(false);
       return;
     }
 
@@ -1920,8 +1895,12 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setLiveDiffLoading(true);
       try {
         const snapshot = await api.getTaskLiveDiff(task.id, {
-          baseRef: diffCompareBaseRef ?? task.repoDefaultBranch ?? undefined,
-          diffKind: "compare"
+          ...(diffLiveKind === "compare"
+            ? {
+                baseRef: diffCompareBaseRef ?? task.repoDefaultBranch ?? undefined,
+                diffKind: "compare" as const
+              }
+            : { diffKind: "working" as const })
         });
         if (!cancelled) {
           setLiveDiff(snapshot);
@@ -2036,7 +2015,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       const codeValue = (Array.isArray(children) ? children.join("") : String(children ?? "")).replace(/\n$/, "");
 
       if (language === "diff" || codeValue.startsWith("diff --git")) {
-        return renderParsedDiff(codeValue, "No diff preview available.");
+        return <div className="task-timeline-diff">{renderParsedDiff(codeValue, "No diff preview available.")}</div>;
       }
 
       if (language === "mermaid") {
@@ -2096,23 +2075,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const providerLabel = task ? getAgentProviderLabel(task.provider) : "Agent";
   const hasBranch = isBuildTask || isAskTask;
   const runtimeBranchLabel = task ? (hasBranch ? task.branchName ?? task.baseBranch : task.baseBranch) : "";
-  const githubPullRequestTargetBranch = task ? getTaskGitHubTargetBranch(task) : null;
-  const githubPullRequestLookupPending = Boolean(
-    task &&
-      githubPullRequestTargetBranch &&
-      task.repoDefaultBranch &&
-      githubPullRequestTargetBranch !== task.repoDefaultBranch &&
-      !existingGitHubPullRequestChecked
-  );
-  const githubDiffTarget =
-    task && !githubPullRequestLookupPending ? getGitHubDiffTarget(task, existingGitHubPullRequest) : null;
   const hasReadOnlyTaskAccess = !canEditTask;
-  const pendingChangeProposal = useMemo(
-    () => changeProposals.find((p) => p.status === "pending") ?? null,
+  const showCheckpointState = task?.autoApplyCheckpoints !== true;
+  const visibleChangeProposals = useMemo(
+    () => changeProposals.filter((proposal) => proposal.status !== "applying"),
     [changeProposals]
   );
+  const pendingChangeProposal = useMemo(
+    () => (showCheckpointState ? visibleChangeProposals.find((p) => p.status === "pending") ?? null : null),
+    [showCheckpointState, visibleChangeProposals]
+  );
   const latestAppliedChangeProposalId = useMemo(() => {
-    const applied = changeProposals.filter((p) => p.status === "applied");
+    const applied = visibleChangeProposals.filter((p) => p.status === "applied");
     if (applied.length === 0) {
       return null;
     }
@@ -2125,20 +2099,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       }
     }
     return best.id;
-  }, [changeProposals]);
-  const activeTerminalStatus =
-    gitTerminalStatus?.activeInteractiveSession && gitTerminalStatus.terminalMode === "git"
-      ? gitTerminalStatus
-      : interactiveTerminalStatus?.activeInteractiveSession
-        ? interactiveTerminalStatus
-        : gitTerminalStatus?.activeInteractiveSession
-          ? gitTerminalStatus
-          : null;
+  }, [visibleChangeProposals]);
+  const activeTerminalStatus = interactiveTerminalStatus?.activeInteractiveSession ? interactiveTerminalStatus : null;
   const activeTerminalMode: TaskTerminalSessionMode | null =
     activeTerminalStatus?.terminalMode ??
-    (task?.activeInteractiveSession ? (task.activeTerminalSessionMode === "git" ? "git" : "interactive") : null);
+    (task?.activeInteractiveSession ? "terminal" : null);
   const interactiveTerminalRunning = activeTerminalStatus?.activeInteractiveSession === true;
-  const gitTerminalAvailable = gitTerminalStatus?.available === true;
+  const terminalAvailable = interactiveTerminalStatus?.available === true;
   const activeTerminalLabel = activeTerminalMode ? getTaskTerminalSessionLabel(activeTerminalMode) : "Terminal";
   const activeTerminalSentenceLabel = activeTerminalMode ? getTaskTerminalSessionSentenceLabel(activeTerminalMode) : "Terminal";
   const showWorkingIndicator = hasTaskWorkingState || interactiveTerminalRunning;
@@ -2150,24 +2117,29 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       })
     : "Working";
   const canKillInteractiveTerminal = canEditTask && canUseInteractiveTerminal && !!task && !isArchived && interactiveTerminalRunning;
-  const interactiveComposerSelected = selectedChatAction === "interactive";
   const terminalComposerSelected = selectedChatAction === "terminal";
-  const selectedChatActionRequiresPrompt = selectedChatAction !== "interactive" && selectedChatAction !== "terminal";
+  const selectedChatActionRequiresPrompt = selectedChatAction !== "terminal";
   const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived" || task.status === "draft";
   const promptMagicVisible = (selectedChatAction === "build" || selectedChatAction === "ask") && canCreateTask;
-  const parallelAskAllowed =
-    selectedChatAction === "ask" &&
-    task?.executionStatus === "running" &&
-    (task.executionAction === "build" || task.executionAction === "ask");
-  const autoRunStartBlocked =
-    selectedChatAction !== "comment" && (!!pendingChangeProposal || ((isQueued || isActive) && !parallelAskAllowed));
+  const autoRunStartBlocked = false;
   const chatDisabled = chatClosed || interactiveTerminalRunning || autoRunStartBlocked;
-  const chatInputDisabled = chatClosed || interactiveTerminalRunning || interactiveComposerSelected || terminalComposerSelected;
+  const chatInputDisabled = chatClosed || interactiveTerminalRunning || terminalComposerSelected;
   const canUsePromptMagic = promptMagicVisible && !chatInputDisabled;
   const promptMagicDisabled = !canUsePromptMagic || chatInput.trim().length === 0 || taskPromptMagicLoading;
   const canAttachPromptImages = selectedChatAction === "build" || selectedChatAction === "ask";
   const promptImageAttachmentDisabled = chatClosed || interactiveTerminalRunning || !canAttachPromptImages;
+  const pendingQueuedMessages = useMemo(
+    () =>
+      taskMessages.filter(
+        (message) => message.role === "user" && (message.action === "ask" || message.action === "build") && message.queueState === "pending"
+      ),
+    [taskMessages]
+  );
   const draftActionLabel = taskActionLabel[selectedChatAction].toLowerCase();
+  const willQueueSubmittedMessage =
+    selectedChatAction !== "comment" &&
+    selectedChatAction !== "terminal" &&
+    (pendingChangeProposal !== null || isQueued || isActive || pendingQueuedMessages.length > 0);
   const chatPlaceholder = (() => {
     if (interactiveTerminalRunning) {
       return `A ${activeTerminalSentenceLabel.toLowerCase()} session is already running for this task. Close or end it before sending from here.`;
@@ -2179,9 +2151,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return task?.status === "archived"
         ? "This task is archived and read-only."
         : "This task is closed. Create a follow-up task to continue.";
-    }
-    if (selectedChatAction === "interactive") {
-      return "Interactive terminal does not need a prompt. Press Start to open the live session in a new window.";
     }
     if (selectedChatAction === "terminal") {
       return "Terminal does not need a prompt. Press Start to open the task workspace terminal in a new window.";
@@ -2196,13 +2165,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return "Describe the next implementation change for this branch. Claude will receive the selected image file paths in the prompt.";
     }
     if (pendingChangeProposal) {
-      return `Draft the next ${draftActionLabel} while you review the pending checkpoint. Start is available again after you apply or reject it.`;
-    }
-    if (parallelAskAllowed) {
-      return "Ask a repository question while the current run keeps working. This ask will start immediately.";
+      return `Queue the next ${draftActionLabel} while you review the pending checkpoint. It will start automatically after you apply or reject it.`;
     }
     if (isQueued || isActive) {
-      return `Draft the next ${draftActionLabel} while the current run finishes. Start becomes available when the task is ready.`;
+      return `Queue the next ${draftActionLabel} while the current run finishes. It will start automatically when the task is ready.`;
     }
     if (selectedChatAction === "ask") {
       return "Ask a repository question or refine the last answer";
@@ -2217,10 +2183,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       buildTaskHistoryEntries({
         messages: taskMessages,
         runs: taskRuns,
-        proposals: changeProposals,
+        proposals: visibleChangeProposals,
         interactiveTerminalRunning: interactiveTerminalRunning || interactiveTerminalLaunchPending
       }),
-    [changeProposals, interactiveTerminalLaunchPending, interactiveTerminalRunning, taskMessages, taskRuns]
+    [interactiveTerminalLaunchPending, interactiveTerminalRunning, taskMessages, taskRuns, visibleChangeProposals]
   );
   const activeTerminalHistoryEntry = useMemo(
     () =>
@@ -2232,9 +2198,29 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         ) ?? null,
     [chatTimeline]
   );
+  const activeAutoRunHistoryEntry = useMemo(
+    () =>
+      [...chatTimeline]
+        .reverse()
+        .find(
+          (entry): entry is Extract<(typeof chatTimeline)[number], { kind: "grouped_auto_run" }> =>
+            entry.kind === "grouped_auto_run" && entry.run.status === "running" && entry.run.taskId === task?.id
+        ) ?? null,
+    [chatTimeline, task?.id]
+  );
   const historicalChatTimeline = useMemo(
     () => chatTimeline,
     [chatTimeline]
+  );
+  const canUnstickQueue = Boolean(
+    canEditTask &&
+      task &&
+      !isArchived &&
+      !isDraft &&
+      pendingChangeProposal === null &&
+      pendingQueuedMessages.length > 0 &&
+      task.executionStatus !== "preparing" &&
+      task.executionStatus !== "running"
   );
   const historyTotalCount = historicalChatTimeline.length;
   const loadedHistoryPageCount = Math.max(1, Math.ceil(Math.max(0, historyTotalCount) / HISTORY_PAGE_SIZE));
@@ -2379,7 +2365,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   };
   const handleProviderInputChange = (value: AgentProvider) => {
     setProviderInput(value);
-    const nextModels = getModelsForProvider(value).filter(
+    const nextModels = getProviderConfiguredModels(value, settings).filter(
       (option) => roleAllowedModels.length === 0 || roleAllowedModels.includes(option.value)
     );
     const nextEfforts = getEffortOptionsForProvider(value).filter(
@@ -2398,21 +2384,22 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     !!chatInput.trim() ||
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelInput !== (currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)) ||
+    modelInput !== currentTaskModel ||
     (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource);
   const composerClearDisabled = interactiveTerminalRunning || !composerHasChangesToClear;
   const terminalSubmitDisabled =
     chatClosed ||
     interactiveTerminalRunning ||
     interactiveTerminalLaunchPending ||
-    !gitTerminalAvailable;
+    !terminalAvailable;
   const chatSubmitDisabled =
     selectedChatAction === "terminal"
       ? terminalSubmitDisabled
       : chatDisabled ||
           (selectedChatActionRequiresPrompt && chatInput.trim().length === 0) ||
           (selectedPromptImageFiles.length > 0 && !canAttachPromptImages);
-  const chatSubmitLabel = selectedChatAction === "comment" ? "Add Comment" : "Start";
+  const chatSubmitLabel =
+    selectedChatAction === "comment" ? "Add Comment" : selectedChatActionRequiresPrompt && willQueueSubmittedMessage ? "Queue" : "Start";
   const handleConfirmClearComposer = () => {
     setSelectedSnippetId(null);
     setSnippetVariableModalOpen(false);
@@ -2423,7 +2410,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (task) {
       const nextProvider = currentTaskProvider;
       setProviderInput(nextProvider);
-      setModelInput(currentTaskModelOverride || getDefaultModelForProvider(nextProvider));
+      setModelInput(currentTaskModel);
       setProviderProfileInput(currentTaskProviderProfile);
       setCodexCredentialSourceInput(currentTaskCodexCredentialSource);
     }
@@ -2433,20 +2420,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
-    if (selectedChatAction === "interactive") {
-      setSubmitting("message");
-      try {
-        await handleStartInteractiveTerminalWindow();
-      } finally {
-        setSubmitting(null);
-      }
-      return;
-    }
-
     if (selectedChatAction === "terminal") {
       setSubmitting("message");
       try {
-        await handleStartInteractiveTerminalWindow("git");
+        await handleStartInteractiveTerminalWindow("terminal");
       } finally {
         setSubmitting(null);
       }
@@ -2495,12 +2472,36 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       messageApi.success(
         selectedChatAction === "comment"
           ? "Comment added to history"
-          : parallelAskAllowed && selectedChatAction === "ask"
-            ? "Ask started from history"
-            : `${taskActionLabel[selectedChatAction]} queued from history`
+          : willQueueSubmittedMessage
+            ? `${taskActionLabel[selectedChatAction]} follow-up queued`
+            : `${taskActionLabel[selectedChatAction]} started`
       );
     } catch (error) {
       showTaskActionError(error, "Task execution could not be started");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+  const handleCancelTask = async () => {
+    if (!task || !canCancel) {
+      return;
+    }
+
+    setSubmitting("cancel");
+    try {
+      const updatedTask = await api.cancelTask(task.id);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success(isQueued ? "Task cancelled" : "Cancellation requested");
+    } catch (error) {
+      showTaskActionError(error, "Task could not be cancelled");
     } finally {
       setSubmitting(null);
     }
@@ -2555,6 +2556,54 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setIsDeletingTask(false);
       setRedirectingToTaskList(false);
       showTaskActionError(error, "Failed to delete task");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+  const handleRemoveQueuedMessage = async (messageId: string) => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("message");
+    try {
+      const updatedTask = await api.deletePendingTaskMessage(task.id, messageId);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success("Queued follow-up removed");
+    } catch (error) {
+      showTaskActionError(error, "Queued follow-up could not be removed");
+    } finally {
+      setSubmitting(null);
+    }
+  };
+  const handleUnstickQueue = async () => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("message");
+    try {
+      const updatedTask = await api.unstickTaskQueue(task.id);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success("Queue resumed");
+    } catch (error) {
+      showTaskActionError(error, "Queue could not be resumed");
     } finally {
       setSubmitting(null);
     }
@@ -2626,6 +2675,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       modelOverride: modelInput,
       codexCredentialSource: codexCredentialSourceInput,
       branchStrategy: isImplementationTask ? branchStrategyInput : undefined,
+      autoApplyCheckpoints: autoApplyCheckpointsInput,
       notify,
       refreshTaskOnFailure: true
     });
@@ -2698,6 +2748,151 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       }
     });
   };
+  const openLinkTaskModal = async () => {
+    if (!task || !canLinkTaskWorkspace) {
+      return;
+    }
+
+    setSelectedLinkedTaskId(undefined);
+    setLinkTaskModalOpen(true);
+    setLinkTaskCandidatesLoading(true);
+    try {
+      const candidates = await api.listTasks({ view: "active", limit: 500 });
+      setLinkTaskCandidates(candidates);
+    } catch (error) {
+      showTaskActionError(error, "Could not load tasks");
+    } finally {
+      setLinkTaskCandidatesLoading(false);
+    }
+  };
+  const handleLinkTaskWorkspace = async () => {
+    if (!task || !selectedLinkedTaskId) {
+      return;
+    }
+
+    setSubmitting("linkTask");
+    try {
+      const updatedTask = await api.linkTaskWorkspace(task.id, selectedLinkedTaskId);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      setLinkTaskModalOpen(false);
+      setSelectedLinkedTaskId(undefined);
+      messageApi.success("Task workspace linked");
+    } catch (error) {
+      showTaskActionError(error, "Could not link task workspace");
+    } finally {
+      setSubmitting((current) => (current === "linkTask" ? null : current));
+    }
+  };
+  const handleUnlinkTaskWorkspace = async (linkedTaskId: string) => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("linkTask");
+    try {
+      const updatedTask = await api.unlinkTaskWorkspace(task.id, linkedTaskId);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      messageApi.success("Task workspace unlinked");
+    } catch (error) {
+      showTaskActionError(error, "Could not unlink task workspace");
+    } finally {
+      setSubmitting((current) => (current === "linkTask" ? null : current));
+    }
+  };
+  const openLinkPrModal = () => {
+    if (!task || !canLinkPullRequest) {
+      return;
+    }
+    setLinkPrNumberDraft(task.githubPrNumber ? String(task.githubPrNumber) : "");
+    setLinkPrModalOpen(true);
+  };
+  const confirmLinkPullRequest = async () => {
+    if (!task || !canLinkPullRequest) {
+      return;
+    }
+
+    const trimmed = linkPrNumberDraft.trim();
+    const githubPrNumber = trimmed.length === 0 ? null : Number(trimmed);
+    if (githubPrNumber !== null && (!Number.isInteger(githubPrNumber) || githubPrNumber <= 0)) {
+      messageApi.warning("Enter a positive pull request number.");
+      return;
+    }
+
+    setSubmitting("linkPr");
+    try {
+      const updatedTask = await api.updateTaskPullRequest(task.id, { githubPrNumber });
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      setLinkPrModalOpen(false);
+      messageApi.success(githubPrNumber === null ? "Linked pull request cleared" : `Linked pull request #${githubPrNumber}`);
+    } catch (error) {
+      showTaskActionError(error, "Could not update linked pull request");
+    } finally {
+      setSubmitting((current) => (current === "linkPr" ? null : current));
+    }
+  };
+  const openLinkIssueModal = () => {
+    if (!task || !canLinkIssue) {
+      return;
+    }
+    setLinkIssueNumberDraft(task.githubIssueNumber ? String(task.githubIssueNumber) : "");
+    setLinkIssueModalOpen(true);
+  };
+  const confirmLinkIssue = async () => {
+    if (!task || !canLinkIssue) {
+      return;
+    }
+
+    const trimmed = linkIssueNumberDraft.trim();
+    const githubIssueNumber = trimmed.length === 0 ? null : Number(trimmed);
+    if (githubIssueNumber !== null && (!Number.isInteger(githubIssueNumber) || githubIssueNumber <= 0)) {
+      messageApi.warning("Enter a positive issue number.");
+      return;
+    }
+
+    setSubmitting("linkIssue");
+    try {
+      const updatedTask = await api.updateTaskIssue(task.id, { githubIssueNumber });
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              ...updatedTask,
+              logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+            }
+          : updatedTask
+      );
+      setLinkIssueModalOpen(false);
+      messageApi.success(githubIssueNumber === null ? "Linked issue cleared" : `Linked issue #${githubIssueNumber}`);
+    } catch (error) {
+      showTaskActionError(error, "Could not update linked issue");
+    } finally {
+      setSubmitting((current) => (current === "linkIssue" ? null : current));
+    }
+  };
   const openTaskStateModal = () => {
     if (!task) {
       return;
@@ -2747,23 +2942,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const closeDraftEditModal = () => {
     setDraftEditModalOpen(false);
   };
-  const loadPushPreview = async () => {
-    if (!task) {
-      return;
-    }
-    setPushPreviewLoading(true);
-    try {
-      const preview = await api.getTaskPushPreview(task.id);
-      setPushPreview(preview);
-      setPushCommitMessage((current) => (current.trim().length > 0 ? current : preview.suggestedCommitMessage));
-    } catch (error) {
-      setPushPreview(null);
-      showTaskActionError(error, "Could not load push preview");
-    } finally {
-      setPushPreviewLoading(false);
-    }
-  };
-
   const confirmRenameTask = async () => {
     if (!task) {
       return;
@@ -2877,7 +3055,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         operation_type: "push_task_branch",
         source_surface: "task_detail"
       });
-      void loadPushPreview();
+      void loadTaskGitState();
       setLiveDiffRefreshKey((k) => k + 1);
     } catch (error) {
       trackEvent("git_op_failed", {
@@ -2890,6 +3068,109 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     } finally {
       setSubmitting(null);
     }
+  };
+  const handleResetGit = async () => {
+    if (!task) {
+      return;
+    }
+
+    Modal.confirm({
+      title: "Reset local Git state?",
+      content:
+        "This discards uncommitted changes and local-only commits by resetting the task branch to its remote branch, or to the task base if nothing has been pushed yet.",
+      okText: "Reset",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setSubmitting("resetGit");
+        try {
+          const updatedTask = await api.resetTaskGit(task.id);
+          setTask((current) =>
+            current
+              ? {
+                  ...current,
+                  ...updatedTask,
+                  logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                }
+              : updatedTask
+          );
+          messageApi.success("Local Git state reset");
+          void loadTaskGitState();
+          setLiveDiffRefreshKey((k) => k + 1);
+        } catch (error) {
+          showTaskActionError(error, "Failed to reset local Git state");
+        } finally {
+          setSubmitting(null);
+        }
+      }
+    });
+  };
+  const handleRevertCommit = async (commit: TaskWorkspaceCommit) => {
+    if (!task) {
+      return;
+    }
+
+    Modal.confirm({
+      title: `Revert ${commit.shortSha}?`,
+      content: "This creates a new commit that reverts the selected commit.",
+      okText: "Revert commit",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setSubmitting("revertCommit");
+        try {
+          const updatedTask = await api.revertTaskCommit(task.id, commit.sha);
+          setTask((current) =>
+            current
+              ? {
+                  ...current,
+                  ...updatedTask,
+                  logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                }
+              : updatedTask
+          );
+          messageApi.success(`Reverted ${commit.shortSha}`);
+          void loadTaskGitState();
+          setLiveDiffRefreshKey((k) => k + 1);
+        } catch (error) {
+          showTaskActionError(error, "Failed to revert commit");
+        } finally {
+          setSubmitting(null);
+        }
+      }
+    });
+  };
+  const handleResetToCommit = async (commit: TaskWorkspaceCommit) => {
+    if (!task) {
+      return;
+    }
+
+    Modal.confirm({
+      title: `Reset to ${commit.shortSha}?`,
+      content: "This removes newer local-only commits and discards uncommitted changes.",
+      okText: "Reset to commit",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        setSubmitting("resetCommit");
+        try {
+          const updatedTask = await api.resetTaskCommit(task.id, commit.sha);
+          setTask((current) =>
+            current
+              ? {
+                  ...current,
+                  ...updatedTask,
+                  logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
+                }
+              : updatedTask
+          );
+          messageApi.success(`Reset to ${commit.shortSha}`);
+          void loadTaskGitState();
+          setLiveDiffRefreshKey((k) => k + 1);
+        } catch (error) {
+          showTaskActionError(error, "Failed to reset to commit");
+        } finally {
+          setSubmitting(null);
+        }
+      }
+    });
   };
   const handleMergeTask = async () => {
     if (!task || !mergeTargetBranch || !mergePreview?.mergeable) {
@@ -3023,7 +3304,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         source_surface: "task_detail"
       });
       setLiveDiffRefreshKey((k) => k + 1);
-      void loadPushPreview();
+      void loadTaskGitState();
     } catch (error) {
       trackEvent("git_op_failed", {
         task_id: task.id,
@@ -3078,20 +3359,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setLiveDiffRefreshKey((k) => k + 1);
       refetchChangeProposals();
       void Promise.allSettled([
-        api.getTaskInteractiveTerminalStatus(task.id, { mode: "interactive" }),
-        api.getTaskInteractiveTerminalStatus(task.id, { mode: "git" })
-      ]).then(([interactiveResult, gitResult]) => {
+        api.getTaskInteractiveTerminalStatus(task.id, { mode: "terminal" })
+      ]).then(([terminalResult]) => {
         setInteractiveTerminalStatus(
-          interactiveResult.status === "fulfilled"
-            ? interactiveResult.value
-            : {
-                available: false,
-                reason: "Could not load interactive terminal status."
-              }
-        );
-        setGitTerminalStatus(
-          gitResult.status === "fulfilled"
-            ? gitResult.value
+          terminalResult.status === "fulfilled"
+            ? terminalResult.value
             : {
                 available: false,
                 reason: "Could not load terminal status."
@@ -3128,13 +3400,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
-  const openInteractiveTerminalWindow = (mode: TaskTerminalSessionMode = "interactive"): void => {
+  const openInteractiveTerminalWindow = (mode: TaskTerminalSessionMode = "terminal"): void => {
     if (!task) {
       return;
     }
 
-    const path = `/tasks/${task.id}/interactive`;
-    const query = mode === "git" ? "?mode=git" : "";
+    const path = `/tasks/${task.id}/terminal`;
+    const query = "?mode=terminal";
     const url = `${window.location.origin}${path}${query}`;
     const w = Math.min(1280, window.screen.availWidth - 48);
     const h = Math.min(840, window.screen.availHeight - 48);
@@ -3151,18 +3423,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     ].join(",");
     window.open(url, "_blank", `${features},noopener,noreferrer`);
   };
-  const handleStartInteractiveTerminalWindow = async (mode: TaskTerminalSessionMode = "interactive"): Promise<void> => {
+  const handleStartInteractiveTerminalWindow = async (mode: TaskTerminalSessionMode = "terminal"): Promise<void> => {
     if (!task) {
       return;
-    }
-
-    if (mode === "interactive" && configDirty && canEditTask && !isArchived) {
-      try {
-        await handleSaveConfig({ notify: false });
-      } catch (error) {
-        showTaskActionError(error, "Execution config could not be updated");
-        return;
-      }
     }
 
     setInteractiveTerminalLaunchPending(true);
@@ -3236,13 +3499,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (!task || !canPush) {
       return;
     }
-    void loadPushPreview();
-  }, [canPush, task?.id, task?.updatedAt]);
+    void loadTaskGitState();
+  }, [canPush, loadTaskGitState, task?.id, task?.updatedAt]);
 
   const moreActionItems = task
     ? [
         hasBranchForSync ? { key: "refreshGitStatus", label: "Refresh Git Status" } : null,
         canEditTask && !isArchived ? { key: "newSession", label: "New Session" } : null,
+        canLinkTaskWorkspace ? { key: "linkTask", label: "Link Task" } : null,
+        canLinkPullRequest ? { key: "linkPr", label: task.githubPrNumber ? "Edit Linked PR" : "Link Pull Request" } : null,
+        canLinkIssue ? { key: "linkIssue", label: task.githubIssueNumber ? "Edit Linked Issue" : "Link Issue" } : null,
         canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Session", danger: true } : null,
         canChangeTaskState ? { key: "changeState", label: "Change State" } : null,
         canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
@@ -3250,8 +3516,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         canDelete ? { key: "delete", label: "Delete Task", danger: true } : null
       ].filter(Boolean)
     : [];
-  const hasExecutionButtons = canCancel || canStartDraft;
-  const hasGitHubDiffTargetAction = githubPullRequestLookupPending || Boolean(githubDiffTarget);
+  const showHeaderCancel = canCancel && activeAutoRunHistoryEntry === null;
+  const hasExecutionButtons = showHeaderCancel || canStartDraft || canUnstickQueue;
   const assigneeLabel = task?.ownerUserId ? (assigneeNameById.get(task.ownerUserId) ?? task.ownerUserId) : "Unassigned";
   const contextContent = (
     <Space direction="vertical" size={16} style={{ width: "100%" }}>
@@ -3280,6 +3546,32 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Descriptions.Item label={baseBranchLabel}>{task?.baseBranch}</Descriptions.Item>
           {hasBranch ? <Descriptions.Item label="Branch Strategy">{task ? getTaskBranchStrategyLabel(task.branchStrategy) : ""}</Descriptions.Item> : null}
           {hasBranch ? <Descriptions.Item label="Target Branch">{task?.branchName ?? "(pending)"}</Descriptions.Item> : null}
+          <Descriptions.Item label="Linked PR">
+            {task?.githubPrNumber ? (
+              linkedPullRequestUrl ? (
+                <Typography.Link href={linkedPullRequestUrl} target="_blank" rel="noreferrer">
+                  #{task.githubPrNumber}
+                </Typography.Link>
+              ) : (
+                `#${task.githubPrNumber}`
+              )
+            ) : (
+              <Typography.Text type="secondary">None</Typography.Text>
+            )}
+          </Descriptions.Item>
+          <Descriptions.Item label="Linked Issue">
+            {task?.githubIssueNumber ? (
+              linkedIssueUrl ? (
+                <Typography.Link href={linkedIssueUrl} target="_blank" rel="noreferrer">
+                  #{task.githubIssueNumber}
+                </Typography.Link>
+              ) : (
+                `#${task.githubIssueNumber}`
+              )
+            ) : (
+              <Typography.Text type="secondary">None</Typography.Text>
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label="Created">{task ? dayjs(task.createdAt).format("YYYY-MM-DD HH:mm") : ""}</Descriptions.Item>
           <Descriptions.Item label="Deadline">
             {canEditTask && !isArchived ? (
@@ -3302,12 +3594,32 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Descriptions.Item label="Provider">{getAgentProviderLabel(currentTaskProvider)}</Descriptions.Item>
           <Descriptions.Item label="Effort">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
           <Descriptions.Item label="Last Action">{task?.lastAction ?? "draft"}</Descriptions.Item>
-          <Descriptions.Item label="Model">{currentTaskModelOverride || getDefaultModelForProvider(currentTaskProvider)}</Descriptions.Item>
+          <Descriptions.Item label="Model">{currentTaskModel}</Descriptions.Item>
           {currentTaskProvider === "codex" ? (
             <Descriptions.Item label="Codex Credential Source">
               {codexCredentialSourceOptions.find((option) => option.value === currentTaskCodexCredentialSource)?.label ?? "Auto"}
             </Descriptions.Item>
           ) : null}
+          <Descriptions.Item label="Linked Workspaces" span={2}>
+            {task?.linkedWorkspaces?.length ? (
+              <Space size={[8, 8]} wrap>
+                {task.linkedWorkspaces.map((link) => (
+                  <Tag
+                    key={link.taskId}
+                    closable={canLinkTaskWorkspace}
+                    onClose={(event) => {
+                      event.preventDefault();
+                      void handleUnlinkTaskWorkspace(link.taskId);
+                    }}
+                  >
+                    {link.title} <Typography.Text code>{`.linked-workspace/${link.alias}`}</Typography.Text>
+                  </Tag>
+                ))}
+              </Space>
+            ) : (
+              <Typography.Text type="secondary">None</Typography.Text>
+            )}
+          </Descriptions.Item>
           <Descriptions.Item label="Status">
             {task ? (
               showWorkingIndicator ? (
@@ -3336,6 +3648,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     pushPreview &&
       (pushPreview.hasUncommittedChanges || pushPreview.unpushedCommitSubjects.length > 0)
   );
+  const uncommittedChangeCount = pushPreview?.changedFiles.length ?? 0;
+  const unpushedCommitCount = pushPreview?.unpushedCommitSubjects.length ?? 0;
+  const gitStateSummary = [
+    pushPreviewLoading
+      ? { label: "Working tree", value: "Loading…" }
+      : {
+          label: "Working tree",
+          value: pushPreview?.hasUncommittedChanges ? `${uncommittedChangeCount} changed ${uncommittedChangeCount === 1 ? "file" : "files"}` : "Clean"
+        },
+    pushPreviewLoading
+      ? { label: "Local commits", value: "Loading…" }
+      : {
+          label: "Local commits",
+          value: unpushedCommitCount > 0 ? `${unpushedCommitCount} unpushed` : "All pushed"
+        },
+    pushPreviewLoading
+      ? { label: "Branch status", value: "Loading…" }
+      : {
+          label: "Branch status",
+          value: pushPreviewHasPushableChanges || pushCount > 0 ? "Local-only changes present" : "In sync with remote"
+        }
+  ];
   const gitOperationBusy = gitOperation?.status === "queued" || gitOperation?.status === "running";
   const gitOperationStatusLabel =
     gitOperation?.status === "queued"
@@ -3374,6 +3708,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const applyCheckpointFooterBusy = applyCheckpointApplyingOrPushing || applyCheckpointCommitMessageGenerating;
   const mergeFooterBusy = submitting === "merge" || mergeCommitMessageGenerating;
   const pushNothingToPush = Boolean(pushPreview) && pushCount === 0 && !pushPreviewHasPushableChanges;
+  const resetGitDisabled = submitting === "resetGit" || pushPreviewLoading || gitOperationBusy || !pushPreviewHasPushableChanges;
   const pushPrimaryDisabled = submitting === "push" || pushPreviewLoading || pushNothingToPush || gitOperationBusy;
   const mergeBlockedReason =
     pendingChangeProposal
@@ -3385,15 +3720,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     canPull ? (
       <Tooltip
         title={
-          pendingChangeProposal
-            ? "Apply or reject the pending checkpoint before pulling."
-            : gitOperationBusy
-              ? "Another Git operation is already running."
+          gitOperationBusy
+            ? "Another Git operation is already running."
             : undefined
         }
       >
         <span style={{ display: "inline-block" }}>
-          <Button onClick={handlePullTask} loading={submitting === "pull"} disabled={!!pendingChangeProposal || submitting === "push" || gitOperationBusy}>
+          <Button onClick={handlePullTask} loading={submitting === "pull"} disabled={submitting === "push" || gitOperationBusy}>
             {`Pull (${pullCount})`}
           </Button>
         </span>
@@ -3403,41 +3736,85 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     canPush ? (
       <Tooltip
         title={
-          pendingChangeProposal
-            ? "Apply or reject the pending checkpoint before pushing."
-            : gitOperationBusy
-              ? "Another Git operation is already running."
+          gitOperationBusy
+            ? "Another Git operation is already running."
             : pushNothingToPush
               ? "Nothing to push — commit local changes or refresh Git status."
               : undefined
         }
       >
         <span style={{ display: "inline-block" }}>
-          <Button type="primary" onClick={() => void confirmPushTask()} loading={submitting === "push"} disabled={!!pendingChangeProposal || pushPrimaryDisabled}>
+          <Button type="primary" onClick={() => void confirmPushTask()} loading={submitting === "push"} disabled={pushPrimaryDisabled}>
             {`Push (${pushCount})`}
           </Button>
         </span>
       </Tooltip>
     ) : null;
-  const renderGitHubDiffTargetButton = () => {
-    if (githubPullRequestLookupPending) {
-      return (
-        <Button loading disabled>
-          Checking PR…
-        </Button>
-      );
-    }
-
-    if (!githubDiffTarget) {
-      return null;
-    }
-
-    return (
-      <Button href={githubDiffTarget.href} target="_blank" rel="noreferrer">
-        {githubDiffTarget.label}
-      </Button>
-    );
-  };
+  const renderResetGitButton = () =>
+    canPush ? (
+      <Tooltip
+        title={
+          gitOperationBusy
+            ? "Another Git operation is already running."
+              : !pushPreviewHasPushableChanges
+                ? "No local-only changes or commits to reset."
+                : undefined
+        }
+      >
+        <span style={{ display: "inline-block" }}>
+          <Button
+            danger
+            onClick={() => void handleResetGit()}
+            loading={submitting === "resetGit"}
+            disabled={resetGitDisabled}
+          >
+            Reset Git
+          </Button>
+        </span>
+      </Tooltip>
+    ) : null;
+  const renderViewPullRequestButton = () =>
+    task?.githubPrNumber ? (
+      <Tooltip
+        title={
+          linkedPullRequestUrl
+            ? `Open linked pull request #${task.githubPrNumber}.`
+            : "The linked pull request URL is unavailable for this repository."
+        }
+      >
+        <span style={{ display: "inline-block" }}>
+          <Button
+            href={linkedPullRequestUrl ?? undefined}
+            target="_blank"
+            rel="noreferrer"
+            disabled={!linkedPullRequestUrl}
+          >
+            View PR
+          </Button>
+        </span>
+      </Tooltip>
+    ) : null;
+  const renderViewIssueButton = () =>
+    task?.githubIssueNumber ? (
+      <Tooltip
+        title={
+          linkedIssueUrl
+            ? `Open linked issue #${task.githubIssueNumber}.`
+            : "The linked issue URL is unavailable for this repository."
+        }
+      >
+        <span style={{ display: "inline-block" }}>
+          <Button
+            href={linkedIssueUrl ?? undefined}
+            target="_blank"
+            rel="noreferrer"
+            disabled={!linkedIssueUrl}
+          >
+            View Issue
+          </Button>
+        </span>
+      </Tooltip>
+    ) : null;
   const dropdownMoreActionItems = [
     ...(canMerge
       ? [
@@ -3482,6 +3859,21 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               return;
             }
 
+            if (key === "linkTask") {
+              void openLinkTaskModal();
+              return;
+            }
+
+            if (key === "linkPr") {
+              openLinkPrModal();
+              return;
+            }
+
+            if (key === "linkIssue") {
+              openLinkIssueModal();
+              return;
+            }
+
             if (key === "changeState") {
               openTaskStateModal();
               return;
@@ -3509,7 +3901,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
         trigger={["click"]}
       >
-        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "killTerminal" || submitting === "merge" || submitting === "state"}>
+        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "killTerminal" || submitting === "merge" || submitting === "state" || submitting === "linkTask" || submitting === "linkPr" || submitting === "linkIssue"}>
           More
         </Button>
       </Dropdown>
@@ -3521,13 +3913,33 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         <Card size="small" style={{ flexShrink: 0 }} styles={{ body: { paddingBottom: 12 } }}>
           <Segmented
             value={diffLiveKind}
-            onChange={(value) => setDiffLiveKind(value as "compare" | "commits")}
+            onChange={(value) => setDiffLiveKind(value as "compare" | "commits" | "working")}
             options={[
+              { label: "Working tree", value: "working" },
               { label: "Branch commits", value: "commits" },
               { label: "Compare to branch", value: "compare" }
             ]}
             style={{ marginBottom: 14 }}
           />
+          <Flex gap={8} wrap style={{ width: "100%", marginBottom: 14 }}>
+            {gitStateSummary.map((item) => (
+              <div
+                key={item.label}
+                style={{
+                  minWidth: 150,
+                  flex: "1 1 170px",
+                  padding: "10px 12px",
+                  borderRadius: 8,
+                  background: token.colorFillAlter
+                }}
+              >
+                <Typography.Text type="secondary" style={{ display: "block", fontSize: 12 }}>
+                  {item.label}
+                </Typography.Text>
+                <Typography.Text strong>{item.value}</Typography.Text>
+              </div>
+            ))}
+          </Flex>
           <Flex align="flex-start" wrap="wrap" gap={16}>
             <div style={{ minWidth: 200, flex: "1 1 220px" }}>
               <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
@@ -3537,8 +3949,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 placeholder={task.repoDefaultBranch ?? "Branch"}
                 value={diffCompareBaseRef ?? task.repoDefaultBranch}
                 options={diffBaseBranchOptions}
-                loading={diffBranchesLoading}
-                disabled={!canRequestLiveDiff || diffLiveKind === "commits"}
+                disabled={!canRequestLiveDiff || diffLiveKind !== "compare"}
                 style={{ width: "100%" }}
                 onChange={(value) => {
                   setDiffCompareBaseRef(typeof value === "string" && value.length > 0 ? value : task.repoDefaultBranch ?? null);
@@ -3549,12 +3960,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   Recent commits on the current workspace branch. Choose one to view its patch. The base branch is only used in
                   Compare to branch mode.
                 </Typography.Paragraph>
+              ) : diffLiveKind === "working" ? (
+                <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
+                  Live workspace changes against HEAD, including uncommitted edits.
+                </Typography.Paragraph>
               ) : null}
             </div>
             <ArrowRightOutlined style={{ color: "rgba(0,0,0,0.45)", marginTop: 34 }} />
             <div style={{ minWidth: 200, flex: "1 1 220px" }}>
               <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
-                {diffLiveKind === "commits" ? "Workspace (HEAD)" : "Compare (HEAD)"}
+                {diffLiveKind === "commits" ? "Workspace (HEAD)" : diffLiveKind === "working" ? "Working tree" : "Compare (HEAD)"}
               </Typography.Text>
               <Typography.Text code style={{ fontSize: 14 }}>
                 {diffHeadLabel}
@@ -3577,6 +3992,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 ) : (
                   liveDiff?.message ?? "Select a commit to view its changes."
                 )
+              ) : diffLiveKind === "working" ? (
+                hasLiveDiff ? `Working tree · updated ${dayjs(liveDiff?.fetchedAt).format("HH:mm:ss")}` : liveDiff?.message ?? "Live working tree diff will appear once the task workspace exists."
               ) : hasLiveDiff ? (
                 `Compare · updated ${dayjs(liveDiff?.fetchedAt).format("HH:mm:ss")}`
               ) : hasStoredDiff ? (
@@ -3608,9 +4025,46 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               size="small"
               title="Commits"
               extra={
-                <Button type="link" size="small" onClick={triggerGitRefresh} style={{ padding: 0 }}>
-                  Refresh
-                </Button>
+                <Space size={8}>
+                  {selectedCommitSha ? (
+                    <>
+                      <Button
+                        type="link"
+                        size="small"
+                        onClick={() => {
+                          const selected = commitLog.find((commit) => commit.sha === selectedCommitSha);
+                          if (selected) {
+                            void handleRevertCommit(selected);
+                          }
+                        }}
+                        loading={submitting === "revertCommit"}
+                        style={{ padding: 0 }}
+                      >
+                        Revert commit
+                      </Button>
+                      {commitLog.find((commit) => commit.sha === selectedCommitSha)?.isPushed === false ? (
+                        <Button
+                          type="link"
+                          size="small"
+                          danger
+                          onClick={() => {
+                            const selected = commitLog.find((commit) => commit.sha === selectedCommitSha);
+                            if (selected) {
+                              void handleResetToCommit(selected);
+                            }
+                          }}
+                          loading={submitting === "resetCommit"}
+                          style={{ padding: 0 }}
+                        >
+                          Reset to here
+                        </Button>
+                      ) : null}
+                    </>
+                  ) : null}
+                  <Button type="link" size="small" onClick={triggerGitRefresh} style={{ padding: 0 }}>
+                    Refresh
+                  </Button>
+                </Space>
               }
               style={{ width: "100%", maxWidth: 360, flex: "0 0 320px", height: "100%", minHeight: 0, display: "flex", flexDirection: "column" }}
               styles={{ body: { padding: 0, flex: 1, minHeight: 0, overflow: "auto" } }}
@@ -3635,9 +4089,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     >
                       <List.Item.Meta
                         title={
-                          <Typography.Text code style={{ fontSize: 12 }}>
-                            {c.shortSha}
-                          </Typography.Text>
+                          <Space size={8} wrap>
+                            <Typography.Text code style={{ fontSize: 12 }}>
+                              {c.shortSha}
+                            </Typography.Text>
+                            <Tag color={c.isPushed ? "default" : "blue"} style={{ marginInlineEnd: 0 }}>
+                              {c.isPushed ? "Pushed" : "Local"}
+                            </Tag>
+                          </Space>
                         }
                         description={
                           <div>
@@ -3672,6 +4131,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                             : hasLiveDiff
                               ? "This commit has no file changes in its patch."
                               : liveDiff?.message ?? "Could not load this commit’s diff."
+                    : diffLiveKind === "working"
+                      ? hasLiveDiff
+                        ? "No uncommitted changes in the working tree."
+                        : liveDiff?.message ?? "Could not load the working tree diff."
                     : hasLiveDiff
                         ? "No diff between the selected base and HEAD."
                         : "No diff captured yet. Run Build to generate one."
@@ -3690,7 +4153,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const aiSettingsSummary = [
     providerOptions.find((option) => option.value === providerInput)?.label ?? getAgentProviderLabel(providerInput),
-    allowedProviderModels.find((option) => option.value === modelInput)?.label ?? modelInput,
+    (allowedProviderModels.find((option) => option.value === modelInput)?.label ?? modelInput) ||
+      `${getProviderDefaultModel(providerInput, settings)} (default)`,
     getProviderProfileLabel(providerProfileInput),
     providerInput === "codex"
       ? `Credential: ${codexCredentialSourceOptions.find((option) => option.value === codexCredentialSourceInput)?.label ?? "Auto"}`
@@ -3700,6 +4164,42 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     .join(" · ");
   const chatComposer = (
     <Flex vertical gap={12}>
+      <Flex gap={8} align="center" wrap="wrap">
+        <Button onClick={() => setAiSettingsModalOpen(true)}>Settings</Button>
+        <Select
+          showSearch
+          value={modelInput}
+          options={allowedProviderModels}
+          loading={providerModelsLoading}
+          onChange={(value) => setModelInput(value)}
+          optionFilterProp="label"
+          placeholder="Select model"
+          style={{ minWidth: 220, flex: 1 }}
+          disabled={!canEditTask || isArchived || interactiveTerminalRunning}
+        />
+        {!terminalComposerSelected && canUseSnippets ? (
+          <Select
+            showSearch
+            style={{ minWidth: 220, flex: 1 }}
+            placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
+            value={selectedSnippetId}
+            onChange={(value) => setSelectedSnippetId(value)}
+            optionFilterProp="label"
+            allowClear
+            loading={snippetsLoading}
+            disabled={snippetsLoading || snippets.length === 0 || !canEditTask || isArchived || interactiveTerminalRunning}
+            options={snippets.map((snippet) => ({
+              label: snippet.name,
+              value: snippet.id
+            }))}
+          />
+        ) : null}
+        {!terminalComposerSelected && canUseSnippets ? (
+          <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}>
+            Insert
+          </Button>
+        ) : null}
+      </Flex>
       <div style={{ position: "relative" }}>
         {promptMagicVisible ? (
           <Button
@@ -3799,113 +4299,61 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Divider style={{ margin: 0 }} />
         </>
       ) : null}
-      <Flex justify="space-between" align="flex-end" gap={12} wrap="wrap">
-        <Flex align="flex-end" gap={12} wrap="wrap" style={{ flex: "1 1 0", minWidth: 0 }}>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column"
-            }}
-          >
-            <Button style={{ alignSelf: "flex-start" }} onClick={() => setAiSettingsModalOpen(true)}>
-              AI Settings
+      <Flex justify="flex-end" align="flex-end" gap={12} wrap="wrap">
+        <Flex align="center" justify="flex-end" gap={12} wrap="wrap">
+          <Space.Compact size="middle">
+            <Select
+              value={selectedChatAction}
+              options={allowedChatActions.map((action) => ({
+                label: taskActionLabel[action],
+                value: action
+              }))}
+              disabled={chatClosed || interactiveTerminalRunning}
+              onChange={(value) => {
+                selectedChatActionRef.current = true;
+                setSelectedChatAction(value);
+              }}
+              style={{ minWidth: 140 }}
+            />
+            <Button
+              type="primary"
+              loading={submitting === "message"}
+              disabled={chatSubmitDisabled}
+              onClick={() => void handleSubmitComposer()}
+            >
+              {chatSubmitLabel}
             </Button>
-          </div>
-          {!interactiveComposerSelected && !terminalComposerSelected ? (
-            <div
+            <Popconfirm
+              title="Clear composer?"
+              description="This will clear the message input, selected reference images, and reset the settings to this task's defaults."
+              okText="Clear"
+              cancelText="Cancel"
+              okButtonProps={{ danger: true }}
+              placement="top"
+              disabled={composerClearDisabled}
+              onConfirm={handleConfirmClearComposer}
+            >
+              <Button disabled={composerClearDisabled}>Clear</Button>
+            </Popconfirm>
+          </Space.Compact>
+          {canPull || canPush || hasLinkedPullRequest || hasLinkedIssue || hasDropdownMoreActions ? (
+            <Space
+              size={8}
+              wrap
               style={{
-                minWidth: 260,
-                maxWidth: 420,
-                display: "flex",
-                flexDirection: "column"
+                paddingInlineStart: 12,
+                marginInlineStart: 4,
+                borderInlineStart: "1px solid var(--ant-colorSplit, rgba(5, 5, 5, 0.12))"
               }}
             >
-              <Flex gap={8}>
-                <Select
-                  showSearch
-                  style={{ minWidth: 180, flex: 1 }}
-                  placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-                  value={selectedSnippetId}
-                  onChange={(value) => setSelectedSnippetId(value)}
-                  optionFilterProp="label"
-                  allowClear
-                  loading={snippetsLoading}
-                  disabled={
-                    snippetsLoading ||
-                    snippets.length === 0 ||
-                    !canEditTask ||
-                    isArchived ||
-                    interactiveTerminalRunning
-                  }
-                  options={snippets.map((snippet) => ({
-                    label: snippet.name,
-                    value: snippet.id
-                  }))}
-                />
-                <Button
-                  onClick={handleInsertSelectedSnippet}
-                  disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}
-                >
-                  Insert
-                </Button>
-              </Flex>
-            </div>
+              {renderPullTaskButton()}
+              {renderPushTaskButton()}
+              {renderResetGitButton()}
+              {renderViewPullRequestButton()}
+              {renderViewIssueButton()}
+              {renderMoreActionsButton()}
+            </Space>
           ) : null}
-        </Flex>
-        <Flex align="center" gap={12} wrap="wrap" style={{ flexShrink: 0 }}>
-          <Flex align="center" gap={12} wrap="wrap">
-            <Space.Compact size="middle">
-              <Select
-                value={selectedChatAction}
-                options={allowedChatActions.map((action) => ({
-                  label: taskActionLabel[action],
-                  value: action
-                }))}
-                disabled={chatClosed || interactiveTerminalRunning}
-                onChange={(value) => {
-                  selectedChatActionRef.current = true;
-                  setSelectedChatAction(value);
-                }}
-                style={{ minWidth: 140 }}
-              />
-              <Button
-                type="primary"
-                loading={submitting === "message"}
-                disabled={chatSubmitDisabled}
-                onClick={() => void handleSubmitComposer()}
-              >
-                {chatSubmitLabel}
-              </Button>
-              <Popconfirm
-                title="Clear composer?"
-                description="This will clear the message input, selected reference images, and reset the AI settings to this task's defaults."
-                okText="Clear"
-                cancelText="Cancel"
-                okButtonProps={{ danger: true }}
-                placement="top"
-                disabled={composerClearDisabled}
-                onConfirm={handleConfirmClearComposer}
-              >
-                <Button disabled={composerClearDisabled}>Clear</Button>
-              </Popconfirm>
-            </Space.Compact>
-            {canPull || canPush || hasGitHubDiffTargetAction || hasDropdownMoreActions ? (
-              <Space
-                size={8}
-                wrap
-                style={{
-                  paddingInlineStart: 12,
-                  marginInlineStart: 4,
-                  borderInlineStart: "1px solid var(--ant-colorSplit, rgba(5, 5, 5, 0.12))"
-                }}
-              >
-                {renderPullTaskButton()}
-                {renderPushTaskButton()}
-                {renderGitHubDiffTargetButton()}
-                {renderMoreActionsButton()}
-              </Space>
-            ) : null}
-          </Flex>
         </Flex>
       </Flex>
       <Divider style={{ margin: "8px 0 0" }} />
@@ -4030,7 +4478,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedAfterPush
       );
       messageApi.success(canReapplyReverted ? "Checkpoint re-applied and pushed" : "Checkpoint applied and pushed");
-      void loadPushPreview();
+      void loadTaskGitState();
       setLiveDiffRefreshKey((k) => k + 1);
     } catch (error) {
       if (applied) {
@@ -4206,38 +4654,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Typography.Paragraph>
     ) : null;
 
-  const renderRunLogsPanel = (run: TaskRun) => (
-    <div
-      style={{
-        padding: "14px 16px",
-        background: "#0b0f14",
-        borderRadius: 8,
-        maxHeight: 600,
-        overflow: "scroll"
-      }}
-    >
-      <pre
-        style={{
-          margin: 0,
-          color: "#d8e1ee",
-          fontFamily: "\"SFMono-Regular\", Consolas, monospace",
-          fontSize: 12,
-          lineHeight: 1.65,
-          whiteSpace: "pre-wrap",
-          wordBreak: "break-word"
-        }}
-      >
-        {run.logs.join("\n") || "No logs captured for this run."}
-      </pre>
-    </div>
-  );
-
-  const formatTimelineEventKind = (kind: string): string =>
-    kind
-      .split(".")
-      .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
-      .join(" ");
-
   type TimelineEvent = NonNullable<TaskRun["timelineEvents"]>[number];
 
   const getTimelineEventColor = (event: TimelineEvent): string => {
@@ -4259,13 +4675,30 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     return "gray";
   };
 
+  const getTimelineDisplayItemColor = (item: TimelineDisplayItem): string => {
+    if (item.type === "event") {
+      return getTimelineEventColor(item.event);
+    }
+    if (item.status === "failed") {
+      return "red";
+    }
+    if (item.status === "in_progress") {
+      return "blue";
+    }
+    return "green";
+  };
+
+  const formatTimelineIndexRange = (start: number, end: number): string => (start === end ? `#${start + 1}` : `#${start + 1}-${end + 1}`);
+
   const renderTimelineEventContent = (event: TimelineEvent): ReactNode => {
     const showDetail = event.detail && event.detail !== event.filePath;
     return (
       <Space direction="vertical" size={6} style={{ width: "100%" }}>
         <Flex align="flex-start" justify="space-between" gap={8} wrap="wrap">
-          <Space size={6} wrap>
-            <Typography.Text strong>{event.title}</Typography.Text>
+          <Space size={6} wrap style={{ minWidth: 0, flex: "1 1 auto" }}>
+            <Typography.Text strong style={{ whiteSpace: "normal", wordBreak: "break-word" }}>
+              {event.title}
+            </Typography.Text>
             {event.toolName ? <Tag color="blue">{event.toolName}</Tag> : null}
             {event.status ? <Tag>{event.status}</Tag> : null}
             {event.exitCode != null ? <Tag color={event.exitCode === 0 ? "green" : "red"}>exit {event.exitCode}</Tag> : null}
@@ -4274,9 +4707,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             #{event.rawEventIndex + 1}
           </Typography.Text>
         </Flex>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          {formatTimelineEventKind(event.kind)}
-        </Typography.Text>
         {event.filePath ? (
           <Typography.Text code style={{ width: "fit-content", maxWidth: "100%", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
             {event.filePath}
@@ -4298,15 +4728,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </Typography.Text>
         ) : null}
         {event.message ? (
-          <Typography.Paragraph
-            style={{
-              margin: 0,
-              maxHeight: 180,
-              overflow: "auto",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word"
-            }}
-          >
+          <Typography.Paragraph style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
             {event.message}
           </Typography.Paragraph>
         ) : null}
@@ -4314,8 +4736,123 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   };
 
+  const renderToolGroupContent = (
+    item: Extract<TimelineDisplayItem, { type: "tool_group" }>,
+    provider: TaskRun["provider"]
+  ): ReactNode => (
+    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+      <Flex align="flex-start" justify="space-between" gap={8} wrap="wrap">
+        <Space size={6} wrap>
+          <Typography.Text strong>{item.title}</Typography.Text>
+          <Tag>{item.calls.length}</Tag>
+          {provider !== "codex" ? (
+            <Tag color={item.status === "failed" ? "red" : item.status === "in_progress" ? "blue" : "green"}>{item.status}</Tag>
+          ) : null}
+          {item.rawEventCount > item.calls.length ? <Tag>{item.rawEventCount} events</Tag> : null}
+        </Space>
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {formatTimelineIndexRange(item.rawEventIndexStart, item.rawEventIndexEnd)}
+        </Typography.Text>
+      </Flex>
+      <Collapse
+        ghost
+        size="small"
+        items={[
+          {
+            key: "tools",
+            label: "Details",
+            children: (
+              <List
+                size="small"
+                dataSource={item.calls}
+                renderItem={(call) => (
+                  <List.Item style={{ paddingLeft: 0, paddingRight: 0 }}>
+                    <Space direction="vertical" size={4} style={{ width: "100%" }}>
+                      <Flex align="flex-start" justify="space-between" gap={8} wrap="wrap">
+                        <Space size={6} wrap>
+                          <Typography.Text>{call.title}</Typography.Text>
+                          {call.toolName ? <Tag color="blue">{call.toolName}</Tag> : null}
+                          {call.status ? <Tag>{call.status}</Tag> : null}
+                          {call.exitCode != null ? <Tag color={call.exitCode === 0 ? "green" : "red"}>exit {call.exitCode}</Tag> : null}
+                        </Space>
+                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                          {formatTimelineIndexRange(call.rawEventIndexStart, call.rawEventIndexEnd)}
+                        </Typography.Text>
+                      </Flex>
+                      {call.detail ? (
+                        <Typography.Text
+                          code
+                          style={{
+                            display: "block",
+                            padding: "6px 8px",
+                            background: token.colorFillAlter,
+                            borderRadius: 6,
+                            whiteSpace: "pre-wrap",
+                            wordBreak: "break-word"
+                          }}
+                        >
+                          {call.detail}
+                        </Typography.Text>
+                      ) : null}
+                      {call.message ? (
+                        <Typography.Paragraph style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                          {call.message}
+                        </Typography.Paragraph>
+                      ) : null}
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            )
+          }
+        ]}
+      />
+    </Space>
+  );
+
+  const renderFileGroupContent = (item: Extract<TimelineDisplayItem, { type: "file_group" }>): ReactNode => (
+    <Space direction="vertical" size={8} style={{ width: "100%" }}>
+      <Flex align="flex-start" justify="space-between" gap={8} wrap="wrap">
+        <Space size={6} wrap>
+          <Typography.Text strong>{item.title}</Typography.Text>
+          <Tag>{item.files.length}</Tag>
+          {item.status ? <Tag>{item.status}</Tag> : null}
+          {item.rawEventCount > item.files.length ? <Tag>{item.rawEventCount} events</Tag> : null}
+        </Space>
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          {formatTimelineIndexRange(item.rawEventIndexStart, item.rawEventIndexEnd)}
+        </Typography.Text>
+      </Flex>
+      <List
+        size="small"
+        dataSource={item.files}
+        renderItem={(file) => (
+          <List.Item style={{ paddingLeft: 0, paddingRight: 0 }}>
+            <Space size={6} wrap>
+              {file.fileChangeKind ? <Tag>{file.fileChangeKind}</Tag> : null}
+              <Typography.Text code style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+                {file.filePath ?? file.title}
+              </Typography.Text>
+            </Space>
+          </List.Item>
+        )}
+      />
+    </Space>
+  );
+
+  const renderTimelineDisplayItemContent = (item: TimelineDisplayItem): ReactNode => {
+    if (item.type === "tool_group") {
+      return renderToolGroupContent(item, currentTaskProvider);
+    }
+    if (item.type === "file_group") {
+      return renderFileGroupContent(item);
+    }
+    return renderTimelineEventContent(item.event);
+  };
+
   const renderRunTimelinePanel = (run: TaskRun) => {
     const events = run.timelineEvents ?? [];
+    const items = buildTimelineDisplayItems(events);
     if (events.length === 0) {
       return <Typography.Text type="secondary">No parsed timeline events captured for this run.</Typography.Text>;
     }
@@ -4332,11 +4869,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
       >
         <Timeline
-          mode="left"
-          items={events.map((event) => ({
-            key: event.id,
-            color: getTimelineEventColor(event),
-            children: renderTimelineEventContent(event)
+          items={items.map((item) => ({
+            key: item.id,
+            color: getTimelineDisplayItemColor(item),
+            children: renderTimelineDisplayItemContent(item)
           }))}
         />
       </div>
@@ -4345,6 +4881,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const renderRunTimelineCollapse = (run: TaskRun) => {
     const count = run.timelineEvents?.length ?? 0;
+    const displayCount = buildTimelineDisplayItems(run.timelineEvents ?? []).length;
     return (
       <Collapse
         size="small"
@@ -4361,46 +4898,26 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         items={[
           {
             key: run.id,
-            label: `Timeline${count > 0 ? ` (${count})` : ""}`,
+            label: `Timeline${count > 0 ? ` (${displayCount}/${count})` : ""}`,
+            extra: run.hasRawJson ? (
+              <Tooltip title="Download raw provider JSONL">
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<DownloadOutlined />}
+                  href={api.getTaskRunRawJsonUrl(taskId, run.id)}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  Raw JSON
+                </Button>
+              </Tooltip>
+            ) : null,
             children: renderRunTimelinePanel(run)
           }
         ]}
       />
     );
   };
-
-  const renderRunLogsCollapse = (run: TaskRun) => (
-    <Collapse
-      size="small"
-      activeKey={expandedRunKeys.includes(run.id) ? [run.id] : []}
-      onChange={(keys) =>
-        setExpandedRunKeys((current) => {
-          const isOpen = Array.isArray(keys) ? keys.length > 0 : Boolean(keys);
-          return isOpen ? (current.includes(run.id) ? current : [...current, run.id]) : current.filter((key) => key !== run.id);
-        })
-      }
-      items={[
-        {
-          key: run.id,
-          label: `Logs${run.logs.length > 0 ? ` (${run.logs.length})` : ""}`,
-          extra: run.hasRawJson ? (
-            <Tooltip title="Download raw provider JSONL">
-              <Button
-                size="small"
-                type="text"
-                icon={<DownloadOutlined />}
-                href={api.getTaskRunRawJsonUrl(taskId, run.id)}
-                onClick={(event) => event.stopPropagation()}
-              >
-                Raw JSON
-              </Button>
-            </Tooltip>
-          ) : null,
-          children: renderRunLogsPanel(run)
-        }
-      ]}
-    />
-  );
 
   const renderRunErrorNotice = (run: TaskRun) =>
     run.errorMessage ? (
@@ -4420,6 +4937,20 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           {run.errorMessage}
         </Typography.Paragraph>
       </div>
+    ) : null;
+
+  const taskErrorNotice =
+    task?.errorMessage && task.executionStatus === "failed" ? (
+      <Alert
+        type="error"
+        showIcon
+        message="Task failed"
+        description={
+          <Typography.Paragraph type="danger" style={{ margin: 0, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {task.errorMessage}
+          </Typography.Paragraph>
+        }
+      />
     ) : null;
 
   const renderCheckpointDiffSection = (proposal: TaskChangeProposal, keyPrefix: string) => {
@@ -4678,7 +5209,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Card
             size="small"
             bodyStyle={{
-              background: "rgba(107,143,163,0.12)",
               padding: "10px 12px"
             }}
             style={getHistoryContextCardStyle(entryKey, { width: "100%" })}
@@ -4707,6 +5237,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : "rgba(107,143,163,0.08)";
     const isCompactMessage = entryMessage.role === "user";
     const canEditCommentMessage = canEditTask && !isArchived && entryMessage.role === "user" && entryMessage.action === "comment";
+    const isPendingQueuedFollowUp =
+      entryMessage.role === "user" &&
+      (entryMessage.action === "ask" || entryMessage.action === "build") &&
+      entryMessage.queueState === "pending";
 
     return (
       <Flex key={entryKey}>
@@ -4726,13 +5260,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                     {entryMessage.role}
                   </Tag>
                   {entryMessage.action ? <Tag style={{ marginInlineEnd: 0 }}>{taskActionLabel[entryMessage.action]}</Tag> : null}
+                  {isPendingQueuedFollowUp ? <Tag color="gold">Queued</Tag> : null}
                   <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
                 </Space>
-                {canEditCommentMessage ? (
-                  <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openCommentEditModal(entryMessage)}>
-                    Edit
-                  </Button>
-                ) : null}
+                <Space size={4}>
+                  {isPendingQueuedFollowUp ? (
+                    <Popconfirm
+                      title="Remove queued follow-up?"
+                      description="This pending follow-up has not started yet."
+                      onConfirm={() => void handleRemoveQueuedMessage(entryMessage.id)}
+                      okText="Remove"
+                    >
+                      <Button size="small" type="text" icon={<RollbackOutlined />} loading={submitting === "message"}>
+                        Remove
+                      </Button>
+                    </Popconfirm>
+                  ) : null}
+                  {canEditCommentMessage ? (
+                    <Button size="small" type="text" icon={<EditOutlined />} onClick={() => openCommentEditModal(entryMessage)}>
+                      Edit
+                    </Button>
+                  ) : null}
+                </Space>
               </Flex>
               <div>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
@@ -4770,14 +5319,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           size="small"
           style={getHistoryContextCardStyle(entryKey, {
             width: "100%",
-            borderColor: proposal.status === "pending" ? "rgba(250,173,20,0.45)" : undefined
+            borderColor: showCheckpointState && proposal.status === "pending" ? "rgba(250,173,20,0.45)" : undefined
           })}
         >
           <Flex justify="space-between" align="flex-start" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
             <Space wrap size={8}>
               <Typography.Text strong>Checkpoint</Typography.Text>
               <Tag>{changeProposalSourceLabel(proposal.sourceType)}</Tag>
-              <Tag color={checkpointStatusColor(proposal.status)}>{checkpointStatusLabel(proposal.status)}</Tag>
+              {showCheckpointState ? <Tag color={checkpointStatusColor(proposal.status)}>{checkpointStatusLabel(proposal.status)}</Tag> : null}
               {proposal.diffTruncated ? <Tag>Truncated preview</Tag> : null}
             </Space>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
@@ -4827,7 +5376,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </Typography.Paragraph>
           {renderRunErrorNotice(run)}
           {renderRunTimelineCollapse(run)}
-          {renderRunLogsCollapse(run)}
           {renderRunNoChangeNotice(run)}
           {normalizedRunSummary ? (
             isCollapsibleSummaryRun ? (
@@ -4856,6 +5404,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     const promptText = entry.promptText;
     const runStatusLabel = entry.run.status;
     const runStatusTagColor = runStatusColor[entry.run.status];
+    const showRunCancel = canCancel && activeAutoRunHistoryEntry?.key === entry.key && !isArchived;
 
     return (
       <Card
@@ -4869,14 +5418,21 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Tag>{taskActionLabel[entry.run.action]}</Tag>
             {entry.run.action === "build" && entry.run.changeOutcome === "no_change" ? <Tag color="default">No code changes</Tag> : null}
             <Tag>{getAgentProviderLabel(entry.run.provider)}</Tag>
-            {entry.proposal ? <Tag color={checkpointStatusColor(entry.proposal.status)}>{checkpointStatusLabel(entry.proposal.status)}</Tag> : null}
+            {showCheckpointState && entry.proposal ? <Tag color={checkpointStatusColor(entry.proposal.status)}>{checkpointStatusLabel(entry.proposal.status)}</Tag> : null}
             {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
           </Space>
         }
         extra={
-          <Typography.Text type="secondary">
-            {dayjs(entry.run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(entry.run.startedAt, entry.run.finishedAt)}
-          </Typography.Text>
+          <Space size={8} wrap style={{ justifyContent: "flex-end" }}>
+            <Typography.Text type="secondary">
+              {dayjs(entry.run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(entry.run.startedAt, entry.run.finishedAt)}
+            </Typography.Text>
+            {showRunCancel ? (
+              <Button size="small" danger onClick={() => void handleCancelTask()} loading={submitting === "cancel"}>
+                Cancel
+              </Button>
+            ) : null}
+          </Space>
         }
       >
         <Flex vertical gap="middle">
@@ -4887,7 +5443,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </div>
           {renderRunErrorNotice(entry.run)}
           {renderRunTimelineCollapse(entry.run)}
-          {renderRunLogsCollapse(entry.run)}
           <Collapse
             size="small"
             defaultActiveKey={[`${entryKey}-summary`]}
@@ -4927,7 +5482,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     const terminalSentenceLabel = getTaskTerminalSessionSentenceLabel(terminalMode);
     const terminalStatusTag = entry.active
       ? { color: "processing", label: "Active" }
-      : entry.proposal
+      : showCheckpointState && entry.proposal
         ? { color: checkpointStatusColor(entry.proposal.status), label: checkpointStatusLabel(entry.proposal.status) }
         : null;
     const showTerminalSessionControls = entry.active && canEditTask && task && !isArchived;
@@ -5104,6 +5659,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       label: "History",
       children: (
         <Space direction="vertical" size={16} style={{ width: "100%" }}>
+          {taskErrorNotice}
           {pendingChangeProposal && canEditTask && task && !isArchived ? (
             <Alert
               type="warning"
@@ -5188,7 +5744,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
       />
       <Modal
-        title="AI Settings"
+        title="Settings"
         open={aiSettingsModalOpen}
         onCancel={() => setAiSettingsModalOpen(false)}
         destroyOnClose
@@ -5215,12 +5771,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <div>
             <Typography.Text type="secondary">Model</Typography.Text>
             <Select
+              showSearch
               value={modelInput}
               options={allowedProviderModels}
               loading={providerModelsLoading}
-              showSearch
-              optionFilterProp="label"
               onChange={(value) => setModelInput(value)}
+              optionFilterProp="label"
+              placeholder="Select model"
               style={{ width: "100%", marginTop: 6 }}
               disabled={!canEditTask || isArchived || interactiveTerminalRunning}
             />
@@ -5244,6 +5801,23 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               style={{ width: "100%", marginTop: 6 }}
               disabled={!canEditTask || isArchived || interactiveTerminalRunning || providerInput !== "codex"}
             />
+          </div>
+          <div>
+            <Flex align="center" justify="space-between" gap={12}>
+              <div>
+                <Typography.Text type="secondary">Checkpoint Apply Mode</Typography.Text>
+                <Typography.Paragraph type="secondary" style={{ marginBottom: 0, marginTop: 6 }}>
+                  Auto-apply checkpoints and continue queued work without manual review.
+                </Typography.Paragraph>
+              </div>
+              <Switch
+                checked={autoApplyCheckpointsInput}
+                onChange={setAutoApplyCheckpointsInput}
+                checkedChildren="Auto"
+                unCheckedChildren="Manual"
+                disabled={!canEditTask || isArchived || interactiveTerminalRunning}
+              />
+            </Flex>
           </div>
         </Flex>
       </Modal>
@@ -5364,7 +5938,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       >
         <Space direction="vertical" size={12} style={{ width: "100%" }}>
           <Typography.Paragraph type="secondary" style={{ marginBottom: 0 }}>
-            Optional commit message. Click Magic to draft one with {OPENAI_COMMIT_MESSAGE_MODEL}, or leave blank to use AgentSwarm's generated subject on apply.
+            Optional commit message. Click Magic to draft one with {OPENAI_COMMIT_MESSAGE_MODEL}, or leave blank to use Verft's generated subject on apply.
           </Typography.Paragraph>
           <Input.TextArea
             autoFocus
@@ -5444,8 +6018,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             <Form.Item label="Target Branch" required>
               <Select
                 showSearch
-                placeholder={mergeBranchesLoading ? "Loading branches..." : "Select target branch"}
-                loading={mergeBranchesLoading}
+                placeholder="Select target branch"
                 value={mergeTargetBranch}
                 onChange={(value) => setMergeTargetBranch(value ?? undefined)}
                 disabled={mergeFooterBusy}
@@ -5460,7 +6033,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               <Input
                 value={mergeCommitMessage}
                 onChange={(event) => setMergeCommitMessage(event.target.value)}
-                placeholder="feat(agentswarm): update files"
+                placeholder="feat(verft): update files"
                 maxLength={72}
                 disabled={mergeFooterBusy}
               />
@@ -5477,7 +6050,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               </Form.Item>
             ) : null}
           </Form>
-          {!mergeBranchesLoading && mergeBranches.length === 0 ? (
+          {mergeBranches.length === 0 ? (
             <Alert type="info" showIcon message="No target branches available for merging." />
           ) : null}
           {mergePreviewLoading ? (
@@ -5496,6 +6069,92 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             />
           ) : null}
         </Space>
+      </Modal>
+      <Modal
+        title="Link Task"
+        open={linkTaskModalOpen}
+        onCancel={() => {
+          if (submitting === "linkTask") {
+            return;
+          }
+          setLinkTaskModalOpen(false);
+          setSelectedLinkedTaskId(undefined);
+        }}
+        destroyOnClose
+        onOk={() => void handleLinkTaskWorkspace()}
+        okText="Link"
+        confirmLoading={submitting === "linkTask"}
+        okButtonProps={{ disabled: !selectedLinkedTaskId }}
+      >
+        <Form layout="vertical">
+          <Form.Item label="Task" required>
+            <Select
+              showSearch
+              placeholder={linkTaskCandidatesLoading ? "Loading tasks..." : "Select task"}
+              loading={linkTaskCandidatesLoading}
+              value={selectedLinkedTaskId}
+              onChange={(value) => setSelectedLinkedTaskId(value)}
+              optionFilterProp="label"
+              options={linkTaskOptions}
+              disabled={submitting === "linkTask"}
+              notFoundContent={linkTaskCandidatesLoading ? <Spin size="small" /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} />}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+      <Modal
+        title="Linked Pull Request"
+        open={linkPrModalOpen}
+        onCancel={() => {
+          if (submitting === "linkPr") {
+            return;
+          }
+          setLinkPrModalOpen(false);
+        }}
+        destroyOnClose
+        onOk={() => void confirmLinkPullRequest()}
+        okText="Save"
+        confirmLoading={submitting === "linkPr"}
+      >
+        <Form layout="vertical">
+          <Form.Item label="Pull Request Number">
+            <Input
+              value={linkPrNumberDraft}
+              onChange={(event) => setLinkPrNumberDraft(event.target.value.replace(/[^\d]/g, ""))}
+              onPressEnter={() => void confirmLinkPullRequest()}
+              placeholder="123"
+              disabled={submitting === "linkPr"}
+            />
+          </Form.Item>
+          <Typography.Text type="secondary">Leave blank to clear the linked pull request.</Typography.Text>
+        </Form>
+      </Modal>
+      <Modal
+        title="Linked Issue"
+        open={linkIssueModalOpen}
+        onCancel={() => {
+          if (submitting === "linkIssue") {
+            return;
+          }
+          setLinkIssueModalOpen(false);
+        }}
+        destroyOnClose
+        onOk={() => void confirmLinkIssue()}
+        okText="Save"
+        confirmLoading={submitting === "linkIssue"}
+      >
+        <Form layout="vertical">
+          <Form.Item label="Issue Number">
+            <Input
+              value={linkIssueNumberDraft}
+              onChange={(event) => setLinkIssueNumberDraft(event.target.value.replace(/[^\d]/g, ""))}
+              onPressEnter={() => void confirmLinkIssue()}
+              placeholder="123"
+              disabled={submitting === "linkIssue"}
+            />
+          </Form.Item>
+          <Typography.Text type="secondary">Leave blank to clear the linked issue.</Typography.Text>
+        </Form>
       </Modal>
       <WorkspaceFilePreviewModal
         open={workspaceFilePreview.open}
@@ -5613,21 +6272,22 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                               Start Task
                             </Button>
                           ) : null}
-                          {canCancel ? (
+                          {showHeaderCancel ? (
                             <Button
                               danger
-                              onClick={async () => {
-                                setSubmitting("cancel");
-                                try {
-                                  await api.cancelTask(task.id);
-                                  messageApi.success(isQueued ? "Task cancelled" : "Cancellation requested");
-                                } finally {
-                                  setSubmitting(null);
-                                }
-                              }}
+                              onClick={() => void handleCancelTask()}
                               loading={submitting === "cancel"}
                             >
                               Cancel
+                            </Button>
+                          ) : null}
+                          {canUnstickQueue ? (
+                            <Button
+                              onClick={() => void handleUnstickQueue()}
+                              icon={<ArrowRightOutlined />}
+                              loading={submitting === "message"}
+                            >
+                              Unstick Queue
                             </Button>
                           ) : null}
 
@@ -5688,7 +6348,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         onOk={() => void handleKillInteractiveTerminal()}
         destroyOnClose
       >
-        This stops the live {activeTerminalSentenceLabel.toLowerCase()} session and keeps whatever is currently in the workspace so AgentSwarm
+        This stops the live {activeTerminalSentenceLabel.toLowerCase()} session and keeps whatever is currently in the workspace so Verft
         can create the usual checkpoint for recovery.
       </Modal>
       <Modal
@@ -5724,15 +6384,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <Form
             form={followUpForm}
             layout="vertical"
-            onFinish={async (values: { title: string; prompt: string; notes?: string }) => {
+            onFinish={async (values: { title: string; prompt: string }) => {
               setSubmitting("continue");
               try {
                 const normalizedPrompt = values.prompt.trim();
-                const normalizedNotes = values.notes?.trim() ?? "";
                 const nextTask = await api.createTask({
                   title: values.title.trim(),
                   prompt: normalizedPrompt,
-                  notes: normalizedNotes,
                   taskType: "build",
                   repoId: task.repoId,
                   baseBranch: followUpBranch,
@@ -5774,13 +6432,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 <Input.TextArea
                   autoSize={{ minRows: 6, maxRows: 18 }}
                   placeholder="Describe the new problem to solve on this branch."
-                  style={{ resize: "none" }}
-                />
-              </Form.Item>
-              <Form.Item name="notes" label="Notes (Markdown)">
-                <Input.TextArea
-                  autoSize={{ minRows: 4, maxRows: 12 }}
-                  placeholder="Optional markdown notes for this follow-up task."
                   style={{ resize: "none" }}
                 />
               </Form.Item>

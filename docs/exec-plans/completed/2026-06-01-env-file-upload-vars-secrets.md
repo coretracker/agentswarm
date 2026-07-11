@@ -53,7 +53,7 @@
 - User Approval To Start: YES (issue request)
 - Baseline Checks Run: YES (`REMOTE_BUILD=0 ./scripts/harness/check.sh`)
 - Visible Task List Updated: YES
-- Task-Level Tests/Lint/Build: YES (`npm run build -w @agentswarm/server`, `npm run build -w @agentswarm/web`, package tests, harness check)
+- Task-Level Tests/Lint/Build: YES (`npm run build -w @verft/server`, `npm run build -w @verft/web`, package tests, harness check)
 - Self Review Complete: YES
 - Code Review Complete: NO (pending maintainer review)
 - Final Verification Complete: YES (repository check pipeline completed successfully)
@@ -61,12 +61,12 @@
 - Docs/Changelog Updated: YES (execution plan documentation updated)
 
 ## Validation Commands
-- `npm run lint -w @agentswarm/server`
-- `npm run test -w @agentswarm/server`
-- `npm run build -w @agentswarm/server`
-- `npm run lint -w @agentswarm/web`
-- `npm run test -w @agentswarm/web`
-- `npm run build -w @agentswarm/web`
+- `npm run lint -w @verft/server`
+- `npm run test -w @verft/server`
+- `npm run build -w @verft/server`
+- `npm run lint -w @verft/web`
+- `npm run test -w @verft/web`
+- `npm run build -w @verft/web`
 - `REMOTE_BUILD=0 ./scripts/harness/check.sh`
 - `REMOTE_BUILD=0 ./scripts/harness/test.sh` (fails in this environment because Docker Compose is unavailable)
 

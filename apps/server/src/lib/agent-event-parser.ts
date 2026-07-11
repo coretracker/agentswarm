@@ -1,4 +1,4 @@
-import type { AgentProvider, NormalizedAgentEvent } from "@agentswarm/shared-types";
+import type { AgentProvider, NormalizedAgentEvent } from "@verft/shared-types";
 
 type JsonObject = Record<string, unknown>;
 
@@ -7,6 +7,20 @@ const isRecord = (value: unknown): value is JsonObject => Boolean(value) && type
 const asString = (value: unknown): string | undefined => (typeof value === "string" ? value : undefined);
 const asNumber = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
 const asRecord = (value: unknown): JsonObject | undefined => (isRecord(value) ? value : undefined);
+
+const stringify = (value: unknown): string | undefined => {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    return value;
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return undefined;
+  }
+};
 
 const truncate = (value: string | undefined, maxLength = 800): string | undefined => {
   if (!value) {
@@ -149,17 +163,76 @@ function parseCodexItem(raw: JsonObject, index: number, events: NormalizedAgentE
     return;
   }
 
-  if (itemType === "file_change" && isCompleted) {
+  if (itemType === "mcp_tool_call") {
+    const server = asString(item?.server);
+    const toolName = asString(item?.tool);
+    const error = item?.error;
+    const isFailed = isCompleted && error !== undefined && error !== null;
+    const kind = !isCompleted ? "tool.started" : isFailed ? "tool.failed" : "tool.completed";
+    const titleToolName = [server, toolName].filter(Boolean).join(":");
+    const result = asRecord(item?.result);
+    const content = Array.isArray(result?.content) ? result.content : [];
+    const textContent = content
+      .map((block) => asString(asRecord(block)?.text))
+      .filter((text): text is string => Boolean(text))
+      .join("\n");
+    const message = isFailed ? truncate(stringify(error)) : truncate(textContent || stringify(item?.result));
+    push(events, "codex", index, itemId ?? "mcp-tool-call", {
+      kind,
+      title: !isCompleted
+        ? titleToolName ? `MCP ${titleToolName} started` : "MCP tool started"
+        : isFailed
+          ? titleToolName ? `MCP ${titleToolName} failed` : "MCP tool failed"
+          : titleToolName ? `MCP ${titleToolName} completed` : "MCP tool completed",
+      detail: truncate(stringify(item?.arguments)),
+      message: isCompleted ? message : undefined,
+      status: status ?? (!isCompleted ? "in_progress" : isFailed ? "failed" : "completed"),
+      toolCallId: itemId,
+      toolName: toolName ?? "mcp_tool_call"
+    });
+    return;
+  }
+
+  if (itemType === "web_search") {
+    const action = asRecord(item?.action);
+    const actionType = asString(action?.type);
+    const query = asString(item?.query) ?? asString(action?.query);
+    const queries = Array.isArray(action?.queries) ? action.queries : [];
+    const queryList = queries
+      .map((entry) => asString(entry))
+      .filter((entry): entry is string => Boolean(entry));
+    const detail = truncate(query);
+    const message = truncate(queryList.length > 0 ? queryList.join("\n") : actionType ? JSON.stringify(action) : undefined);
+    push(events, "codex", index, itemId ?? "web-search", {
+      kind: !isCompleted ? "tool.started" : "tool.completed",
+      title: !isCompleted ? "Web search started" : "Web search completed",
+      detail,
+      message: isCompleted ? message : undefined,
+      status: status ?? (!isCompleted ? "in_progress" : "completed"),
+      toolCallId: itemId,
+      toolName: "web_search"
+    });
+    return;
+  }
+
+  if (itemType === "file_change") {
     const changes = Array.isArray(item?.changes) ? item.changes : [];
     changes.forEach((change, changeIndex) => {
       const record = asRecord(change);
       const filePath = asString(record?.path);
       const fileChangeKind = asString(record?.kind);
+      const isStarted = !isCompleted;
       push(events, "codex", index, `${itemId ?? "file-change"}-${changeIndex}`, {
         kind: "file.changed",
-        title: fileChangeKind ? `File ${fileChangeKind}` : "File changed",
+        title: isStarted
+          ? fileChangeKind
+            ? `File ${fileChangeKind} started`
+            : "File change started"
+          : fileChangeKind
+            ? `File ${fileChangeKind}`
+            : "File changed",
         detail: filePath,
-        status,
+        status: status ?? (isStarted ? "in_progress" : "completed"),
         toolCallId: itemId,
         filePath,
         fileChangeKind

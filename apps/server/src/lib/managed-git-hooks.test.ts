@@ -6,8 +6,8 @@ import { describe, it } from "node:test";
 import { installManagedGitHooks, MANAGED_GIT_HOOKS } from "./managed-git-hooks.js";
 
 describe("installManagedGitHooks", () => {
-  it("writes blocking git hooks with execute permissions", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-managed-hooks-"));
+  it("writes managed git hooks with execute permissions", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "verft-managed-hooks-"));
     const gitDir = path.join(root, ".git");
 
     try {
@@ -25,7 +25,7 @@ describe("installManagedGitHooks", () => {
   });
 
   it("installs hooks into the shared common dir for linked worktrees", async () => {
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-managed-hooks-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-managed-hooks-"));
     const workspacePath = path.join(root, "workspace");
     const commonDir = path.join(root, "repo", ".git");
     const worktreeGitDir = path.join(commonDir, "worktrees", "task-1");

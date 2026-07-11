@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
-import type { Task } from "@agentswarm/shared-types";
+import type { Task } from "@verft/shared-types";
+import { env } from "../config/env.js";
 import { SpawnerService } from "./spawner.js";
 
 const createTask = (overrides: Partial<Task> = {}): Task =>
@@ -13,6 +15,7 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     deadline: null,
     pinned: false,
     hasPendingCheckpoint: false,
+    autoApplyCheckpoints: false,
     activeInteractiveSession: false,
     activeTerminalSessionMode: null,
     ownerUserId: null,
@@ -32,7 +35,6 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     branchName: "feature/task-1",
     workspaceBaseRef: null,
     prompt: "Do the work",
-    notes: "",
     executionSummary: "",
     resultMarkdown: null,
     branchDiff: null,
@@ -48,14 +50,15 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     finishedAt: null,
     errorMessage: null,
     lastAction: "build",
-    enqueued: false
+    enqueued: false,
+    ...overrides
   }) satisfies Task as Task;
 
 const createSpawner = (): SpawnerService =>
   new SpawnerService(
     {} as never,
     {
-      getSettings: async () => ({ workspaceProvisioningMode: "clone_only", branchPrefix: "agentswarm" })
+      getSettings: async () => ({ workspaceProvisioningMode: "clone_only", branchPrefix: "verft" })
     } as never,
     {} as never,
     {} as never
@@ -78,14 +81,295 @@ describe("SpawnerService workspace provisioning", () => {
 
     const mount = spawner.resolveTaskRunRawEventsMount("task-123", "run-with-spaces");
 
-    assert.equal(mount.hostDir, "/tmp/agentswarm-task-workspaces/.task-state/task-123/raw-runs");
+    assert.equal(mount.hostDir, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/raw-runs"));
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
+  });
+
+  it("mounts provider state from a task-scoped agent home path", () => {
+    const spawner = createSpawner() as any;
+    const paths = {
+      hostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/Task-AbC/agent-home/.claude"),
+      homeHostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/Task-AbC/agent-home")
+    };
+
+    assert.equal(
+      spawner.resolveProviderStateMountSourceRelativePath("Task AbC", "claude", paths),
+      ".task-state/Task-AbC/agent-home"
+    );
+    assert.equal(spawner.resolveProviderStateContainerPath("codex"), "/home/agent/.codex");
+    assert.equal(spawner.resolveProviderStateContainerPath("claude"), "/home/agent/.claude");
+    assert.equal(spawner.resolveProviderHomeContainerPath("codex"), "/home/agent");
+    assert.equal(spawner.resolveProviderHomeContainerPath("claude"), "/home/agent");
+  });
+
+  it("rejects provider state mounts that resolve to repository .claude", () => {
+    const spawner = createSpawner() as any;
+    const paths = {
+      hostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, "task-1/.claude"),
+      homeHostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, "task-1/.claude")
+    };
+
+    assert.throws(
+      () => spawner.resolveProviderStateMountSourceRelativePath("task-1", "claude", paths),
+      /Refusing to mount unsafe provider state path/
+    );
+  });
+
+  it("injects Verft MCP into task runtime config", async () => {
+    const createdTokens: unknown[] = [];
+    const spawner = new SpawnerService(
+      {} as never,
+      {} as never,
+      {
+        getAuthSessionUser: async (userId: string) => ({ id: userId }),
+        listUsers: async () => []
+      } as never,
+      {} as never,
+      undefined,
+      {
+        createToken: async (input: unknown) => {
+          createdTokens.push(input);
+          return { token: "runtime-token" };
+        }
+      } as never
+    );
+
+    const runtimeMcp = await (spawner as any).buildRuntimeMcpConfig(
+      createTask({ ownerUserId: "user-1" }),
+      [
+        {
+          name: "verft",
+          transport: "http",
+          url: "https://manual.example.com/mcp",
+          bearerTokenEnvVar: "MANUAL_TOKEN",
+          enabled: true
+        },
+        {
+          name: "github",
+          transport: "http",
+          url: "https://api.githubcopilot.com/mcp",
+          enabled: true
+        }
+      ],
+      "run-1"
+    );
+
+    assert.equal(runtimeMcp.injectedVerftMcp, true);
+    assert.equal(runtimeMcp.env.VERFT_MCP_OAUTH_TOKEN, "runtime-token");
+    assert.equal(createdTokens.length, 1);
+    assert.deepEqual((createdTokens[0] as { scopes: string[] }).scopes, [
+      "repo:list",
+      "repo:read",
+      "task:list",
+      "task:read",
+      "task:create_subtask",
+      "task:edit",
+      "task:build",
+      "task:ask"
+    ]);
+    assert.equal(runtimeMcp.servers.length, 2);
+    assert.deepEqual(
+      runtimeMcp.servers.map((server: { name: string }) => server.name),
+      ["github", "verft"]
+    );
+    assert.equal(runtimeMcp.servers[1].transport, "http");
+    const expectedEndpoints = existsSync("/.dockerenv")
+      ? [
+          `http://127.0.0.1:${env.PORT}/mcp`,
+          `http://host.docker.internal:${env.PORT}/mcp`,
+          `http://172.17.0.1:${env.PORT}/mcp`
+        ]
+      : [`http://host.docker.internal:${env.PORT}/mcp`, `http://172.17.0.1:${env.PORT}/mcp`];
+    const expectedEndpoint = expectedEndpoints[0] ?? "";
+    assert.equal(runtimeMcp.env.VERFT_MCP_ENDPOINT, expectedEndpoint);
+    assert.equal(runtimeMcp.env.VERFT_MCP_ENDPOINTS, expectedEndpoints.join(","));
+    assert.equal(runtimeMcp.servers[1].url, expectedEndpoint);
+    assert.equal(runtimeMcp.servers[1].bearerTokenEnvVar, "VERFT_MCP_OAUTH_TOKEN");
+  });
+
+  it("resolves task runtime MCP servers from the task repository", async () => {
+    const spawner = new SpawnerService(
+      {} as never,
+      {} as never,
+      {
+        getAuthSessionUser: async () => null,
+        listUsers: async () => []
+      } as never,
+      {
+        getRepositoryRuntimeEnvEntries: async () => [],
+        getRepositoryMcpServers: async (repositoryId: string) => [
+          {
+            name: `${repositoryId}-github`,
+            transport: "http",
+            url: "https://api.githubcopilot.com/mcp",
+            bearerTokenEnvVar: "REPO_MCP_TOKEN",
+            enabled: true
+          }
+        ]
+      } as never
+    );
+
+    const runtimeMcp = await spawner.buildRuntimeMcpConfigForTask(createTask({ repoId: "repo-7" }), "run-1");
+
+    assert.equal(runtimeMcp.injectedVerftMcp, false);
+    assert.deepEqual(
+      runtimeMcp.servers.map((server) => server.name),
+      ["repo-7-github"]
+    );
+  });
+
+  it("merges populated global and repository harness sections in precedence order", () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+
+    const empty = spawnerAny.buildMergedHarnessMarkdown({}, {
+      harnessWhatExists: null,
+      harnessAllowedActions: "",
+      harnessHowToWork: "   ",
+      harnessDefinitionOfDone: null,
+      harnessEvidenceExpectations: undefined
+    });
+    assert.equal(empty, null);
+
+    const populated = spawnerAny.buildMergedHarnessMarkdown(
+      {
+        harnessWhatExists: "Global platform context.",
+        harnessNotAllowedActions: "Never expose secrets."
+      },
+      {
+      harnessWhatExists: "Monorepo with apps/web and apps/server.",
+      harnessAllowedActions: null,
+      harnessHowToWork: "Prefer harness scripts in scripts/harness.",
+      harnessDefinitionOfDone: "check.sh and test.sh pass.",
+      harnessEvidenceExpectations: ""
+      }
+    );
+    assert.match(populated, /# Harness/);
+    assert.ok(populated.indexOf("## Global Harness") < populated.indexOf("## Repository Harness"));
+    assert.match(populated, /### What exists\?/);
+    assert.match(populated, /### What is not allowed\?/);
+    assert.match(populated, /### How should you work\?/);
+    assert.match(populated, /### How do you know you are done\?/);
+    assert.doesNotMatch(populated, /### What is allowed\?/);
+    assert.doesNotMatch(populated, /### How do you prove it\?/);
+  });
+
+  it("writes and removes runtime harness files based on repository harness content", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const root = await mkdtemp(path.join(tmpdir(), "verft-runtime-harness-"));
+    const workspacePath = path.join(root, "workspace");
+    await mkdir(workspacePath, { recursive: true });
+
+    const markdown = spawnerAny.buildMergedHarnessMarkdown({}, {
+      harnessWhatExists: "apps/web, apps/server",
+      harnessAllowedActions: "You can edit TypeScript and docs.",
+      harnessHowToWork: "Use existing patterns.",
+      harnessDefinitionOfDone: "All required checks pass.",
+      harnessEvidenceExpectations: "Share test command output."
+    });
+    const harnessPath = await spawnerAny.syncWorkspaceRuntimeHarnessFile(workspacePath, markdown);
+    assert.equal(harnessPath, path.join(workspacePath, ".verft-runtime", "harness.md"));
+    const written = await readFile(harnessPath, "utf8");
+    assert.match(written, /### What exists\?/);
+    assert.match(written, /### What is allowed\?/);
+    assert.match(written, /### How do you prove it\?/);
+
+    const removedPath = await spawnerAny.syncWorkspaceRuntimeHarnessFile(workspacePath, null);
+    assert.equal(removedPath, null);
+    const exists = await access(harnessPath)
+      .then(() => true)
+      .catch(() => false);
+    assert.equal(exists, false);
+  });
+
+  it("allows internal checkpoint apply flow to bypass the running-task guard", async () => {
+    const spawner = new SpawnerService(
+      {
+        getChangeProposal: async () => ({
+          id: "proposal-1",
+          taskId: "task-1",
+          sourceType: "build_run",
+          sourceId: "run-1",
+          status: "applied",
+          fromRef: "abc123",
+          toRef: "def456",
+          diff: "diff --git a/src/example.ts b/src/example.ts",
+          diffStat: "1 file changed",
+          changedFiles: ["src/example.ts"],
+          diffTruncated: false,
+          untrackedPathsAtCheckpoint: [],
+          createdAt: "2026-06-12T08:00:00.000Z",
+          resolvedAt: null,
+          revertedAt: null
+        })
+      } as never,
+      {} as never,
+      {} as never,
+      {} as never
+    );
+
+    const runningTask = createTask({ executionStatus: "running" });
+    const bypassed = await spawner.applyChangeProposal(runningTask, "proposal-1", { allowDuringExecution: true });
+    assert.deepEqual(bypassed, {
+      ok: false,
+      message: "Checkpoint must be pending, applying, or reverted to apply."
+    });
+  });
+
+  it("marks provider-created local commit checkpoints as already applied", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "verft-provider-commit-"));
+    let createdStatus: string | null = null;
+    const logs: string[] = [];
+    const spawner = new SpawnerService(
+      {
+        getRun: async () => ({
+          id: "run-1",
+          taskId: "task-1",
+          changeProposalCheckpointRef: "abc123",
+          changeProposalUntrackedPaths: []
+        }),
+        createChangeProposal: async (input: any) => {
+          createdStatus = input.status;
+          return {
+            ...input,
+            resolvedAt: input.status === "applied" ? "2026-06-12T08:00:00.000Z" : null,
+            revertedAt: null
+          };
+        },
+        appendLog: async (_taskId: string, line: string) => {
+          logs.push(line);
+        }
+      } as never,
+      {
+        getRuntimeCredentials: async () => ({
+          githubToken: null,
+          gitUsername: "x-access-token"
+        })
+      } as never,
+      {} as never,
+      {} as never
+    );
+
+    const proposal = await spawner.createBuildRunChangeProposal(createTask(), "run-1", root, {
+      fromRef: "abc123",
+      diff: "diff --git a/src/example.ts b/src/example.ts",
+      diffStat: "1 file changed",
+      changedFiles: ["src/example.ts"],
+      diffTruncated: false,
+      toRef: "def456789",
+      alreadyApplied: true
+    });
+
+    assert.equal(createdStatus, "applied");
+    assert.equal(proposal?.status, "applied");
+    assert.equal(logs.some((line) => line.includes("marked applied because the agent already created local commit def4567")), true);
   });
 
   it("ignores incomplete trailing raw JSON events during live timeline parsing", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-raw-events-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-raw-events-"));
     const rawEventsPath = path.join(root, "events.jsonl");
     await writeFile(
       rawEventsPath,
@@ -112,7 +396,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("prepares build workspace via clone model", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-clone-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-clone-"));
     const workspacePath = path.join(root, "task");
     const task = createTask();
 
@@ -162,10 +446,36 @@ describe("SpawnerService workspace provisioning", () => {
     assert.deepEqual(workspace, fallbackWorkspace);
   });
 
+  it("formats workspace preparation failures with git error details", async () => {
+    const spawner = createSpawner();
+    const spawnerAny = spawner as any;
+    const task = createTask();
+
+    spawnerAny.resolveWorkspacePath = () => "/tmp/workspace";
+    spawnerAny.cloneWorkspaceFromSource = async () => {
+      throw new Error("fatal: repository 'https://secret-token@github.com/example/missing.git/' not found");
+    };
+    spawnerAny.classifyWorkspacePrepareFailure = () => "auth";
+
+    await assert.rejects(
+      async () => {
+        await spawnerAny.prepareWorkspace(task, "build", "feature/task-1", "/repo-cache/path", "clone_only");
+      },
+      (error: unknown) => {
+        const message = spawnerAny.formatWorkspacePrepareErrorMessage(error);
+        assert.match(message, /Workspace setup failed: repository access was denied/);
+        assert.match(message, /Git error:/);
+        assert.match(message, /fatal: repository 'https:\/\/<redacted>@github\.com\/example\/missing\.git\/' not found/);
+        assert.doesNotMatch(message, /secret-token/);
+        return true;
+      }
+    );
+  });
+
   it("reuses the existing task workspace for ask runs", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-ask-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-ask-"));
     const taskWorkspacePath = path.join(root, "task-workspace");
     const task = createTask();
     await mkdir(taskWorkspacePath, { recursive: true });
@@ -205,7 +515,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("rebuilds ask workspace when the folder exists but is not a git repo", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-ask-rebuild-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-ask-rebuild-"));
     const taskWorkspacePath = path.join(root, "task-workspace");
     const task = createTask();
     await mkdir(taskWorkspacePath, { recursive: true });
@@ -236,7 +546,7 @@ describe("SpawnerService workspace provisioning", () => {
   it("cleans up ephemeral clone workspace directory", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-cleanup-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-cleanup-"));
     const workspacePath = path.join(root, "workspace");
     await mkdir(workspacePath, { recursive: true });
     await writeFile(path.join(workspacePath, "file.txt"), "x", "utf8");
@@ -260,8 +570,10 @@ describe("SpawnerService workspace provisioning", () => {
   it("uses clone workspace metadata for manual postflight runs", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
-    const root = await mkdtemp(path.join(tmpdir(), "agentswarm-postflight-"));
+    const root = await mkdtemp(path.join(tmpdir(), "verft-postflight-"));
     const workspacePath = path.join(root, "workspace");
+    const originalRuntimePayloadRoot = env.RUNTIME_PAYLOAD_ROOT;
+    env.RUNTIME_PAYLOAD_ROOT = path.join(root, "runtime-payloads");
     const task = createTask({ id: "task-postflight" });
     await mkdir(workspacePath, { recursive: true });
 
@@ -289,12 +601,12 @@ describe("SpawnerService workspace provisioning", () => {
       gitUsername: "x-access-token",
       openaiApiKey: null,
       anthropicApiKey: null,
-      codexAuthJson: null,
       openaiBaseUrl: null,
+      anthropicBaseUrl: null,
       defaultProvider: "codex"
     };
     spawnerAny.settingsStore = {
-      getSettings: async () => ({ branchPrefix: "agentswarm" }),
+      getSettings: async () => ({ branchPrefix: "verft" }),
       getRuntimeCredentials: async () => runtimeCredentials
     };
     spawnerAny.taskStore = {
@@ -308,7 +620,11 @@ describe("SpawnerService workspace provisioning", () => {
       appendLog: async () => undefined
     };
 
-    await spawner.runTaskPostflight(task);
-    assert.equal(workspaceKindSeen, "clone");
+    try {
+      await spawner.runTaskPostflight(task);
+      assert.equal(workspaceKindSeen, "clone");
+    } finally {
+      env.RUNTIME_PAYLOAD_ROOT = originalRuntimePayloadRoot;
+    }
   });
 });

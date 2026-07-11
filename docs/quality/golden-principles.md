@@ -5,14 +5,14 @@ These rules are based on recurring patterns already used in this repository.
 ## 1) Preserve architectural layering
 - Rule: Keep web, server, and shared-types separated by the documented boundaries.
 - Rationale: Cross-layer imports create fragile coupling and break deploy/runtime assumptions.
-- Good behavior: In `apps/web`, call server APIs or use `@agentswarm/shared-types` instead of importing from `apps/server`.
+- Good behavior: In `apps/web`, call server APIs or use `@verft/shared-types` instead of importing from `apps/server`.
 - Bad behavior: Importing `apps/server/*` directly into `apps/web/*`.
-- Mechanically enforced: Yes (`scripts/harness/boundary-check.mjs`, run by `scripts/harness/check.sh` and CI).
+- Mechanically enforced: Manual check available (`node scripts/harness/boundary-check.mjs`); not part of the current default lint/test gate.
 
 ## 2) Prefer existing shared contracts and utilities
-- Rule: Reuse `@agentswarm/shared-types` and existing helper modules before creating new ad-hoc copies.
+- Rule: Reuse `@verft/shared-types` and existing helper modules before creating new ad-hoc copies.
 - Rationale: Shared contracts keep server and web behavior aligned and reduce drift.
-- Good behavior: Import `Task`, enums, and shared limits from `@agentswarm/shared-types` in routes/components.
+- Good behavior: Import `Task`, enums, and shared limits from `@verft/shared-types` in routes/components.
 - Bad behavior: Duplicating task status enums or payload shapes in individual files.
 - Mechanically enforced: Partly (shared-types import boundaries are enforced; utility reuse choice is not).
 
@@ -30,12 +30,12 @@ These rules are based on recurring patterns already used in this repository.
 - Bad behavior: Relying on one unvalidated response shape and crashing when fields differ.
 - Mechanically enforced: No.
 
-## 5) Use canonical harness commands
-- Rule: Use `scripts/harness/*` as the default workflow for setup, checks, tests, startup, and logs.
-- Rationale: Harness commands standardize behavior across local runs and agents.
-- Good behavior: Run `./scripts/harness/doctor.sh`, `check.sh`, `test.sh`, and `pr-ready.sh` before PR.
-- Bad behavior: Running ad-hoc subsets only and skipping required checks.
-- Mechanically enforced: Partly (`pr-ready.sh` and CI enforce subsets; full usage is policy-driven).
+## 5) Use canonical Dockerized CI
+- Rule: Use `npm run ci` as the default workflow for linting and tests.
+- Rationale: `npm run ci` matches the current CI gate and avoids host toolchain drift.
+- Good behavior: Run `npm run ci` before PR.
+- Bad behavior: Relying on unrelated local-only checks as the merge signal.
+- Mechanically enforced: Yes (CI runs lint and tests).
 
 ## 6) Add tests for bug fixes and behavior changes
 - Rule: Every bug fix or meaningful behavior change should include or update tests.

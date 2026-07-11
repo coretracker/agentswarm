@@ -1,5 +1,5 @@
-import type { AgentProvider } from "@agentswarm/shared-types";
-import { env } from "../config/env.js";
+import type { AgentProvider } from "@verft/shared-types";
+import { DEPLOYMENT_ENVIRONMENT_LABEL, env } from "../config/env.js";
 
 export type DockerSocketAccessDeniedReason = "feature_disabled" | "invalid_socket_path";
 
@@ -59,7 +59,7 @@ export function resolveDockerSocketAccessPolicy(provider: AgentProvider): Docker
     provider === "claude" ? env.DOCKER_SOCKET_CONTAINER_PATH_CLAUDE : env.DOCKER_SOCKET_CONTAINER_PATH_CODEX;
   return evaluateDockerSocketAccessPolicy({
     enabled: env.DOCKER_SOCKET_ACCESS_ENABLED,
-    appEnvironment: env.APP_ENVIRONMENT,
+    appEnvironment: DEPLOYMENT_ENVIRONMENT_LABEL,
     hostPath: env.DOCKER_SOCKET_HOST_PATH,
     containerPath
   });
@@ -71,6 +71,13 @@ export function resolveDockerSocketMountArgs(policy: DockerSocketAccessPolicy): 
 
 export function resolveDockerSocketEnvEntries(policy: DockerSocketAccessPolicy): Array<[string, string]> {
   return policy.enabled ? [["DOCKER_HOST", `unix://${policy.containerPath}`]] : [];
+}
+
+export function resolveDockerSocketRunArgs(policy: DockerSocketAccessPolicy): string[] {
+  return [
+    ...resolveDockerSocketMountArgs(policy),
+    ...resolveDockerSocketEnvEntries(policy).flatMap(([name, value]) => ["-e", `${name}=${value}`])
+  ];
 }
 
 const emittedDockerSocketEnabledProviders = new Set<AgentProvider>();
