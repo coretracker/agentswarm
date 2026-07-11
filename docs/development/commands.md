@@ -60,12 +60,16 @@ Notes:
   - `npm run -w @verft/shared-types build`
 
 ## Existing Docker Control Commands
-- `./verft.sh init`
-- `./verft.sh start`
-- `./verft.sh rebuild`
-- `./verft.sh stop`
+- `./verft init`
+- `./verft start`
+- `./verft rebuild`
+- `./verft rebuild --clean`
+- `./verft update`
+- `./verft stop`
 
-`init` and `rebuild` build the unified agent toolbox image from `agent-runtime/Dockerfile`. Override the tag with `AGENT_RUNTIME_IMAGE` when testing a custom runtime image.
+`init` and `rebuild` build the unified agent toolbox image from `agent-runtime/Dockerfile`. Builds use Docker's cache by default; pass `--clean` to `rebuild` to pull base images and disable the build cache. Override the tag with `AGENT_RUNTIME_IMAGE` when testing a custom runtime image.
+
+`update` runs `git pull --ff-only` for the current branch, then performs the cached rebuild. If Git cannot fast-forward or pull successfully, the rebuild does not run.
 
 ## CI / Local Parity Notes
 - CI workflow: `.github/workflows/lint-and-tests.yml`.

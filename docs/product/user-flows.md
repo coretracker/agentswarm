@@ -33,27 +33,35 @@ Notes:
 - Installations that previously used global MCP server settings must recreate the intended MCP servers on each repository that should expose them.
 - GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
 - GitHub Integration can optionally archive linked tasks when a GitHub pull request webhook reports the PR as merged.
+- Archived tasks are automatically deleted after the configured retention window; the setting defaults to 7 days and can be disabled.
 - GitHub Integration creates or queues build-mode tasks when a `pull_request.review_requested` webhook targets the configured integration bot.
-- GitHub Integration processes created or edited issue comments and pull request conversation comments when the comment body passes the configured bot mention and user filters.
-- GitHub Integration adds an `eyes` reaction to accepted issue comments and pull request conversation comments, but skips the hidden task-created comment that Verft posts after opening a task.
+- GitHub Integration processes created or edited issue comments, pull request conversation comments, and inline pull request review comments when the comment body passes the configured bot mention and user filters.
+- When a GitHub webhook author matches an active Verft user's configured GitHub username, new tasks and linked-task continuations use that user's provider, model, and effort defaults.
+- New tasks created from GitHub issues use the first linked development branch as their base branch, falling back to the repository default branch when no linked branch is available.
+- GitHub Integration adds an `eyes` reaction to accepted issue comments, pull request conversation comments, and inline pull request review comments, but skips the hidden task-created comment that Verft posts after opening a task.
 - GitHub Integration supports separate editable agent templates for newly created GitHub tasks, feedback comments on linked tasks, and requested PR reviews. Templates can include markers such as `{{target_ref}}`, `{{title}}`, `{{title_line}}`, `{{author}}`, `{{requested_reviewer}}`, `{{url_line}}`, and `{{feedback_body}}`.
 - GitHub Integration supports an editable task-created comment template for the public GitHub reply posted after Verft creates a new task. The server appends the hidden duplicate-detection marker automatically.
 
 ## Settings And Credentials Flow (Current)
 1. Open `/settings`.
 2. Use `General` to set the default provider, concurrent agents, access roles, and response presets.
-3. Use `Git` to set the GitHub token, Git username, optional commit author identity, and feature branch prefix. Default GitHub PAT HTTPS auth uses `x-access-token`.
-4. Start the host daemon with `npm run hostexec`, then use `Hostexec` to check availability and optionally set the bearer token env var reference. Verft autodetects the default daemon URLs; repository Host Commands restrict mounted shims.
-5. Use `Codex` to set the OpenAI API key or Codex `auth.json`, default effort/model, model list, prompt magic settings, and base URL override.
-6. Use `Claude Code` to set the Anthropic API key, default effort/model, model list, and base URL override.
-7. Open your profile to manage GitHub username linking, personal default agent settings, and personal access tokens.
+3. Use `Harness` to define standing guidance applied to every task.
+4. Use `Credentials` to set the GitHub token, OpenAI API key, and Anthropic API key. Stored credential values are write-only.
+5. Use `Git` to set the Git username, optional commit author identity, and feature branch prefix. Default GitHub PAT HTTPS auth uses `x-access-token`.
+6. Start the host daemon with `npm run hostexec`, then use `Hostexec` to check availability and optionally set the bearer token env var reference. Verft autodetects the default daemon URLs; repository Host Commands restrict mounted shims.
+7. Use `Codex` to set default effort/model, model list, prompt magic settings, and base URL override.
+8. Use `Claude Code` to set default effort/model, model list, and base URL override.
+9. Open your profile to manage GitHub username linking, personal default agent settings, and personal access tokens.
+10. Administrators can edit another user's default provider, model, and effort from the user's edit form.
 
 Notes:
+- Global and repository Harness sections display as read-only, content-sized textareas. Use the `Edit` link below a section to edit its Markdown in a right-side drawer, then apply the draft before saving the containing settings or repository form.
 - The GitHub token is used for both server-side Git actions and in-agent `git pull` / `git push` inside Codex and Claude runtimes.
 - Stored credential values are write-only and never returned in plaintext by the API/UI.
 - Agent-created commit identity resolves from system Git author settings when configured, otherwise from the built-in Verft fallback identity.
 - Codex runs use system/global OpenAI API key or Codex `auth.json`; user profiles do not store per-user Codex `auth.json`.
 - Hostexec tokens are referenced by environment variable name; token values are not stored in settings. Bridge commands execute on the host with the task workspace as `cwd` and are rejected if the resolved directory escapes the workspace.
+- Task runtimes receive one generated `.verft-runtime/harness.md`. Populated global harness sections appear first, followed by populated repository harness sections; both scopes are preserved.
 
 ## Task Flows (New + Existing)
 

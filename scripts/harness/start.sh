@@ -73,7 +73,7 @@ if ! docker info >/dev/null 2>&1; then
 fi
 
 log "starting stack"
-./verft.sh start
+./verft start
 
 log "waiting for health endpoint: $HEALTH_URL"
 for attempt in $(seq 1 60); do

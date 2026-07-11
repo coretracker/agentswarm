@@ -62,8 +62,8 @@ if [[ -f .env.example ]]; then
   done
 fi
 
-if [[ ! -x ./verft.sh ]]; then
-  echo "[harness:doctor] error: ./verft.sh is missing or not executable" >&2
+if [[ ! -x ./verft ]]; then
+  echo "[harness:doctor] error: ./verft is missing or not executable" >&2
   exit 1
 fi
 

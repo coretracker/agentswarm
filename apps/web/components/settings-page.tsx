@@ -51,11 +51,14 @@ import { useSettings } from "../src/hooks/useSettings";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useAuth } from "./auth-provider";
 import { ModelSelect } from "./model-select";
+import { HarnessMarkdownField } from "./harness-markdown-field";
 import { buildApiUrl } from "../src/lib/public-url";
 
 interface GeneralSettingsForm {
   defaultProvider: AgentProvider;
   maxAgents: number;
+  archivedTaskAutoDeleteEnabled: boolean;
+  archivedTaskAutoDeleteDays: number;
   branchPrefix: string;
   gitUsername: string;
   gitAuthorName: string;
@@ -64,6 +67,12 @@ interface GeneralSettingsForm {
   anthropicBaseUrl: string;
   taskPromptMagicModel: string;
   taskPromptMagicTemplate: string;
+  harnessWhatExists: string;
+  harnessAllowedActions: string;
+  harnessNotAllowedActions: string;
+  harnessHowToWork: string;
+  harnessDefinitionOfDone: string;
+  harnessEvidenceExpectations: string;
   hostexecEnabled: boolean;
   hostexecUrl: string;
   hostexecBearerTokenEnvVar: string;
@@ -107,7 +116,7 @@ interface ResponsePreferencePresetFormValues {
 }
 
 type ClearCredentialTarget = "github" | "openai" | "anthropic" | "slackSigningSecret" | "slackBotToken";
-type SettingsTabKey = "general" | "git" | "hostexec" | "credentials" | "slack" | "codex" | "claude";
+type SettingsTabKey = "general" | "harness" | "git" | "hostexec" | "credentials" | "slack" | "codex" | "claude";
 type DirtyGeneralTabKey = SettingsTabKey;
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
@@ -147,6 +156,8 @@ const summarizeResponsePreference = (preset: ResponsePreferencePreset): string =
 const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   defaultProvider: settings.defaultProvider,
   maxAgents: settings.maxAgents,
+  archivedTaskAutoDeleteEnabled: settings.archivedTaskAutoDeleteEnabled,
+  archivedTaskAutoDeleteDays: settings.archivedTaskAutoDeleteDays,
   branchPrefix: settings.branchPrefix,
   gitUsername: settings.gitUsername,
   gitAuthorName: settings.gitAuthorName ?? "",
@@ -155,6 +166,12 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   anthropicBaseUrl: settings.anthropicBaseUrl ?? "",
   taskPromptMagicModel: settings.taskPromptMagicModel,
   taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
+  harnessWhatExists: settings.harnessWhatExists ?? "",
+  harnessAllowedActions: settings.harnessAllowedActions ?? "",
+  harnessNotAllowedActions: settings.harnessNotAllowedActions ?? "",
+  harnessHowToWork: settings.harnessHowToWork ?? "",
+  harnessDefinitionOfDone: settings.harnessDefinitionOfDone ?? "",
+  harnessEvidenceExpectations: settings.harnessEvidenceExpectations ?? "",
   hostexecEnabled: settings.hostexec?.enabled === true,
   hostexecUrl: settings.hostexec?.url ?? "",
   hostexecBearerTokenEnvVar: settings.hostexec?.bearerTokenEnvVar ?? "",
@@ -438,6 +455,8 @@ export function SettingsPage() {
       const payload: UpdateSettingsInput = {
         defaultProvider: values.defaultProvider,
         maxAgents: values.maxAgents,
+        archivedTaskAutoDeleteEnabled: values.archivedTaskAutoDeleteEnabled === true,
+        archivedTaskAutoDeleteDays: values.archivedTaskAutoDeleteDays,
         branchPrefix: values.branchPrefix,
         gitUsername: values.gitUsername,
         gitAuthorName: values.gitAuthorName?.trim() || null,
@@ -451,6 +470,12 @@ export function SettingsPage() {
         anthropicBaseUrl: values.anthropicBaseUrl?.trim() ? values.anthropicBaseUrl.trim() : null,
         taskPromptMagicModel: values.taskPromptMagicModel,
         taskPromptMagicTemplate: values.taskPromptMagicTemplate,
+        harnessWhatExists: values.harnessWhatExists.trim() || null,
+        harnessAllowedActions: values.harnessAllowedActions.trim() || null,
+        harnessNotAllowedActions: values.harnessNotAllowedActions.trim() || null,
+        harnessHowToWork: values.harnessHowToWork.trim() || null,
+        harnessDefinitionOfDone: values.harnessDefinitionOfDone.trim() || null,
+        harnessEvidenceExpectations: values.harnessEvidenceExpectations.trim() || null,
         codexDefaultModel: values.codexDefaultModel,
         codexModels: values.codexModels,
         codexDefaultEffort: values.codexDefaultEffort,
@@ -626,8 +651,12 @@ export function SettingsPage() {
       label: <span>{generalDirtyTabs.includes("general") ? "General *" : "General"}</span>
     },
     {
+      key: "harness",
+      label: <span>{generalDirtyTabs.includes("harness") ? "Harness *" : "Harness"}</span>
+    },
+    {
       key: "git",
-      label: <span>{generalDirtyTabs.includes("git") || credentialDirtyTabs.includes("git") ? "Git *" : "Git"}</span>
+      label: <span>{generalDirtyTabs.includes("git") ? "Git *" : "Git"}</span>
     },
     {
       key: "hostexec",
@@ -696,10 +725,61 @@ export function SettingsPage() {
                   >
                     <InputNumber min={1} max={20} style={{ width: "100%" }} />
                   </Form.Item>
+                  <Form.Item name="archivedTaskAutoDeleteEnabled" valuePropName="checked">
+                    <Checkbox>Automatically delete archived tasks</Checkbox>
+                  </Form.Item>
+                  <Form.Item
+                    name="archivedTaskAutoDeleteDays"
+                    label="Delete Archived Tasks After"
+                    extra="Archived tasks older than this many days are deleted automatically."
+                    rules={[{ required: true }]}
+                  >
+                    <InputNumber min={1} max={3650} addonAfter="days" style={{ width: "100%" }} />
+                  </Form.Item>
                 </Flex>
               </Card>
             </Space>
             {renderSaveBar({ dirty: generalDirty, label: "Save General Settings", loading: savingGeneral })}
+          </Form>
+        ) : null}
+
+        {activeTab === "harness" ? (
+          <Form
+            form={generalForm}
+            layout="vertical"
+            disabled={!canEditSettings}
+            onValuesChange={() => markGeneralTabDirty("harness")}
+            onFinish={saveGeneralSettings}
+          >
+            <Card bordered={false} loading={loading} title="Global Harness">
+              <Flex vertical gap={12}>
+                <Alert
+                  type="info"
+                  showIcon
+                  message="Applied to every task"
+                  description="Global guidance is written first, followed by repository harness guidance. Both are preserved in the runtime harness."
+                />
+                {([
+                  ["harnessWhatExists", "1. What exists?", "Shared platform context, services, tools, and conventions."],
+                  ["harnessAllowedActions", "2. What is allowed?", "Actions agents may take across repositories."],
+                  ["harnessNotAllowedActions", "3. What is not allowed?", "Actions agents must never take."],
+                  ["harnessHowToWork", "4. How should you work?", "Global process, planning, and approval expectations."],
+                  ["harnessDefinitionOfDone", "5. How do you know you are done?", "Global validation and quality gates."],
+                  ["harnessEvidenceExpectations", "6. How do you prove it?", "Evidence expected in task results."]
+                ] as const).map(([name, label, extra]) => (
+                  <Form.Item
+                    key={name}
+                    name={name}
+                    label={label}
+                    extra={extra}
+                    rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
+                  >
+                    <HarnessMarkdownField label={label} disabled={!canEditSettings} />
+                  </Form.Item>
+                ))}
+              </Flex>
+            </Card>
+            {renderSaveBar({ dirty: generalDirty, label: "Save Global Harness", loading: savingGeneral })}
           </Form>
         ) : null}
 
@@ -802,108 +882,46 @@ export function SettingsPage() {
         ) : null}
 
         {activeTab === "git" ? (
-          <Space direction="vertical" size={16} style={{ width: "100%" }}>
-            <Form
-              form={generalForm}
-              layout="vertical"
-              disabled={!canEditSettings}
-              onValuesChange={() => markGeneralTabDirty("git")}
-              onFinish={saveGeneralSettings}
-            >
-              <Card bordered={false} loading={loading} title="Git">
-                <Flex vertical gap={16} style={{ width: "100%" }}>
-                  <Form.Item
-                    name="gitUsername"
-                    label="Git Username"
-                    extra="Used for authenticated GitHub HTTPS access from server Git actions and Codex or Claude runtimes."
-                    rules={[{ required: true, whitespace: true }]}
-                  >
-                    <Input placeholder="x-access-token" />
-                  </Form.Item>
-                  <Form.Item
-                    name="gitAuthorName"
-                    label="Git Author Name"
-                    extra="Used for agent-created Git commits. Leave blank to use the system default."
-                    style={{ marginBottom: 0 }}
-                  >
-                    <Input placeholder="Verft" />
-                  </Form.Item>
-                  <Form.Item
-                    name="gitAuthorEmail"
-                    label="Git Author Email"
-                    extra="Used for agent-created Git commits. Leave blank to use the system default."
-                    rules={[{ type: "email", message: "Enter a valid email address" }]}
-                  >
-                    <Input placeholder="verft@example.com" />
-                  </Form.Item>
-                  <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
-                    <Input placeholder="verft" />
-                  </Form.Item>
-                </Flex>
-              </Card>
-              {renderSaveBar({ dirty: generalDirty, label: "Save Git Settings", loading: savingGeneral })}
-            </Form>
-
-            <Card
-              bordered={false}
-              loading={loading}
-              title="GitHub Token"
-              extra={
-                settings ? (
-                  <Space wrap>
-                    <Tag color={settings.githubTokenConfigured ? "green" : "default"}>
-                      GitHub Token {settings.githubTokenConfigured ? "Configured" : "Missing"}
-                    </Tag>
-                  </Space>
-                ) : null
-              }
-            >
-              <Alert
-                type="info"
-                showIcon
-                style={{ marginBottom: 16 }}
-                message="Credentials are write-only"
-                description="Tokens are encrypted on the server and never returned by the API."
-              />
-              <Form
-                form={credentialForm}
-                layout="vertical"
-                disabled={!canEditSettings}
-                onValuesChange={() => markCredentialTabDirty("git")}
-                onFinish={saveCredentials}
-              >
+          <Form
+            form={generalForm}
+            layout="vertical"
+            disabled={!canEditSettings}
+            onValuesChange={() => markGeneralTabDirty("git")}
+            onFinish={saveGeneralSettings}
+          >
+            <Card bordered={false} loading={loading} title="Git">
+              <Flex vertical gap={16} style={{ width: "100%" }}>
                 <Form.Item
-                  name="githubToken"
-                  label="GitHub Token"
-                  extra="Used for server pull/push/merge operations and for in-agent `git pull` / `git push` inside Codex and Claude task runtimes."
+                  name="gitUsername"
+                  label="Git Username"
+                  extra="Used with the GitHub token from Credentials for authenticated HTTPS access from server Git actions and Codex or Claude runtimes."
+                  rules={[{ required: true, whitespace: true }]}
                 >
-                  <Input.Password placeholder={settings?.githubTokenConfigured ? "Configured. Enter a new token to replace it." : "github_pat_..."} />
+                  <Input placeholder="x-access-token" />
                 </Form.Item>
-                {renderSaveBar({
-                  dirty: credentialsDirty,
-                  label: "Save GitHub Token",
-                  loading: savingCredentials,
-                  statusText: credentialsDirty ? "Unsaved GitHub token changes" : "No pending GitHub token changes"
-                })}
-                <Space wrap>
-                  <Popconfirm
-                    title="Clear GitHub token?"
-                    description="This removes the stored GitHub token from settings."
-                    okText="Clear"
-                    cancelText="Cancel"
-                    okButtonProps={{ danger: true, loading: savingCredentials }}
-                    placement="top"
-                    disabled={!canEditSettings}
-                    onConfirm={() => handleClearCredential("github")}
-                  >
-                    <Button danger loading={savingCredentials} disabled={!canEditSettings}>
-                      Clear GitHub Token
-                    </Button>
-                  </Popconfirm>
-                </Space>
-              </Form>
+                <Form.Item
+                  name="gitAuthorName"
+                  label="Git Author Name"
+                  extra="Used for agent-created Git commits. Leave blank to use the system default."
+                  style={{ marginBottom: 0 }}
+                >
+                  <Input placeholder="Verft" />
+                </Form.Item>
+                <Form.Item
+                  name="gitAuthorEmail"
+                  label="Git Author Email"
+                  extra="Used for agent-created Git commits. Leave blank to use the system default."
+                  rules={[{ type: "email", message: "Enter a valid email address" }]}
+                >
+                  <Input placeholder="verft@example.com" />
+                </Form.Item>
+                <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
+                  <Input placeholder="verft" />
+                </Form.Item>
+              </Flex>
             </Card>
-          </Space>
+            {renderSaveBar({ dirty: generalDirty, label: "Save Git Settings", loading: savingGeneral })}
+          </Form>
         ) : null}
 
         {activeTab === "hostexec" ? (
@@ -1153,6 +1171,9 @@ export function SettingsPage() {
             extra={
               settings ? (
                 <Space wrap>
+                  <Tag color={settings.githubTokenConfigured ? "green" : "default"}>
+                    GitHub Token {settings.githubTokenConfigured ? "Configured" : "Missing"}
+                  </Tag>
                   <Tag color={settings.openaiApiKeyConfigured ? "green" : "default"}>
                     OpenAI Key {settings.openaiApiKeyConfigured ? "Configured" : "Missing"}
                   </Tag>
@@ -1167,8 +1188,8 @@ export function SettingsPage() {
               type="info"
               showIcon
               style={{ marginBottom: 16 }}
-              message="Shared provider setup"
-              description="API keys are encrypted in Verft settings. The setup terminal stores Codex and Claude login and plugin files in the shared base volume so new tasks can reuse them."
+              message="Credentials are write-only"
+              description="GitHub tokens and provider API keys are encrypted in Verft settings and never returned by the API. The setup terminal stores Codex and Claude login and plugin files in the shared base volume so new tasks can reuse them."
             />
             <Flex vertical gap={8} style={{ marginBottom: 16 }}>
               <Flex align="center" justify="space-between" gap={12} wrap="wrap">
@@ -1205,6 +1226,13 @@ export function SettingsPage() {
               onValuesChange={() => markCredentialTabDirty("credentials")}
               onFinish={saveCredentials}
             >
+              <Form.Item
+                name="githubToken"
+                label="GitHub Token"
+                extra="Used for server pull/push/merge operations and for in-agent `git pull` / `git push` inside Codex and Claude task runtimes."
+              >
+                <Input.Password placeholder={settings?.githubTokenConfigured ? "Configured. Enter a new token to replace it." : "github_pat_..."} />
+              </Form.Item>
               <Form.Item name="openaiApiKey" label="OpenAI API Key">
                 <Input.Password placeholder={settings?.openaiApiKeyConfigured ? "Configured. Enter a new key to replace it." : "sk-..."} />
               </Form.Item>
@@ -1218,6 +1246,20 @@ export function SettingsPage() {
                 statusText: credentialsDirty ? "Unsaved credential changes" : "No pending credential changes"
               })}
               <Space wrap>
+                <Popconfirm
+                  title="Clear GitHub token?"
+                  description="This removes the stored GitHub token from settings."
+                  okText="Clear"
+                  cancelText="Cancel"
+                  okButtonProps={{ danger: true, loading: savingCredentials }}
+                  placement="top"
+                  disabled={!canEditSettings}
+                  onConfirm={() => handleClearCredential("github")}
+                >
+                  <Button danger loading={savingCredentials} disabled={!canEditSettings}>
+                    Clear GitHub Token
+                  </Button>
+                </Popconfirm>
                 <Popconfirm
                   title="Clear OpenAI API key?"
                   description="This removes the stored OpenAI API key from settings."

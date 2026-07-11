@@ -633,6 +633,18 @@ Feedback:
     `
   },
   {
+    id: "20260709_01_system_harness_fields",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS harness_what_exists text NULL,
+      ADD COLUMN IF NOT EXISTS harness_allowed_actions text NULL,
+      ADD COLUMN IF NOT EXISTS harness_not_allowed_actions text NULL,
+      ADD COLUMN IF NOT EXISTS harness_how_to_work text NULL,
+      ADD COLUMN IF NOT EXISTS harness_definition_of_done text NULL,
+      ADD COLUMN IF NOT EXISTS harness_evidence_expectations text NULL;
+    `
+  },
+  {
     id: "20260630_02_repository_github_task_created_comment_template",
     sql: `
       ALTER TABLE repositories
@@ -792,6 +804,14 @@ Feedback:
       INSERT INTO assistant_settings (singleton_id, updated_at)
       VALUES (1, now()::text)
       ON CONFLICT (singleton_id) DO NOTHING;
+    `
+  },
+  {
+    id: "20260710_01_archived_task_auto_delete_settings",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS archived_task_auto_delete_enabled boolean NOT NULL DEFAULT true,
+      ADD COLUMN IF NOT EXISTS archived_task_auto_delete_days integer NOT NULL DEFAULT 7;
     `
   }
 ];

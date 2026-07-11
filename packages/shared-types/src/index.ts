@@ -212,6 +212,7 @@ export type McpServerTransport = "stdio" | "http";
 export type PermissionScope =
   | "task:list"
   | "task:create"
+  | "task:create_subtask"
   | "task:read"
   | "task:edit"
   | "task:build"
@@ -239,6 +240,7 @@ export type PermissionScope =
 export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "task:list",
   "task:create",
+  "task:create_subtask",
   "task:read",
   "task:edit",
   "task:build",
@@ -279,7 +281,7 @@ export interface PermissionScopeGroup {
 }
 
 export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
-  { label: "Tasks", scopes: ["task:list", "task:create", "task:read", "task:edit", "task:build", "task:ask", "task:terminal", "task:delete"] },
+  { label: "Tasks", scopes: ["task:list", "task:create", "task:create_subtask", "task:read", "task:edit", "task:build", "task:ask", "task:terminal", "task:delete"] },
   { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
   { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
   { label: "Settings", scopes: ["settings:read", "settings:edit"] },
@@ -560,6 +562,8 @@ export interface Task {
   activeInteractiveSession?: boolean;
   activeTerminalSessionMode?: TaskTerminalSessionMode | null;
   linkedWorkspaces?: TaskLinkedWorkspace[];
+  parentTaskId?: string | null;
+  rootTaskId?: string | null;
   ownerUserId: string | null;
   creatorName?: string | null;
   repoId: string;
@@ -941,6 +945,8 @@ export interface SystemDataStores {
 export interface SystemSettings {
   defaultProvider: AgentProvider;
   maxAgents: number;
+  archivedTaskAutoDeleteEnabled: boolean;
+  archivedTaskAutoDeleteDays: number;
   branchPrefix: string;
   workspaceProvisioningMode: WorkspaceProvisioningMode;
   gitUsername: string;
@@ -951,6 +957,12 @@ export interface SystemSettings {
   anthropicBaseUrl: string | null;
   taskPromptMagicModel: string;
   taskPromptMagicTemplate: string;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
   githubTokenConfigured: boolean;
   openaiApiKeyConfigured: boolean;
   anthropicApiKeyConfigured: boolean;
@@ -1062,6 +1074,8 @@ export interface CreateTaskInput {
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
   autoApplyCheckpoints?: boolean;
+  parentTaskId?: string | null;
+  rootTaskId?: string | null;
   model?: string;
   reasoningEffort?: TaskReasoningEffort;
 }
@@ -1432,6 +1446,8 @@ export const getTaskExecutionStatusLabel = (status: TaskExecutionStatus): string
 export interface UpdateSettingsInput {
   defaultProvider?: AgentProvider;
   maxAgents?: number;
+  archivedTaskAutoDeleteEnabled?: boolean;
+  archivedTaskAutoDeleteDays?: number;
   branchPrefix?: string;
   workspaceProvisioningMode?: WorkspaceProvisioningMode;
   gitUsername?: string;
@@ -1442,6 +1458,12 @@ export interface UpdateSettingsInput {
   anthropicBaseUrl?: string | null;
   taskPromptMagicModel?: string;
   taskPromptMagicTemplate?: string;
+  harnessWhatExists?: string | null;
+  harnessAllowedActions?: string | null;
+  harnessNotAllowedActions?: string | null;
+  harnessHowToWork?: string | null;
+  harnessDefinitionOfDone?: string | null;
+  harnessEvidenceExpectations?: string | null;
   codexDefaultModel?: string;
   codexModels?: ProviderModelOption[];
   codexDefaultEffort?: ProviderProfile;

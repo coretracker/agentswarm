@@ -60,6 +60,8 @@ const buildSystemDataStores = (): SystemDataStores => ({
 const defaultSettings: SystemSettings = {
   defaultProvider: DEFAULT_PROVIDER,
   maxAgents: 2,
+  archivedTaskAutoDeleteEnabled: true,
+  archivedTaskAutoDeleteDays: 7,
   branchPrefix: "verft",
   workspaceProvisioningMode: "clone_only",
   gitUsername: "x-access-token",
@@ -71,6 +73,12 @@ const defaultSettings: SystemSettings = {
   taskPromptMagicModel: "gpt-5.4-mini",
   taskPromptMagicTemplate:
     "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
+  harnessWhatExists: null,
+  harnessAllowedActions: null,
+  harnessNotAllowedActions: null,
+  harnessHowToWork: null,
+  harnessDefinitionOfDone: null,
+  harnessEvidenceExpectations: null,
   githubTokenConfigured: false,
   openaiApiKeyConfigured: false,
   anthropicApiKeyConfigured: false,
@@ -117,11 +125,23 @@ const normalizeOptionalUrl = (value: string | null | undefined): string | null =
   return normalized || null;
 };
 
+const normalizeHarnessValue = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim();
+  return normalized || null;
+};
+
 const normalizeDefaultProvider = (value: AgentProvider | string | undefined): AgentProvider =>
   normalizeProvider(value ?? defaultSettings.defaultProvider);
 
 const normalizeWorkspaceProvisioningMode = (value: WorkspaceProvisioningMode | string | undefined): WorkspaceProvisioningMode =>
   value === "hybrid" ? "hybrid" : "clone_only";
+
+const normalizeArchivedTaskAutoDeleteDays = (value: number | undefined): number => {
+  if (typeof value !== "number") {
+    return defaultSettings.archivedTaskAutoDeleteDays;
+  }
+  return Number.isInteger(value) && value >= 1 && value <= 3650 ? value : defaultSettings.archivedTaskAutoDeleteDays;
+};
 
 const normalizeProviderModels = (value: ProviderModelOption[] | undefined, fallback: ProviderModelOption[]): ProviderModelOption[] => {
   const normalized: ProviderModelOption[] = [];
@@ -265,6 +285,8 @@ export class RedisSettingsStore implements SettingsStore {
       const baseSettings = {
         defaultProvider: defaultSettings.defaultProvider,
         maxAgents: defaultSettings.maxAgents,
+        archivedTaskAutoDeleteEnabled: defaultSettings.archivedTaskAutoDeleteEnabled,
+        archivedTaskAutoDeleteDays: defaultSettings.archivedTaskAutoDeleteDays,
         branchPrefix: defaultSettings.branchPrefix,
         workspaceProvisioningMode: defaultSettings.workspaceProvisioningMode,
         gitUsername: defaultSettings.gitUsername,
@@ -275,6 +297,12 @@ export class RedisSettingsStore implements SettingsStore {
         anthropicBaseUrl: defaultSettings.anthropicBaseUrl,
         taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
         taskPromptMagicTemplate: defaultSettings.taskPromptMagicTemplate,
+        harnessWhatExists: defaultSettings.harnessWhatExists,
+        harnessAllowedActions: defaultSettings.harnessAllowedActions,
+        harnessNotAllowedActions: defaultSettings.harnessNotAllowedActions,
+        harnessHowToWork: defaultSettings.harnessHowToWork,
+        harnessDefinitionOfDone: defaultSettings.harnessDefinitionOfDone,
+        harnessEvidenceExpectations: defaultSettings.harnessEvidenceExpectations,
         codexDefaultModel: defaultSettings.codexDefaultModel,
         codexModels: defaultSettings.codexModels,
         codexDefaultEffort: defaultSettings.codexDefaultEffort,
@@ -299,6 +327,11 @@ export class RedisSettingsStore implements SettingsStore {
     const normalizedBase = {
       defaultProvider: normalizedDefaultProvider,
       maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
+      archivedTaskAutoDeleteEnabled:
+        typeof parsed.archivedTaskAutoDeleteEnabled === "boolean"
+          ? parsed.archivedTaskAutoDeleteEnabled
+          : defaultSettings.archivedTaskAutoDeleteEnabled,
+      archivedTaskAutoDeleteDays: normalizeArchivedTaskAutoDeleteDays(parsed.archivedTaskAutoDeleteDays),
       branchPrefix: normalizeBranchPrefix(parsed.branchPrefix),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(parsed.workspaceProvisioningMode),
       gitUsername: normalizeGitUsername(parsed.gitUsername),
@@ -309,6 +342,12 @@ export class RedisSettingsStore implements SettingsStore {
       anthropicBaseUrl: normalizeOptionalUrl(parsed.anthropicBaseUrl),
       taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
       taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
+      harnessWhatExists: normalizeHarnessValue(parsed.harnessWhatExists),
+      harnessAllowedActions: normalizeHarnessValue(parsed.harnessAllowedActions),
+      harnessNotAllowedActions: normalizeHarnessValue(parsed.harnessNotAllowedActions),
+      harnessHowToWork: normalizeHarnessValue(parsed.harnessHowToWork),
+      harnessDefinitionOfDone: normalizeHarnessValue(parsed.harnessDefinitionOfDone),
+      harnessEvidenceExpectations: normalizeHarnessValue(parsed.harnessEvidenceExpectations),
       codexDefaultModel: normalizedCodexDefaultModel,
       codexModels: normalizeProviderModels(parsed.codexModels, defaultSettings.codexModels),
       codexDefaultEffort: normalizeProviderProfile(parsed.codexDefaultEffort) ?? defaultSettings.codexDefaultEffort,
@@ -323,6 +362,8 @@ export class RedisSettingsStore implements SettingsStore {
       Object.prototype.hasOwnProperty.call(parsed, "agentRules") ||
       parsed.defaultProvider !== normalizedBase.defaultProvider ||
       parsed.maxAgents !== normalizedBase.maxAgents ||
+      parsed.archivedTaskAutoDeleteEnabled !== normalizedBase.archivedTaskAutoDeleteEnabled ||
+      parsed.archivedTaskAutoDeleteDays !== normalizedBase.archivedTaskAutoDeleteDays ||
       parsed.branchPrefix !== normalizedBase.branchPrefix ||
       parsed.workspaceProvisioningMode !== normalizedBase.workspaceProvisioningMode ||
       parsed.gitUsername !== normalizedBase.gitUsername ||
@@ -357,6 +398,14 @@ export class RedisSettingsStore implements SettingsStore {
     const nextBase = {
       defaultProvider: nextDefaultProvider,
       maxAgents: input.maxAgents ?? current.maxAgents,
+      archivedTaskAutoDeleteEnabled:
+        input.archivedTaskAutoDeleteEnabled === undefined
+          ? current.archivedTaskAutoDeleteEnabled
+          : input.archivedTaskAutoDeleteEnabled,
+      archivedTaskAutoDeleteDays:
+        input.archivedTaskAutoDeleteDays === undefined
+          ? current.archivedTaskAutoDeleteDays
+          : normalizeArchivedTaskAutoDeleteDays(input.archivedTaskAutoDeleteDays),
       branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
         input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
@@ -382,6 +431,12 @@ export class RedisSettingsStore implements SettingsStore {
           : normalizeOptionalUrl(input.anthropicBaseUrl),
       taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
       taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
+      harnessWhatExists: input.harnessWhatExists === undefined ? current.harnessWhatExists : normalizeHarnessValue(input.harnessWhatExists),
+      harnessAllowedActions: input.harnessAllowedActions === undefined ? current.harnessAllowedActions : normalizeHarnessValue(input.harnessAllowedActions),
+      harnessNotAllowedActions: input.harnessNotAllowedActions === undefined ? current.harnessNotAllowedActions : normalizeHarnessValue(input.harnessNotAllowedActions),
+      harnessHowToWork: input.harnessHowToWork === undefined ? current.harnessHowToWork : normalizeHarnessValue(input.harnessHowToWork),
+      harnessDefinitionOfDone: input.harnessDefinitionOfDone === undefined ? current.harnessDefinitionOfDone : normalizeHarnessValue(input.harnessDefinitionOfDone),
+      harnessEvidenceExpectations: input.harnessEvidenceExpectations === undefined ? current.harnessEvidenceExpectations : normalizeHarnessValue(input.harnessEvidenceExpectations),
       codexDefaultModel: nextCodexDefaultModel,
       codexModels: input.codexModels === undefined ? current.codexModels : normalizeProviderModels(input.codexModels, defaultSettings.codexModels),
       codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
@@ -468,6 +523,8 @@ export class PostgresSettingsStore implements SettingsStore {
           singleton_id,
           default_provider,
           max_agents,
+          archived_task_auto_delete_enabled,
+          archived_task_auto_delete_days,
           branch_prefix,
           workspace_provisioning_mode,
           git_username,
@@ -480,6 +537,12 @@ export class PostgresSettingsStore implements SettingsStore {
           anthropic_base_url,
           task_prompt_magic_model,
           task_prompt_magic_template,
+          harness_what_exists,
+          harness_allowed_actions,
+          harness_not_allowed_actions,
+          harness_how_to_work,
+          harness_definition_of_done,
+          harness_evidence_expectations,
           codex_default_model,
           codex_models,
           codex_default_effort,
@@ -488,12 +551,14 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19::jsonb, $20, $21::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24::jsonb, $25, $26, $27::jsonb, $28, $29::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
         defaultSettings.defaultProvider,
         defaultSettings.maxAgents,
+        defaultSettings.archivedTaskAutoDeleteEnabled,
+        defaultSettings.archivedTaskAutoDeleteDays,
         defaultSettings.branchPrefix,
         defaultSettings.workspaceProvisioningMode,
         defaultSettings.gitUsername,
@@ -506,6 +571,12 @@ export class PostgresSettingsStore implements SettingsStore {
         defaultSettings.anthropicBaseUrl,
         defaultSettings.taskPromptMagicModel,
         defaultSettings.taskPromptMagicTemplate,
+        defaultSettings.harnessWhatExists,
+        defaultSettings.harnessAllowedActions,
+        defaultSettings.harnessNotAllowedActions,
+        defaultSettings.harnessHowToWork,
+        defaultSettings.harnessDefinitionOfDone,
+        defaultSettings.harnessEvidenceExpectations,
         defaultSettings.codexDefaultModel,
         JSON.stringify(defaultSettings.codexModels),
         defaultSettings.codexDefaultEffort,
@@ -524,6 +595,8 @@ export class PostgresSettingsStore implements SettingsStore {
         SELECT
           default_provider,
           max_agents,
+          archived_task_auto_delete_enabled,
+          archived_task_auto_delete_days,
           branch_prefix,
           workspace_provisioning_mode,
           git_username,
@@ -536,6 +609,12 @@ export class PostgresSettingsStore implements SettingsStore {
           anthropic_base_url,
           task_prompt_magic_model,
           task_prompt_magic_template,
+          harness_what_exists,
+          harness_allowed_actions,
+          harness_not_allowed_actions,
+          harness_how_to_work,
+          harness_definition_of_done,
+          harness_evidence_expectations,
           codex_default_model,
           codex_models,
           codex_default_effort,
@@ -560,6 +639,13 @@ export class PostgresSettingsStore implements SettingsStore {
     const normalizedBase = {
       defaultProvider: normalizedDefaultProvider,
       maxAgents: typeof row?.max_agents === "number" ? row.max_agents : defaultSettings.maxAgents,
+      archivedTaskAutoDeleteEnabled:
+        typeof row?.archived_task_auto_delete_enabled === "boolean"
+          ? row.archived_task_auto_delete_enabled
+          : defaultSettings.archivedTaskAutoDeleteEnabled,
+      archivedTaskAutoDeleteDays: normalizeArchivedTaskAutoDeleteDays(
+        typeof row?.archived_task_auto_delete_days === "number" ? row.archived_task_auto_delete_days : undefined
+      ),
       branchPrefix: normalizeBranchPrefix(typeof row?.branch_prefix === "string" ? row.branch_prefix : undefined),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(row?.workspace_provisioning_mode),
       gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
@@ -581,6 +667,12 @@ export class PostgresSettingsStore implements SettingsStore {
         typeof row?.task_prompt_magic_template === "string" && row.task_prompt_magic_template.trim().length > 0
           ? row.task_prompt_magic_template.trim()
           : defaultSettings.taskPromptMagicTemplate,
+      harnessWhatExists: normalizeHarnessValue(row?.harness_what_exists),
+      harnessAllowedActions: normalizeHarnessValue(row?.harness_allowed_actions),
+      harnessNotAllowedActions: normalizeHarnessValue(row?.harness_not_allowed_actions),
+      harnessHowToWork: normalizeHarnessValue(row?.harness_how_to_work),
+      harnessDefinitionOfDone: normalizeHarnessValue(row?.harness_definition_of_done),
+      harnessEvidenceExpectations: normalizeHarnessValue(row?.harness_evidence_expectations),
       codexDefaultModel: normalizedCodexDefaultModel,
       codexModels: normalizeProviderModels(
         Array.isArray(row?.codex_models) ? (row.codex_models as ProviderModelOption[]) : undefined,
@@ -614,6 +706,14 @@ export class PostgresSettingsStore implements SettingsStore {
     const nextBase = {
       defaultProvider: nextDefaultProvider,
       maxAgents: input.maxAgents ?? current.maxAgents,
+      archivedTaskAutoDeleteEnabled:
+        input.archivedTaskAutoDeleteEnabled === undefined
+          ? current.archivedTaskAutoDeleteEnabled
+          : input.archivedTaskAutoDeleteEnabled,
+      archivedTaskAutoDeleteDays:
+        input.archivedTaskAutoDeleteDays === undefined
+          ? current.archivedTaskAutoDeleteDays
+          : normalizeArchivedTaskAutoDeleteDays(input.archivedTaskAutoDeleteDays),
       branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
         input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
@@ -639,6 +739,12 @@ export class PostgresSettingsStore implements SettingsStore {
           : normalizeOptionalUrl(input.anthropicBaseUrl),
       taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
       taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
+      harnessWhatExists: input.harnessWhatExists === undefined ? current.harnessWhatExists : normalizeHarnessValue(input.harnessWhatExists),
+      harnessAllowedActions: input.harnessAllowedActions === undefined ? current.harnessAllowedActions : normalizeHarnessValue(input.harnessAllowedActions),
+      harnessNotAllowedActions: input.harnessNotAllowedActions === undefined ? current.harnessNotAllowedActions : normalizeHarnessValue(input.harnessNotAllowedActions),
+      harnessHowToWork: input.harnessHowToWork === undefined ? current.harnessHowToWork : normalizeHarnessValue(input.harnessHowToWork),
+      harnessDefinitionOfDone: input.harnessDefinitionOfDone === undefined ? current.harnessDefinitionOfDone : normalizeHarnessValue(input.harnessDefinitionOfDone),
+      harnessEvidenceExpectations: input.harnessEvidenceExpectations === undefined ? current.harnessEvidenceExpectations : normalizeHarnessValue(input.harnessEvidenceExpectations),
       codexDefaultModel: nextCodexDefaultModel,
       codexModels: input.codexModels === undefined ? current.codexModels : normalizeProviderModels(input.codexModels, defaultSettings.codexModels),
       codexDefaultEffort: normalizeProviderProfile(input.codexDefaultEffort) ?? current.codexDefaultEffort,
@@ -657,6 +763,8 @@ export class PostgresSettingsStore implements SettingsStore {
           singleton_id,
           default_provider,
           max_agents,
+          archived_task_auto_delete_enabled,
+          archived_task_auto_delete_days,
           branch_prefix,
           workspace_provisioning_mode,
           git_username,
@@ -669,6 +777,12 @@ export class PostgresSettingsStore implements SettingsStore {
           anthropic_base_url,
           task_prompt_magic_model,
           task_prompt_magic_template,
+          harness_what_exists,
+          harness_allowed_actions,
+          harness_not_allowed_actions,
+          harness_how_to_work,
+          harness_definition_of_done,
+          harness_evidence_expectations,
           codex_default_model,
           codex_models,
           codex_default_effort,
@@ -677,11 +791,13 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16::jsonb, $17, $18, $19::jsonb, $20, $21::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24::jsonb, $25, $26, $27::jsonb, $28, $29::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
           max_agents = EXCLUDED.max_agents,
+          archived_task_auto_delete_enabled = EXCLUDED.archived_task_auto_delete_enabled,
+          archived_task_auto_delete_days = EXCLUDED.archived_task_auto_delete_days,
           branch_prefix = EXCLUDED.branch_prefix,
           workspace_provisioning_mode = EXCLUDED.workspace_provisioning_mode,
           git_username = EXCLUDED.git_username,
@@ -694,6 +810,12 @@ export class PostgresSettingsStore implements SettingsStore {
           anthropic_base_url = EXCLUDED.anthropic_base_url,
           task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
           task_prompt_magic_template = EXCLUDED.task_prompt_magic_template,
+          harness_what_exists = EXCLUDED.harness_what_exists,
+          harness_allowed_actions = EXCLUDED.harness_allowed_actions,
+          harness_not_allowed_actions = EXCLUDED.harness_not_allowed_actions,
+          harness_how_to_work = EXCLUDED.harness_how_to_work,
+          harness_definition_of_done = EXCLUDED.harness_definition_of_done,
+          harness_evidence_expectations = EXCLUDED.harness_evidence_expectations,
           codex_default_model = EXCLUDED.codex_default_model,
           codex_models = EXCLUDED.codex_models,
           codex_default_effort = EXCLUDED.codex_default_effort,
@@ -705,6 +827,8 @@ export class PostgresSettingsStore implements SettingsStore {
       [
         nextBase.defaultProvider,
         nextBase.maxAgents,
+        nextBase.archivedTaskAutoDeleteEnabled,
+        nextBase.archivedTaskAutoDeleteDays,
         nextBase.branchPrefix,
         nextBase.workspaceProvisioningMode,
         nextBase.gitUsername,
@@ -717,6 +841,12 @@ export class PostgresSettingsStore implements SettingsStore {
         nextBase.anthropicBaseUrl,
         nextBase.taskPromptMagicModel,
         nextBase.taskPromptMagicTemplate,
+        nextBase.harnessWhatExists,
+        nextBase.harnessAllowedActions,
+        nextBase.harnessNotAllowedActions,
+        nextBase.harnessHowToWork,
+        nextBase.harnessDefinitionOfDone,
+        nextBase.harnessEvidenceExpectations,
         nextBase.codexDefaultModel,
         JSON.stringify(nextBase.codexModels),
         nextBase.codexDefaultEffort,

@@ -30,12 +30,18 @@ test("GitHub PR webhook queues linked PR comments", async () => {
   });
 
   const appendedMessages: unknown[] = [];
+  const taskPatches: unknown[] = [];
   const triggeredActions: unknown[] = [];
   const secret = "webhook-secret";
 
   registerGitHubPrWebhookRoutes(app, {
     repositoryStore: {
-      getRepository: async () => ({ id: "repo-1" }),
+      getRepository: async () => ({
+        id: "repo-1",
+        defaultProvider: "claude",
+        defaultProviderProfile: "medium",
+        defaultModel: "claude-sonnet-4-6"
+      }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
     } as never,
     taskStore: {
@@ -44,6 +50,10 @@ test("GitHub PR webhook queues linked PR comments", async () => {
         executionStatus: "idle"
       }),
       listMessages: async () => [],
+      patchTask: async (_taskId: string, patch: unknown) => {
+        taskPatches.push(patch);
+        return {};
+      },
       appendMessage: async (_taskId: string, input: unknown) => {
         appendedMessages.push(input);
         return {
@@ -61,7 +71,14 @@ test("GitHub PR webhook queues linked PR comments", async () => {
       }
     } as never,
     settingsStore: defaultSettingsStore as never,
-    spawner: defaultSpawner as never
+    spawner: defaultSpawner as never,
+    userStore: {
+      findByGithubUsername: async () => ({
+        defaultProvider: "codex",
+        defaultProviderProfile: "max",
+        defaultModel: "gpt-5.4"
+      })
+    } as never
   });
 
   const payload = JSON.stringify({
@@ -94,6 +111,13 @@ test("GitHub PR webhook queues linked PR comments", async () => {
   });
 
   assert.equal(response.statusCode, 202);
+  assert.deepEqual(taskPatches, [
+    {
+      provider: "codex",
+      providerProfile: "max",
+      modelOverride: "gpt-5.4"
+    }
+  ]);
   assert.equal(appendedMessages.length, 1);
   assert.deepEqual(appendedMessages[0], {
     role: "user",
@@ -110,7 +134,7 @@ test("GitHub PR webhook queues linked PR comments", async () => {
   await app.close();
 });
 
-test("GitHub PR merged webhook ignores archive when repository toggle is disabled", async () => {
+test("GitHub PR closed webhook archives linked task when merge archive toggle is disabled", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
     const rawBody = typeof body === "string" ? body : body.toString("utf8");
@@ -118,8 +142,10 @@ test("GitHub PR merged webhook ignores archive when repository toggle is disable
     done(null, JSON.parse(rawBody));
   });
 
-  let taskLookupCount = 0;
   const secret = "webhook-secret";
+  const archivedTaskIds: string[] = [];
+  const removedQueueTaskIds: string[] = [];
+  const logs: Array<{ taskId: string; line: string }> = [];
 
   registerGitHubPrWebhookRoutes(app, {
     repositoryStore: {
@@ -127,11 +153,25 @@ test("GitHub PR merged webhook ignores archive when repository toggle is disable
       getRepositoryGitHubPrWebhookSecret: async () => secret
     } as never,
     taskStore: {
-      findTaskByGitHubPrNumber: async () => {
-        taskLookupCount += 1;
+      findTaskByGitHubPrNumber: async () => ({
+        id: "task-1",
+        status: "open",
+        executionStatus: "idle"
+      }),
+      archiveTask: async (taskId: string) => {
+        archivedTaskIds.push(taskId);
+        return null;
+      },
+      appendLog: async (taskId: string, line: string) => {
+        logs.push({ taskId, line });
         return null;
       }
     } as never,
+    taskQueueStore: {
+      removeTask: async (taskId: string) => {
+        removedQueueTaskIds.push(taskId);
+      }
+    },
     scheduler: {} as never,
     settingsStore: defaultSettingsStore as never,
     spawner: defaultSpawner as never
@@ -164,8 +204,10 @@ test("GitHub PR merged webhook ignores archive when repository toggle is disable
   });
 
   assert.equal(response.statusCode, 202);
-  assert.deepEqual(JSON.parse(response.body), { archived: false, reason: "auto_archive_disabled" });
-  assert.equal(taskLookupCount, 0);
+  assert.deepEqual(JSON.parse(response.body), { archived: true, taskId: "task-1" });
+  assert.deepEqual(removedQueueTaskIds, ["task-1"]);
+  assert.deepEqual(archivedTaskIds, ["task-1"]);
+  assert.deepEqual(logs, [{ taskId: "task-1", line: "Task archived after GitHub PR #42 was closed." }]);
 
   await app.close();
 });
@@ -256,7 +298,84 @@ test("GitHub PR merged webhook archives linked task when repository toggle is en
   ]);
   assert.deepEqual(removedQueueTaskIds, ["task-1"]);
   assert.deepEqual(archivedTaskIds, ["task-1"]);
-  assert.deepEqual(logs, [{ taskId: "task-1", line: "Task archived after GitHub PR #42 was merged." }]);
+  assert.deepEqual(logs, [{ taskId: "task-1", line: "Task archived after GitHub PR #42 was closed." }]);
+
+  await app.close();
+});
+
+test("GitHub issue closed webhook archives linked task", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const secret = "webhook-secret";
+  const archivedTaskIds: string[] = [];
+  const removedQueueTaskIds: string[] = [];
+  const logs: Array<{ taskId: string; line: string }> = [];
+
+  registerGitHubPrWebhookRoutes(app, {
+    repositoryStore: {
+      getRepository: async () => ({ id: "repo-1" }),
+      getRepositoryGitHubPrWebhookSecret: async () => secret
+    } as never,
+    taskStore: {
+      findTaskByGitHubIssueNumber: async () => ({
+        id: "task-issue",
+        status: "open",
+        executionStatus: "idle"
+      }),
+      archiveTask: async (taskId: string) => {
+        archivedTaskIds.push(taskId);
+        return null;
+      },
+      appendLog: async (taskId: string, line: string) => {
+        logs.push({ taskId, line });
+        return null;
+      }
+    } as never,
+    taskQueueStore: {
+      removeTask: async (taskId: string) => {
+        removedQueueTaskIds.push(taskId);
+      }
+    },
+    scheduler: {} as never,
+    settingsStore: defaultSettingsStore as never,
+    spawner: defaultSpawner as never
+  });
+
+  const payload = JSON.stringify({
+    action: "closed",
+    issue: {
+      id: 9001,
+      number: 77,
+      title: "Import customers fails"
+    },
+    sender: {
+      login: "alice",
+      type: "User"
+    }
+  });
+  const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/github/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issues",
+      "x-hub-signature-256": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { archived: true, taskId: "task-issue" });
+  assert.deepEqual(removedQueueTaskIds, ["task-issue"]);
+  assert.deepEqual(archivedTaskIds, ["task-issue"]);
+  assert.deepEqual(logs, [{ taskId: "task-issue", line: "Task archived after GitHub issue #77 was closed." }]);
 
   await app.close();
 });
@@ -1337,12 +1456,18 @@ test("GitHub webhook queues linked issue comments", async () => {
   });
 
   const appendedMessages: unknown[] = [];
+  const taskPatches: unknown[] = [];
   const triggeredActions: unknown[] = [];
   const secret = "webhook-secret";
 
   registerGitHubPrWebhookRoutes(app, {
     repositoryStore: {
-      getRepository: async () => ({ id: "repo-1" }),
+      getRepository: async () => ({
+        id: "repo-1",
+        defaultProvider: "claude",
+        defaultProviderProfile: "medium",
+        defaultModel: "claude-sonnet-4-6"
+      }),
       getRepositoryGitHubPrWebhookSecret: async () => secret
     } as never,
     taskStore: {
@@ -1351,6 +1476,10 @@ test("GitHub webhook queues linked issue comments", async () => {
         executionStatus: "idle"
       }),
       listMessages: async () => [],
+      patchTask: async (_taskId: string, patch: unknown) => {
+        taskPatches.push(patch);
+        return {};
+      },
       appendMessage: async (_taskId: string, input: unknown) => {
         appendedMessages.push(input);
         return {
@@ -1368,7 +1497,14 @@ test("GitHub webhook queues linked issue comments", async () => {
       }
     } as never,
     settingsStore: defaultSettingsStore as never,
-    spawner: defaultSpawner as never
+    spawner: defaultSpawner as never,
+    userStore: {
+      findByGithubUsername: async () => ({
+        defaultProvider: "codex",
+        defaultProviderProfile: "low",
+        defaultModel: "gpt-5.4-mini"
+      })
+    } as never
   });
 
   const payload = JSON.stringify({
@@ -1402,6 +1538,13 @@ test("GitHub webhook queues linked issue comments", async () => {
   });
 
   assert.equal(response.statusCode, 202);
+  assert.deepEqual(taskPatches, [
+    {
+      provider: "codex",
+      providerProfile: "low",
+      modelOverride: "gpt-5.4-mini"
+    }
+  ]);
   assert.equal(appendedMessages.length, 1);
   assert.deepEqual(appendedMessages[0], {
     role: "user",
@@ -1507,6 +1650,102 @@ test("GitHub webhook reacts with eyes to linked issue comments", async () => {
     assert.equal(fetchCalls[0]?.init?.method, "POST");
     assert.equal((fetchCalls[0]?.init?.headers as Record<string, string>).Authorization, "Bearer github-token");
     assert.deepEqual(JSON.parse(String(fetchCalls[0]?.init?.body)), { content: "eyes" });
+  } finally {
+    globalThis.fetch = originalFetch;
+    await app.close();
+  }
+});
+
+test("GitHub webhook reacts with eyes to created and edited linked pull request review comments", async () => {
+  const app = Fastify();
+  app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
+    const rawBody = typeof body === "string" ? body : body.toString("utf8");
+    (request as typeof request & { rawBody?: string }).rawBody = rawBody;
+    done(null, JSON.parse(rawBody));
+  });
+
+  const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    fetchCalls.push({ url: String(url), init });
+    return Response.json({ id: 1 }, { status: 201 });
+  }) as typeof fetch;
+
+  const secret = "webhook-secret";
+
+  try {
+    registerGitHubPrWebhookRoutes(app, {
+      repositoryStore: {
+        getRepository: async () => ({ id: "repo-1" }),
+        getRepositoryGitHubPrWebhookSecret: async () => secret
+      } as never,
+      taskStore: {
+        findTaskByGitHubPrNumber: async () => ({
+          id: "task-pr",
+          executionStatus: "queued"
+        }),
+        listMessages: async () => [],
+        appendMessage: async (_taskId: string, input: unknown) => ({
+          id: "message-pr",
+          content: (input as { content: string }).content
+        })
+      } as never,
+      scheduler: {} as never,
+      settingsStore: {
+        ...defaultSettingsStore,
+        getRuntimeCredentials: async () => ({
+          githubToken: "github-token"
+        })
+      } as never,
+      spawner: defaultSpawner as never
+    });
+
+    for (const [action, commentId] of [["created", 4001], ["edited", 4002]] as const) {
+      const payload = JSON.stringify({
+        action,
+        repository: {
+          full_name: "acme/repo"
+        },
+        pull_request: {
+          number: 42,
+          title: "Fix import"
+        },
+        comment: {
+          id: commentId,
+          body: "Please cover this branch.",
+          html_url: `https://github.com/acme/repo/pull/42#discussion_r${commentId}`,
+          path: "src/import.ts",
+          line: 12
+        },
+        sender: {
+          login: "alice",
+          type: "User"
+        }
+      });
+      const signature = `sha256=${createHmac("sha256", secret).update(payload).digest("hex")}`;
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/github/webhooks/repo-1",
+        headers: {
+          "content-type": "application/json",
+          "x-github-event": "pull_request_review_comment",
+          "x-hub-signature-256": signature
+        },
+        payload
+      });
+
+      assert.equal(response.statusCode, 202);
+      assert.deepEqual(JSON.parse(response.body), { queued: true, taskId: "task-pr", messageId: "message-pr" });
+    }
+
+    assert.equal(fetchCalls.length, 2);
+    for (const [index, commentId] of [4001, 4002].entries()) {
+      assert.equal(fetchCalls[index]?.url, `https://api.github.com/repos/acme/repo/pulls/comments/${commentId}/reactions`);
+      assert.equal(fetchCalls[index]?.init?.method, "POST");
+      assert.equal((fetchCalls[index]?.init?.headers as Record<string, string>).Authorization, "Bearer github-token");
+      assert.deepEqual(JSON.parse(String(fetchCalls[index]?.init?.body)), { content: "eyes" });
+    }
   } finally {
     globalThis.fetch = originalFetch;
     await app.close();
@@ -1840,7 +2079,7 @@ test("GitHub webhook ignores edited issue comments that were already processed",
   await app.close();
 });
 
-test("GitHub webhook creates feature branch task from issue body mention without linked task", async () => {
+test("GitHub webhook creates feature branch task from the first issue-linked branch", async () => {
   const app = Fastify();
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request, body, done) => {
     const rawBody = typeof body === "string" ? body : body.toString("utf8");
@@ -1853,6 +2092,35 @@ test("GitHub webhook creates feature branch task from issue body mention without
   const patches: unknown[] = [];
   const appendedMessages: unknown[] = [];
   const triggeredActions: unknown[] = [];
+  const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === "string" ? input : input.toString();
+    fetchCalls.push({ url, init });
+    if (url === "https://api.github.com/graphql") {
+      return new Response(
+        JSON.stringify({
+          data: {
+            repository: {
+              issue: {
+                linkedBranches: {
+                  nodes: [
+                    { ref: { name: "feature/first-linked" } },
+                    { ref: { name: "feature/second-linked" } }
+                  ]
+                }
+              }
+            }
+          }
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } }
+      );
+    }
+    if (init?.method === "POST") {
+      return new Response("{}", { status: 201, headers: { "Content-Type": "application/json" } });
+    }
+    return new Response("[]", { status: 200, headers: { "Content-Type": "application/json" } });
+  };
 
   const openedTask = {
     id: "task-issue-created",
@@ -1901,7 +2169,12 @@ test("GitHub webhook creates feature branch task from issue body mention without
         return true;
       }
     } as never,
-    settingsStore: defaultSettingsStore as never,
+    settingsStore: {
+      ...defaultSettingsStore,
+      getRuntimeCredentials: async () => ({
+        githubToken: "github-token"
+      })
+    } as never,
     spawner: defaultSpawner as never
   });
 
@@ -1952,7 +2225,7 @@ test("GitHub webhook creates feature branch task from issue body mention without
       repoId: "repo-1",
       prompt: (appendedMessages[0] as { content: string }).content,
       taskType: "build",
-      baseBranch: "main",
+      baseBranch: "feature/first-linked",
       branchStrategy: "feature_branch",
       autoApplyCheckpoints: true,
       provider: "codex",
@@ -1982,7 +2255,19 @@ test("GitHub webhook creates feature branch task from issue body mention without
     { content: (appendedMessages[0] as { content: string }).content },
     { promptMessageId: "message-issue-created" }
   ]);
+  assert.equal(fetchCalls[0]?.url, "https://api.github.com/graphql");
+  const graphQlBody = JSON.parse(String(fetchCalls[0]?.init?.body)) as {
+    query: string;
+    variables: { owner: string; name: string; issueNumber: number };
+  };
+  assert.match(graphQlBody.query, /linkedBranches\(first: 1\)/);
+  assert.deepEqual(graphQlBody.variables, {
+    owner: "acme",
+    name: "repo",
+    issueNumber: 77
+  });
 
+  globalThis.fetch = originalFetch;
   await app.close();
 });
 
@@ -2080,12 +2365,13 @@ test("GitHub webhook posts an initial task comment when creating an issue task",
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(response.statusCode, 202);
-    assert.equal(fetchCalls.length, 2);
-    assert.equal(fetchCalls[0]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments?per_page=100");
-    assert.equal(fetchCalls[1]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments");
-    assert.equal(fetchCalls[1]?.init?.method, "POST");
-    assert.equal((fetchCalls[1]?.init?.headers as Record<string, string>).Authorization, "Bearer github-token");
-    assert.deepEqual(JSON.parse(String(fetchCalls[1]?.init?.body)), {
+    assert.equal(fetchCalls.length, 3);
+    assert.equal(fetchCalls[0]?.url, "https://api.github.com/graphql");
+    assert.equal(fetchCalls[1]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments?per_page=100");
+    assert.equal(fetchCalls[2]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments");
+    assert.equal(fetchCalls[2]?.init?.method, "POST");
+    assert.equal((fetchCalls[2]?.init?.headers as Record<string, string>).Authorization, "Bearer github-token");
+    assert.deepEqual(JSON.parse(String(fetchCalls[2]?.init?.body)), {
       body:
         "🤖 A new task has been created and will start working on this shortly.\n\nTask: http://localhost:3217/tasks/task-issue-created\n\nI’ll post progress updates here as work continues.\n\n<!-- verft-task-created:task-issue-created -->"
     });
@@ -2191,8 +2477,8 @@ test("GitHub webhook uses a custom task created comment template", async () => {
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(response.statusCode, 202);
-    assert.equal(fetchCalls[1]?.init?.method, "POST");
-    assert.deepEqual(JSON.parse(String(fetchCalls[1]?.init?.body)), {
+    assert.equal(fetchCalls[2]?.init?.method, "POST");
+    assert.deepEqual(JSON.parse(String(fetchCalls[2]?.init?.body)), {
       body:
         "Task task-custom-comment is ready for issue #77 in acme/repo.\nOpen: http://localhost:3217/tasks/task-custom-comment\nRequested by @alice.\n\n<!-- verft-task-created:task-custom-comment -->"
     });
@@ -2298,8 +2584,9 @@ test("GitHub webhook skips duplicate initial task comments for retried issue tas
     await new Promise((resolve) => setImmediate(resolve));
 
     assert.equal(response.statusCode, 202);
-    assert.equal(fetchCalls.length, 1);
-    assert.equal(fetchCalls[0]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments?per_page=100");
+    assert.equal(fetchCalls.length, 2);
+    assert.equal(fetchCalls[0]?.url, "https://api.github.com/graphql");
+    assert.equal(fetchCalls[1]?.url, "https://api.github.com/repos/acme/repo/issues/77/comments?per_page=100");
   } finally {
     globalThis.fetch = originalFetch;
     await app.close();

@@ -104,6 +104,7 @@ const VERFT_RUNTIME_MCP_SCOPES: PermissionScope[] = [
   "repo:read",
   "task:list",
   "task:read",
+  "task:create_subtask",
   "task:edit",
   "task:build",
   "task:ask"
@@ -1341,30 +1342,46 @@ export class SpawnerService {
     return normalized.length > 0 ? normalized : null;
   }
 
-  private buildRepositoryHarnessMarkdown(repository: Repository | null): string | null {
-    const sections: Array<{ heading: string; content: string | null }> = [
-      { heading: "What exists?", content: this.normalizeRepositoryHarnessSection(repository?.harnessWhatExists) },
-      { heading: "What is allowed?", content: this.normalizeRepositoryHarnessSection(repository?.harnessAllowedActions) },
-      { heading: "What is not allowed?", content: this.normalizeRepositoryHarnessSection(repository?.harnessNotAllowedActions) },
-      { heading: "How should you work?", content: this.normalizeRepositoryHarnessSection(repository?.harnessHowToWork) },
-      {
-        heading: "How do you know you are done?",
-        content: this.normalizeRepositoryHarnessSection(repository?.harnessDefinitionOfDone)
-      },
-      { heading: "How do you prove it?", content: this.normalizeRepositoryHarnessSection(repository?.harnessEvidenceExpectations) }
+  private buildMergedHarnessMarkdown(
+    globalHarness: Pick<
+      Awaited<ReturnType<SettingsStore["getSettings"]>>,
+      | "harnessWhatExists"
+      | "harnessAllowedActions"
+      | "harnessNotAllowedActions"
+      | "harnessHowToWork"
+      | "harnessDefinitionOfDone"
+      | "harnessEvidenceExpectations"
+    >,
+    repository: Repository | null
+  ): string | null {
+    const sources = [
+      { heading: "Global Harness", value: globalHarness },
+      { heading: "Repository Harness", value: repository }
     ];
+    const sectionDefinitions = [
+      ["What exists?", "harnessWhatExists"],
+      ["What is allowed?", "harnessAllowedActions"],
+      ["What is not allowed?", "harnessNotAllowedActions"],
+      ["How should you work?", "harnessHowToWork"],
+      ["How do you know you are done?", "harnessDefinitionOfDone"],
+      ["How do you prove it?", "harnessEvidenceExpectations"]
+    ] as const;
+    const lines: string[] = ["# Harness", ""];
 
-    const populatedSections = sections.filter((section) => section.content);
-    if (populatedSections.length === 0) {
-      return null;
+    for (const source of sources) {
+      const sections = sectionDefinitions
+        .map(([heading, key]) => ({ heading, content: this.normalizeRepositoryHarnessSection(source.value?.[key]) }))
+        .filter((section) => section.content);
+      if (sections.length === 0) {
+        continue;
+      }
+      lines.push(`## ${source.heading}`, "");
+      for (const section of sections) {
+        lines.push(`### ${section.heading}`, "", section.content!, "");
+      }
     }
 
-    const lines: string[] = ["# Repository Harness", ""];
-    for (const section of populatedSections) {
-      lines.push(`## ${section.heading}`, "", section.content!, "");
-    }
-
-    return `${lines.join("\n").trim()}\n`;
+    return lines.length === 2 ? null : `${lines.join("\n").trim()}\n`;
   }
 
   private async syncWorkspaceRuntimeHarnessFile(workspacePath: string, harnessMarkdown: string | null): Promise<string | null> {
@@ -5527,8 +5544,8 @@ export class SpawnerService {
           absolutePath
         };
       });
-      const repositoryHarnessMarkdown = this.buildRepositoryHarnessMarkdown(repository);
-      const harnessFilePath = repositoryHarnessMarkdown ? this.resolveRuntimeHarnessFilePath(workspace.workspacePath) : null;
+      const mergedHarnessMarkdown = this.buildMergedHarnessMarkdown(settings, repository);
+      const harnessFilePath = mergedHarnessMarkdown ? this.resolveRuntimeHarnessFilePath(workspace.workspacePath) : null;
       const manifest: RuntimeManifest = {
         taskId: task.id,
         provider: task.provider,
@@ -5627,7 +5644,7 @@ export class SpawnerService {
           changeProposalUntrackedPaths
         });
       }
-      const runtimeHarnessFilePath = await this.syncWorkspaceRuntimeHarnessFile(workspace.workspacePath, repositoryHarnessMarkdown);
+      const runtimeHarnessFilePath = await this.syncWorkspaceRuntimeHarnessFile(workspace.workspacePath, mergedHarnessMarkdown);
       if (runtimeHarnessFilePath) {
         await appendRunLog(`Spawner: runtime harness guidance available at ${runtimeHarnessFilePath}.`);
       }

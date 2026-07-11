@@ -30,6 +30,7 @@ import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useSettings } from "../src/hooks/useSettings";
 import { trackEvent } from "../src/utils/analytics";
 import { buildApiUrl } from "../src/lib/public-url";
+import { HarnessMarkdownField } from "./harness-markdown-field";
 
 interface RepositoryEditorPageProps {
   mode: "create" | "edit";
@@ -881,19 +882,11 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
         }}
       >
         <Flex vertical gap={16}>
-          <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-            <Flex vertical gap={0}>
-              <Typography.Title level={2} style={{ margin: 0 }}>
-                {title}
-              </Typography.Title>
-              <Typography.Text type="secondary">Manage reusable repository definitions for task creation.</Typography.Text>
-            </Flex>
-            <Space wrap>
-              <Button onClick={goBack}>Cancel</Button>
-              <Button type="primary" htmlType="submit" loading={submitting}>
-                {mode === "edit" ? "Save" : "Create"}
-              </Button>
-            </Space>
+          <Flex vertical gap={0}>
+            <Typography.Title level={2} style={{ margin: 0 }}>
+              {title}
+            </Typography.Title>
+            <Typography.Text type="secondary">Manage reusable repository definitions for task creation.</Typography.Text>
           </Flex>
 
           <Tabs
@@ -1014,7 +1007,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   ) : null}
                   <Form.Item
                     name="githubIntegrationBotLogin"
-                    label="Ignored Github Bot User"
+                    label="GitHub Bot User"
                     tooltip="Comments from this GitHub login are ignored by the PR feedback webhook to prevent reply loops."
                     rules={[{ max: 255, message: "Login must be 255 characters or fewer." }]}
                   >
@@ -1031,7 +1024,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     name="githubPrRequireBotMention"
                     label="Only Process Bot Mentions"
                     valuePropName="checked"
-                    extra="When enabled and an ignored GitHub bot user is configured, issue and PR comments are ignored unless the body mentions that bot user."
+                    extra="When enabled and a GitHub bot user is configured, issue and PR comments are ignored unless the body mentions that bot user."
                   >
                     <Switch />
                   </Form.Item>
@@ -1592,7 +1585,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra="Repository understanding: apps, packages, docs, important folders, generated files, and runtime services."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                    <HarnessMarkdownField label="1. What exists?" />
                   </Form.Item>
                   <Form.Item
                     name="harnessAllowedActions"
@@ -1600,7 +1593,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra="Constraints and policies: what agents may edit, what is protected, secret handling, network/Docker limits, and PR rules."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                    <HarnessMarkdownField label="2. What is allowed?" />
                   </Form.Item>
                   <Form.Item
                     name="harnessNotAllowedActions"
@@ -1608,7 +1601,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra="Restrictions and off-limits actions: what agents must never do, protected files or branches, forbidden commands, and hard constraints."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                    <HarnessMarkdownField label="3. What is not allowed?" />
                   </Form.Item>
                   <Form.Item
                     name="harnessHowToWork"
@@ -1616,7 +1609,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra="Process and decision-making: planning expectations, approval points, branch flow, preferred commands, and when to ask questions."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                    <HarnessMarkdownField label="4. How should you work?" />
                   </Form.Item>
                   <Form.Item
                     name="harnessDefinitionOfDone"
@@ -1624,7 +1617,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra="Validation and quality gates: required checks, tests, builds, and review criteria."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                    <HarnessMarkdownField label="5. How do you know you are done?" />
                   </Form.Item>
                   <Form.Item
                     name="harnessEvidenceExpectations"
@@ -1632,7 +1625,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     extra="Expected proof: command outcomes, links, screenshots, changed docs, and skipped-check explanations."
                     rules={[{ max: 8000, message: "Keep this answer at 8000 characters or fewer." }]}
                   >
-                    <Input.TextArea autoSize={{ minRows: 3, maxRows: 10 }} />
+                    <HarnessMarkdownField label="6. How do you prove it?" />
                   </Form.Item>
                 </Flex>
               </Card>
@@ -1701,6 +1694,34 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               ) : null}
             </Card>
           ) : null}
+
+          <Card
+            size="small"
+            style={{
+              position: "sticky",
+              bottom: 16,
+              zIndex: 20,
+              marginTop: 16
+            }}
+            styles={{ body: { padding: 12 } }}
+          >
+            <Flex justify="space-between" align="center" gap={12} wrap="wrap">
+              <Typography.Text type="secondary">
+                {hasUnsavedChanges ? "Unsaved changes" : "All changes saved"}
+              </Typography.Text>
+              <Space wrap>
+                <Button onClick={goBack}>Cancel</Button>
+                <Button
+                  type="primary"
+                  htmlType="submit"
+                  loading={submitting}
+                  disabled={!hasUnsavedChanges || submitting}
+                >
+                  {mode === "edit" ? "Save" : "Create"}
+                </Button>
+              </Space>
+            </Flex>
+          </Card>
         </Flex>
       </Form>
     </>

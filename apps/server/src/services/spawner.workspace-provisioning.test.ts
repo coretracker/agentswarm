@@ -157,6 +157,16 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(runtimeMcp.injectedVerftMcp, true);
     assert.equal(runtimeMcp.env.VERFT_MCP_OAUTH_TOKEN, "runtime-token");
     assert.equal(createdTokens.length, 1);
+    assert.deepEqual((createdTokens[0] as { scopes: string[] }).scopes, [
+      "repo:list",
+      "repo:read",
+      "task:list",
+      "task:read",
+      "task:create_subtask",
+      "task:edit",
+      "task:build",
+      "task:ask"
+    ]);
     assert.equal(runtimeMcp.servers.length, 2);
     assert.deepEqual(
       runtimeMcp.servers.map((server: { name: string }) => server.name),
@@ -208,11 +218,11 @@ describe("SpawnerService workspace provisioning", () => {
     );
   });
 
-  it("builds repository harness markdown only when fields are populated", () => {
+  it("merges populated global and repository harness sections in precedence order", () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
 
-    const empty = spawnerAny.buildRepositoryHarnessMarkdown({
+    const empty = spawnerAny.buildMergedHarnessMarkdown({}, {
       harnessWhatExists: null,
       harnessAllowedActions: "",
       harnessHowToWork: "   ",
@@ -221,19 +231,27 @@ describe("SpawnerService workspace provisioning", () => {
     });
     assert.equal(empty, null);
 
-    const populated = spawnerAny.buildRepositoryHarnessMarkdown({
+    const populated = spawnerAny.buildMergedHarnessMarkdown(
+      {
+        harnessWhatExists: "Global platform context.",
+        harnessNotAllowedActions: "Never expose secrets."
+      },
+      {
       harnessWhatExists: "Monorepo with apps/web and apps/server.",
       harnessAllowedActions: null,
       harnessHowToWork: "Prefer harness scripts in scripts/harness.",
       harnessDefinitionOfDone: "check.sh and test.sh pass.",
       harnessEvidenceExpectations: ""
-    });
-    assert.match(populated, /# Repository Harness/);
-    assert.match(populated, /## What exists\?/);
-    assert.match(populated, /## How should you work\?/);
-    assert.match(populated, /## How do you know you are done\?/);
-    assert.doesNotMatch(populated, /## What is allowed\?/);
-    assert.doesNotMatch(populated, /## How do you prove it\?/);
+      }
+    );
+    assert.match(populated, /# Harness/);
+    assert.ok(populated.indexOf("## Global Harness") < populated.indexOf("## Repository Harness"));
+    assert.match(populated, /### What exists\?/);
+    assert.match(populated, /### What is not allowed\?/);
+    assert.match(populated, /### How should you work\?/);
+    assert.match(populated, /### How do you know you are done\?/);
+    assert.doesNotMatch(populated, /### What is allowed\?/);
+    assert.doesNotMatch(populated, /### How do you prove it\?/);
   });
 
   it("writes and removes runtime harness files based on repository harness content", async () => {
@@ -243,7 +261,7 @@ describe("SpawnerService workspace provisioning", () => {
     const workspacePath = path.join(root, "workspace");
     await mkdir(workspacePath, { recursive: true });
 
-    const markdown = spawnerAny.buildRepositoryHarnessMarkdown({
+    const markdown = spawnerAny.buildMergedHarnessMarkdown({}, {
       harnessWhatExists: "apps/web, apps/server",
       harnessAllowedActions: "You can edit TypeScript and docs.",
       harnessHowToWork: "Use existing patterns.",
@@ -253,9 +271,9 @@ describe("SpawnerService workspace provisioning", () => {
     const harnessPath = await spawnerAny.syncWorkspaceRuntimeHarnessFile(workspacePath, markdown);
     assert.equal(harnessPath, path.join(workspacePath, ".verft-runtime", "harness.md"));
     const written = await readFile(harnessPath, "utf8");
-    assert.match(written, /## What exists\?/);
-    assert.match(written, /## What is allowed\?/);
-    assert.match(written, /## How do you prove it\?/);
+    assert.match(written, /### What exists\?/);
+    assert.match(written, /### What is allowed\?/);
+    assert.match(written, /### How do you prove it\?/);
 
     const removedPath = await spawnerAny.syncWorkspaceRuntimeHarnessFile(workspacePath, null);
     assert.equal(removedPath, null);

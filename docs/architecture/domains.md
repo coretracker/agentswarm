@@ -24,7 +24,7 @@ This section lists major code domains visible in the repository.
 - Paths:
   - `docker-compose.yml`
   - `deploy/nginx.conf`
-  - `verft.sh`
+  - `verft`
 - Purpose: local stack orchestration and service routing.
 
 ## TODO
