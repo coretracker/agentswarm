@@ -6,6 +6,8 @@ import { resolveCreateTaskProviderConfig } from "./task-create-defaults.js";
 const settings: SystemSettings = {
   defaultProvider: "codex",
   maxAgents: 3,
+  archivedTaskAutoDeleteEnabled: true,
+  archivedTaskAutoDeleteDays: 7,
   branchPrefix: "verft/",
   workspaceProvisioningMode: "clone_only",
   gitUsername: "verft",

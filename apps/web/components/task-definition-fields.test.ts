@@ -6,6 +6,8 @@ import { getTaskDefinitionInitialValues, hasClaudeTaskCredentials } from "./task
 const settings: SystemSettings = {
   defaultProvider: "codex",
   maxAgents: 3,
+  archivedTaskAutoDeleteEnabled: true,
+  archivedTaskAutoDeleteDays: 7,
   branchPrefix: "verft/",
   workspaceProvisioningMode: "clone_only",
   gitUsername: "verft",

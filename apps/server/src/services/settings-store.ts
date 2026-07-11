@@ -60,6 +60,8 @@ const buildSystemDataStores = (): SystemDataStores => ({
 const defaultSettings: SystemSettings = {
   defaultProvider: DEFAULT_PROVIDER,
   maxAgents: 2,
+  archivedTaskAutoDeleteEnabled: true,
+  archivedTaskAutoDeleteDays: 7,
   branchPrefix: "verft",
   workspaceProvisioningMode: "clone_only",
   gitUsername: "x-access-token",
@@ -133,6 +135,13 @@ const normalizeDefaultProvider = (value: AgentProvider | string | undefined): Ag
 
 const normalizeWorkspaceProvisioningMode = (value: WorkspaceProvisioningMode | string | undefined): WorkspaceProvisioningMode =>
   value === "hybrid" ? "hybrid" : "clone_only";
+
+const normalizeArchivedTaskAutoDeleteDays = (value: number | undefined): number => {
+  if (typeof value !== "number") {
+    return defaultSettings.archivedTaskAutoDeleteDays;
+  }
+  return Number.isInteger(value) && value >= 1 && value <= 3650 ? value : defaultSettings.archivedTaskAutoDeleteDays;
+};
 
 const normalizeProviderModels = (value: ProviderModelOption[] | undefined, fallback: ProviderModelOption[]): ProviderModelOption[] => {
   const normalized: ProviderModelOption[] = [];
@@ -276,6 +285,8 @@ export class RedisSettingsStore implements SettingsStore {
       const baseSettings = {
         defaultProvider: defaultSettings.defaultProvider,
         maxAgents: defaultSettings.maxAgents,
+        archivedTaskAutoDeleteEnabled: defaultSettings.archivedTaskAutoDeleteEnabled,
+        archivedTaskAutoDeleteDays: defaultSettings.archivedTaskAutoDeleteDays,
         branchPrefix: defaultSettings.branchPrefix,
         workspaceProvisioningMode: defaultSettings.workspaceProvisioningMode,
         gitUsername: defaultSettings.gitUsername,
@@ -316,6 +327,11 @@ export class RedisSettingsStore implements SettingsStore {
     const normalizedBase = {
       defaultProvider: normalizedDefaultProvider,
       maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
+      archivedTaskAutoDeleteEnabled:
+        typeof parsed.archivedTaskAutoDeleteEnabled === "boolean"
+          ? parsed.archivedTaskAutoDeleteEnabled
+          : defaultSettings.archivedTaskAutoDeleteEnabled,
+      archivedTaskAutoDeleteDays: normalizeArchivedTaskAutoDeleteDays(parsed.archivedTaskAutoDeleteDays),
       branchPrefix: normalizeBranchPrefix(parsed.branchPrefix),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(parsed.workspaceProvisioningMode),
       gitUsername: normalizeGitUsername(parsed.gitUsername),
@@ -346,6 +362,8 @@ export class RedisSettingsStore implements SettingsStore {
       Object.prototype.hasOwnProperty.call(parsed, "agentRules") ||
       parsed.defaultProvider !== normalizedBase.defaultProvider ||
       parsed.maxAgents !== normalizedBase.maxAgents ||
+      parsed.archivedTaskAutoDeleteEnabled !== normalizedBase.archivedTaskAutoDeleteEnabled ||
+      parsed.archivedTaskAutoDeleteDays !== normalizedBase.archivedTaskAutoDeleteDays ||
       parsed.branchPrefix !== normalizedBase.branchPrefix ||
       parsed.workspaceProvisioningMode !== normalizedBase.workspaceProvisioningMode ||
       parsed.gitUsername !== normalizedBase.gitUsername ||
@@ -380,6 +398,14 @@ export class RedisSettingsStore implements SettingsStore {
     const nextBase = {
       defaultProvider: nextDefaultProvider,
       maxAgents: input.maxAgents ?? current.maxAgents,
+      archivedTaskAutoDeleteEnabled:
+        input.archivedTaskAutoDeleteEnabled === undefined
+          ? current.archivedTaskAutoDeleteEnabled
+          : input.archivedTaskAutoDeleteEnabled,
+      archivedTaskAutoDeleteDays:
+        input.archivedTaskAutoDeleteDays === undefined
+          ? current.archivedTaskAutoDeleteDays
+          : normalizeArchivedTaskAutoDeleteDays(input.archivedTaskAutoDeleteDays),
       branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
         input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
@@ -497,6 +523,8 @@ export class PostgresSettingsStore implements SettingsStore {
           singleton_id,
           default_provider,
           max_agents,
+          archived_task_auto_delete_enabled,
+          archived_task_auto_delete_days,
           branch_prefix,
           workspace_provisioning_mode,
           git_username,
@@ -523,12 +551,14 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::jsonb, $23, $24, $25::jsonb, $26, $27::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24::jsonb, $25, $26, $27::jsonb, $28, $29::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
         defaultSettings.defaultProvider,
         defaultSettings.maxAgents,
+        defaultSettings.archivedTaskAutoDeleteEnabled,
+        defaultSettings.archivedTaskAutoDeleteDays,
         defaultSettings.branchPrefix,
         defaultSettings.workspaceProvisioningMode,
         defaultSettings.gitUsername,
@@ -565,6 +595,8 @@ export class PostgresSettingsStore implements SettingsStore {
         SELECT
           default_provider,
           max_agents,
+          archived_task_auto_delete_enabled,
+          archived_task_auto_delete_days,
           branch_prefix,
           workspace_provisioning_mode,
           git_username,
@@ -607,6 +639,13 @@ export class PostgresSettingsStore implements SettingsStore {
     const normalizedBase = {
       defaultProvider: normalizedDefaultProvider,
       maxAgents: typeof row?.max_agents === "number" ? row.max_agents : defaultSettings.maxAgents,
+      archivedTaskAutoDeleteEnabled:
+        typeof row?.archived_task_auto_delete_enabled === "boolean"
+          ? row.archived_task_auto_delete_enabled
+          : defaultSettings.archivedTaskAutoDeleteEnabled,
+      archivedTaskAutoDeleteDays: normalizeArchivedTaskAutoDeleteDays(
+        typeof row?.archived_task_auto_delete_days === "number" ? row.archived_task_auto_delete_days : undefined
+      ),
       branchPrefix: normalizeBranchPrefix(typeof row?.branch_prefix === "string" ? row.branch_prefix : undefined),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(row?.workspace_provisioning_mode),
       gitUsername: normalizeGitUsername(typeof row?.git_username === "string" ? row.git_username : undefined),
@@ -667,6 +706,14 @@ export class PostgresSettingsStore implements SettingsStore {
     const nextBase = {
       defaultProvider: nextDefaultProvider,
       maxAgents: input.maxAgents ?? current.maxAgents,
+      archivedTaskAutoDeleteEnabled:
+        input.archivedTaskAutoDeleteEnabled === undefined
+          ? current.archivedTaskAutoDeleteEnabled
+          : input.archivedTaskAutoDeleteEnabled,
+      archivedTaskAutoDeleteDays:
+        input.archivedTaskAutoDeleteDays === undefined
+          ? current.archivedTaskAutoDeleteDays
+          : normalizeArchivedTaskAutoDeleteDays(input.archivedTaskAutoDeleteDays),
       branchPrefix: normalizeBranchPrefix(input.branchPrefix ?? current.branchPrefix),
       workspaceProvisioningMode: normalizeWorkspaceProvisioningMode(
         input.workspaceProvisioningMode ?? current.workspaceProvisioningMode
@@ -716,6 +763,8 @@ export class PostgresSettingsStore implements SettingsStore {
           singleton_id,
           default_provider,
           max_agents,
+          archived_task_auto_delete_enabled,
+          archived_task_auto_delete_days,
           branch_prefix,
           workspace_provisioning_mode,
           git_username,
@@ -742,11 +791,13 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::jsonb, $23, $24, $25::jsonb, $26, $27::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24::jsonb, $25, $26, $27::jsonb, $28, $29::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
           max_agents = EXCLUDED.max_agents,
+          archived_task_auto_delete_enabled = EXCLUDED.archived_task_auto_delete_enabled,
+          archived_task_auto_delete_days = EXCLUDED.archived_task_auto_delete_days,
           branch_prefix = EXCLUDED.branch_prefix,
           workspace_provisioning_mode = EXCLUDED.workspace_provisioning_mode,
           git_username = EXCLUDED.git_username,
@@ -776,6 +827,8 @@ export class PostgresSettingsStore implements SettingsStore {
       [
         nextBase.defaultProvider,
         nextBase.maxAgents,
+        nextBase.archivedTaskAutoDeleteEnabled,
+        nextBase.archivedTaskAutoDeleteDays,
         nextBase.branchPrefix,
         nextBase.workspaceProvisioningMode,
         nextBase.gitUsername,

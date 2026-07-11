@@ -945,6 +945,8 @@ export interface SystemDataStores {
 export interface SystemSettings {
   defaultProvider: AgentProvider;
   maxAgents: number;
+  archivedTaskAutoDeleteEnabled: boolean;
+  archivedTaskAutoDeleteDays: number;
   branchPrefix: string;
   workspaceProvisioningMode: WorkspaceProvisioningMode;
   gitUsername: string;
@@ -1444,6 +1446,8 @@ export const getTaskExecutionStatusLabel = (status: TaskExecutionStatus): string
 export interface UpdateSettingsInput {
   defaultProvider?: AgentProvider;
   maxAgents?: number;
+  archivedTaskAutoDeleteEnabled?: boolean;
+  archivedTaskAutoDeleteDays?: number;
   branchPrefix?: string;
   workspaceProvisioningMode?: WorkspaceProvisioningMode;
   gitUsername?: string;
