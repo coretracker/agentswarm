@@ -385,6 +385,7 @@ export function SettingsPage() {
           generalForm.setFieldValue("claudeDefaultModel", models[0]?.value ?? fallback[0]?.value);
         }
       }
+      markGeneralTabDirty(provider);
       message.success(response.source === "api" ? "Models fetched from provider" : "Using saved or built-in model list");
     } catch (error) {
       message.error(error instanceof Error ? error.message : "Failed to fetch provider models");
