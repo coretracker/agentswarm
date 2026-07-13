@@ -495,7 +495,10 @@ export function SettingsPage() {
               <Form.Item
                 name={[field.name, "label"]}
                 label={field.name === 0 ? "Title" : undefined}
-                rules={[{ required: true, whitespace: true, message: "Enter a title" }]}
+                rules={[
+                  { required: true, whitespace: true, message: "Enter a title" },
+                  { max: 160, message: "Keep model titles at 160 characters or fewer." }
+                ]}
                 style={{ flex: "1 1 220px", marginBottom: 0 }}
               >
                 <Input placeholder="GPT-5.5" />
@@ -503,7 +506,10 @@ export function SettingsPage() {
               <Form.Item
                 name={[field.name, "value"]}
                 label={field.name === 0 ? "Value" : undefined}
-                rules={[{ required: true, whitespace: true, message: "Enter a model value" }]}
+                rules={[
+                  { required: true, whitespace: true, message: "Enter a model value" },
+                  { max: 160, message: "Keep model values at 160 characters or fewer." }
+                ]}
                 style={{ flex: "1 1 260px", marginBottom: 0 }}
               >
                 <Input placeholder="gpt-5.5" />
@@ -853,6 +859,10 @@ export function SettingsPage() {
                 <Form.Item
                   name="codexDefaultModel"
                   label="Default Model"
+                  rules={[
+                    { required: true, whitespace: true, message: "Enter a default model" },
+                    { max: 120, message: "Keep the default model at 120 characters or fewer." }
+                  ]}
                   extra={
                     codexModelsSource === "cache"
                       ? "Model suggestions come from the saved Codex model list below."
@@ -866,6 +876,10 @@ export function SettingsPage() {
                   name="taskPromptMagicModel"
                   label="Task Prompt Magic Model"
                   extra="Model used by the Magic Prompt helper in task creation."
+                  rules={[
+                    { required: true, whitespace: true, message: "Enter a task prompt magic model" },
+                    { max: 120, message: "Keep the model at 120 characters or fewer." }
+                  ]}
                 >
                   <Input placeholder="gpt-5.4-mini" />
                 </Form.Item>
@@ -873,6 +887,10 @@ export function SettingsPage() {
                   name="taskPromptMagicTemplate"
                   label="Task Prompt Magic Template"
                   extra="Use {{user_request}} as the placeholder for the user's current text."
+                  rules={[
+                    { required: true, whitespace: true, message: "Enter a task prompt magic template" },
+                    { max: 12000, message: "Keep the template at 12000 characters or fewer." }
+                  ]}
                 >
                   <Input.TextArea autoSize={{ minRows: 6, maxRows: 16 }} placeholder="Template with {{user_request}} placeholder" />
                 </Form.Item>
@@ -880,7 +898,13 @@ export function SettingsPage() {
                   name="openaiBaseUrl"
                   label="Base URL Override"
                   extra="Set when pointing Verft at an OpenAI-compatible proxy or self-hosted gateway."
-                  rules={[{ type: "url", message: "Enter a valid absolute URL." }]}
+                  rules={[
+                    {
+                      type: "url",
+                      transform: (value) => trimFormString(value) || undefined,
+                      message: "Enter a valid absolute URL."
+                    }
+                  ]}
                   style={{ marginBottom: 0 }}
                 >
                   <Input placeholder="https://api.openai.com/v1" />
@@ -912,6 +936,10 @@ export function SettingsPage() {
                 <Form.Item
                   name="claudeDefaultModel"
                   label="Default Model"
+                  rules={[
+                    { required: true, whitespace: true, message: "Enter a default model" },
+                    { max: 120, message: "Keep the default model at 120 characters or fewer." }
+                  ]}
                   extra={
                     claudeModelsSource === "cache"
                       ? "Model suggestions come from the saved Claude model list below."
@@ -925,7 +953,13 @@ export function SettingsPage() {
                   name="anthropicBaseUrl"
                   label="Base URL Override"
                   extra="Set when pointing Verft at an Anthropic-compatible proxy or gateway."
-                  rules={[{ type: "url", message: "Enter a valid absolute URL." }]}
+                  rules={[
+                    {
+                      type: "url",
+                      transform: (value) => trimFormString(value) || undefined,
+                      message: "Enter a valid absolute URL."
+                    }
+                  ]}
                   style={{ marginBottom: 0 }}
                 >
                   <Input placeholder="https://api.anthropic.com/v1" />
@@ -949,7 +983,10 @@ export function SettingsPage() {
                   name="gitUsername"
                   label="Git Username"
                   extra="Used with the GitHub token from Credentials for authenticated HTTPS access from server Git actions and Codex or Claude runtimes."
-                  rules={[{ required: true, whitespace: true }]}
+                  rules={[
+                    { required: true, whitespace: true, message: "Enter a Git username" },
+                    { max: 120, message: "Keep the Git username at 120 characters or fewer." }
+                  ]}
                 >
                   <Input placeholder="x-access-token" />
                 </Form.Item>
@@ -957,6 +994,7 @@ export function SettingsPage() {
                   name="gitAuthorName"
                   label="Git Author Name"
                   extra="Used for agent-created Git commits. Leave blank to use the system default."
+                  rules={[{ max: 120, message: "Keep the Git author name at 120 characters or fewer." }]}
                   style={{ marginBottom: 0 }}
                 >
                   <Input placeholder="Verft" />
@@ -965,11 +1003,24 @@ export function SettingsPage() {
                   name="gitAuthorEmail"
                   label="Git Author Email"
                   extra="Used for agent-created Git commits. Leave blank to use the system default."
-                  rules={[{ type: "email", message: "Enter a valid email address" }]}
+                  rules={[
+                    {
+                      type: "email",
+                      transform: (value) => trimFormString(value) || undefined,
+                      message: "Enter a valid email address"
+                    }
+                  ]}
                 >
                   <Input placeholder="verft@example.com" />
                 </Form.Item>
-                <Form.Item name="branchPrefix" label="Feature Branch Prefix" rules={[{ required: true, whitespace: true }]}>
+                <Form.Item
+                  name="branchPrefix"
+                  label="Feature Branch Prefix"
+                  rules={[
+                    { required: true, whitespace: true, message: "Enter a feature branch prefix" },
+                    { max: 80, message: "Keep the feature branch prefix at 80 characters or fewer." }
+                  ]}
+                >
                   <Input placeholder="verft" />
                 </Form.Item>
               </Flex>
@@ -1009,7 +1060,13 @@ export function SettingsPage() {
                 <Form.Item
                   name="hostexecUrl"
                   label="URL"
-                  rules={[{ type: "url", message: "Enter a valid absolute URL." }]}
+                  rules={[
+                    {
+                      type: "url",
+                      transform: (value) => trimFormString(value) || undefined,
+                      message: "Enter a valid absolute URL."
+                    }
+                  ]}
                   extra="Daemon capabilities are read from /capabilities."
                 >
                   <Input placeholder="http://host.docker.internal:38128" />
@@ -1018,6 +1075,7 @@ export function SettingsPage() {
                   name="hostexecBearerTokenEnvVar"
                   label="Bearer Token Env Var"
                   rules={[
+                    { max: 120, message: "Keep the environment variable name at 120 characters or fewer." },
                     {
                       validator: (_rule, value?: string) => {
                         if (!value || value.trim().length === 0) {
