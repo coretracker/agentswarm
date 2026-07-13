@@ -6,6 +6,7 @@
 - [Human-gated taskwise delivery flow](development/human-gated-taskwise-delivery-flow.md)
 - [Testing](development/testing.md)
 - [Debugging](development/debugging.md)
+- [Create-or-queue task API](development/create-or-queue-api.md)
 - [Slack setup](development/slack-setup.md)
 
 ## Architecture
