@@ -532,7 +532,7 @@ export function SettingsPage() {
   const saveGeneralSettings = async (tab: GeneralSettingsTabKey): Promise<void> => {
     setSavingGeneral(true);
     try {
-      await generalForm.validateFields(generalSettingsFieldsByTab[tab]);
+      await generalForm.validateFields(generalSettingsFieldsByTab[tab], { recursive: true });
       const values = generalForm.getFieldsValue(true) as GeneralSettingsForm;
       const payload = buildSettingsPayload(tab, values);
       const nextSettings = await api.updateSettings(payload);
@@ -880,6 +880,7 @@ export function SettingsPage() {
                   name="openaiBaseUrl"
                   label="Base URL Override"
                   extra="Set when pointing Verft at an OpenAI-compatible proxy or self-hosted gateway."
+                  rules={[{ type: "url", message: "Enter a valid absolute URL." }]}
                   style={{ marginBottom: 0 }}
                 >
                   <Input placeholder="https://api.openai.com/v1" />
@@ -924,6 +925,7 @@ export function SettingsPage() {
                   name="anthropicBaseUrl"
                   label="Base URL Override"
                   extra="Set when pointing Verft at an Anthropic-compatible proxy or gateway."
+                  rules={[{ type: "url", message: "Enter a valid absolute URL." }]}
                   style={{ marginBottom: 0 }}
                 >
                   <Input placeholder="https://api.anthropic.com/v1" />
