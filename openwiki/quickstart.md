@@ -87,4 +87,4 @@ Key terms are defined in `docs/product/terminology.md` and represented in `packa
 
 ## Current git context at initialization
 
-The inspected HEAD is `22d3dc16dd9ad529d4541cb51e7f0323e8f7d387` (`ci: add OpenWiki init workflow`). The working tree has an uncommitted modification to `.github/workflows/openwiki-update.yml`: it removes the `Build` environment and changes the update run from OpenAI/gpt-5.5/no tracing to OpenRouter `z-ai/glm-5.2` with LangSmith tracing env vars. Treat this as working-tree state, not committed baseline.
+The current inspected HEAD is `2bc0ff39a30460cc8f78eb7318b70a7c177910e9` (`chore: release v0.1.1`). The working tree has an uncommitted modification to `.github/workflows/openwiki-update.yml`: it removes the `Build` environment, changes the update run from OpenAI/gpt-5.5/no tracing to OpenRouter `z-ai/glm-5.2` with LangSmith tracing env vars, pins create-pull-request to a v7 commit SHA, and expands update PR paths to include `openwiki`, `AGENTS.md`, `CLAUDE.md`, and the workflow file. `CLAUDE.md` is also untracked and contains an OpenWiki generated-doc guidance block. Treat this as working-tree state, not committed baseline.

@@ -125,9 +125,9 @@ Current workflows:
 
 - `.github/workflows/lint-and-tests.yml`: pull request and main-push CI running `./scripts/ci.sh`.
 - `.github/workflows/openwiki-init.yml`: manual workflow that installs OpenWiki, runs `openwiki code --init --print`, and opens an init PR adding `openwiki` (and `AGENTS.md` in `add-paths`). It currently uses `OPENAI_API_KEY`, `OPENWIKI_MODEL_ID=gpt-5.5`, and tracing disabled.
-- `.github/workflows/openwiki-update.yml`: manual + daily scheduled workflow that installs OpenWiki, runs `openwiki code --update --print`, and opens an update PR adding `openwiki`.
+- `.github/workflows/openwiki-update.yml`: manual + daily scheduled workflow that installs OpenWiki, runs `openwiki code --update --print`, and opens an update PR for `openwiki`, agent instruction files, and the update workflow itself.
 
-In the current working tree, `.github/workflows/openwiki-update.yml` does not use the `Build` environment and runs updates with `OPENROUTER_API_KEY`, `OPENWIKI_MODEL_ID=z-ai/glm-5.2`, `LANGSMITH_API_KEY`, `LANGCHAIN_PROJECT=openwiki`, and tracing enabled. Treat this as current local state until committed.
+In the current working tree, `.github/workflows/openwiki-update.yml` does not use the `Build` environment and runs updates with `OPENROUTER_API_KEY`, `OPENWIKI_MODEL_ID=z-ai/glm-5.2`, `LANGSMITH_API_KEY`, `LANGCHAIN_PROJECT=openwiki`, and tracing enabled. Its create-pull-request step is pinned to a v7 commit SHA and includes `openwiki`, `AGENTS.md`, `CLAUDE.md`, and `.github/workflows/openwiki-update.yml` in `add-paths`; `CLAUDE.md` is currently untracked and contains an OpenWiki generated-doc guidance block. Treat this as current local state until committed.
 
 ## Operational watchpoints
 
