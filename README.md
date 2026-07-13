@@ -226,6 +226,10 @@ Task agents receive the Verft MCP server automatically at runtime through an int
 
 Checkpoint mutation, push/merge, attachments, terminal control, and summarization are intentionally deferred to later MCP phases.
 
+## Automation API
+
+External automation can create or continue a task with `POST /api/tasks/create-or-queue` using a Verft personal access token. See [Create-or-Queue Task API](docs/development/create-or-queue-api.md) for request shape, scopes, curl examples, and a GitHub Actions example.
+
 ## Common Commands
 
 | Command | Description |

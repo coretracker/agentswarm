@@ -163,6 +163,35 @@ const createTaskMessageSchema = z.object({
   attachments: z.array(taskPromptAttachmentInputSchema).max(TASK_PROMPT_ATTACHMENT_MAX_COUNT).optional()
 });
 
+const createOrQueueTaskSchema = z
+  .object({
+    repoId: z.string().trim().min(1),
+    target: z.object({
+      type: z
+        .string()
+        .trim()
+        .min(1)
+        .max(80)
+        .regex(/^[a-z][a-z0-9_-]*$/, "Target type must use lowercase letters, numbers, underscores, or hyphens."),
+      id: z.string().trim().min(1).max(255)
+    }),
+    task: z.object({
+      title: z.string().trim().min(1).max(500).optional(),
+      message: z.string().trim().min(1),
+      action: z.enum(["build", "ask"]).optional(),
+      taskType: z.enum(["build", "ask"]).optional(),
+      baseBranch: z.string().trim().min(1).optional(),
+      workOnBranch: z.boolean().optional(),
+      createIfMissing: z.boolean().optional(),
+      provider: z.enum(["codex", "claude"]).optional(),
+      providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
+      modelOverride: z.string().trim().min(1).optional(),
+      codexCredentialSource: z.enum(["auto", "global"]).optional()
+    }),
+    dedupeKey: z.string().trim().min(1).max(500).optional()
+  })
+  .strict();
+
 const updateTaskMessageSchema = z.object({
   content: z.string().trim().min(1)
 });
@@ -246,6 +275,13 @@ const historyPageQuerySchema = z.object({
 
 const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
 const PROVIDER_SESSION_ID_FILE = "verft-session-id.txt";
+
+const readBearerToken = (request: FastifyRequest): string | null => {
+  const authorization = request.headers.authorization;
+  const value = Array.isArray(authorization) ? authorization[0] : authorization;
+  const match = typeof value === "string" ? /^Bearer\s+(.+)$/i.exec(value.trim()) : null;
+  return match?.[1]?.trim() || null;
+};
 
 const clearTaskProviderSessionId = async (taskId: string): Promise<void> => {
   for (const provider of ["codex", "claude"] as const) {
@@ -394,6 +430,173 @@ export const registerTaskRoutes = (
       return Promise.all(tasks.map((task) => withTaskCreatorName(deps.userStore, task, creatorNameCache)));
     }
   );
+
+  app.post("/tasks/create-or-queue", async (request, reply) => {
+    const auth = await deps.auth.authenticateBearerToken(readBearerToken(request));
+    if (!auth) {
+      return reply.status(401).send({ message: "Authentication required" });
+    }
+    request.auth = auth;
+
+    const parsed = createOrQueueTaskSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const input = parsed.data;
+    const repository = await deps.repositoryStore.getRepository(input.repoId);
+    if (!repository || !canUserAccessRepository(auth.user, input.repoId)) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    const action = input.task.action ?? input.task.taskType ?? "build";
+    if (!auth.scopes.has("task:edit")) {
+      return reply.status(403).send({ message: "Task edit access is required." });
+    }
+    if (!requireTaskActionCapabilityAccess(request, reply, action)) {
+      return;
+    }
+
+    const targetType = input.target.type;
+    const targetId = input.target.id;
+    const numericTargetId = Number.parseInt(targetId, 10);
+    let task = await deps.taskStore.findTaskByExternalTarget(input.repoId, targetType, targetId);
+    if (!task && targetType === "github_pr" && String(numericTargetId) === targetId && numericTargetId > 0) {
+      task = await deps.taskStore.findTaskByGitHubPrNumber(input.repoId, numericTargetId);
+    }
+    if (!task && targetType === "github_issue" && String(numericTargetId) === targetId && numericTargetId > 0) {
+      task = await deps.taskStore.findTaskByGitHubIssueNumber(input.repoId, numericTargetId);
+    }
+
+    const createIfMissing = input.task.createIfMissing !== false;
+    let createdTask = false;
+    if (!task) {
+      if (!createIfMissing) {
+        return reply.status(404).send({ message: "Task not found" });
+      }
+      if (!auth.scopes.has("task:create")) {
+        return reply.status(403).send({ message: "Task create access is required." });
+      }
+
+      const createPayload = {
+        title: input.task.title ?? `${targetType}:${targetId}`,
+        draft: true,
+        repoId: input.repoId,
+        prompt: input.task.message,
+        taskType: input.task.taskType ?? action,
+        provider: input.task.provider,
+        providerProfile: input.task.providerProfile,
+        modelOverride: input.task.modelOverride,
+        codexCredentialSource: input.task.codexCredentialSource,
+        baseBranch: input.task.baseBranch,
+        branchStrategy: input.task.workOnBranch === true ? "work_on_branch" as const : "feature_branch" as const
+      };
+      const settings = await deps.settingsStore.getSettings();
+      const resolvedCreatePayload = {
+        ...createPayload,
+        ...resolveCreateTaskProviderConfig(createPayload, settings, repository, auth.user)
+      };
+      if (!requireTaskExecutionConfigAccess(request, reply, resolvedCreatePayload)) {
+        return;
+      }
+
+      const draftTask = await deps.taskStore.createTask(resolvedCreatePayload, repository, auth.user.id);
+      task =
+        (await deps.taskStore.patchTask(draftTask.id, {
+          status: "open",
+          workflowStatus: "ready",
+          executionStatus: "idle",
+          executionAction: action,
+          lastAction: action,
+          creatorName: auth.user.name,
+          ...(targetType === "github_pr" && String(numericTargetId) === targetId && numericTargetId > 0
+            ? { githubPrNumber: numericTargetId }
+            : {}),
+          ...(targetType === "github_issue" && String(numericTargetId) === targetId && numericTargetId > 0
+            ? { githubIssueNumber: numericTargetId }
+            : {})
+        })) ?? draftTask;
+      createdTask = true;
+    }
+
+    if (task.status === "archived") {
+      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+    }
+    if (!canUserAccessTask(auth.user, task)) {
+      return reply.status(404).send({ message: "Task not found" });
+    }
+    await deps.taskStore.linkTaskExternalTarget(task.id, input.repoId, targetType, targetId);
+
+    const dedupeKey = input.dedupeKey?.trim() || null;
+    const messages = dedupeKey ? await deps.taskStore.listMessages(task.id) : [];
+    const duplicate = dedupeKey ? messages.find((message) => message.externalId === dedupeKey) ?? null : null;
+    if (duplicate) {
+      return reply.status(202).send({
+        taskId: task.id,
+        messageId: duplicate.id,
+        createdTask,
+        queuedMessage: false,
+        deduped: true
+      });
+    }
+
+    const blocked = await getMutationBlocked(deps.taskStore, task.id);
+    if (blocked?.code === "active_terminal_session") {
+      return replyWithMutationBlocked(reply, blocked);
+    }
+
+    const message = await deps.taskStore.appendMessage(task.id, {
+      role: "user",
+      action,
+      queueState: "pending",
+      queueSource: "user",
+      externalId: dedupeKey,
+      content: input.task.message
+    });
+    if (!message) {
+      return reply.status(500).send({ message: "Task message could not be queued." });
+    }
+
+    const canStart =
+      task.executionStatus === "idle" &&
+      !(await deps.taskStore.hasPendingChangeProposal(task.id));
+    if (canStart) {
+      if (createdTask) {
+        const startResult = await beginTaskStart(
+          {
+            taskStore: deps.taskStore,
+            scheduler: deps.scheduler,
+            spawner: deps.spawner
+          },
+          {
+            task,
+            action,
+            input: { content: input.task.message },
+            promptMessageId: message.id,
+            fallbackMessage: "Task start failed"
+          }
+        );
+        if (!startResult.ok) {
+          return reply.status(startResult.statusCode).send({ message: startResult.message });
+        }
+      } else {
+        await deps.scheduler.triggerNextPendingAction(task.id, "manual");
+      }
+    } else if (
+      (task.executionStatus === "failed" || task.executionStatus === "cancelled") &&
+      !(await deps.taskStore.hasPendingChangeProposal(task.id))
+    ) {
+      await deps.scheduler.triggerNextPendingAction(task.id, "manual");
+    }
+
+    return reply.status(202).send({
+      taskId: task.id,
+      messageId: message.id,
+      createdTask,
+      queuedMessage: true,
+      deduped: false
+    });
+  });
 
   app.get<{ Params: { id: string } }>("/tasks/:id", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request, reply) => {
     const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
