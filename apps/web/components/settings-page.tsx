@@ -116,11 +116,34 @@ interface ResponsePreferencePresetFormValues {
 type ClearCredentialTarget = "github" | "openai" | "anthropic" | "slackSigningSecret" | "slackBotToken";
 type SettingsTabKey = "general" | "harness" | "git" | "hostexec" | "credentials" | "slack" | "codex" | "claude";
 type DirtyGeneralTabKey = SettingsTabKey;
+type GeneralSettingsTabKey = Exclude<SettingsTabKey, "credentials" | "slack">;
+type CredentialSettingsTabKey = Extract<SettingsTabKey, "credentials" | "slack">;
 
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: getAgentProviderLabel("codex"), value: "codex" },
   { label: getAgentProviderLabel("claude"), value: "claude" }
 ];
+
+const generalSettingsFieldsByTab: Record<GeneralSettingsTabKey, Array<keyof GeneralSettingsForm>> = {
+  general: ["defaultProvider", "maxAgents", "archivedTaskAutoDeleteEnabled", "archivedTaskAutoDeleteDays"],
+  harness: [
+    "harnessWhatExists",
+    "harnessAllowedActions",
+    "harnessNotAllowedActions",
+    "harnessHowToWork",
+    "harnessDefinitionOfDone",
+    "harnessEvidenceExpectations"
+  ],
+  git: ["gitUsername", "gitAuthorName", "gitAuthorEmail", "branchPrefix"],
+  hostexec: ["hostexecEnabled", "hostexecUrl", "hostexecBearerTokenEnvVar"],
+  codex: ["codexDefaultEffort", "codexDefaultModel", "codexModels", "taskPromptMagicModel", "taskPromptMagicTemplate", "openaiBaseUrl"],
+  claude: ["claudeDefaultEffort", "claudeDefaultModel", "claudeModels", "anthropicBaseUrl"]
+};
+
+const credentialFieldsByTab: Record<CredentialSettingsTabKey, Array<keyof CredentialForm>> = {
+  credentials: ["githubToken", "openaiApiKey", "anthropicApiKey"],
+  slack: ["slackSigningSecret", "slackBotToken"]
+};
 
 const toSentenceValue = (value: string): string => value.replace(/_/g, " ");
 const trimFormString = (value: string | null | undefined): string => (value ?? "").trim();
@@ -180,6 +203,80 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   claudeModels: settings.claudeModels,
   claudeDefaultEffort: settings.claudeDefaultEffort
 });
+
+const buildSettingsPayload = (tab: GeneralSettingsTabKey, values: GeneralSettingsForm): UpdateSettingsInput => {
+  if (tab === "general") {
+    return {
+      defaultProvider: values.defaultProvider,
+      maxAgents: values.maxAgents,
+      archivedTaskAutoDeleteEnabled: values.archivedTaskAutoDeleteEnabled === true,
+      archivedTaskAutoDeleteDays: values.archivedTaskAutoDeleteDays
+    };
+  }
+
+  if (tab === "harness") {
+    return {
+      harnessWhatExists: trimFormString(values.harnessWhatExists) || null,
+      harnessAllowedActions: trimFormString(values.harnessAllowedActions) || null,
+      harnessNotAllowedActions: trimFormString(values.harnessNotAllowedActions) || null,
+      harnessHowToWork: trimFormString(values.harnessHowToWork) || null,
+      harnessDefinitionOfDone: trimFormString(values.harnessDefinitionOfDone) || null,
+      harnessEvidenceExpectations: trimFormString(values.harnessEvidenceExpectations) || null
+    };
+  }
+
+  if (tab === "git") {
+    return {
+      branchPrefix: values.branchPrefix,
+      gitUsername: values.gitUsername,
+      gitAuthorName: trimFormString(values.gitAuthorName) || null,
+      gitAuthorEmail: trimFormString(values.gitAuthorEmail) || null
+    };
+  }
+
+  if (tab === "hostexec") {
+    return {
+      hostexec: {
+        enabled: values.hostexecEnabled === true,
+        url: trimFormString(values.hostexecUrl) || null,
+        bearerTokenEnvVar: trimFormString(values.hostexecBearerTokenEnvVar) || null
+      }
+    };
+  }
+
+  if (tab === "codex") {
+    return {
+      openaiBaseUrl: trimFormString(values.openaiBaseUrl) || null,
+      taskPromptMagicModel: values.taskPromptMagicModel,
+      taskPromptMagicTemplate: values.taskPromptMagicTemplate,
+      codexDefaultModel: values.codexDefaultModel,
+      codexModels: values.codexModels,
+      codexDefaultEffort: values.codexDefaultEffort
+    };
+  }
+
+  return {
+    anthropicBaseUrl: trimFormString(values.anthropicBaseUrl) || null,
+    claudeDefaultModel: values.claudeDefaultModel,
+    claudeModels: values.claudeModels,
+    claudeDefaultEffort: values.claudeDefaultEffort
+  };
+};
+
+const buildCredentialPayload = (tab: CredentialSettingsTabKey, values: CredentialForm): CredentialForm => {
+  if (tab === "slack") {
+    return {
+      slackSigningSecret: trimFormString(values.slackSigningSecret) || undefined,
+      slackBotToken: trimFormString(values.slackBotToken) || undefined
+    };
+  }
+
+  return {
+    githubToken: trimFormString(values.githubToken) || undefined,
+    openaiApiKey: trimFormString(values.openaiApiKey) || undefined,
+    anthropicApiKey: trimFormString(values.anthropicApiKey) || undefined
+  };
+};
 
 export function SettingsPage() {
   const { message } = App.useApp();
@@ -432,40 +529,12 @@ export function SettingsPage() {
     </Form.List>
   );
 
-  const saveGeneralSettings = async (values: GeneralSettingsForm): Promise<void> => {
+  const saveGeneralSettings = async (tab: GeneralSettingsTabKey): Promise<void> => {
     setSavingGeneral(true);
     try {
-      const payload: UpdateSettingsInput = {
-        defaultProvider: values.defaultProvider,
-        maxAgents: values.maxAgents,
-        archivedTaskAutoDeleteEnabled: values.archivedTaskAutoDeleteEnabled === true,
-        archivedTaskAutoDeleteDays: values.archivedTaskAutoDeleteDays,
-        branchPrefix: values.branchPrefix,
-        gitUsername: values.gitUsername,
-        gitAuthorName: values.gitAuthorName?.trim() || null,
-        gitAuthorEmail: values.gitAuthorEmail?.trim() || null,
-        hostexec: {
-          enabled: values.hostexecEnabled === true,
-          url: values.hostexecUrl?.trim() ? values.hostexecUrl.trim() : null,
-          bearerTokenEnvVar: values.hostexecBearerTokenEnvVar?.trim() ? values.hostexecBearerTokenEnvVar.trim() : null
-        },
-        openaiBaseUrl: values.openaiBaseUrl?.trim() ? values.openaiBaseUrl.trim() : null,
-        anthropicBaseUrl: values.anthropicBaseUrl?.trim() ? values.anthropicBaseUrl.trim() : null,
-        taskPromptMagicModel: values.taskPromptMagicModel,
-        taskPromptMagicTemplate: values.taskPromptMagicTemplate,
-        harnessWhatExists: values.harnessWhatExists.trim() || null,
-        harnessAllowedActions: values.harnessAllowedActions.trim() || null,
-        harnessNotAllowedActions: values.harnessNotAllowedActions.trim() || null,
-        harnessHowToWork: values.harnessHowToWork.trim() || null,
-        harnessDefinitionOfDone: values.harnessDefinitionOfDone.trim() || null,
-        harnessEvidenceExpectations: values.harnessEvidenceExpectations.trim() || null,
-        codexDefaultModel: values.codexDefaultModel,
-        codexModels: values.codexModels,
-        codexDefaultEffort: values.codexDefaultEffort,
-        claudeDefaultModel: values.claudeDefaultModel,
-        claudeModels: values.claudeModels,
-        claudeDefaultEffort: values.claudeDefaultEffort
-      };
+      await generalForm.validateFields(generalSettingsFieldsByTab[tab]);
+      const values = generalForm.getFieldsValue(true) as GeneralSettingsForm;
+      const payload = buildSettingsPayload(tab, values);
       const nextSettings = await api.updateSettings(payload);
       setSettings(nextSettings);
       setGeneralDirty(false);
@@ -478,17 +547,12 @@ export function SettingsPage() {
     }
   };
 
-  const saveCredentials = async (values: CredentialForm): Promise<void> => {
+  const saveCredentials = async (tab: CredentialSettingsTabKey): Promise<void> => {
     setSavingCredentials(true);
     try {
-      const nextSettings = await api.updateCredentials({
-        githubToken: values.githubToken?.trim() || undefined,
-        openaiApiKey: values.openaiApiKey?.trim() || undefined,
-        anthropicApiKey: values.anthropicApiKey?.trim() || undefined,
-        slackSigningSecret: values.slackSigningSecret?.trim() || undefined,
-        slackBotToken: values.slackBotToken?.trim() || undefined
-      });
-      credentialForm.resetFields();
+      await credentialForm.validateFields(credentialFieldsByTab[tab]);
+      const nextSettings = await api.updateCredentials(buildCredentialPayload(tab, credentialForm.getFieldsValue(true) as CredentialForm));
+      credentialForm.resetFields(credentialFieldsByTab[tab]);
       setSettings(nextSettings);
       setCredentialsDirty(false);
       setCredentialDirtyTabs([]);
@@ -568,6 +632,16 @@ export function SettingsPage() {
     if (hasUnsavedChanges && !confirmLeave()) {
       return;
     }
+    if (hasUnsavedChanges) {
+      if (settings) {
+        generalForm.setFieldsValue(toFormValues(settings));
+      }
+      credentialForm.resetFields();
+      setGeneralDirty(false);
+      setCredentialsDirty(false);
+      setGeneralDirtyTabs([]);
+      setCredentialDirtyTabs([]);
+    }
     setActiveTab(nextTab);
   };
 
@@ -606,7 +680,7 @@ export function SettingsPage() {
     window.open(url, "_blank", `${features},noopener,noreferrer`);
   };
 
-  const renderSaveBar = (options: { dirty: boolean; label: string; loading: boolean; statusText?: string }) => (
+  const renderSaveBar = (options: { dirty: boolean; label: string; loading: boolean; onSave: () => void; statusText?: string }) => (
     <Card
       size="small"
       style={{
@@ -621,7 +695,7 @@ export function SettingsPage() {
         <Typography.Text type="secondary">
           {options.statusText ?? (options.dirty ? "Unsaved changes" : "All changes saved")}
         </Typography.Text>
-        <Button type="primary" htmlType="submit" loading={options.loading} disabled={!canEditSettings || !options.dirty}>
+        <Button type="primary" loading={options.loading} disabled={!canEditSettings || !options.dirty} onClick={options.onSave}>
           {options.label}
         </Button>
       </Flex>
@@ -692,7 +766,6 @@ export function SettingsPage() {
             layout="vertical"
             disabled={!canEditSettings}
             onValuesChange={() => markGeneralTabDirty("general")}
-            onFinish={saveGeneralSettings}
           >
             <Space direction="vertical" size={16} style={{ width: "100%" }}>
               <Card bordered={false} loading={loading} title="General">
@@ -722,7 +795,7 @@ export function SettingsPage() {
                 </Flex>
               </Card>
             </Space>
-            {renderSaveBar({ dirty: generalDirty, label: "Save General Settings", loading: savingGeneral })}
+            {renderSaveBar({ dirty: generalDirty, label: "Save General Settings", loading: savingGeneral, onSave: () => void saveGeneralSettings("general") })}
           </Form>
         ) : null}
 
@@ -732,7 +805,6 @@ export function SettingsPage() {
             layout="vertical"
             disabled={!canEditSettings}
             onValuesChange={() => markGeneralTabDirty("harness")}
-            onFinish={saveGeneralSettings}
           >
             <Card bordered={false} loading={loading} title="Global Harness">
               <Flex vertical gap={12}>
@@ -762,7 +834,7 @@ export function SettingsPage() {
                 ))}
               </Flex>
             </Card>
-            {renderSaveBar({ dirty: generalDirty, label: "Save Global Harness", loading: savingGeneral })}
+            {renderSaveBar({ dirty: generalDirty, label: "Save Global Harness", loading: savingGeneral, onSave: () => void saveGeneralSettings("harness") })}
           </Form>
         ) : null}
 
@@ -772,7 +844,6 @@ export function SettingsPage() {
             layout="vertical"
             disabled={!canEditSettings}
             onValuesChange={() => markGeneralTabDirty("codex")}
-            onFinish={saveGeneralSettings}
           >
             <Card bordered={false} loading={loading} title="Codex">
               <Flex vertical gap={16} style={{ width: "100%" }}>
@@ -815,7 +886,7 @@ export function SettingsPage() {
                 </Form.Item>
               </Flex>
             </Card>
-            {renderSaveBar({ dirty: generalDirty, label: "Save Codex Settings", loading: savingGeneral })}
+            {renderSaveBar({ dirty: generalDirty, label: "Save Codex Settings", loading: savingGeneral, onSave: () => void saveGeneralSettings("codex") })}
           </Form>
         ) : null}
 
@@ -825,7 +896,6 @@ export function SettingsPage() {
             layout="vertical"
             disabled={!canEditSettings}
             onValuesChange={() => markGeneralTabDirty("claude")}
-            onFinish={saveGeneralSettings}
           >
             <Card bordered={false} loading={loading} title="Claude Code">
               <Flex vertical gap={16} style={{ width: "100%" }}>
@@ -860,7 +930,7 @@ export function SettingsPage() {
                 </Form.Item>
               </Flex>
             </Card>
-            {renderSaveBar({ dirty: generalDirty, label: "Save Claude Code Settings", loading: savingGeneral })}
+            {renderSaveBar({ dirty: generalDirty, label: "Save Claude Code Settings", loading: savingGeneral, onSave: () => void saveGeneralSettings("claude") })}
           </Form>
         ) : null}
 
@@ -870,7 +940,6 @@ export function SettingsPage() {
             layout="vertical"
             disabled={!canEditSettings}
             onValuesChange={() => markGeneralTabDirty("git")}
-            onFinish={saveGeneralSettings}
           >
             <Card bordered={false} loading={loading} title="Git">
               <Flex vertical gap={16} style={{ width: "100%" }}>
@@ -903,7 +972,7 @@ export function SettingsPage() {
                 </Form.Item>
               </Flex>
             </Card>
-            {renderSaveBar({ dirty: generalDirty, label: "Save Git Settings", loading: savingGeneral })}
+            {renderSaveBar({ dirty: generalDirty, label: "Save Git Settings", loading: savingGeneral, onSave: () => void saveGeneralSettings("git") })}
           </Form>
         ) : null}
 
@@ -913,7 +982,6 @@ export function SettingsPage() {
             layout="vertical"
             disabled={!canEditSettings}
             onValuesChange={() => markGeneralTabDirty("hostexec")}
-            onFinish={saveGeneralSettings}
           >
             <Card
               bordered={false}
@@ -985,7 +1053,7 @@ export function SettingsPage() {
                 ) : null}
               </Flex>
             </Card>
-            {renderSaveBar({ dirty: generalDirty, label: "Save Hostexec Settings", loading: savingGeneral })}
+            {renderSaveBar({ dirty: generalDirty, label: "Save Hostexec Settings", loading: savingGeneral, onSave: () => void saveGeneralSettings("hostexec") })}
           </Form>
         ) : null}
 
@@ -1019,7 +1087,6 @@ export function SettingsPage() {
               layout="vertical"
               disabled={!canEditSettings}
               onValuesChange={() => markCredentialTabDirty("slack")}
-              onFinish={saveCredentials}
             >
               <Form.Item label="Event URL">
                 <Input
@@ -1058,6 +1125,7 @@ export function SettingsPage() {
                 dirty: credentialsDirty,
                 label: "Save Slack Credentials",
                 loading: savingCredentials,
+                onSave: () => void saveCredentials("slack"),
                 statusText: credentialsDirty ? "Unsaved Slack credential changes" : "No pending Slack credential changes"
               })}
               <Space wrap>
@@ -1155,7 +1223,6 @@ export function SettingsPage() {
               layout="vertical"
               disabled={!canEditSettings}
               onValuesChange={() => markCredentialTabDirty("credentials")}
-              onFinish={saveCredentials}
             >
               <Form.Item
                 name="githubToken"
@@ -1174,6 +1241,7 @@ export function SettingsPage() {
                 dirty: credentialsDirty,
                 label: "Save Credentials",
                 loading: savingCredentials,
+                onSave: () => void saveCredentials("credentials"),
                 statusText: credentialsDirty ? "Unsaved credential changes" : "No pending credential changes"
               })}
               <Space wrap>
