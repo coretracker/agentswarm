@@ -747,5 +747,20 @@ Feedback:
       ADD COLUMN IF NOT EXISTS archived_task_auto_delete_enabled boolean NOT NULL DEFAULT true,
       ADD COLUMN IF NOT EXISTS archived_task_auto_delete_days integer NOT NULL DEFAULT 7;
     `
+  },
+  {
+    id: "20260713_01_task_external_links",
+    sql: `
+      CREATE TABLE IF NOT EXISTS task_external_links (
+        task_id text NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        repo_id text NOT NULL,
+        target_type text NOT NULL,
+        target_id text NOT NULL,
+        created_at text NOT NULL,
+        PRIMARY KEY (repo_id, target_type, target_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS task_external_links_task_id_idx ON task_external_links(task_id);
+    `
   }
 ];

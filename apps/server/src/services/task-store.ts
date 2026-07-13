@@ -63,6 +63,7 @@ const TASK_CHANGE_PROPOSAL_IDS_KEY_PREFIX = "verft:task_change_proposal_ids:";
 const TASK_PENDING_CHANGE_PROPOSAL_KEY_PREFIX = "verft:task_pending_change_proposal:";
 const TASK_ACTIVE_INTERACTIVE_SESSION_KEY_PREFIX = "verft:task_active_interactive_session:";
 const TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX = "verft:task_interactive_terminal_transcript:";
+const TASK_EXTERNAL_LINK_KEY_PREFIX = "verft:task_external_link:";
 const TASK_IDS_KEY = "verft:task_ids";
 const MAX_LOG_LINES = 400;
 const MAX_MESSAGES = 200;
@@ -422,6 +423,8 @@ export type UpdateTaskChangeProposalUpdates = Partial<
 export interface TaskStore {
   createTask(input: CreateTaskInput, repository: Repository, ownerUserId: string): Promise<Task>;
   getTask(taskId: string): Promise<Task | null>;
+  findTaskByExternalTarget(repositoryId: string, targetType: string, targetId: string): Promise<Task | null>;
+  linkTaskExternalTarget(taskId: string, repositoryId: string, targetType: string, targetId: string): Promise<void>;
   findTaskByGitHubPrNumber(repositoryId: string, githubPrNumber: number): Promise<Task | null>;
   findTaskByGitHubIssueNumber(repositoryId: string, githubIssueNumber: number): Promise<Task | null>;
   findTaskBySlackThread(repositoryId: string, slackChannelId: string, slackThreadTs: string): Promise<Task | null>;
@@ -623,6 +626,10 @@ export class RedisTaskStore implements TaskStore {
     return `${TASK_INTERACTIVE_TERMINAL_TRANSCRIPT_KEY_PREFIX}${sessionId}`;
   }
 
+  private taskExternalLinkKey(repositoryId: string, targetType: string, targetId: string): string {
+    return `${TASK_EXTERNAL_LINK_KEY_PREFIX}${repositoryId}:${targetType}:${targetId}`;
+  }
+
   private async getStoredTask(taskId: string): Promise<Task | null> {
     const raw = await this.redis.get(this.taskKey(taskId));
     if (!raw) {
@@ -818,6 +825,15 @@ export class RedisTaskStore implements TaskStore {
   async findTaskByGitHubPrNumber(repositoryId: string, githubPrNumber: number): Promise<Task | null> {
     const tasks = await this.listTasks({ view: "active", limit: 1000 });
     return tasks.find((task) => task.repoId === repositoryId && task.githubPrNumber === githubPrNumber) ?? null;
+  }
+
+  async findTaskByExternalTarget(repositoryId: string, targetType: string, targetId: string): Promise<Task | null> {
+    const taskId = await this.redis.get(this.taskExternalLinkKey(repositoryId, targetType, targetId));
+    return taskId ? this.getTask(taskId) : null;
+  }
+
+  async linkTaskExternalTarget(taskId: string, repositoryId: string, targetType: string, targetId: string): Promise<void> {
+    await this.redis.set(this.taskExternalLinkKey(repositoryId, targetType, targetId), taskId);
   }
 
   async findTaskByGitHubIssueNumber(repositoryId: string, githubIssueNumber: number): Promise<Task | null> {
@@ -2284,6 +2300,37 @@ export class PostgresTaskStore implements TaskStore {
     );
     const row = result.rows[0];
     return row ? this.withPendingCheckpointState({ ...this.mapTaskRow(row), logs: [] }) : null;
+  }
+
+  async findTaskByExternalTarget(repositoryId: string, targetType: string, targetId: string): Promise<Task | null> {
+    const result = await this.pool.query(
+      `
+        SELECT t.task_data
+        FROM task_external_links AS l
+        INNER JOIN tasks AS t ON t.id = l.task_id
+        WHERE l.repo_id = $1
+          AND l.target_type = $2
+          AND l.target_id = $3
+          AND t.status <> 'archived'
+        ORDER BY t.created_at DESC
+        LIMIT 1
+      `,
+      [repositoryId, targetType, targetId]
+    );
+    const row = result.rows[0];
+    return row ? this.withPendingCheckpointState({ ...this.mapTaskRow(row), logs: [] }) : null;
+  }
+
+  async linkTaskExternalTarget(taskId: string, repositoryId: string, targetType: string, targetId: string): Promise<void> {
+    await this.pool.query(
+      `
+        INSERT INTO task_external_links (task_id, repo_id, target_type, target_id, created_at)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (repo_id, target_type, target_id)
+        DO UPDATE SET task_id = EXCLUDED.task_id
+      `,
+      [taskId, repositoryId, targetType, targetId, nowIso()]
+    );
   }
 
   async findTaskByGitHubIssueNumber(repositoryId: string, githubIssueNumber: number): Promise<Task | null> {
