@@ -340,7 +340,7 @@ describe("TaskStore.createTask", () => {
     assert.equal(task.autoApplyCheckpoints, true);
   });
 
-  it("normalizes legacy snippet-source tasks to blank tasks", async () => {
+  it("strips removed task source metadata from legacy tasks", async () => {
     const redis = new FakeRedis();
     const taskStore = new RedisTaskStore(redis as never, {
       publish: async () => {}
@@ -357,7 +357,7 @@ describe("TaskStore.createTask", () => {
 
     const refreshed = await taskStore.getTask(task.id);
 
-    assert.equal(refreshed?.taskSource, "blank");
+    assert.equal((refreshed as { taskSource?: unknown } | null)?.taskSource, undefined);
     assert.equal((refreshed as { snippetId?: unknown } | null)?.snippetId, undefined);
   });
 });
