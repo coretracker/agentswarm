@@ -512,13 +512,14 @@ export class RedisTaskStore implements TaskStore {
       requirements?: string;
       prompt?: string;
       notes?: string;
-      taskSource?: Task["taskSource"];
+      taskSource?: string;
       snippetId?: string;
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
     delete taskWithoutStartMode.notes;
-    const taskSource = legacyTask.taskSource === "snippet" || legacyTask.taskSource === "blank" ? legacyTask.taskSource : "blank";
+    delete taskWithoutStartMode.taskSource;
+    delete taskWithoutStartMode.snippetId;
     const normalizedTask: Task = {
       ...taskWithoutStartMode,
       deadline: normalizeDeadline(legacyTask.deadline),
@@ -538,11 +539,6 @@ export class RedisTaskStore implements TaskStore {
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
       codexCredentialSource: normalizeCodexCredentialSource(legacyTask.codexCredentialSource),
-      taskSource,
-      snippetId:
-        taskSource === "snippet" && typeof legacyTask.snippetId === "string" && legacyTask.snippetId.trim().length > 0
-          ? legacyTask.snippetId.trim()
-          : undefined,
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
@@ -745,7 +741,6 @@ export class RedisTaskStore implements TaskStore {
     const autoApplyCheckpoints = input.autoApplyCheckpoints === true;
     const parentTaskId = input.parentTaskId?.trim() || null;
     const rootTaskId = input.rootTaskId?.trim() || parentTaskId;
-    const taskSource = "blank";
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
     const initialStatus: TaskStatus = isDraft ? "draft" : "open";
@@ -775,7 +770,6 @@ export class RedisTaskStore implements TaskStore {
       providerProfile,
       modelOverride,
       codexCredentialSource,
-      taskSource,
       baseBranch,
       branchStrategy,
       complexity,
@@ -1904,13 +1898,14 @@ export class PostgresTaskStore implements TaskStore {
       requirements?: string;
       prompt?: string;
       notes?: string;
-      taskSource?: Task["taskSource"];
+      taskSource?: string;
       snippetId?: string;
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
     delete taskWithoutStartMode.notes;
-    const taskSource = legacyTask.taskSource === "snippet" || legacyTask.taskSource === "blank" ? legacyTask.taskSource : "blank";
+    delete taskWithoutStartMode.taskSource;
+    delete taskWithoutStartMode.snippetId;
     const normalizedTask: Task = {
       ...taskWithoutStartMode,
       deadline: normalizeDeadline(legacyTask.deadline),
@@ -1926,11 +1921,6 @@ export class PostgresTaskStore implements TaskStore {
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
       codexCredentialSource: normalizeCodexCredentialSource(legacyTask.codexCredentialSource),
-      taskSource,
-      snippetId:
-        taskSource === "snippet" && typeof legacyTask.snippetId === "string" && legacyTask.snippetId.trim().length > 0
-          ? legacyTask.snippetId.trim()
-          : undefined,
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
@@ -2210,7 +2200,6 @@ export class PostgresTaskStore implements TaskStore {
     const autoApplyCheckpoints = input.autoApplyCheckpoints === true;
     const parentTaskId = input.parentTaskId?.trim() || null;
     const rootTaskId = input.rootTaskId?.trim() || parentTaskId;
-    const taskSource = "blank";
     const isDraft = input.draft === true;
     const initialAction: TaskAction = taskType === "ask" ? "ask" : "build";
     const initialStatus: TaskStatus = isDraft ? "draft" : "open";
@@ -2238,7 +2227,6 @@ export class PostgresTaskStore implements TaskStore {
       providerProfile,
       modelOverride,
       codexCredentialSource,
-      taskSource,
       baseBranch,
       branchStrategy,
       complexity,

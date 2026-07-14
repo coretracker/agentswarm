@@ -5,7 +5,6 @@ import type {
   AuthProfile,
   AuthSession,
   CreateRoleInput,
-  CreateSnippetInput,
   CreateTaskMessageInput,
   CreateRepositoryInput,
   CreateTaskInput,
@@ -18,7 +17,6 @@ import type {
   ProviderModelOption,
   Repository,
   Role,
-  Snippet,
   SystemSettings,
   Task,
   OpenAiDiffAssistInput,
@@ -46,7 +44,6 @@ import type {
   TaskAction,
   TaskTerminalSessionMode,
   UpdateRoleInput,
-  UpdateSnippetInput,
   UpdateTaskPinInput,
   UpdateTaskDeadlineInput,
   UpdateTaskDraftInput,
@@ -206,26 +203,6 @@ export const api = {
   deleteRole: (id: string) =>
     request<void>(`/roles/${id}`, {
       method: "DELETE"
-    }),
-  listSnippets: () => request<Snippet[]>("/snippets"),
-  getSnippet: (id: string) => request<Snippet>(`/snippets/${id}`),
-  createSnippet: (input: CreateSnippetInput) =>
-    request<Snippet>("/snippets", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateSnippet: (id: string, input: UpdateSnippetInput) =>
-    request<Snippet>(`/snippets/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteSnippet: (id: string) =>
-    request<void>(`/snippets/${id}`, {
-      method: "DELETE"
-    }),
-  duplicateSnippet: (id: string) =>
-    request<Snippet>(`/snippets/${id}/duplicate`, {
-      method: "POST"
     }),
   listTasks: (options?: ListTasksOptions) => {
     const params = new URLSearchParams();

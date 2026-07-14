@@ -45,7 +45,6 @@ const buildSystemResponsePreferencePreset = (): ResponsePreferencePreset => ({
 
 const buildSystemDataStores = (): SystemDataStores => ({
   taskStore: "postgres",
-  snippetStore: "postgres",
   repositoryStore: "postgres",
   credentialStore: "postgres",
   roleStore: "postgres",

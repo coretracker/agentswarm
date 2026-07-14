@@ -21,8 +21,8 @@ It is built for teams that want the speed of AI coding agents without giving up 
 
 ## How It Works
 
-1. **Connect**: Add repositories, GitHub credentials, provider credentials, repository env, MCP tools, snippets, and defaults.
-2. **Create**: Start build or ask tasks from prompts, reusable snippets, GitHub feedback, or agent-created subtasks.
+1. **Connect**: Add repositories, GitHub credentials, provider credentials, repository env, MCP tools, and defaults.
+2. **Create**: Start build or ask tasks from prompts, GitHub feedback, or agent-created subtasks.
 3. **Observe**: Follow task status, streamed logs, messages, terminal output, checkpoints, and pending diffs from the browser.
 4. **Decide**: Apply, reject, revert, push, or merge each result from Verft's review UI.
 
@@ -42,7 +42,7 @@ Ask tasks let Codex or Claude inspect a codebase and answer without writing file
 
 ### Standardize Repeated Work
 
-Use snippets for recurring prompts, repository defaults for provider/model choices, repository-local postflight checks for validation, and MCP servers for repository-specific tool access.
+Use repository defaults for provider/model choices, repository-local postflight checks for validation, and MCP servers for repository-specific tool access.
 
 ### Integrate With GitHub Feedback
 
@@ -114,8 +114,6 @@ Tasks are the main unit of work in Verft.
 
 - **Build tasks** ask an agent to modify a repository in an isolated workspace.
 - **Ask tasks** ask an agent to inspect and answer without writing files.
-- **Snippet tasks** start from reusable prompt templates and variables.
-
 Task definitions include title, repository, prompt, deadline, provider/model settings, branch settings, and optional prompt attachments. Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
 
 ### Checkpoints And Git Actions
@@ -124,7 +122,7 @@ Verft tracks task status, messages, runs, logs, diffs, checkpoints, and Git oper
 
 ### Repository Configuration
 
-Repositories can define environment variables, write-only environment secrets, default agent provider/model/effort settings, GitHub integration settings, repository-local MCP servers, host commands, snippets, and postflight checks.
+Repositories can define environment variables, write-only environment secrets, default agent provider/model/effort settings, GitHub integration settings, repository-local MCP servers, host commands, and postflight checks.
 
 Repository-specific MCP servers are configured on each repository. Task runs and interactive terminals receive only the MCP servers configured for the task repository, plus the internal Verft MCP bridge.
 

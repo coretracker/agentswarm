@@ -25,7 +25,6 @@ import {
   type TaskBranchStrategy,
   type ProviderProfile,
   type SystemSettings,
-  type Snippet,
   type TaskMergePreview,
   type TaskPushPreview,
   type TaskChangeProposal,
@@ -89,7 +88,6 @@ import { Highlight, type Language } from "prism-react-renderer";
 import { Diff, Hunk, type FileData } from "react-diff-view";
 import remarkGfm from "remark-gfm";
 import { api, ApiError, type TaskInteractiveTerminalStatus } from "../src/api/client";
-import { useSnippets } from "../src/hooks/useSnippets";
 import { useTask } from "../src/hooks/useTask";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useTaskMessages } from "../src/hooks/useTaskMessages";
@@ -103,7 +101,6 @@ import {
   formatAttachmentSize,
   type SelectedTaskPromptImageFile
 } from "../src/utils/task-prompt-attachments";
-import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { buildTaskLifecycleViewModel } from "../src/utils/task-lifecycle-view-model";
 import { buildTimelineDisplayItems, type TimelineDisplayItem } from "../src/utils/task-run-timeline";
@@ -129,7 +126,6 @@ const runStatusColor: Record<TaskRun["status"], string> = {
 };
 
 type ComposerAction = TaskMessageAction | "terminal";
-type SnippetVariableFormValues = Record<string, string>;
 
 const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
@@ -717,8 +713,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     refetch: refetchChangeProposals,
     loadMore: loadMoreProposals
   } = useTaskChangeProposals(taskId);
-  const canUseSnippets = can("snippet:list");
-  const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const [liveDiff, setLiveDiff] = useState<TaskLiveDiff | null>(null);
   const [liveDiffLoading, setLiveDiffLoading] = useState(false);
   const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
@@ -900,10 +894,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const executionConfigSyncedTaskIdRef = useRef<string | null>(null);
   const applyCheckpointAutoMagicProposalIdRef = useRef<string | null>(null);
   const mergeAutoMagicTargetRef = useRef<string | null>(null);
-  const [selectedSnippetId, setSelectedSnippetId] = useState<string | null>(null);
-  const [snippetVariableModalOpen, setSnippetVariableModalOpen] = useState(false);
-  const [pendingSnippetForInsert, setPendingSnippetForInsert] = useState<Snippet | null>(null);
-  const [snippetVariableForm] = Form.useForm<SnippetVariableFormValues>();
   const [selectedPromptImageFiles, setSelectedPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
   const [pushPreview, setPushPreview] = useState<TaskPushPreview | null>(null);
   const [pushPreviewLoading, setPushPreviewLoading] = useState(false);
@@ -2315,54 +2305,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     };
   }, [hasActiveTerminalHistoryEntry, loading, messagesLoading, proposalsLoading, runsLoading, task?.id]);
 
-  const handleInsertSelectedSnippet = () => {
-    if (!selectedSnippetId) {
-      return;
-    }
-
-    const snippet = snippets.find((item) => item.id === selectedSnippetId);
-    if (!snippet) {
-      messageApi.error("Selected snippet is no longer available.");
-      return;
-    }
-
-    if ((snippet.variables ?? []).length > 0) {
-      setPendingSnippetForInsert(snippet);
-      snippetVariableForm.resetFields();
-      const defaultValues = Object.fromEntries(
-        (snippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""])
-      );
-      snippetVariableForm.setFieldsValue(defaultValues);
-      setSnippetVariableModalOpen(true);
-      return;
-    }
-
-    setChatInput((current) => insertSnippetContent(current, snippet.content));
-    setSelectedSnippetId(null);
-  };
-  const handleConfirmSnippetVariableInsert = async () => {
-    if (!pendingSnippetForInsert) {
-      return;
-    }
-
-    try {
-      const values = await snippetVariableForm.validateFields();
-      const rendered = applySnippetVariables(pendingSnippetForInsert.content, pendingSnippetForInsert.variables, values);
-      setChatInput((current) => insertSnippetContent(current, rendered));
-      setSnippetVariableModalOpen(false);
-      setPendingSnippetForInsert(null);
-      snippetVariableForm.resetFields();
-      setSelectedSnippetId(null);
-    } catch {
-      // Form-level validation messages are shown inline.
-    }
-  };
-  const handleCloseSnippetVariableModal = () => {
-    setSnippetVariableModalOpen(false);
-    setPendingSnippetForInsert(null);
-    snippetVariableForm.resetFields();
-    setSelectedSnippetId(null);
-  };
   const handleProviderInputChange = (value: AgentProvider) => {
     setProviderInput(value);
     const nextModels = getProviderConfiguredModels(value, settings).filter(
@@ -2379,7 +2321,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   };
   const composerHasChangesToClear =
-    !!selectedSnippetId ||
     selectedPromptImageFiles.length > 0 ||
     !!chatInput.trim() ||
     providerInput !== currentTaskProvider ||
@@ -2401,10 +2342,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const chatSubmitLabel =
     selectedChatAction === "comment" ? "Add Comment" : selectedChatActionRequiresPrompt && willQueueSubmittedMessage ? "Queue" : "Start";
   const handleConfirmClearComposer = () => {
-    setSelectedSnippetId(null);
-    setSnippetVariableModalOpen(false);
-    setPendingSnippetForInsert(null);
-    snippetVariableForm.resetFields();
     setSelectedPromptImageFiles([]);
     setChatInput("");
     if (task) {
@@ -4177,28 +4114,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           style={{ minWidth: 220, flex: 1 }}
           disabled={!canEditTask || isArchived || interactiveTerminalRunning}
         />
-        {!terminalComposerSelected && canUseSnippets ? (
-          <Select
-            showSearch
-            style={{ minWidth: 220, flex: 1 }}
-            placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-            value={selectedSnippetId}
-            onChange={(value) => setSelectedSnippetId(value)}
-            optionFilterProp="label"
-            allowClear
-            loading={snippetsLoading}
-            disabled={snippetsLoading || snippets.length === 0 || !canEditTask || isArchived || interactiveTerminalRunning}
-            options={snippets.map((snippet) => ({
-              label: snippet.name,
-              value: snippet.id
-            }))}
-          />
-        ) : null}
-        {!terminalComposerSelected && canUseSnippets ? (
-          <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetId || !canEditTask || isArchived || interactiveTerminalRunning}>
-            Insert
-          </Button>
-        ) : null}
       </Flex>
       <div style={{ position: "relative" }}>
         {promptMagicVisible ? (
@@ -5820,32 +5735,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             </Flex>
           </div>
         </Flex>
-      </Modal>
-      <Modal
-        title={pendingSnippetForInsert ? `Insert Snippet: ${pendingSnippetForInsert.name}` : "Insert Snippet"}
-        open={snippetVariableModalOpen}
-        onCancel={handleCloseSnippetVariableModal}
-        destroyOnClose
-        onOk={() => void handleConfirmSnippetVariableInsert()}
-        okText="Insert"
-      >
-        <Form form={snippetVariableForm} layout="vertical">
-          {(pendingSnippetForInsert?.variables ?? []).map((variable) => (
-            <Form.Item
-              key={variable.name}
-              name={variable.name}
-              label={variable.title.trim() || variable.name}
-              tooltip={variable.description.trim() || undefined}
-              rules={[{ required: true, message: `Enter ${variable.title.trim() || variable.name}` }]}
-            >
-              {variable.type === "multiline" ? (
-                <Input.TextArea rows={4} placeholder={variable.description.trim() || variable.name} />
-              ) : (
-                <Input placeholder={variable.description.trim() || variable.name} />
-              )}
-            </Form.Item>
-          ))}
-        </Form>
       </Modal>
       <Modal
         title="Change State"
