@@ -59,7 +59,6 @@
 - `apps/web/components/task-detail-page.tsx`
 - `apps/web/components/app-sidebar.tsx`
 - `apps/web/components/tasks-page.tsx`
-- `apps/web/components/tasks-kanban-board-page.tsx`
 - Server/web tests that construct `Task` or `TaskRun` fixtures with `logs: []`.
 - Docs that describe task history or log output.
 
