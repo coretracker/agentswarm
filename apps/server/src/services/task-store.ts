@@ -511,13 +511,11 @@ export class RedisTaskStore implements TaskStore {
       // Legacy field kept for migration of stored tasks created before the prompt refactor.
       requirements?: string;
       prompt?: string;
-      notes?: string;
       taskSource?: string;
       snippetId?: string;
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
-    delete taskWithoutStartMode.notes;
     delete taskWithoutStartMode.taskSource;
     delete taskWithoutStartMode.snippetId;
     const normalizedTask: Task = {
@@ -1897,13 +1895,11 @@ export class PostgresTaskStore implements TaskStore {
       executionAction?: TaskExecutionAction;
       requirements?: string;
       prompt?: string;
-      notes?: string;
       taskSource?: string;
       snippetId?: string;
     };
     const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
     delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
-    delete taskWithoutStartMode.notes;
     delete taskWithoutStartMode.taskSource;
     delete taskWithoutStartMode.snippetId;
     const normalizedTask: Task = {

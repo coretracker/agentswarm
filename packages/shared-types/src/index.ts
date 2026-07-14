@@ -964,11 +964,6 @@ export interface SystemSettings {
   dataStores?: SystemDataStores;
 }
 
-export interface UserNotes {
-  notes: string;
-  updatedAt: string;
-}
-
 export interface CreateRepositoryInput {
   name: string;
   url: string;
@@ -1117,10 +1112,6 @@ export interface UpdateTaskDraftInput {
   codexCredentialSource?: CodexCredentialSource;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
-}
-
-export interface UpdateUserNotesInput {
-  notes: string;
 }
 
 export interface UpdateTaskStateInput {

@@ -295,26 +295,6 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
     `
   },
   {
-    id: "20260522_02_workspace_notes",
-    sql: `
-      ALTER TABLE system_settings
-      ADD COLUMN IF NOT EXISTS workspace_notes text NOT NULL DEFAULT '';
-
-      ALTER TABLE system_settings
-      ADD COLUMN IF NOT EXISTS workspace_notes_updated_at text NOT NULL DEFAULT '';
-    `
-  },
-  {
-    id: "20260522_03_user_notes",
-    sql: `
-      CREATE TABLE IF NOT EXISTS user_notes (
-        user_id text PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-        notes text NOT NULL,
-        updated_at text NOT NULL
-      );
-    `
-  },
-  {
     id: "20260526_02_task_git_operations",
     sql: `
       CREATE TABLE IF NOT EXISTS task_git_operations (
@@ -513,18 +493,6 @@ Feedback:
     sql: `
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS github_pr_allowed_users jsonb NOT NULL DEFAULT '[]'::jsonb;
-    `
-  },
-  {
-    id: "20260625_01_remove_task_notes",
-    sql: `
-      UPDATE tasks
-      SET task_data = task_data - 'notes'
-      WHERE task_data ? 'notes';
-
-      UPDATE task_drafts
-      SET definition = definition - 'notes'
-      WHERE definition ? 'notes';
     `
   },
   {
@@ -738,6 +706,24 @@ Feedback:
 
       DROP INDEX IF EXISTS snippets_updated_at_idx;
       DROP TABLE IF EXISTS snippets;
+    `
+  },
+  {
+    id: "20260714_02_remove_notes",
+    sql: `
+      UPDATE tasks
+      SET task_data = task_data - 'notes'
+      WHERE task_data ? 'notes';
+
+      UPDATE task_drafts
+      SET definition = definition - 'notes'
+      WHERE definition ? 'notes';
+
+      DROP TABLE IF EXISTS user_notes;
+
+      ALTER TABLE system_settings
+      DROP COLUMN IF EXISTS workspace_notes,
+      DROP COLUMN IF EXISTS workspace_notes_updated_at;
     `
   }
 ];
