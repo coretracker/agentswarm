@@ -186,10 +186,6 @@ const updateCredentialsSchema = z.object({
   clearSlackBotToken: z.boolean().optional()
 });
 
-const updateUserNotesSchema = z.object({
-  notes: z.string().max(200_000)
-});
-
 async function getProviderBaseStateStatus(): Promise<{ volume: string; files: Record<string, boolean> }> {
   const files = [
     "codex/auth.json",
@@ -344,17 +340,4 @@ export const registerSettingsRoutes = (
     return reply.send(settings);
   });
 
-  app.get("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:read"]) }, async (request) =>
-    deps.settingsStore.getUserNotes(request.auth!.user.id)
-  );
-
-  app.patch("/settings/notes", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const parsed = updateUserNotesSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const next = await deps.settingsStore.updateUserNotes(request.auth!.user.id, parsed.data.notes);
-    return reply.send(next);
-  });
 };
