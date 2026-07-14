@@ -3,7 +3,6 @@
 import { useMemo, useEffect, useRef, useState, type ReactNode } from "react";
 import { App, Button, Drawer, Flex, Grid, Layout, Menu, Result, Select, Skeleton, Spin, Typography, message, theme as antTheme } from "antd";
 import {
-  AppstoreOutlined,
   CopyOutlined,
   DatabaseOutlined,
   LeftOutlined,
@@ -40,7 +39,6 @@ import {
 
 const menuIconByPath: Record<string, ReactNode> = {
   "/tasks": <UnorderedListOutlined />,
-  "/tasks/board": <AppstoreOutlined />,
   "/snippets": <CopyOutlined />,
   "/repositories": <DatabaseOutlined />,
   "/settings": <SettingOutlined />,

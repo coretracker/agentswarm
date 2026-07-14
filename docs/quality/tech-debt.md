@@ -28,7 +28,7 @@ Top gaps are prioritized from `docs/quality/scorecard.md`.
 - Suggested fix: align `known-issues.md` with current repository state and keep it updated with each harness change.
 
 ## 6) Legacy Task Status Is Overloaded
-- Impact: Kanban planning and task lifecycle UI have to interpret a single `status` field that mixes workflow state, execution state, and legacy result state.
+- Impact: task lifecycle UI has to interpret a single `status` field that mixes workflow state, execution state, and legacy result state.
 - Evidence: tasks now expose `workflowStatus`, `executionStatus`, `executionAction`, and `reviewReason`, but `status` remains for compatibility.
 - Suggested fix: migrate callers to the new fields, backfill persisted tasks if needed, then remove legacy `completed`/`answered`/`accepted` values and eventually retire overloaded `status`.
 
