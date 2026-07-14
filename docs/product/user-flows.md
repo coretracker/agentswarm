@@ -72,7 +72,7 @@ Notes:
 flowchart TD
   subgraph A[New Task Flow]
     A1[User opens Create Task]
-    A2[Fill config: source, repo, title, prompt, provider]
+    A2[Fill config: repo, title, prompt, provider]
     A3{Optional: Magic Prompt?}
     A4[POST /tasks/prompt-magic]
     A5[Prompt returned + textarea/title updated]

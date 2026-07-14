@@ -7,7 +7,6 @@ import { PostgresRepositoryStore } from "./repository-store.js";
 import { PostgresRoleStore } from "./role-store.js";
 import { RedisSessionStore } from "./session-store.js";
 import { PostgresSettingsStore } from "./settings-store.js";
-import { PostgresSnippetStore } from "./snippet-store.js";
 import { RedisTaskQueueStore } from "./task-queue-store.js";
 import { PostgresTaskStore } from "./task-store.js";
 import { PostgresUserStore } from "./user-store.js";
@@ -23,7 +22,6 @@ export const createPostgresStores = (
   const taskStore = new PostgresTaskStore(pool, eventBus);
   const taskQueueStore = new RedisTaskQueueStore(redisClients.command);
   const webhookDeliveryStore = new RedisWebhookDeliveryStore(redisClients.command);
-  const snippetStore = new PostgresSnippetStore(pool, eventBus);
   const repositoryStore = new PostgresRepositoryStore(pool, eventBus);
   const credentialStore = new PostgresCredentialStore(pool);
   const roleStore = new PostgresRoleStore(pool);
@@ -36,7 +34,6 @@ export const createPostgresStores = (
     taskStore,
     taskQueueStore,
     webhookDeliveryStore,
-    snippetStore,
     repositoryStore,
     credentialStore,
     roleStore,

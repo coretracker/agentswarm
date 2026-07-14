@@ -22,7 +22,6 @@ import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerGitHubPrWebhookRoutes } from "./routes/github-pr-webhooks.js";
 import { registerSlackWebhookRoutes } from "./routes/slack-webhooks.js";
-import { registerSnippetRoutes } from "./routes/snippets.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 import { attachSettingsProviderTerminalUpgrade } from "./lib/settings-provider-terminal.js";
 import { registerMcpRoutes } from "./mcp/server.js";
@@ -136,7 +135,6 @@ const bootstrap = async (): Promise<void> => {
     taskStore,
     taskQueueStore,
     webhookDeliveryStore,
-    snippetStore,
     repositoryStore,
     credentialStore,
     roleStore,
@@ -179,10 +177,8 @@ const bootstrap = async (): Promise<void> => {
     scheduler,
     spawner,
     settingsStore,
-    snippetStore,
     auth
   });
-  registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerGitHubPrWebhookRoutes(app, { repositoryStore, taskStore, taskQueueStore, scheduler, settingsStore, spawner, userStore });
   registerSlackWebhookRoutes(app, { repositoryStore, taskStore, scheduler, settingsStore, spawner });

@@ -219,11 +219,6 @@ export type PermissionScope =
   | "task:ask"
   | "task:terminal"
   | "task:delete"
-  | "snippet:list"
-  | "snippet:create"
-  | "snippet:read"
-  | "snippet:edit"
-  | "snippet:delete"
   | "repo:list"
   | "repo:read"
   | "repo:create"
@@ -247,11 +242,6 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "task:ask",
   "task:terminal",
   "task:delete",
-  "snippet:list",
-  "snippet:create",
-  "snippet:read",
-  "snippet:edit",
-  "snippet:delete",
   "repo:list",
   "repo:read",
   "repo:create",
@@ -282,7 +272,6 @@ export interface PermissionScopeGroup {
 
 export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
   { label: "Tasks", scopes: ["task:list", "task:create", "task:create_subtask", "task:read", "task:edit", "task:build", "task:ask", "task:terminal", "task:delete"] },
-  { label: "Snippets", scopes: ["snippet:list", "snippet:create", "snippet:read", "snippet:edit", "snippet:delete"] },
   { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
   { label: "Settings", scopes: ["settings:read", "settings:edit"] },
   { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
@@ -579,8 +568,7 @@ export interface Task {
   providerProfile: ProviderProfile;
   modelOverride: string | null;
   codexCredentialSource?: CodexCredentialSource;
-  taskSource?: "blank" | "snippet";
-  snippetId?: string;
+  taskSource?: "blank";
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
   complexity: TaskComplexity;
@@ -930,7 +918,6 @@ export type WorkspaceProvisioningMode = "clone_only" | "hybrid";
 
 export interface SystemDataStores {
   taskStore: "postgres";
-  snippetStore: "postgres";
   repositoryStore: "postgres";
   credentialStore: "postgres";
   roleStore: "postgres";
@@ -1093,37 +1080,6 @@ export interface TaskDefinitionInput {
   codexCredentialSource?: CodexCredentialSource;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
-}
-
-export interface Snippet {
-  id: string;
-  name: string;
-  content: string;
-  variables: SnippetVariable[];
-  createdAt: string;
-  updatedAt: string;
-}
-
-export type SnippetVariableType = "text" | "multiline";
-
-export interface SnippetVariable {
-  name: string;
-  type: SnippetVariableType;
-  title: string;
-  description: string;
-  defaultValue: string;
-}
-
-export interface CreateSnippetInput {
-  name: string;
-  content: string;
-  variables?: SnippetVariable[];
-}
-
-export interface UpdateSnippetInput {
-  name: string;
-  content: string;
-  variables?: SnippetVariable[];
 }
 
 export interface TriggerTaskActionInput {
@@ -1585,11 +1541,6 @@ export interface RepositoryEvent {
   payload: Repository | { id: string };
 }
 
-export interface SnippetEvent {
-  type: "snippet:created" | "snippet:updated" | "snippet:deleted";
-  payload: Snippet | { id: string };
-}
-
 export type RealtimeEvent =
   | TaskEvent
   | TaskDeletedEvent
@@ -1603,5 +1554,4 @@ export type RealtimeEvent =
   | TaskPushedEvent
   | TaskMergedEvent
   | SettingsEvent
-  | RepositoryEvent
-  | SnippetEvent;
+  | RepositoryEvent;

@@ -74,17 +74,6 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         updated_at text NOT NULL
       );
 
-      CREATE TABLE IF NOT EXISTS snippets (
-        id text PRIMARY KEY,
-        name text NOT NULL,
-        content text NOT NULL,
-        variables jsonb NOT NULL DEFAULT '[]'::jsonb,
-        created_at text NOT NULL,
-        updated_at text NOT NULL
-      );
-
-      CREATE INDEX IF NOT EXISTS snippets_updated_at_idx ON snippets(updated_at DESC);
-
       CREATE TABLE IF NOT EXISTS system_settings (
         singleton_id smallint PRIMARY KEY CHECK (singleton_id = 1),
         default_provider text NOT NULL,
@@ -272,43 +261,6 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       WHERE run_data ? 'flow';
 
       DROP TABLE IF EXISTS flows;
-    `
-  },
-  {
-    id: "20260513_02_cleanup_legacy_preset_scopes",
-    sql: `
-      UPDATE roles AS r
-      SET scopes = COALESCE(
-        (
-          SELECT jsonb_agg(value ORDER BY value)
-          FROM (
-            SELECT DISTINCT
-              CASE value
-                WHEN 'preset:list' THEN 'snippet:list'
-                WHEN 'preset:create' THEN 'snippet:create'
-                WHEN 'preset:read' THEN 'snippet:read'
-                WHEN 'preset:edit' THEN 'snippet:edit'
-                WHEN 'preset:delete' THEN 'snippet:delete'
-                ELSE value
-              END AS value
-            FROM jsonb_array_elements_text(r.scopes) AS scope(value)
-            WHERE value !~ '^preset:' OR value IN ('preset:list', 'preset:create', 'preset:read', 'preset:edit', 'preset:delete')
-          ) AS deduped
-        ),
-        '[]'::jsonb
-      )
-      WHERE EXISTS (
-        SELECT 1
-        FROM jsonb_array_elements_text(r.scopes) AS scope(value)
-        WHERE value ~ '^preset:'
-      );
-    `
-  },
-  {
-    id: "20260521_01_snippet_variables",
-    sql: `
-      ALTER TABLE snippets
-      ADD COLUMN IF NOT EXISTS variables jsonb NOT NULL DEFAULT '[]'::jsonb;
     `
   },
   {
@@ -761,6 +713,31 @@ Feedback:
       );
 
       CREATE INDEX IF NOT EXISTS task_external_links_task_id_idx ON task_external_links(task_id);
+    `
+  },
+  {
+    id: "20260714_01_remove_snippets",
+    sql: `
+      UPDATE roles AS r
+      SET scopes = COALESCE(
+        (
+          SELECT jsonb_agg(value ORDER BY value)
+          FROM (
+            SELECT DISTINCT value
+            FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+            WHERE value !~ '^(snippet|preset):'
+          ) AS deduped
+        ),
+        '[]'::jsonb
+      )
+      WHERE EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(r.scopes) AS scope(value)
+        WHERE value ~ '^(snippet|preset):'
+      );
+
+      DROP INDEX IF EXISTS snippets_updated_at_idx;
+      DROP TABLE IF EXISTS snippets;
     `
   }
 ];

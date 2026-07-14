@@ -18,7 +18,6 @@ import {
 import type { AuthService } from "../lib/auth.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { RepositoryStore } from "../services/repository-store.js";
-import type { SnippetStore } from "../services/snippet-store.js";
 import type { UserStore } from "../services/user-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
 import { beginTaskStart, getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
@@ -361,7 +360,6 @@ export const registerTaskRoutes = (
     scheduler: SchedulerService;
     spawner: SpawnerService;
     settingsStore: SettingsStore;
-    snippetStore: SnippetStore;
     auth: AuthService;
   }
 ): void => {
