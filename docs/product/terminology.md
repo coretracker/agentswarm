@@ -4,7 +4,6 @@ The terms below come from current repository docs and code.
 
 - Task: a unit of work created against a repository.
 - Task draft: a saved task definition that can be edited before it becomes a runnable task.
-- Task board: the Kanban view that shows task drafts alongside active task workflow states.
 - Provider: the agent engine used for a task (`codex` or `claude`).
 - Task workspace: the filesystem area where task changes are made.
 - Ask task: read-focused task mode for question/answer style outputs.

@@ -8,7 +8,6 @@ export interface NavigationRoute {
 
 export const navigationRoutes: NavigationRoute[] = [
   { key: "/tasks", label: "Tasks", requiredScopes: ["task:list"] },
-  { key: "/tasks/board", label: "Board", requiredScopes: ["task:list"] },
   { key: "/snippets", label: "Snippets", requiredScopes: ["snippet:list"] },
   { key: "/repositories", label: "Repositories", requiredScopes: ["repo:list"] },
   { key: "/settings", label: "Settings", requiredScopes: ["settings:read"] },
@@ -21,7 +20,7 @@ export const isTerminalFullscreenPath = (pathname: string): boolean =>
   /^\/tasks\/[^/]+\/terminal$/.test(pathname) || pathname === "/settings/provider-setup-terminal";
 
 export const getRequiredScopesForPathname = (pathname: string): PermissionScope[] => {
-  if (pathname === "/tasks" || pathname === "/tasks/board") {
+  if (pathname === "/tasks") {
     return ["task:list"];
   }
 
@@ -83,10 +82,6 @@ export const resolveDefaultPath = (grantedScopes: Iterable<PermissionScope>): st
 };
 
 export const getSelectedNavigationKey = (pathname: string): string => {
-  if (pathname === "/tasks/board") {
-    return "/tasks/board";
-  }
-
   if (pathname.startsWith("/tasks")) {
     return "/tasks";
   }
