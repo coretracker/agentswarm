@@ -280,6 +280,15 @@ const repositoryDefaultProviderOptions: Array<{ label: string; value: AgentProvi
 const GITHUB_TEMPLATE_MARKER_HELP =
   "Template markers: {{target_label}}, {{target_ref}}, {{title}}, {{title_line}}, {{feedback_type}}, {{author}}, {{requested_reviewer}}, {{requested_reviewer_line}}, {{issue_title_line}}, {{review_state_line}}, {{file_line}}, {{url_line}}, {{diff_context_block}}, {{feedback_body}}.";
 
+const generateSuggestedWebhookSecret = (): string => {
+  if (typeof crypto === "undefined" || typeof crypto.getRandomValues !== "function") {
+    return "";
+  }
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+};
+
 const bytesToBase64 = (bytes: Uint8Array): string => {
   let binary = "";
   const chunkSize = 0x8000;
@@ -327,6 +336,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const [notFound, setNotFound] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editingRepository, setEditingRepository] = useState<Repository | null>(null);
+  const [githubWebhookSecretVisible, setGithubWebhookSecretVisible] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
   const [usersLoadError, setUsersLoadError] = useState<string | null>(null);
   const [initialSnapshot, setInitialSnapshot] = useState("");
@@ -393,7 +403,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           return;
         }
         setEditingRepository(repository);
-        const initial = normalizeValues({
+        const storedInitial = normalizeValues({
           name: repository.name,
           url: repository.url,
           defaultBranch: repository.defaultBranch,
@@ -452,8 +462,13 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           harnessDefinitionOfDone: repository.harnessDefinitionOfDone ?? "",
           harnessEvidenceExpectations: repository.harnessEvidenceExpectations ?? ""
         });
+        const initial =
+          repository.githubPrWebhookSecretConfigured === true
+            ? storedInitial
+            : { ...storedInitial, githubPrWebhookSecret: generateSuggestedWebhookSecret() };
         form.setFieldsValue(initial);
-        setInitialSnapshot(snapshotValues(initial));
+        setInitialSnapshot(snapshotValues(storedInitial));
+        setGithubWebhookSecretVisible(repository.githubPrWebhookSecretConfigured !== true);
       })
       .catch((error: unknown) => {
         if (!active) {
@@ -989,7 +1004,12 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                         : "Github Webhook Secret"
                     }
                   >
-                    <Input.Password />
+                    <Input.Password
+                      visibilityToggle={{
+                        visible: githubWebhookSecretVisible,
+                        onVisibleChange: setGithubWebhookSecretVisible
+                      }}
+                    />
                   </Form.Item>
                   {editingRepository.githubPrWebhookSecretConfigured ? (
                     <Form.Item name="clearGithubPrWebhookSecret" valuePropName="checked">
