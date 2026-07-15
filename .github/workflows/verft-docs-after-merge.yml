@@ -1,0 +1,71 @@
+name: Ask Verft to update docs after PR merge
+
+on:
+  pull_request:
+    types:
+      - closed
+
+jobs:
+  create-docs-task:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      VERFT_URL: ${{ vars.VERFT_URL }}
+      VERFT_REPO_ID: ${{ vars.VERFT_REPO_ID }}
+      VERFT_PAT: ${{ secrets.VERFT_PAT }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+      BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
+      MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+      REPOSITORY: ${{ github.repository }}
+
+    steps:
+      - name: Build Verft task payload
+        run: |
+          node <<'NODE' > payload.json
+          const {
+            BASE_BRANCH,
+            MERGE_SHA,
+            PR_NUMBER,
+            PR_TITLE,
+            PR_URL,
+            REPOSITORY,
+            VERFT_REPO_ID,
+          } = process.env;
+
+          const payload = {
+            repoId: VERFT_REPO_ID,
+            target: {
+              type: "github_pr",
+              id: PR_NUMBER,
+            },
+            task: {
+              title: `Update documentation for ${REPOSITORY} PR #${PR_NUMBER}`,
+              message: [
+                `A pull request was merged and may need documentation updates.`,
+                ``,
+                `Repository: ${REPOSITORY}`,
+                `PR: ${PR_TITLE}`,
+                `URL: ${PR_URL}`,
+                `Merge commit: ${MERGE_SHA || "Not available"}`,
+                ``,
+                `Review the merged change and create or update the user documentation that is needed.`,
+              ].join("\n"),
+              action: "build",
+              baseBranch: BASE_BRANCH,
+              workOnBranch: true,
+              createIfMissing: true,
+            },
+            dedupeKey: `github-actions:${REPOSITORY}:pr:${PR_NUMBER}:docs-after-merge:${MERGE_SHA || "merged"}`,
+          };
+
+          process.stdout.write(JSON.stringify(payload));
+          NODE
+
+      - name: Send task to Verft
+        run: |
+          curl -fsS -X POST "${VERFT_URL%/}/api/tasks/create-or-queue" \
+            -H "Authorization: Bearer ${VERFT_PAT}" \
+            -H "Content-Type: application/json" \
+            --data @payload.json
