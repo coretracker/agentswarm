@@ -31,7 +31,7 @@ describe("normalizeTaskLifecycleStatus", () => {
     assert.equal(normalizeTaskLifecycleStatus("in_review", "build", false), "in_review");
   });
 
-  it("maps queued and active execution statuses back to open Kanban state", () => {
+  it("maps queued and active execution statuses back to open workflow state", () => {
     assert.equal(normalizeTaskLifecycleStatus("build_queued", "build", false), "open");
     assert.equal(normalizeTaskLifecycleStatus("asking", "ask", false), "open");
   });
@@ -42,7 +42,7 @@ describe("normalizeTaskLifecycleStatus", () => {
 });
 
 describe("reconcileTaskStatusWithPendingCheckpoint", () => {
-  it("does not move Kanban state when a checkpoint is pending", () => {
+  it("does not move workflow state when a checkpoint is pending", () => {
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("failed", true), "open");
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("open", true), "open");
     assert.equal(reconcileTaskStatusWithPendingCheckpoint("in_review", true), "in_review");

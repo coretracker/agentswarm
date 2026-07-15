@@ -2,7 +2,6 @@ import Fastify from "fastify";
 import { randomUUID } from "node:crypto";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
-import * as Sentry from "@sentry/node";
 import { Server as SocketIOServer } from "socket.io";
 import type { RealtimeEvent } from "@verft/shared-types";
 import { AUTO_RUN_POSTGRES_MIGRATIONS, env } from "./config/env.js";
@@ -22,10 +21,10 @@ import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerGitHubPrWebhookRoutes } from "./routes/github-pr-webhooks.js";
 import { registerSlackWebhookRoutes } from "./routes/slack-webhooks.js";
-import { registerSnippetRoutes } from "./routes/snippets.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
 import { attachSettingsProviderTerminalUpgrade } from "./lib/settings-provider-terminal.js";
 import { registerMcpRoutes } from "./mcp/server.js";
+import { createOperationalLogger } from "./lib/operational-logger.js";
 
 const readHeaderValue = (value: string | string[] | undefined): string | null => {
   if (typeof value === "string") {
@@ -43,24 +42,21 @@ const getOperationIdFromHeaders = (headers: Record<string, string | string[] | u
   readHeaderValue(headers["x-operation-id"]) ?? readHeaderValue(headers["x-agent-operation-id"]);
 
 const bootstrap = async (): Promise<void> => {
-  const sentryEnabled = env.SENTRY_ENABLED && env.SENTRY_DSN.trim().length > 0;
-  if (sentryEnabled) {
-    Sentry.init({
-      dsn: env.SENTRY_DSN,
-      tracesSampleRate: 1
-    });
-  }
-
   const app = Fastify({
     logger: {
       level: process.env.LOG_LEVEL ?? "info",
-      base: { service: "verft-server" }
+      base: { service: "verft-server" },
+      formatters: {
+        level: (label) => ({ level: label })
+      },
+      timestamp: () => `,"time":"${new Date().toISOString()}"`
     },
     disableRequestLogging: true,
     requestIdHeader: "x-request-id",
     genReqId: (rawRequest) => readHeaderValue(rawRequest.headers["x-request-id"]) ?? randomUUID(),
     bodyLimit: 35 * 1024 * 1024
   });
+  const operationalLogger = createOperationalLogger(app.log);
   await app.register(cookie);
   app.decorateRequest("auth", null);
   await app.register(cors, {
@@ -82,61 +78,75 @@ const bootstrap = async (): Promise<void> => {
     if (operationId) {
       reply.header("x-operation-id", operationId);
     }
+    if (!env.LOG_REQUESTS) {
+      return;
+    }
     request.log.info(
       {
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url
+        type: "request",
+        event: "request.started",
+        data: {
+          requestId: request.id,
+          operationId,
+          method: request.method,
+          url: request.url
+        }
       },
       "request.started"
     );
   });
   app.addHook("onResponse", async (request, reply) => {
+    if (!env.LOG_REQUESTS) {
+      return;
+    }
     const operationId = getOperationIdFromHeaders(request.headers);
     request.log.info(
       {
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url,
-        statusCode: reply.statusCode,
-        durationMs: reply.elapsedTime
+        type: "request",
+        event: "request.completed",
+        data: {
+          requestId: request.id,
+          operationId,
+          method: request.method,
+          url: request.url,
+          statusCode: reply.statusCode,
+          durationMs: reply.elapsedTime
+        }
       },
       "request.completed"
     );
   });
-  app.log.info(
+  operationalLogger.info(
+    "system",
+    "system.startup.config",
+    "Server configuration loaded",
     {
-      event: "startup.config",
       port: env.PORT,
       corsOrigin: env.CORS_ORIGIN,
       durableStores: "postgres",
       runtimeServices: "redis",
       postgresAutoMigrate: AUTO_RUN_POSTGRES_MIGRATIONS,
-      sentryEnabled,
+      logRequests: env.LOG_REQUESTS,
       taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
       taskWorkspaceDockerSource: env.TASK_WORKSPACE_DOCKER_SOURCE
-    },
-    "Server configuration loaded"
+    }
   );
 
   const redisClients = createRedisClients(env.REDIS_URL);
   const eventBus = new EventBus(redisClients.pub, env.EVENT_CHANNEL);
   const postgresPool = createPostgresPool(env.DATABASE_URL);
   if (AUTO_RUN_POSTGRES_MIGRATIONS) {
-    app.log.info({ event: "startup.migrations", mode: "auto" }, "Running Postgres migrations");
+    operationalLogger.info("system", "system.startup.migrations.started", "Running Postgres migrations", { mode: "auto" });
     await runPostgresMigrations(postgresPool);
-    app.log.info({ event: "startup.migrations", mode: "auto" }, "Postgres migrations completed");
+    operationalLogger.info("system", "system.startup.migrations.completed", "Postgres migrations completed", { mode: "auto" });
   } else {
-    app.log.info({ event: "startup.migrations", mode: "manual" }, "Skipping auto-migrations");
+    operationalLogger.info("system", "system.startup.migrations.skipped", "Skipping auto-migrations", { mode: "manual" });
   }
 
   const {
     taskStore,
     taskQueueStore,
     webhookDeliveryStore,
-    snippetStore,
     repositoryStore,
     credentialStore,
     roleStore,
@@ -157,9 +167,17 @@ const bootstrap = async (): Promise<void> => {
     taskStore,
     personalAccessTokenStore
   });
-  const spawner = new SpawnerService(taskStore, settingsStore, userStore, repositoryStore, undefined, personalAccessTokenStore);
+  const spawner = new SpawnerService(
+    taskStore,
+    settingsStore,
+    userStore,
+    repositoryStore,
+    undefined,
+    personalAccessTokenStore,
+    operationalLogger
+  );
   const scheduler = new SchedulerService(taskStore, taskQueueStore, settingsStore, spawner);
-  const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore);
+  const webhookDeliveryService = new WebhookDeliveryService(webhookDeliveryStore, repositoryStore, operationalLogger);
 
   await roleStore.ensureDefaultAdminRole();
   await userStore.ensureDefaultAdminUser({
@@ -179,10 +197,8 @@ const bootstrap = async (): Promise<void> => {
     scheduler,
     spawner,
     settingsStore,
-    snippetStore,
     auth
   });
-  registerSnippetRoutes(app, { snippetStore, auth });
   registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
   registerGitHubPrWebhookRoutes(app, { repositoryStore, taskStore, taskQueueStore, scheduler, settingsStore, spawner, userStore });
   registerSlackWebhookRoutes(app, { repositoryStore, taskStore, scheduler, settingsStore, spawner });
@@ -204,26 +220,17 @@ const bootstrap = async (): Promise<void> => {
     request.log.error(
       {
         err: error,
-        requestId: request.id,
-        operationId,
-        method: request.method,
-        url: request.url
-      },
-      "request.failed"
-    );
-    if (sentryEnabled) {
-      Sentry.captureException(error, {
-        tags: {
-          route: request.routeOptions.url
-        },
-        extra: {
+        type: "request",
+        event: "request.failed",
+        data: {
           requestId: request.id,
           operationId,
           method: request.method,
           url: request.url
         }
-      });
-    }
+      },
+      "request.failed"
+    );
     void reply.send(error);
   });
 
@@ -248,7 +255,7 @@ const bootstrap = async (): Promise<void> => {
 
   io.on("connection", (socket) => {
     auth.onSocketConnection(socket);
-    app.log.info({ socketId: socket.id }, "Socket client connected");
+    operationalLogger.info("system", "socket.connected", "Socket client connected", { socketId: socket.id });
   });
 
   await redisClients.sub.subscribe(env.EVENT_CHANNEL);
@@ -258,7 +265,9 @@ const bootstrap = async (): Promise<void> => {
       void webhookDeliveryService.handleRealtimeEvent(event);
       void auth.emitScopedRealtimeEvent(io, event);
     } catch (error) {
-      app.log.error({ error }, "Failed to parse event message");
+      operationalLogger.error("system", "event.message.parse_failed", "Failed to parse event message", {
+        errorMessage: error instanceof Error ? error.message : String(error)
+      });
     }
   });
 
@@ -281,44 +290,36 @@ const bootstrap = async (): Promise<void> => {
       redisClients.sub.quit()
     ]);
     await app.close();
-    if (sentryEnabled) {
-      await Sentry.close(2_000);
-    }
   };
 
   process.on("SIGINT", () => {
-    app.log.warn({ signal: "SIGINT" }, "Shutdown signal received");
+    operationalLogger.warn("system", "system.shutdown.requested", "Shutdown signal received", { signal: "SIGINT" });
     void close();
   });
   process.on("SIGTERM", () => {
-    app.log.warn({ signal: "SIGTERM" }, "Shutdown signal received");
+    operationalLogger.warn("system", "system.shutdown.requested", "Shutdown signal received", { signal: "SIGTERM" });
     void close();
   });
 
   process.on("uncaughtException", (error) => {
-    app.log.fatal({ err: error }, "Unhandled exception");
-    if (sentryEnabled) {
-      Sentry.captureException(error);
-    }
+    app.log.fatal({ err: error, type: "system", event: "system.unhandled_exception", data: {} }, "Unhandled exception");
     void close().finally(() => process.exit(1));
   });
   process.on("unhandledRejection", (reason) => {
-    app.log.fatal({ reason }, "Unhandled promise rejection");
-    if (sentryEnabled) {
-      Sentry.captureException(reason);
-    }
+    app.log.fatal({ reason, type: "system", event: "system.unhandled_rejection", data: {} }, "Unhandled promise rejection");
     void close().finally(() => process.exit(1));
   });
 
   const listenAddress = await app.listen({ port: env.PORT, host: "0.0.0.0" });
-  app.log.info(
+  operationalLogger.info(
+    "system",
+    "system.startup.ready",
+    "Server started",
     {
-      event: "startup.ready",
       listenAddress,
       healthPath: "/health",
       proxyHealthPath: "/api/health"
-    },
-    "Server started"
+    }
   );
 };
 
@@ -331,8 +332,11 @@ void bootstrap().catch((error) => {
   console.error(
     JSON.stringify({
       level: "fatal",
-      event: "startup.bootstrap_failed",
-      error: errorForLog
+      time: new Date().toISOString(),
+      type: "system",
+      event: "system.startup.bootstrap_failed",
+      data: { error: errorForLog },
+      message: "Server bootstrap failed"
     })
   );
   process.exit(1);

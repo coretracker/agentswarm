@@ -339,6 +339,27 @@ describe("TaskStore.createTask", () => {
 
     assert.equal(task.autoApplyCheckpoints, true);
   });
+
+  it("strips removed task source metadata from legacy tasks", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const task = await taskStore.createTask(createTaskInput, repository, "user-1");
+    await redis.set(
+      `verft:task:${task.id}`,
+      JSON.stringify({
+        ...task,
+        taskSource: "snippet",
+        snippetId: "snippet-1"
+      })
+    );
+
+    const refreshed = await taskStore.getTask(task.id);
+
+    assert.equal((refreshed as { taskSource?: unknown } | null)?.taskSource, undefined);
+    assert.equal((refreshed as { snippetId?: unknown } | null)?.snippetId, undefined);
+  });
 });
 
 describe("TaskStore change proposals", () => {

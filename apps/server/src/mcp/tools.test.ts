@@ -257,27 +257,6 @@ describe("MCP Phase 1 tools", () => {
     assert.equal((createdInput as { modelOverride: string }).modelOverride, "claude-sonnet-4-6");
   });
 
-  it("rejects notes when creating tasks through MCP", async () => {
-    const tool = toolByName("verft_create_task");
-
-    await assert.rejects(
-      () =>
-        tool.handler(
-          {
-            title: "Task",
-            repoId: "repo-1",
-            prompt: "Do work",
-            notes: "Legacy notes"
-          },
-          {
-            user,
-            deps: {} as never
-          }
-        ),
-      /Unrecognized key\(s\) in object: 'notes'/
-    );
-  });
-
   it("creates runtime subtasks for the current task repository and links the parent", async () => {
     const tool = toolByName("verft_create_subtask");
     const parentTask = createTask({
@@ -416,25 +395,6 @@ describe("MCP Phase 1 tools", () => {
         runtimeContext: { taskId: "task-1" }
       }),
       true
-    );
-  });
-
-  it("rejects notes when updating drafts through MCP", async () => {
-    const tool = toolByName("verft_update_draft");
-
-    await assert.rejects(
-      () =>
-        tool.handler(
-          {
-            taskId: "task-1",
-            notes: "Legacy notes"
-          },
-          {
-            user,
-            deps: {} as never
-          }
-        ),
-      /Unrecognized key\(s\) in object: 'notes'/
     );
   });
 

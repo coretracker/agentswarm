@@ -66,14 +66,13 @@ Notes:
 ## Task Flows (New + Existing)
 
 Notes:
-- `/tasks/board` shows saved task drafts in Backlog and active tasks in Ready, In Progress, Review, and Done columns.
 - Saving a draft stores the same task definition fields used by the new task form; opening a draft reuses the same form and can create the runnable task. Task definitions do not include task-specific notes.
 
 ```mermaid
 flowchart TD
   subgraph A[New Task Flow]
     A1[User opens Create Task]
-    A2[Fill config: source, repo, title, prompt, provider]
+    A2[Fill config: repo, title, prompt, provider]
     A3{Optional: Magic Prompt?}
     A4[POST /tasks/prompt-magic]
     A5[Prompt returned + textarea/title updated]

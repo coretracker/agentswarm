@@ -137,8 +137,7 @@ const buildDeps = (overrides: Record<string, unknown> = {}) => {
         getTaskBranchSyncCounts: async () => ({ pullCount: 0, pushCount: 0 })
       },
       taskQueueStore: {},
-      userStore: {},
-      snippetStore: {}
+      userStore: {}
     }
   };
 };

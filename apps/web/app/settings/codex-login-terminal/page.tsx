@@ -31,7 +31,7 @@ export default function CodexLoginTerminalPage() {
             Sign in to Codex
           </Typography.Text>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            Running <code>codex login</code>. Window will close when complete.
+            Running <code>codex login --device-auth</code>. Window will close when complete.
           </Typography.Text>
         </Flex>
         <Link href="/settings" style={{ color: token.colorLink, flexShrink: 0 }}>

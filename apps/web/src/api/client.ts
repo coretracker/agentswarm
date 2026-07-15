@@ -5,7 +5,6 @@ import type {
   AuthProfile,
   AuthSession,
   CreateRoleInput,
-  CreateSnippetInput,
   CreateTaskMessageInput,
   CreateRepositoryInput,
   CreateTaskInput,
@@ -18,7 +17,6 @@ import type {
   ProviderModelOption,
   Repository,
   Role,
-  Snippet,
   SystemSettings,
   Task,
   OpenAiDiffAssistInput,
@@ -46,13 +44,11 @@ import type {
   TaskAction,
   TaskTerminalSessionMode,
   UpdateRoleInput,
-  UpdateSnippetInput,
   UpdateTaskPinInput,
   UpdateTaskDeadlineInput,
   UpdateTaskDraftInput,
   UpdateTaskAssigneeInput,
   UpdateTaskStateInput,
-  UpdateUserNotesInput,
   UpdateTaskTitleInput,
   UpdateAuthProfileInput,
   UpdateCredentialSettingsInput,
@@ -62,8 +58,7 @@ import type {
   UpdateRepositoryInput,
   UpdateSettingsInput,
   UpdateUserInput,
-  User,
-  UserNotes
+  User
 } from "@verft/shared-types";
 export type { TaskWorkspaceFilePreview } from "@verft/shared-types";
 import { buildApiUrl } from "../lib/public-url";
@@ -206,26 +201,6 @@ export const api = {
   deleteRole: (id: string) =>
     request<void>(`/roles/${id}`, {
       method: "DELETE"
-    }),
-  listSnippets: () => request<Snippet[]>("/snippets"),
-  getSnippet: (id: string) => request<Snippet>(`/snippets/${id}`),
-  createSnippet: (input: CreateSnippetInput) =>
-    request<Snippet>("/snippets", {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  updateSnippet: (id: string, input: UpdateSnippetInput) =>
-    request<Snippet>(`/snippets/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  deleteSnippet: (id: string) =>
-    request<void>(`/snippets/${id}`, {
-      method: "DELETE"
-    }),
-  duplicateSnippet: (id: string) =>
-    request<Snippet>(`/snippets/${id}/duplicate`, {
-      method: "POST"
     }),
   listTasks: (options?: ListTasksOptions) => {
     const params = new URLSearchParams();
@@ -572,12 +547,6 @@ export const api = {
     }),
   updateCredentials: (input: UpdateCredentialSettingsInput) =>
     request<SystemSettings>("/settings/credentials", {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  getUserNotes: () => request<UserNotes>("/settings/notes"),
-  updateUserNotes: (input: UpdateUserNotesInput) =>
-    request<UserNotes>("/settings/notes", {
       method: "PATCH",
       body: JSON.stringify(input)
     })

@@ -8,8 +8,6 @@ export interface NavigationRoute {
 
 export const navigationRoutes: NavigationRoute[] = [
   { key: "/tasks", label: "Tasks", requiredScopes: ["task:list"] },
-  { key: "/tasks/board", label: "Board", requiredScopes: ["task:list"] },
-  { key: "/snippets", label: "Snippets", requiredScopes: ["snippet:list"] },
   { key: "/repositories", label: "Repositories", requiredScopes: ["repo:list"] },
   { key: "/settings", label: "Settings", requiredScopes: ["settings:read"] },
   { key: "/users", label: "Users", requiredScopes: ["user:list"] }
@@ -17,11 +15,17 @@ export const navigationRoutes: NavigationRoute[] = [
 
 export const isPublicPathname = (pathname: string): boolean => pathname === "/login";
 
+const settingsTerminalPathnames = new Set([
+  "/settings/provider-setup-terminal",
+  "/settings/codex-login-terminal",
+  "/settings/claude-login-terminal"
+]);
+
 export const isTerminalFullscreenPath = (pathname: string): boolean =>
-  /^\/tasks\/[^/]+\/terminal$/.test(pathname) || pathname === "/settings/provider-setup-terminal";
+  /^\/tasks\/[^/]+\/terminal$/.test(pathname) || settingsTerminalPathnames.has(pathname);
 
 export const getRequiredScopesForPathname = (pathname: string): PermissionScope[] => {
-  if (pathname === "/tasks" || pathname === "/tasks/board") {
+  if (pathname === "/tasks") {
     return ["task:list"];
   }
 
@@ -33,16 +37,12 @@ export const getRequiredScopesForPathname = (pathname: string): PermissionScope[
     return ["task:edit", "task:terminal"];
   }
 
-  if (pathname === "/settings/provider-setup-terminal") {
+  if (settingsTerminalPathnames.has(pathname)) {
     return ["settings:edit"];
   }
 
   if (pathname.startsWith("/tasks/")) {
     return ["task:read"];
-  }
-
-  if (pathname === "/snippets" || pathname === "/presets") {
-    return ["snippet:list"];
   }
 
   if (pathname === "/repositories") {
@@ -83,16 +83,8 @@ export const resolveDefaultPath = (grantedScopes: Iterable<PermissionScope>): st
 };
 
 export const getSelectedNavigationKey = (pathname: string): string => {
-  if (pathname === "/tasks/board") {
-    return "/tasks/board";
-  }
-
   if (pathname.startsWith("/tasks")) {
     return "/tasks";
-  }
-
-  if (pathname.startsWith("/snippets") || pathname.startsWith("/presets")) {
-    return "/snippets";
   }
 
   if (pathname.startsWith("/repositories")) {

@@ -1,15 +1,13 @@
 "use client";
 
-import { useMemo, useEffect, useRef, useState, type ReactNode } from "react";
-import { App, Button, Drawer, Flex, Grid, Layout, Menu, Result, Select, Skeleton, Spin, Typography, message, theme as antTheme } from "antd";
+import { useEffect, useState, type ReactNode } from "react";
+import { App, Button, Drawer, Flex, Grid, Layout, Menu, Result, Spin, Switch, Typography, theme as antTheme } from "antd";
 import {
-  AppstoreOutlined,
-  CopyOutlined,
   DatabaseOutlined,
-  LeftOutlined,
+  BulbOutlined,
   LogoutOutlined,
   MenuOutlined,
-  RightOutlined,
+  MoonOutlined,
   SettingOutlined,
   TeamOutlined,
   UnorderedListOutlined
@@ -21,14 +19,6 @@ import { AppFooterNote } from "./app-footer-note";
 import { useAuth } from "./auth-provider";
 import { TaskBrowserNotifications } from "./task-browser-notifications";
 import { useThemeMode } from "./theme-provider";
-import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
-import { api } from "../src/api/client";
-import { trackEvent } from "../src/utils/analytics";
-import { AppRightPanelProvider, type AppRightPanelConfig } from "./app-right-panel-context";
-import { NotesMarkdownEditor } from "./notes-markdown-editor";
-import type {
-  UserNotes
-} from "@verft/shared-types";
 import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
@@ -40,41 +30,22 @@ import {
 
 const menuIconByPath: Record<string, ReactNode> = {
   "/tasks": <UnorderedListOutlined />,
-  "/tasks/board": <AppstoreOutlined />,
-  "/snippets": <CopyOutlined />,
   "/repositories": <DatabaseOutlined />,
   "/settings": <SettingOutlined />,
   "/users": <TeamOutlined />
 };
 
-const NOTES_PANEL_STATE_STORAGE_KEY_PREFIX = "verft:notes-sidebar-state:v1";
-const DEFAULT_NOTES_PANEL_WIDTH = 420;
-const NOTES_PANEL_MIN_WIDTH = 320;
-const NOTES_PANEL_MAX_WIDTH = 720;
-const NOTES_PANEL_COLLAPSED_RAIL_WIDTH = 56;
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { canAll, loading, logout, session } = useAuth();
-  const { mode, setMode } = useThemeMode();
+  const { isDarkTheme, setMode } = useThemeMode();
   const contentMaxWidth = 1760;
   const headerHeight = 64;
   const sidebarWidth = 320;
-  const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_NOTES_PANEL_WIDTH);
-  const [notesSidebarCollapsed, setNotesSidebarCollapsed] = useState(false);
-  const notesResizeSessionRef = useRef<{ startX: number; startWidth: number } | null>(null);
-  const [notesResizing, setNotesResizing] = useState(false);
   const { token } = antTheme.useToken();
   const screens = Grid.useBreakpoint();
   const [loggingOut, setLoggingOut] = useState(false);
-  const [rightPanel, setRightPanel] = useState<AppRightPanelConfig | null>(null);
-  const [workspaceNotes, setWorkspaceNotes] = useState<UserNotes | null>(null);
-  const [workspaceNotesDraft, setWorkspaceNotesDraft] = useState("");
-  const [workspaceNotesLoading, setWorkspaceNotesLoading] = useState(true);
-  const [workspaceNotesSaving, setWorkspaceNotesSaving] = useState(false);
-  const [workspaceNotesStatus, setWorkspaceNotesStatus] = useState<"saved" | "saving" | "error">("saved");
-  const workspaceNotesAutosaveTimeoutRef = useRef<number | null>(null);
-  const workspaceNotesSaveRequestIdRef = useRef(0);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const publicPath = isPublicPathname(pathname);
   const desktopSidebar = screens.lg ?? false;
@@ -88,77 +59,6 @@ export function AppShell({ children }: { children: ReactNode }) {
       label: route.label
     }));
   const hasRouteAccess = session ? canAll(getRequiredScopesForPathname(pathname)) : false;
-  const rightPanelContextValue = useMemo(() => ({ setRightPanel }), []);
-  const notesPanelId = "workspace-notes-panel";
-  const notesPanelStorageKey = useMemo(
-    () => `${NOTES_PANEL_STATE_STORAGE_KEY_PREFIX}:${session?.user.id ?? "anonymous"}`,
-    [session?.user.id]
-  );
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    try {
-      const raw = window.localStorage.getItem(notesPanelStorageKey);
-      if (!raw) {
-        return;
-      }
-      const parsed = JSON.parse(raw) as { collapsed?: boolean; width?: number };
-      if (typeof parsed.collapsed === "boolean") {
-        setNotesSidebarCollapsed(parsed.collapsed);
-      }
-      if (typeof parsed.width === "number" && Number.isFinite(parsed.width)) {
-        setRightPanelWidth(Math.min(NOTES_PANEL_MAX_WIDTH, Math.max(NOTES_PANEL_MIN_WIDTH, Math.round(parsed.width))));
-      }
-    } catch {
-      // Ignore localStorage read/parse errors.
-    }
-  }, [notesPanelStorageKey]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    try {
-      window.localStorage.setItem(
-        notesPanelStorageKey,
-        JSON.stringify({ collapsed: notesSidebarCollapsed, width: rightPanelWidth })
-      );
-    } catch {
-      // Ignore localStorage write errors.
-    }
-  }, [notesPanelStorageKey, notesSidebarCollapsed, rightPanelWidth]);
-
-  useEffect(() => {
-    if (!notesResizing) {
-      return;
-    }
-
-    const handleMouseMove = (event: MouseEvent): void => {
-      const session = notesResizeSessionRef.current;
-      if (!session) {
-        return;
-      }
-      const deltaX = session.startX - event.clientX;
-      const nextWidth = Math.min(NOTES_PANEL_MAX_WIDTH, Math.max(NOTES_PANEL_MIN_WIDTH, session.startWidth + deltaX));
-      setRightPanelWidth(nextWidth);
-    };
-
-    const stopResizing = (): void => {
-      notesResizeSessionRef.current = null;
-      setNotesResizing(false);
-    };
-
-    window.addEventListener("mousemove", handleMouseMove);
-    window.addEventListener("mouseup", stopResizing);
-    return () => {
-      window.removeEventListener("mousemove", handleMouseMove);
-      window.removeEventListener("mouseup", stopResizing);
-    };
-  }, [notesResizing]);
 
   useEffect(() => {
     if (loading || publicPath) {
@@ -175,86 +75,6 @@ export function AppShell({ children }: { children: ReactNode }) {
       setMobileSidebarOpen(false);
     }
   }, [desktopSidebar]);
-
-  const toggleNotesSidebar = (nextCollapsed: boolean): void => {
-    setNotesSidebarCollapsed(nextCollapsed);
-    trackEvent(nextCollapsed ? "notes_sidebar_collapsed" : "notes_sidebar_expanded", {
-      surface: "app_shell",
-      width: rightPanelWidth
-    });
-  };
-
-  useEffect(() => {
-    if (publicPath || !session) {
-      return;
-    }
-
-    setWorkspaceNotesLoading(true);
-    void api
-      .getUserNotes()
-      .then((next) => {
-        setWorkspaceNotes(next);
-        setWorkspaceNotesDraft(next.notes);
-        setWorkspaceNotesStatus("saved");
-      })
-      .catch((error) => {
-        const messageText = error instanceof Error ? error.message : "Failed to load notes";
-        setWorkspaceNotesStatus("error");
-        message.error(messageText);
-      })
-      .finally(() => {
-        setWorkspaceNotesLoading(false);
-      });
-  }, [publicPath, session]);
-
-  useEffect(() => {
-    if (workspaceNotesAutosaveTimeoutRef.current !== null) {
-      window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
-      workspaceNotesAutosaveTimeoutRef.current = null;
-    }
-    if (!workspaceNotes || workspaceNotesDraft === workspaceNotes.notes) {
-      setWorkspaceNotesStatus("saved");
-      return;
-    }
-
-    setWorkspaceNotesStatus("saving");
-    workspaceNotesAutosaveTimeoutRef.current = window.setTimeout(() => {
-      workspaceNotesAutosaveTimeoutRef.current = null;
-      const requestId = workspaceNotesSaveRequestIdRef.current + 1;
-      workspaceNotesSaveRequestIdRef.current = requestId;
-      setWorkspaceNotesSaving(true);
-      void api
-        .updateUserNotes({ notes: workspaceNotesDraft })
-        .then((next) => {
-          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
-            return;
-          }
-          setWorkspaceNotes(next);
-          setWorkspaceNotesDraft(next.notes);
-          setWorkspaceNotesStatus("saved");
-        })
-        .catch((error) => {
-          if (workspaceNotesSaveRequestIdRef.current !== requestId) {
-            return;
-          }
-          const messageText = error instanceof Error ? error.message : "Failed to save notes";
-          setWorkspaceNotesStatus("error");
-          message.error(messageText);
-        })
-        .finally(() => {
-          if (workspaceNotesSaveRequestIdRef.current === requestId) {
-            setWorkspaceNotesSaving(false);
-          }
-        });
-    }, 700);
-
-    return () => {
-      if (workspaceNotesAutosaveTimeoutRef.current !== null) {
-        window.clearTimeout(workspaceNotesAutosaveTimeoutRef.current);
-        workspaceNotesAutosaveTimeoutRef.current = null;
-      }
-    };
-  }, [workspaceNotes, workspaceNotesDraft]);
 
   if (publicPath) {
     return <App>{children}</App>;
@@ -289,8 +109,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   const shellContent = (
     <>
-      <AppRightPanelProvider value={rightPanelContextValue}>
-        <Layout style={{ minHeight: "100vh", background: token.colorBgLayout }}>
+      <Layout style={{ minHeight: "100vh", background: token.colorBgLayout }}>
         <Layout.Header
           style={{
             position: "sticky",
@@ -333,11 +152,12 @@ export function AppShell({ children }: { children: ReactNode }) {
                   <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>
                 </Button>
               </Flex>
-              <Select
-                value={mode}
-                onChange={(value) => setMode(value as AppThemeMode)}
-                options={appThemeOptions}
-                style={{ minWidth: 180 }}
+              <Switch
+                checked={isDarkTheme}
+                checkedChildren={<MoonOutlined />}
+                unCheckedChildren={<BulbOutlined />}
+                aria-label="Toggle dark mode"
+                onChange={(checked) => setMode(checked ? "graphite-dark" : "graphite-light")}
               />
               <Button
                 icon={<LogoutOutlined />}
@@ -407,120 +227,8 @@ export function AppShell({ children }: { children: ReactNode }) {
               </div>
             </Layout.Footer>
           </Layout>
-          {desktopSidebar && !notesSidebarCollapsed ? (
-            <Layout.Sider
-              id={notesPanelId}
-              width={rightPanelWidth}
-              theme="light"
-              style={{
-                position: "sticky",
-                top: headerHeight,
-                alignSelf: "flex-start",
-                height: `calc(100vh - ${headerHeight}px)`,
-                background: token.colorBgContainer,
-                borderLeft: `1px solid ${token.colorBorderSecondary}`,
-                overflow: "hidden",
-                userSelect: notesResizing ? "none" : undefined
-              }}
-            >
-              <div
-                role="separator"
-                aria-orientation="vertical"
-                aria-label="Resize notes sidebar"
-                onMouseDown={(event) => {
-                  event.preventDefault();
-                  notesResizeSessionRef.current = { startX: event.clientX, startWidth: rightPanelWidth };
-                  setNotesResizing(true);
-                }}
-                style={{
-                  position: "absolute",
-                  left: 0,
-                  top: 0,
-                  width: 8,
-                  height: "100%",
-                  cursor: "col-resize",
-                  zIndex: 2
-                }}
-              />
-              <Flex vertical style={{ height: "100%", minHeight: 0 }}>
-                <Flex
-                  justify="space-between"
-                  align="center"
-                  style={{
-                    padding: "16px 16px 12px",
-                    borderBottom: `1px solid ${token.colorBorderSecondary}`,
-                    gap: 12
-                  }}
-                >
-                  <Typography.Title level={5} style={{ margin: 0 }}>
-                    {rightPanel?.title ?? "Notes"}
-                  </Typography.Title>
-                  <Flex align="center" gap={8}>
-                    {rightPanel?.extra ?? null}
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<RightOutlined />}
-                      onClick={() => toggleNotesSidebar(true)}
-                      aria-label="Collapse notes"
-                      aria-controls={notesPanelId}
-                      aria-expanded={!notesSidebarCollapsed}
-                    >
-                      Collapse notes
-                    </Button>
-                  </Flex>
-                </Flex>
-                <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 16 }}>
-                  {rightPanel?.content ?? (
-                    <Flex vertical gap={12}>
-                      <Typography.Text type={workspaceNotesStatus === "error" ? "danger" : "secondary"}>
-                        {workspaceNotesStatus === "saving"
-                          ? "Saving…"
-                          : workspaceNotesStatus === "error"
-                            ? "Save failed. Keep this page open; retrying on next edit."
-                            : "Saved"}
-                      </Typography.Text>
-                      {workspaceNotesLoading ? (
-                        <Skeleton active title={false} paragraph={{ rows: 12 }} />
-                      ) : (
-                        <NotesMarkdownEditor value={workspaceNotesDraft} onChange={setWorkspaceNotesDraft} disabled={workspaceNotesSaving} />
-                      )}
-                    </Flex>
-                  )}
-                </div>
-              </Flex>
-            </Layout.Sider>
-          ) : null}
-          {desktopSidebar && notesSidebarCollapsed ? (
-            <Layout.Sider
-              width={NOTES_PANEL_COLLAPSED_RAIL_WIDTH}
-              theme="light"
-              style={{
-                position: "sticky",
-                top: headerHeight,
-                alignSelf: "flex-start",
-                height: `calc(100vh - ${headerHeight}px)`,
-                background: token.colorBgContainer,
-                borderLeft: `1px solid ${token.colorBorderSecondary}`,
-                overflow: "hidden"
-              }}
-            >
-              <Flex vertical justify="flex-start" align="center" style={{ height: "100%", paddingTop: 12 }}>
-                <Button
-                  type="text"
-                  icon={<LeftOutlined />}
-                  onClick={() => toggleNotesSidebar(false)}
-                  aria-label="Expand notes"
-                  aria-controls={notesPanelId}
-                  aria-expanded={!notesSidebarCollapsed}
-                  title="Expand notes"
-                />
-              </Flex>
-            </Layout.Sider>
-          ) : null}
         </Layout>
       </Layout>
-      </AppRightPanelProvider>
       <Drawer
         placement="left"
         open={!desktopSidebar && mobileSidebarOpen}

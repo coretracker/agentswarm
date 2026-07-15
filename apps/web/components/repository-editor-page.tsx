@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
+import { useRouter } from "next/navigation";
 import type {
   AgentProvider,
   CreateRepositoryInput,
@@ -28,7 +28,6 @@ import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
 import { ApiError, api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useSettings } from "../src/hooks/useSettings";
-import { trackEvent } from "../src/utils/analytics";
 import { buildApiUrl } from "../src/lib/public-url";
 import { HarnessMarkdownField } from "./harness-markdown-field";
 
@@ -319,8 +318,6 @@ const readUploadedEnvValueFile = async (file: File): Promise<{ fileName: string;
 
 export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPageProps) {
   const router = useRouter();
-  const searchParams = useSearchParams();
-  const entryPoint = searchParams.get("from") === "list" ? "list" : "direct_url";
   const { settings } = useSettings();
   const [form] = Form.useForm<RepositoryFormValues>();
   const [messageApi, contextHolder] = message.useMessage();
@@ -348,10 +345,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
     }
     return snapshotValues(watchedValues) !== initialSnapshot;
   }, [initialSnapshot, watchedValues]);
-
-  useEffect(() => {
-    trackEvent("repository_editor_opened", { mode, entry_point: entryPoint });
-  }, [entryPoint, mode]);
 
   useEffect(() => {
     let active = true;
@@ -871,10 +864,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             } else {
               await api.createRepository(payload);
             }
-            trackEvent("repository_saved", { mode, entry_point: entryPoint });
             router.push(`/repositories?saved=${mode === "edit" ? "updated" : "created"}`);
           } catch (error) {
-            trackEvent("repository_save_failed", { mode, entry_point: entryPoint });
             messageApi.error(error instanceof Error ? error.message : "Failed to save repository");
           } finally {
             setSubmitting(false);
@@ -1692,6 +1683,14 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   <Checkbox>Clear stored webhook secret</Checkbox>
                 </Form.Item>
               ) : null}
+            </Card>
+          ) : null}
+
+          {mode === "edit" && editingRepository ? (
+            <Card bordered={false} title="Repository ID">
+              <Typography.Paragraph copyable style={{ marginBottom: 0, wordBreak: "break-all" }}>
+                {editingRepository.id}
+              </Typography.Paragraph>
             </Card>
           ) : null}
 

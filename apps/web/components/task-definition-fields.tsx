@@ -9,7 +9,6 @@ import type {
   CreateTaskPromptAttachmentInput,
   ProviderProfile,
   Repository,
-  Snippet,
   SystemSettings,
   TaskBranchStrategy,
   TaskDefinitionInput,
@@ -22,16 +21,13 @@ import {
   getEffortOptionsForProvider,
   getModelsForProvider
 } from "@verft/shared-types";
-import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Modal, Row, Select, Typography, message } from "antd";
+import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Row, Select, Typography, message } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
 import type { ProviderBaseStateStatus } from "../src/api/client";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useSettings } from "../src/hooks/useSettings";
-import { useSnippets } from "../src/hooks/useSnippets";
-import { trackEvent } from "../src/utils/analytics";
-import { applySnippetVariables, insertSnippetContent } from "../src/utils/snippets";
 import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
 import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
@@ -58,8 +54,6 @@ export interface TaskDefinitionFieldsProps {
   promptImageFiles?: SelectedTaskPromptImageFile[];
   onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
 }
-
-type SnippetVariableFormValues = Record<string, string>;
 
 const providerOptions = (hasClaudeCredentials: boolean): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
   { label: "Codex (OpenAI)", value: "codex" },
@@ -186,14 +180,9 @@ export function TaskDefinitionFields({
   const { settings } = useSettings();
   const [providerBaseState, setProviderBaseState] = useState<ProviderBaseStateStatus | null>(null);
   const [magicPromptLoading, setMagicPromptLoading] = useState(false);
-  const [selectedSnippetToInsertId, setSelectedSnippetToInsertId] = useState<string | null>(null);
-  const [pendingSnippetForInsert, setPendingSnippetForInsert] = useState<Snippet | null>(null);
-  const [snippetVariableModalOpen, setSnippetVariableModalOpen] = useState(false);
-  const [snippetVariableForm] = Form.useForm<SnippetVariableFormValues>();
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
   const canRunAutomatedTask = canBuildTasks || canAskTasks;
-  const canUseSnippets = can("snippet:list");
 
   const selectedRepoId = Form.useWatch("repoId", form);
   const selectedModel = Form.useWatch("model", form);
@@ -201,7 +190,6 @@ export function TaskDefinitionFields({
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
   const selectedPrompt = Form.useWatch("prompt", form);
   const { models: providerModels, loading: providerModelsLoading, source: providerModelsSource } = useProviderModels(selectedProvider);
-  const { snippets, loading: snippetsLoading } = useSnippets(canUseSnippets);
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
   const effectiveTaskType = selectedTaskType;
   const isImplementationTask = effectiveTaskType === "build";
@@ -354,11 +342,6 @@ export function TaskDefinitionFields({
       }
       form.setFieldsValue(nextValues);
       form.setFields([{ name: "prompt", value: nextPrompt }]);
-      trackEvent("task_prompt_magic_used", {
-        source: "task_create",
-        input_length: prompt.length,
-        output_length: nextPrompt.length
-      });
       if (nextPrompt.trim() === prompt) {
         void message.info("Magic prompt returned a similar result.");
       } else {
@@ -371,64 +354,6 @@ export function TaskDefinitionFields({
     } finally {
       setMagicPromptLoading(false);
     }
-  };
-
-  const insertIntoPrompt = (snippetContent: string | null | undefined): void => {
-    const currentPrompt = form.getFieldValue("prompt") as string | undefined;
-    const nextPrompt = insertSnippetContent(currentPrompt, snippetContent);
-    form.setFieldValue("prompt", nextPrompt);
-    form.setFields([{ name: "prompt", value: nextPrompt }]);
-  };
-
-  const handleInsertSelectedSnippet = (): void => {
-    if (!selectedSnippetToInsertId) {
-      return;
-    }
-
-    const snippet = snippets.find((item) => item.id === selectedSnippetToInsertId);
-    if (!snippet) {
-      void message.error("Selected snippet is no longer available.");
-      return;
-    }
-
-    if ((snippet.variables ?? []).length > 0) {
-      setPendingSnippetForInsert(snippet);
-      snippetVariableForm.resetFields();
-      const defaultValues = Object.fromEntries(
-        (snippet.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""])
-      );
-      snippetVariableForm.setFieldsValue(defaultValues);
-      setSnippetVariableModalOpen(true);
-      return;
-    }
-
-    insertIntoPrompt(snippet.content);
-    setSelectedSnippetToInsertId(null);
-  };
-
-  const handleConfirmSnippetVariableInsert = async (): Promise<void> => {
-    if (!pendingSnippetForInsert) {
-      return;
-    }
-
-    try {
-      const values = await snippetVariableForm.validateFields();
-      const rendered = applySnippetVariables(pendingSnippetForInsert.content, pendingSnippetForInsert.variables, values);
-      insertIntoPrompt(rendered);
-      setSnippetVariableModalOpen(false);
-      setPendingSnippetForInsert(null);
-      snippetVariableForm.resetFields();
-      setSelectedSnippetToInsertId(null);
-    } catch {
-      // Form-level validation messages are shown inline.
-    }
-  };
-
-  const handleCloseSnippetVariableModal = (): void => {
-    setSnippetVariableModalOpen(false);
-    setPendingSnippetForInsert(null);
-    snippetVariableForm.resetFields();
-    setSelectedSnippetToInsertId(null);
   };
 
   const renderPromptPanel = () => (
@@ -484,28 +409,6 @@ export function TaskDefinitionFields({
               />
             </Form.Item>
           </div>
-          {canUseSnippets ? (
-            <Flex gap={8} wrap="wrap">
-              <Select
-                showSearch
-                style={{ minWidth: 220, flex: 1 }}
-                placeholder={snippetsLoading ? "Loading snippets..." : "Select snippet"}
-                value={selectedSnippetToInsertId}
-                onChange={(value) => setSelectedSnippetToInsertId(value)}
-                optionFilterProp="label"
-                allowClear
-                loading={snippetsLoading}
-                disabled={snippetsLoading || snippets.length === 0}
-                options={snippets.map((snippet) => ({
-                  label: snippet.name,
-                  value: snippet.id
-                }))}
-              />
-              <Button onClick={handleInsertSelectedSnippet} disabled={!selectedSnippetToInsertId}>
-                Insert
-              </Button>
-            </Flex>
-          ) : null}
           {allowPromptAttachments ? (
             <TaskPromptAttachmentsInput
               files={promptImageFiles}
@@ -654,32 +557,6 @@ export function TaskDefinitionFields({
           </Card>
         </Col>
       </Row>
-      <Modal
-        title={pendingSnippetForInsert ? `Insert Snippet: ${pendingSnippetForInsert.name}` : "Insert Snippet"}
-        open={snippetVariableModalOpen}
-        onCancel={handleCloseSnippetVariableModal}
-        destroyOnClose
-        onOk={() => void handleConfirmSnippetVariableInsert()}
-        okText="Insert"
-      >
-        <Form form={snippetVariableForm} layout="vertical">
-          {(pendingSnippetForInsert?.variables ?? []).map((variable) => (
-            <Form.Item
-              key={variable.name}
-              name={variable.name}
-              label={variable.title.trim() || variable.name}
-              tooltip={variable.description.trim() || undefined}
-              rules={[{ required: true, message: `Enter ${variable.title.trim() || variable.name}` }]}
-            >
-              {variable.type === "multiline" ? (
-                <Input.TextArea rows={4} placeholder={variable.description.trim() || variable.name} />
-              ) : (
-                <Input placeholder={variable.description.trim() || variable.name} />
-              )}
-            </Form.Item>
-          ))}
-        </Form>
-      </Modal>
     </>
   );
 }
