@@ -1,11 +1,13 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
-import { App, Button, Drawer, Flex, Grid, Layout, Menu, Result, Select, Spin, Typography, theme as antTheme } from "antd";
+import { App, Button, Drawer, Flex, Grid, Layout, Menu, Result, Spin, Switch, Typography, theme as antTheme } from "antd";
 import {
   DatabaseOutlined,
+  BulbOutlined,
   LogoutOutlined,
   MenuOutlined,
+  MoonOutlined,
   SettingOutlined,
   TeamOutlined,
   UnorderedListOutlined
@@ -17,7 +19,6 @@ import { AppFooterNote } from "./app-footer-note";
 import { useAuth } from "./auth-provider";
 import { TaskBrowserNotifications } from "./task-browser-notifications";
 import { useThemeMode } from "./theme-provider";
-import { appThemeOptions, type AppThemeMode } from "../src/theme/antd-theme";
 import {
   getRequiredScopesForPathname,
   getSelectedNavigationKey,
@@ -38,7 +39,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
   const { canAll, loading, logout, session } = useAuth();
-  const { mode, setMode } = useThemeMode();
+  const { isDarkTheme, setMode } = useThemeMode();
   const contentMaxWidth = 1760;
   const headerHeight = 64;
   const sidebarWidth = 320;
@@ -151,11 +152,12 @@ export function AppShell({ children }: { children: ReactNode }) {
                   <Typography.Text strong>{`Hi, ${session.user.name || "Administrator"}`}</Typography.Text>
                 </Button>
               </Flex>
-              <Select
-                value={mode}
-                onChange={(value) => setMode(value as AppThemeMode)}
-                options={appThemeOptions}
-                style={{ minWidth: 180 }}
+              <Switch
+                checked={isDarkTheme}
+                checkedChildren={<MoonOutlined />}
+                unCheckedChildren={<BulbOutlined />}
+                aria-label="Toggle dark mode"
+                onChange={(checked) => setMode(checked ? "graphite-dark" : "graphite-light")}
               />
               <Button
                 icon={<LogoutOutlined />}
