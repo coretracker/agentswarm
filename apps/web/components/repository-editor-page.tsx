@@ -1686,6 +1686,14 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             </Card>
           ) : null}
 
+          {mode === "edit" && editingRepository ? (
+            <Card bordered={false} title="Repository ID">
+              <Typography.Paragraph copyable style={{ marginBottom: 0, wordBreak: "break-all" }}>
+                {editingRepository.id}
+              </Typography.Paragraph>
+            </Card>
+          ) : null}
+
           <Card
             size="small"
             style={{
