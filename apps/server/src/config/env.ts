@@ -45,8 +45,7 @@ const envSchema = z.object({
   DEFAULT_ADMIN_PASSWORD: z.string().min(8).default("admin123!"),
   AUTH_COOKIE_NAME: z.string().default("verft_session"),
   AUTH_SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(7),
-  SENTRY_ENABLED: booleanEnv.default(true),
-  SENTRY_DSN: z.string().default("https://464566b3787dde0e2da9f69760ef8f40@o4511433840525312.ingest.de.sentry.io/4511433841901649"),
+  LOG_REQUESTS: booleanEnv.default(false),
   /** When true, toolbox runtime containers can receive Docker socket access. */
   DOCKER_SOCKET_ACCESS_ENABLED: booleanEnv.default(true),
   /** Host path for docker.sock mount source. */

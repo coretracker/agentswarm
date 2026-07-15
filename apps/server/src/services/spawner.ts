@@ -63,12 +63,11 @@ import {
 import { materializeRepositoryRuntimeEnvEntries } from "../lib/repository-runtime-env.js";
 import { parseAgentJsonlEvents } from "../lib/agent-event-parser.js";
 import {
-  emitDockerSocketEnabledEventOnce,
-  emitNestedContainerSpawnedEvent,
   resolveDockerSocketAccessPolicy,
   resolveDockerSocketEnvEntries,
   resolveDockerSocketMountArgs
 } from "../lib/docker-socket-access.js";
+import type { OperationalLogger } from "../lib/operational-logger.js";
 import { buildDockerWorkspaceMountArgs } from "../lib/docker-workspace-mounts.js";
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { buildHostexecRuntimeConfig } from "../lib/hostexec-runtime.js";
@@ -315,7 +314,8 @@ export class SpawnerService {
       "getRepositoryRuntimeEnvEntries" | "getRepositoryMcpServers" | "getRepository"
     >,
     private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore(),
-    private readonly personalAccessTokenStore?: PersonalAccessTokenStore
+    private readonly personalAccessTokenStore?: PersonalAccessTokenStore,
+    private readonly logger?: OperationalLogger
   ) {}
 
   private formatExecutionLabel(command: string, args: string[]): string {
@@ -810,33 +810,6 @@ export class SpawnerService {
    */
   private static readonly WORKSPACE_FETCH_DEPTH: number | null = null;
 
-  private emitWorkspacePrepareEvent(
-    event: "workspace_prepare_started" | "workspace_prepare_succeeded" | "workspace_prepare_failed",
-    payload: {
-      taskId: string;
-      taskType: Task["taskType"];
-      workspaceKind: typeof WORKSPACE_KIND;
-      failureReason?: WorkspacePrepareFailureReason;
-      mode?: "clone_only" | "hybrid";
-    }
-  ): void {
-    const base = {
-      level: "info",
-      event,
-      workspace_kind: payload.workspaceKind,
-      task_type: payload.taskType,
-      task_id: payload.taskId,
-      workspace_provisioning_mode: payload.mode ?? "clone_only"
-    } as const;
-
-    if (event === "workspace_prepare_failed") {
-      console.info(JSON.stringify({ ...base, failure_reason: payload.failureReason ?? "unknown" }));
-      return;
-    }
-
-    console.info(JSON.stringify(base));
-  }
-
   private classifyWorkspacePrepareFailure(error: unknown): WorkspacePrepareFailureReason {
     const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
     if (
@@ -918,28 +891,6 @@ export class SpawnerService {
     return "unknown";
   }
 
-  private emitTaskGitOperationAnalytics(
-    event: "git_op_started" | "git_op_succeeded" | "git_op_failed" | "git_op_retried",
-    payload: {
-      operation: TaskGitOperation;
-      durationMs?: number;
-    }
-  ): void {
-    const base = {
-      level: "info",
-      event,
-      task_id: payload.operation.taskId,
-      operation_type: payload.operation.operationType,
-      status: payload.operation.status,
-      failure_code: payload.operation.errorCode,
-      retry_count: Math.max(0, payload.operation.attemptCount - 1)
-    } as Record<string, unknown>;
-    if (typeof payload.durationMs === "number") {
-      base.duration_ms = payload.durationMs;
-    }
-    console.info(JSON.stringify(base));
-  }
-
   private async measureTaskGitRead<T>(
     events: {
       success: "git_state_snapshot_loaded" | "live_diff_loaded" | "build_finalize_diff_collected";
@@ -949,32 +900,10 @@ export class SpawnerService {
     fn: () => Promise<T>,
     buildMeta?: (result: T) => Record<string, unknown>
   ): Promise<T> {
-    const startedAtMs = Date.now();
-    try {
-      const result = await fn();
-      const base: Record<string, unknown> = {
-        level: "info",
-        event: events.success,
-        task_id: taskId,
-        duration_ms: Math.max(0, Date.now() - startedAtMs)
-      };
-      if (buildMeta) {
-        Object.assign(base, buildMeta(result));
-      }
-      console.info(JSON.stringify(base));
-      return result;
-    } catch (error) {
-      console.info(
-        JSON.stringify({
-          level: "info",
-          event: events.failure,
-          task_id: taskId,
-          duration_ms: Math.max(0, Date.now() - startedAtMs),
-          failure_reason: error instanceof Error ? error.message : String(error)
-        })
-      );
-      throw error;
-    }
+    void events;
+    void taskId;
+    void buildMeta;
+    return fn();
   }
 
   private async withGitWorkerContainer<T>(fn: () => Promise<T>): Promise<T> {
@@ -1002,10 +931,6 @@ export class SpawnerService {
       throw new Error("Task not found.");
     }
 
-    if (attemptCount > 1) {
-      this.emitTaskGitOperationAnalytics("git_op_retried", { operation: queued });
-    }
-
     return this.withNamedLock(this.taskGitOperationLocks, task.id, async () => {
       const running =
         (await this.taskStore.updateGitOperation(queued.operationId, {
@@ -1015,42 +940,27 @@ export class SpawnerService {
           errorMessage: null,
           attemptCount
         })) ?? queued;
-      this.emitTaskGitOperationAnalytics("git_op_started", { operation: running });
-
-      const startedAtMs = Date.parse(running.startedAt);
       try {
         const result = await this.withGitWorkerContainer(() => fn(running));
-        const finished =
-          (await this.taskStore.updateGitOperation(running.operationId, {
+        await this.taskStore.updateGitOperation(running.operationId, {
             status: "succeeded",
             finishedAt: new Date().toISOString(),
             errorCode: null,
             errorMessage: null,
             attemptCount
-          })) ?? running;
-        const finishedAtMs = finished.finishedAt ? Date.parse(finished.finishedAt) : NaN;
-        this.emitTaskGitOperationAnalytics("git_op_succeeded", {
-          operation: finished,
-          durationMs: Number.isFinite(startedAtMs) && Number.isFinite(finishedAtMs) ? Math.max(0, finishedAtMs - startedAtMs) : undefined
-        });
+          });
         return result;
       } catch (error) {
         const failureCode = this.classifyTaskGitOperationFailure(operationType, error);
         const message = this.formatWorkspacePrepareErrorMessage(error);
         const failedStatus: TaskGitOperation["status"] = error instanceof CancelledTaskError ? "cancelled" : "failed";
-        const failed =
-          (await this.taskStore.updateGitOperation(running.operationId, {
+        await this.taskStore.updateGitOperation(running.operationId, {
             status: failedStatus,
             finishedAt: new Date().toISOString(),
             errorCode: failedStatus === "failed" ? failureCode : null,
             errorMessage: failedStatus === "failed" ? message : null,
             attemptCount
-          })) ?? running;
-        const finishedAtMs = failed.finishedAt ? Date.parse(failed.finishedAt) : NaN;
-        this.emitTaskGitOperationAnalytics("git_op_failed", {
-          operation: failed,
-          durationMs: Number.isFinite(startedAtMs) && Number.isFinite(finishedAtMs) ? Math.max(0, finishedAtMs - startedAtMs) : undefined
-        });
+          });
         throw error;
       }
     });
@@ -5178,12 +5088,6 @@ export class SpawnerService {
     let workspace: WorkspacePreparation;
     try {
       const preparedWorkspace = await this.withTrackedTaskGitOperation(workingTask, "clone_for_task", async () => {
-        this.emitWorkspacePrepareEvent("workspace_prepare_started", {
-          taskId: workingTask.id,
-          taskType: workingTask.taskType,
-          workspaceKind: WORKSPACE_KIND,
-          mode: settings.workspaceProvisioningMode
-        });
         try {
           const prepared = await this.withFreshManagedRepo(
             workingTask,
@@ -5202,22 +5106,8 @@ export class SpawnerService {
               )
             })
           );
-          this.emitWorkspacePrepareEvent("workspace_prepare_succeeded", {
-            taskId: workingTask.id,
-            taskType: workingTask.taskType,
-            workspaceKind: WORKSPACE_KIND,
-            mode: settings.workspaceProvisioningMode
-          });
           return prepared.workspace;
         } catch (error) {
-          const reason = error instanceof WorkspacePrepareError ? error.reason : this.classifyWorkspacePrepareFailure(error);
-          this.emitWorkspacePrepareEvent("workspace_prepare_failed", {
-            taskId: workingTask.id,
-            taskType: workingTask.taskType,
-            workspaceKind: WORKSPACE_KIND,
-            failureReason: reason,
-            mode: settings.workspaceProvisioningMode
-          });
           throw error;
         }
       });
@@ -5292,6 +5182,14 @@ export class SpawnerService {
       });
       runId = run?.id ?? null;
       executionId = runId ?? executionId;
+      this.logger?.info("task", "task.run.started", "Task run started", {
+        taskId: task.id,
+        runId,
+        action: "build",
+        provider: task.provider,
+        branchName,
+        postflight: true
+      });
       this.executionContextStorage.enterWith({ taskId: task.id, executionId });
       const payloadDir = this.resolveRuntimePayloadDir(task.id, executionId);
       await mkdir(payloadDir, { recursive: true });
@@ -5401,6 +5299,16 @@ export class SpawnerService {
           ? "Spawner: postflight finished successfully and generated workspace changes."
           : "Spawner: postflight finished successfully with no workspace changes."
       );
+      this.logger?.info("task", "task.run.completed", "Task run completed", {
+        taskId: task.id,
+        runId,
+        action: "build",
+        status: "succeeded",
+        provider: task.provider,
+        branchName,
+        changedFileCount: changedFiles.length,
+        postflight: true
+      });
     } catch (error) {
       const finishedAt = new Date().toISOString();
       const message = this.formatWorkspacePrepareErrorMessage(error);
@@ -5428,6 +5336,16 @@ export class SpawnerService {
         });
       }
 
+      this.logger?.[isCancelled ? "warn" : "error"]("task", isCancelled ? "task.run.cancelled" : "task.run.failed", isCancelled ? "Task run cancelled" : "Task run failed", {
+        taskId: task.id,
+        runId,
+        action: "build",
+        status: isCancelled ? "cancelled" : "failed",
+        provider: task.provider,
+        branchName,
+        errorMessage: isCancelled ? null : message,
+        postflight: true
+      });
       throw error;
     } finally {
       if (executionId) {
@@ -5483,6 +5401,14 @@ export class SpawnerService {
       });
       runId = run?.id ?? null;
       executionId = runId ?? executionId;
+      this.logger?.info("task", "task.run.started", "Task run started", {
+        taskId: task.id,
+        runId,
+        action,
+        provider: task.provider,
+        branchName,
+        promptMessageId
+      });
       this.executionContextStorage.enterWith({ taskId: task.id, executionId });
       const payloadDir = this.resolveRuntimePayloadDir(task.id, executionId);
       const appendRunLog = (line: string) => this.taskStore.appendLogForRun(task.id, line, runId);
@@ -5692,7 +5618,6 @@ export class SpawnerService {
         );
       }
       if (dockerSocketPolicy.enabled) {
-        emitDockerSocketEnabledEventOnce({ provider: task.provider, policy: dockerSocketPolicy });
         await appendRunLog(
           `Spawner: docker socket access enabled for provider runtime (${dockerSocketPolicy.appEnvironment} environment).`
         );
@@ -5769,12 +5694,6 @@ export class SpawnerService {
       args.push(providerDefinition.image, ...providerDefinition.command);
 
       await appendRunLog(`Spawner: launching ${task.provider} container for branch ${branchName}.`);
-      emitNestedContainerSpawnedEvent({
-        source: "task_runtime",
-        taskId: task.id,
-        provider: task.provider,
-        policy: dockerSocketPolicy
-      });
 
       liveTimelineStream = this.startLiveRunTimelineStream(task, runId, rawEventsJsonlPath);
       await new Promise<void>((resolve, reject) => {
@@ -5971,6 +5890,14 @@ export class SpawnerService {
       }
 
       await appendRunLog("Spawner: task finished successfully.");
+      this.logger?.info("task", "task.run.completed", "Task run completed", {
+        taskId: task.id,
+        runId,
+        action,
+        status: "succeeded",
+        provider: task.provider,
+        branchName
+      });
     } catch (error) {
       const finishedAt = new Date().toISOString();
       const message = this.formatWorkspacePrepareErrorMessage(error);
@@ -6000,6 +5927,15 @@ export class SpawnerService {
           lastAction: action
         });
       }
+      this.logger?.[isCancelled ? "warn" : "error"]("task", isCancelled ? "task.run.cancelled" : "task.run.failed", isCancelled ? "Task run cancelled" : "Task run failed", {
+        taskId: task.id,
+        runId,
+        action,
+        status: isCancelled ? "cancelled" : "failed",
+        provider: task.provider,
+        branchName,
+        errorMessage: isCancelled ? null : message
+      });
       throw error;
     } finally {
       if (liveTimelineStream) {

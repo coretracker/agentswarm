@@ -104,7 +104,6 @@ import {
 import { buildTaskHistoryEntries } from "../src/utils/task-history";
 import { buildTaskLifecycleViewModel } from "../src/utils/task-lifecycle-view-model";
 import { buildTimelineDisplayItems, type TimelineDisplayItem } from "../src/utils/task-run-timeline";
-import { trackEvent } from "../src/utils/analytics";
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
 import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
@@ -686,8 +685,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const { settings } = useSettings();
   const { task, setTask, loading, refetch: refetchTask } = useTask(taskId);
   const hadLoadedTaskRef = useRef(false);
-  const trackedBuildOutcomeRunIdsRef = useRef<Set<string>>(new Set());
-  const trackedBuildSummaryViewedRunIdsRef = useRef<Set<string>>(new Set());
   const {
     messages: taskMessages,
     setMessages: setTaskMessages,
@@ -771,7 +768,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   >(null);
   const [proposalBusy, setProposalBusy] = useState<{ id: string; kind: "apply" | "reject" | "revert" | "revert_file" } | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
-  const viewedGitOperationIdsRef = useRef<Set<string>>(new Set());
   const runTimelineScrollRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const runTimelineEventCountsRef = useRef<Record<string, number>>({});
   const [gitOperation, setGitOperation] = useState<TaskGitOperation | null>(null);
@@ -794,30 +790,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       }
     }
   }, [scrollRunTimelineToBottom, taskRuns]);
-
-  useEffect(() => {
-    for (const run of taskRuns) {
-      if (run.action !== "build" || run.status !== "succeeded") {
-        continue;
-      }
-
-      if (!trackedBuildOutcomeRunIdsRef.current.has(run.id)) {
-        trackEvent(run.changeOutcome === "no_change" ? "build_completed_no_changes" : "build_completed_with_changes", {
-          taskId: run.taskId,
-          runId: run.id
-        });
-        trackedBuildOutcomeRunIdsRef.current.add(run.id);
-      }
-
-      if ((run.summary?.trim() ?? "").length > 0 && !trackedBuildSummaryViewedRunIdsRef.current.has(run.id)) {
-        trackEvent("build_summary_viewed", {
-          taskId: run.taskId,
-          runId: run.id
-        });
-        trackedBuildSummaryViewedRunIdsRef.current.add(run.id);
-      }
-    }
-  }, [taskRuns]);
 
   useEffect(() => {
     if (!task?.id) {
@@ -861,23 +833,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       socket.off("task:git_operation", onTaskGitOperation);
     };
   }, [socket, task?.id]);
-
-  useEffect(() => {
-    if (!gitOperation?.operationId) {
-      return;
-    }
-    if (viewedGitOperationIdsRef.current.has(gitOperation.operationId)) {
-      return;
-    }
-    viewedGitOperationIdsRef.current.add(gitOperation.operationId);
-    trackEvent("git_op_status_viewed", {
-      task_id: gitOperation.taskId,
-      operation_type: gitOperation.operationType,
-      status: gitOperation.status,
-      failure_code: gitOperation.errorCode,
-      source_surface: "task_detail"
-    });
-  }, [gitOperation]);
 
   const showTaskActionError = useCallback(
     (error: unknown, fallback: string): void => {
@@ -2454,13 +2409,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       const response = await api.generateTaskPromptMagic({ prompt });
       const nextPrompt = response.prompt ?? "";
       setChatInput(nextPrompt);
-      trackEvent("task_prompt_magic_used", {
-        source: "task_detail",
-        task_id: task?.id ?? taskId,
-        action: selectedChatAction,
-        input_length: prompt.length,
-        output_length: nextPrompt.length
-      });
       if (nextPrompt.trim() === prompt) {
         void messageApi.info("Magic prompt returned a similar result.");
       } else {
@@ -2968,11 +2916,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     setSubmitting("push");
-    trackEvent("git_op_started", {
-      task_id: task.id,
-      operation_type: "push_task_branch",
-      source_surface: "task_detail"
-    });
     try {
       const updatedTask = await api.pushTask(task.id, {
         commitMessage: pushCommitMessage.trim() || undefined
@@ -2987,20 +2930,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedTask
       );
       messageApi.success("Changes pushed");
-      trackEvent("git_op_succeeded", {
-        task_id: task.id,
-        operation_type: "push_task_branch",
-        source_surface: "task_detail"
-      });
       void loadTaskGitState();
       setLiveDiffRefreshKey((k) => k + 1);
     } catch (error) {
-      trackEvent("git_op_failed", {
-        task_id: task.id,
-        operation_type: "push_task_branch",
-        failure_code: "unknown",
-        source_surface: "task_detail"
-      });
       showTaskActionError(error, "Failed to push changes");
     } finally {
       setSubmitting(null);
@@ -3218,11 +3150,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
 
     setSubmitting("pull");
-    trackEvent("git_op_started", {
-      task_id: task.id,
-      operation_type: "pull_task_branch",
-      source_surface: "task_detail"
-    });
     try {
       const updatedTask = await api.pullTask(task.id);
       setTask((current) =>
@@ -3235,20 +3162,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedTask
       );
       messageApi.success("Changes pulled");
-      trackEvent("git_op_succeeded", {
-        task_id: task.id,
-        operation_type: "pull_task_branch",
-        source_surface: "task_detail"
-      });
       setLiveDiffRefreshKey((k) => k + 1);
       void loadTaskGitState();
     } catch (error) {
-      trackEvent("git_op_failed", {
-        task_id: task.id,
-        operation_type: "pull_task_branch",
-        failure_code: "unknown",
-        source_surface: "task_detail"
-      });
       showTaskActionError(error, "Failed to pull changes");
     } finally {
       setSubmitting(null);
@@ -3259,11 +3175,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     if (!gitOperation || gitOperation.status !== "failed") {
       return;
     }
-    trackEvent("git_op_retried", {
-      task_id: gitOperation.taskId,
-      operation_type: gitOperation.operationType,
-      source_surface: "task_detail"
-    });
     if (gitOperation.operationType === "pull_task_branch") {
       await handlePullTask();
       return;

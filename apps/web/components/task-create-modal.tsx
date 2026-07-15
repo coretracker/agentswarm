@@ -5,7 +5,6 @@ import dayjs from "dayjs";
 import { getDefaultModelForProvider, type Task, type UpdateTaskDraftInput } from "@verft/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
-import { trackEvent } from "../src/utils/analytics";
 import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { api } from "../src/api/client";
 import { useAuth } from "./auth-provider";
@@ -104,7 +103,6 @@ export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask
     try {
       const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
       const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      trackEvent("task_create_submitted", { task_type: definition.taskType });
 
       const creationPromise = createTaskFromDefinition(definition);
       form.resetFields();

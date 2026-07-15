@@ -5,7 +5,6 @@ import { useRouter } from "next/navigation";
 import type { TaskType } from "@verft/shared-types";
 import { Button, Flex, Form, Space, Typography, message } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
-import { trackEvent } from "../src/utils/analytics";
 import { encodeTaskPromptImageFiles, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
 import {
@@ -33,7 +32,6 @@ export function TaskCreatePage() {
     try {
       const encodedAttachments = await encodeTaskPromptImageFiles(promptImageFiles);
       const definition = buildTaskDefinitionInput(values, encodedAttachments);
-      trackEvent("task_create_submitted", { task_type: definition.taskType });
       const task = await createTaskFromDefinition(definition);
 
       messageApi.success(startMessageForDefinition(definition));

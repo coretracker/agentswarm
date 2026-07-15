@@ -28,7 +28,6 @@ import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useSettings } from "../src/hooks/useSettings";
-import { trackEvent } from "../src/utils/analytics";
 import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
 import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
@@ -343,11 +342,6 @@ export function TaskDefinitionFields({
       }
       form.setFieldsValue(nextValues);
       form.setFields([{ name: "prompt", value: nextPrompt }]);
-      trackEvent("task_prompt_magic_used", {
-        source: "task_create",
-        input_length: prompt.length,
-        output_length: nextPrompt.length
-      });
       if (nextPrompt.trim() === prompt) {
         void message.info("Magic prompt returned a similar result.");
       } else {
