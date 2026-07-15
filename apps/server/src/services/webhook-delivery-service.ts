@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import type { RealtimeEvent, Repository, Task } from "@verft/shared-types";
+import type { OperationalLogger } from "../lib/operational-logger.js";
 import type { RepositoryStore } from "./repository-store.js";
 import type { WebhookDeliveryStore, WebhookEventType, WebhookJob } from "./webhook-delivery-store.js";
 
@@ -29,7 +30,8 @@ export class WebhookDeliveryService {
 
   constructor(
     private readonly webhookDeliveryStore: WebhookDeliveryStore,
-    private readonly repositoryStore: RepositoryStore
+    private readonly repositoryStore: RepositoryStore,
+    private readonly logger?: OperationalLogger
   ) {}
 
   private selectTaskPayload(task: Task): Record<string, unknown> {
@@ -54,6 +56,11 @@ export class WebhookDeliveryService {
         eventType: "created",
         payload: { task: this.selectTaskPayload(event.payload) }
       });
+      this.logger?.info("webhook", "webhook.delivery.queued", "Webhook delivery queued", {
+        eventType: "created",
+        repositoryId: event.payload.repoId,
+        taskId: event.payload.id
+      });
       await this.webhookDeliveryStore.setLastTaskStatus(event.payload.id, event.payload.status);
       return;
     }
@@ -70,6 +77,13 @@ export class WebhookDeliveryService {
             task: this.selectTaskPayload(event.payload)
           }
         });
+        this.logger?.info("webhook", "webhook.delivery.queued", "Webhook delivery queued", {
+          eventType: "updated",
+          repositoryId: event.payload.repoId,
+          taskId: event.payload.id,
+          previousStatus: lastStatus,
+          currentStatus: event.payload.status
+        });
       }
       await this.webhookDeliveryStore.setLastTaskStatus(event.payload.id, event.payload.status);
       return;
@@ -83,6 +97,11 @@ export class WebhookDeliveryService {
           taskId: event.payload.id,
           repoId: event.payload.repoId
         }
+      });
+      this.logger?.info("webhook", "webhook.delivery.queued", "Webhook delivery queued", {
+        eventType: "deleted",
+        repositoryId: event.payload.repoId,
+        taskId: event.payload.id
       });
       await this.webhookDeliveryStore.clearLastTaskStatus(event.payload.id);
       return;
@@ -100,6 +119,11 @@ export class WebhookDeliveryService {
           triggeredAt: event.payload.triggeredAt
         }
       });
+      this.logger?.info("webhook", "webhook.delivery.queued", "Webhook delivery queued", {
+        eventType: "pushed",
+        repositoryId: event.payload.repoId,
+        taskId: event.payload.taskId
+      });
       return;
     }
 
@@ -115,6 +139,11 @@ export class WebhookDeliveryService {
           commitMessage: event.payload.commitMessage,
           triggeredAt: event.payload.triggeredAt
         }
+      });
+      this.logger?.info("webhook", "webhook.delivery.queued", "Webhook delivery queued", {
+        eventType: "merged",
+        repositoryId: event.payload.repoId,
+        taskId: event.payload.taskId
       });
     }
   }
@@ -154,6 +183,12 @@ export class WebhookDeliveryService {
   private async deliver(job: WebhookJob): Promise<void> {
     const target = await this.repositoryStore.getRepositoryWebhookTarget(job.repositoryId);
     if (!target) {
+      this.logger?.warn("webhook", "webhook.delivery.dropped", "Webhook delivery dropped", {
+        deliveryId: job.id,
+        eventType: job.eventType,
+        repositoryId: job.repositoryId,
+        reason: "missing_target"
+      });
       return;
     }
 
@@ -164,6 +199,13 @@ export class WebhookDeliveryService {
     const signature = createHmac("sha256", target.webhookSecret)
       .update(`${timestamp}.${body}`)
       .digest("hex");
+
+    this.logger?.info("webhook", "webhook.delivery.started", "Webhook delivery started", {
+      deliveryId: job.id,
+      eventType: job.eventType,
+      repositoryId: job.repositoryId,
+      attempt: job.attempt
+    });
 
     const response = await fetch(target.webhookUrl, {
       method: "POST",
@@ -185,6 +227,13 @@ export class WebhookDeliveryService {
     await this.repositoryStore.recordWebhookDeliveryResult(job.repositoryId, {
       status: "success",
       attemptedAt: sentAt
+    });
+    this.logger?.info("webhook", "webhook.delivery.succeeded", "Webhook delivery succeeded", {
+      deliveryId: job.id,
+      eventType: job.eventType,
+      repositoryId: job.repositoryId,
+      statusCode: response.status,
+      attempt: job.attempt
     });
   }
 
@@ -220,10 +269,25 @@ export class WebhookDeliveryService {
           const retryDelay = WEBHOOK_RETRY_DELAYS_MS[job.attempt - 1];
           if (retryDelay === undefined) {
             await this.webhookDeliveryStore.deleteJob(deliveryId);
+            this.logger?.error("webhook", "webhook.delivery.failed", "Webhook delivery failed", {
+              deliveryId: job.id,
+              eventType: job.eventType,
+              repositoryId: job.repositoryId,
+              attempt: job.attempt,
+              errorMessage: detail
+            });
             continue;
           }
 
           await this.webhookDeliveryStore.scheduleRetry(job, retryDelay);
+          this.logger?.warn("webhook", "webhook.delivery.retry_scheduled", "Webhook delivery retry scheduled", {
+            deliveryId: job.id,
+            eventType: job.eventType,
+            repositoryId: job.repositoryId,
+            attempt: job.attempt,
+            retryDelayMs: retryDelay,
+            errorMessage: detail
+          });
         }
       }
     } finally {
