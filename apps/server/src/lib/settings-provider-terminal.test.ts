@@ -25,7 +25,7 @@ describe("buildProviderTerminalScript", () => {
         assert.match(script, new RegExp(`\\$BASE_ROOT/${providerRoot}`));
       }
       if (provider === "codex-login") {
-        assert.match(script, /codex login; STATUS=\$\?/);
+        assert.match(script, /codex login --device-auth; STATUS=\$\?/);
       }
       if (provider === "claude-login") {
         assert.match(script, /claude auth login; STATUS=\$\?/);

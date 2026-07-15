@@ -51,8 +51,8 @@ export function buildProviderTerminalScript(scope: SettingsProviderTerminalScope
   let startHint: string;
   let shellCommand: string;
   if (scope === "codex-login") {
-    startHint = "Running: codex login. Terminal will close when done.";
-    shellCommand = "su-exec agent:agent codex login; STATUS=$?";
+    startHint = "Running: codex login --device-auth. Terminal will close when done.";
+    shellCommand = "su-exec agent:agent codex login --device-auth; STATUS=$?";
   } else if (scope === "claude-login") {
     startHint = "Running: claude auth login. Terminal will close when done.";
     shellCommand = "su-exec agent:agent claude auth login; STATUS=$?";
