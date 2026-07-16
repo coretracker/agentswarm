@@ -33,7 +33,7 @@ Notes:
 - Installations that previously used global MCP server settings must recreate the intended MCP servers on each repository that should expose them.
 - GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
 - New repositories default GitHub comment processing to require a configured bot mention; repository settings can disable that filter.
-- GitHub Integration can optionally archive linked tasks when a GitHub pull request webhook reports the PR as merged.
+- GitHub Integration archives linked tasks by default when a GitHub pull request webhook reports the PR as merged; repositories can disable this in GitHub settings.
 - Archived tasks are automatically deleted after the configured retention window; the setting defaults to 7 days and can be disabled.
 - GitHub Integration creates or queues build-mode tasks when a `pull_request.review_requested` webhook targets the configured integration bot.
 - GitHub Integration processes created or edited issue comments, pull request conversation comments, and inline pull request review comments when the comment body passes the configured bot mention and user filters.

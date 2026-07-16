@@ -503,6 +503,13 @@ Feedback:
     `
   },
   {
+    id: "20260716_01_repository_github_pr_auto_archive_default_on",
+    sql: `
+      ALTER TABLE repositories
+      ALTER COLUMN github_pr_auto_archive_on_merge SET DEFAULT true;
+    `
+  },
+  {
     id: "20260626_01_repository_github_pr_review_instructions",
     sql: `
       ALTER TABLE repositories

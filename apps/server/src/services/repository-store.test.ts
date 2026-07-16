@@ -49,7 +49,7 @@ class FakeRedis {
 }
 
 describe("RedisRepositoryStore MCP servers", () => {
-  it("defaults GitHub bot mention filtering on for new repositories", async () => {
+  it("defaults GitHub PR settings on for new repositories", async () => {
     const store = new RedisRepositoryStore(
       new FakeRedis() as never,
       { publish: async () => undefined } as never
@@ -62,11 +62,14 @@ describe("RedisRepositoryStore MCP servers", () => {
     const disabled = await store.createRepository({
       name: "Repo 2",
       url: "https://github.com/acme/repo-2.git",
-      githubPrRequireBotMention: false
+      githubPrRequireBotMention: false,
+      githubPrAutoArchiveOnMerge: false
     });
 
     assert.equal(defaulted.githubPrRequireBotMention, true);
+    assert.equal(defaulted.githubPrAutoArchiveOnMerge, true);
     assert.equal(disabled.githubPrRequireBotMention, false);
+    assert.equal(disabled.githubPrAutoArchiveOnMerge, false);
   });
 
   it("persists nullable repository default agent settings", async () => {
