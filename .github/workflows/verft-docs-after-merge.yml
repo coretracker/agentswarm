@@ -16,7 +16,6 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_TITLE: ${{ github.event.pull_request.title }}
       PR_URL: ${{ github.event.pull_request.html_url }}
-      BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
       MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
       REPOSITORY: ${{ github.repository }}
 
@@ -25,7 +24,6 @@ jobs:
         run: |
           node <<'NODE' > payload.json
           const {
-            BASE_BRANCH,
             MERGE_SHA,
             PR_NUMBER,
             PR_TITLE,
@@ -53,7 +51,7 @@ jobs:
                 `Review the merged change and create or update the user documentation that is needed.`,
               ].join("\n"),
               action: "build",
-              baseBranch: BASE_BRANCH,
+              baseBranch: "main",
               workOnBranch: true,
               createIfMissing: true,
             },
