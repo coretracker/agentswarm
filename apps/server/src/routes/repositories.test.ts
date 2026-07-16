@@ -48,7 +48,7 @@ const createRepository = (input: CreateRepositoryInput, overrides: Partial<Repos
   githubPrWebhookSecretConfigured: false,
   githubIntegrationBotLogin: input.githubIntegrationBotLogin ?? null,
   githubPrAllowedUsers: input.githubPrAllowedUsers ?? [],
-  githubPrRequireBotMention: input.githubPrRequireBotMention === true,
+  githubPrRequireBotMention: input.githubPrRequireBotMention ?? true,
   githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge === true,
   githubPrInitialInstructions: input.githubPrInitialInstructions ?? null,
   githubPrFeedbackInstructions: input.githubPrFeedbackInstructions ?? null,
@@ -174,6 +174,36 @@ test("repository create accepts GitHub PR auto-archive setting", async () => {
 
   assert.equal(response.statusCode, 201);
   assert.equal(JSON.parse(response.body).githubPrAutoArchiveOnMerge, true);
+
+  await app.close();
+});
+
+test("repository create defaults GitHub bot mention filtering on", async () => {
+  const authUser = createAuthUser({ id: "user-1" });
+  const { app } = createTestApp({ authUser, users: [createUser({ id: "user-1" })] });
+
+  const defaultedResponse = await app.inject({
+    method: "POST",
+    url: "/repositories",
+    payload: {
+      name: "repo",
+      url: "https://github.com/acme/repo.git"
+    }
+  });
+  const disabledResponse = await app.inject({
+    method: "POST",
+    url: "/repositories",
+    payload: {
+      name: "repo-2",
+      url: "https://github.com/acme/repo-2.git",
+      githubPrRequireBotMention: false
+    }
+  });
+
+  assert.equal(defaultedResponse.statusCode, 201);
+  assert.equal(JSON.parse(defaultedResponse.body).githubPrRequireBotMention, true);
+  assert.equal(disabledResponse.statusCode, 201);
+  assert.equal(JSON.parse(disabledResponse.body).githubPrRequireBotMention, false);
 
   await app.close();
 });

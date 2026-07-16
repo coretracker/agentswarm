@@ -725,5 +725,12 @@ Feedback:
       DROP COLUMN IF EXISTS workspace_notes,
       DROP COLUMN IF EXISTS workspace_notes_updated_at;
     `
+  },
+  {
+    id: "20260716_01_repository_github_pr_require_bot_mention_default",
+    sql: `
+      ALTER TABLE repositories
+      ALTER COLUMN github_pr_require_bot_mention SET DEFAULT true;
+    `
   }
 ];

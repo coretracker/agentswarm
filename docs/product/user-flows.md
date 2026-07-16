@@ -32,6 +32,7 @@ Notes:
 - Repository default agent provider/model/effort values are fallback values. Task payload values win first, then matching user profile defaults, then repository defaults, then system settings.
 - Installations that previously used global MCP server settings must recreate the intended MCP servers on each repository that should expose them.
 - GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
+- New repositories default GitHub comment processing to require a configured bot mention; repository settings can disable that filter.
 - GitHub Integration can optionally archive linked tasks when a GitHub pull request webhook reports the PR as merged.
 - Archived tasks are automatically deleted after the configured retention window; the setting defaults to 7 days and can be disabled.
 - GitHub Integration creates or queues build-mode tasks when a `pull_request.review_requested` webhook targets the configured integration bot.

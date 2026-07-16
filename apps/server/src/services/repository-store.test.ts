@@ -49,6 +49,26 @@ class FakeRedis {
 }
 
 describe("RedisRepositoryStore MCP servers", () => {
+  it("defaults GitHub bot mention filtering on for new repositories", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const defaulted = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git"
+    });
+    const disabled = await store.createRepository({
+      name: "Repo 2",
+      url: "https://github.com/acme/repo-2.git",
+      githubPrRequireBotMention: false
+    });
+
+    assert.equal(defaulted.githubPrRequireBotMention, true);
+    assert.equal(disabled.githubPrRequireBotMention, false);
+  });
+
   it("persists nullable repository default agent settings", async () => {
     const store = new RedisRepositoryStore(
       new FakeRedis() as never,
