@@ -103,7 +103,7 @@ const emptyValues = (): RepositoryFormValues => ({
   githubIntegrationBotLogin: "",
   githubPrAllowedUsers: "",
   githubPrRequireBotMention: false,
-  githubPrAutoArchiveOnMerge: false,
+  githubPrAutoArchiveOnMerge: true,
   githubPrInitialInstructions: DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
   githubPrFeedbackInstructions: DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
   githubPrReviewInstructions: DEFAULT_GITHUB_PR_REVIEW_INSTRUCTIONS,
@@ -170,7 +170,7 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
   githubIntegrationBotLogin: typeof values?.githubIntegrationBotLogin === "string" ? values.githubIntegrationBotLogin : "",
   githubPrAllowedUsers: typeof values?.githubPrAllowedUsers === "string" ? values.githubPrAllowedUsers : "",
   githubPrRequireBotMention: values?.githubPrRequireBotMention === true,
-  githubPrAutoArchiveOnMerge: values?.githubPrAutoArchiveOnMerge === true,
+  githubPrAutoArchiveOnMerge: values?.githubPrAutoArchiveOnMerge !== false,
   githubPrInitialInstructions:
     typeof values?.githubPrInitialInstructions === "string"
       ? values.githubPrInitialInstructions
