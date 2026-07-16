@@ -49,6 +49,26 @@ class FakeRedis {
 }
 
 describe("RedisRepositoryStore MCP servers", () => {
+  it("defaults GitHub PR auto-archive on for new repositories", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const defaulted = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git"
+    });
+    const disabled = await store.createRepository({
+      name: "Repo 2",
+      url: "https://github.com/acme/repo-2.git",
+      githubPrAutoArchiveOnMerge: false
+    });
+
+    assert.equal(defaulted.githubPrAutoArchiveOnMerge, true);
+    assert.equal(disabled.githubPrAutoArchiveOnMerge, false);
+  });
+
   it("persists nullable repository default agent settings", async () => {
     const store = new RedisRepositoryStore(
       new FakeRedis() as never,
