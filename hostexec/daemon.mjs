@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const COMMAND_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 38128;
+let nextRequestId = 1;
 
 function parseCliOptions(argv) {
   const options = {};
@@ -85,6 +86,61 @@ function sendText(response, statusCode, message) {
   response.end(`${message}\n`);
 }
 
+function logEvent(level, event, data = {}) {
+  const payload = {
+    type: "hostexec",
+    event,
+    ...data
+  };
+  console[level](JSON.stringify(payload));
+}
+
+function getPathEntries(env = process.env) {
+  return String(env.PATH ?? "")
+    .split(path.delimiter)
+    .filter(Boolean);
+}
+
+function isExecutable(filePath) {
+  try {
+    accessSync(filePath, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveExecutable(command, env = process.env) {
+  for (const entry of getPathEntries(env)) {
+    const candidate = path.resolve(entry, command);
+    if (isExecutable(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function buildSpawnDiagnostics(command, cwd, env = process.env) {
+  const pathEntries = getPathEntries(env);
+  const resolvedExecutable = resolveExecutable(command, env);
+  const diagnostics = {
+    platform: process.platform,
+    arch: process.arch,
+    cwdExists: existsSync(cwd),
+    pathSet: typeof env.PATH === "string" && env.PATH.length > 0,
+    pathEntryCount: pathEntries.length,
+    pathEntries,
+    resolvedExecutable
+  };
+
+  if (process.platform === "darwin") {
+    diagnostics.pathIncludesUsrBin = pathEntries.includes("/usr/bin");
+    diagnostics.usrBinXcodebuildExecutable = command === "xcodebuild" ? isExecutable("/usr/bin/xcodebuild") : undefined;
+  }
+
+  return diagnostics;
+}
+
 async function readJsonBody(request) {
   let body = "";
   for await (const chunk of request) {
@@ -115,21 +171,44 @@ function writeNdjson(response, event) {
   response.write(`${JSON.stringify(event)}\n`);
 }
 
-function runCommand(response, payload) {
+function runCommand(response, payload, context) {
   const command = typeof payload.command === "string" ? payload.command.trim() : "";
   const argv = Array.isArray(payload.argv) ? payload.argv.map((value) => String(value)) : [];
   const hostWorkspaceRoot = typeof payload.hostWorkspaceRoot === "string" ? payload.hostWorkspaceRoot.trim() : "";
   const cwdRelativePath = typeof payload.cwdRelativePath === "string" ? payload.cwdRelativePath : ".";
+  const taskId = typeof payload.taskId === "string" ? payload.taskId.trim() : "";
+  const repoId = typeof payload.repoId === "string" ? payload.repoId.trim() : "";
 
   if (!COMMAND_PATTERN.test(command)) {
+    logEvent("warn", "hostexec.exec.rejected", {
+      requestId: context.requestId,
+      reason: "invalid_command",
+      remoteAddress: context.remoteAddress
+    });
     sendText(response, 400, "invalid command name");
     return;
   }
   if (!allowAllCommands && !allowedCommandSet.has(command.toLowerCase())) {
+    logEvent("warn", "hostexec.exec.rejected", {
+      requestId: context.requestId,
+      command,
+      reason: "command_not_allowed",
+      remoteAddress: context.remoteAddress,
+      taskId,
+      repoId
+    });
     sendText(response, 403, `command is not allowed by hostexec daemon: ${command}`);
     return;
   }
   if (!hostWorkspaceRoot) {
+    logEvent("warn", "hostexec.exec.rejected", {
+      requestId: context.requestId,
+      command,
+      reason: "missing_host_workspace_root",
+      remoteAddress: context.remoteAddress,
+      taskId,
+      repoId
+    });
     sendText(response, 400, "hostWorkspaceRoot is required");
     return;
   }
@@ -138,10 +217,45 @@ function runCommand(response, payload) {
   try {
     cwd = resolveCwd(hostWorkspaceRoot, cwdRelativePath);
   } catch (error) {
+    logEvent("warn", "hostexec.exec.rejected", {
+      requestId: context.requestId,
+      command,
+      reason: "invalid_cwd",
+      remoteAddress: context.remoteAddress,
+      taskId,
+      repoId
+    });
     sendText(response, 400, error instanceof Error ? error.message : "invalid cwd");
     return;
   }
+  if (!existsSync(cwd)) {
+    logEvent("warn", "hostexec.exec.rejected", {
+      requestId: context.requestId,
+      command,
+      reason: "missing_cwd",
+      cwd,
+      cwdRelativePath: cwdRelativePath || ".",
+      hostWorkspaceRoot: path.resolve(hostWorkspaceRoot),
+      hostWorkspaceRootExists: existsSync(path.resolve(hostWorkspaceRoot)),
+      remoteAddress: context.remoteAddress,
+      taskId,
+      repoId
+    });
+    sendText(response, 400, `cwd does not exist: ${cwdRelativePath || "."}`);
+    return;
+  }
 
+  const startedAt = Date.now();
+  logEvent("info", "hostexec.exec.started", {
+    requestId: context.requestId,
+    command,
+    argc: argv.length,
+    cwdRelativePath: cwdRelativePath || ".",
+    remoteAddress: context.remoteAddress,
+    spawn: buildSpawnDiagnostics(command, cwd),
+    taskId,
+    repoId
+  });
   response.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8" });
   const child = spawn(command, argv, {
     cwd,
@@ -153,10 +267,31 @@ function runCommand(response, payload) {
   child.stdout.on("data", (chunk) => writeNdjson(response, { stdout: chunk.toString() }));
   child.stderr.on("data", (chunk) => writeNdjson(response, { stderr: chunk.toString() }));
   child.on("error", (error) => {
+    logEvent("error", "hostexec.exec.spawn_failed", {
+      requestId: context.requestId,
+      command,
+      durationMs: Date.now() - startedAt,
+      error: error.message,
+      errorCode: error.code,
+      syscall: error.syscall,
+      spawnPath: error.path,
+      spawn: buildSpawnDiagnostics(command, cwd),
+      taskId,
+      repoId
+    });
     writeNdjson(response, { stderr: `${error.message}\n`, exitCode: 127 });
     response.end();
   });
   child.on("close", (exitCode, signal) => {
+    logEvent(exitCode === 0 && !signal ? "info" : "warn", "hostexec.exec.completed", {
+      requestId: context.requestId,
+      command,
+      durationMs: Date.now() - startedAt,
+      exitCode: exitCode ?? null,
+      signal: signal ?? null,
+      taskId,
+      repoId
+    });
     if (signal) {
       writeNdjson(response, { stderr: `terminated by ${signal}\n`, exitCode: 1 });
     } else {
@@ -179,26 +314,49 @@ const allowAllCommands = rawConfiguredCommands.trim().length === 0;
 const allowedCommandSet = new Set(configuredCommands.map((command) => command.toLowerCase()));
 
 const server = http.createServer(async (request, response) => {
+  const requestId = nextRequestId;
+  nextRequestId += 1;
+  const remoteAddress = request.socket.remoteAddress ?? "";
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? `${host}:${port}`}`);
   if (token && request.headers.authorization !== `Bearer ${token}`) {
+    logEvent("warn", "hostexec.request.rejected", {
+      requestId,
+      method: request.method,
+      path: url.pathname,
+      reason: "unauthorized",
+      remoteAddress
+    });
     sendText(response, 401, "unauthorized");
     return;
   }
 
   if (request.method === "GET" && url.pathname === "/capabilities") {
+    logEvent("info", "hostexec.capabilities.requested", { requestId, remoteAddress });
     sendJson(response, 200, { allowAll: allowAllCommands, commands: configuredCommands });
     return;
   }
 
   if (request.method === "POST" && url.pathname === "/exec") {
     try {
-      runCommand(response, await readJsonBody(request));
+      runCommand(response, await readJsonBody(request), { requestId, remoteAddress });
     } catch (error) {
+      logEvent("warn", "hostexec.exec.rejected", {
+        requestId,
+        reason: "invalid_request",
+        remoteAddress
+      });
       sendText(response, 400, error instanceof Error ? error.message : "invalid request");
     }
     return;
   }
 
+  logEvent("warn", "hostexec.request.rejected", {
+    requestId,
+    method: request.method,
+    path: url.pathname,
+    reason: "not_found",
+    remoteAddress
+  });
   sendText(response, 404, "not found");
 });
 

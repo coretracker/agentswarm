@@ -1566,7 +1566,7 @@ export class SpawnerService {
   }
 
   private resolveWorkspaceHostPath(taskId: string): string {
-    return path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, taskId);
+    return path.join(env.TASK_WORKSPACE_HOST_SOURCE, taskId);
   }
 
   private buildTaskWorkspaceMountArgs(sourceRelativePath: string, targetPath: string, mode: "ro" | "rw"): string[] {

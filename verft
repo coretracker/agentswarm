@@ -100,17 +100,21 @@ ensure_task_workspace_dir() {
 
 build_runtime_image() {
   local clean_build="$1"
-  local -a build_args=()
-  if [[ "$clean_build" == "true" ]]; then
-    build_args=(--pull --no-cache)
-  fi
 
   echo "Building agent toolbox runtime image: $AGENT_RUNTIME_IMAGE"
-  docker build \
-    "${build_args[@]}" \
-    -f "$ROOT_DIR/agent-runtime/Dockerfile" \
-    -t "$AGENT_RUNTIME_IMAGE" \
-    "$ROOT_DIR/agent-runtime"
+  if [[ "$clean_build" == "true" ]]; then
+    docker build \
+      --pull \
+      --no-cache \
+      -f "$ROOT_DIR/agent-runtime/Dockerfile" \
+      -t "$AGENT_RUNTIME_IMAGE" \
+      "$ROOT_DIR/agent-runtime"
+  else
+    docker build \
+      -f "$ROOT_DIR/agent-runtime/Dockerfile" \
+      -t "$AGENT_RUNTIME_IMAGE" \
+      "$ROOT_DIR/agent-runtime"
+  fi
 }
 
 start_stack() {
@@ -128,14 +132,14 @@ stop_stack() {
 
 rebuild_stack() {
   local clean_build="$1"
-  local -a build_args=()
-  if [[ "$clean_build" == "true" ]]; then
-    build_args=(--pull --no-cache)
-  fi
 
   build_runtime_image "$clean_build"
   echo "Rebuilding Verft compose images"
-  compose build "${build_args[@]}"
+  if [[ "$clean_build" == "true" ]]; then
+    compose build --pull --no-cache
+  else
+    compose build
+  fi
   echo "Restarting Verft services"
   ensure_task_workspace_dir
   compose up -d --force-recreate

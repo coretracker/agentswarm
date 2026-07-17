@@ -19,3 +19,5 @@ npm run hostexec -- --host 0.0.0.0
 ```
 
 Verft autodetects the daemon at the default host URLs. Repository **Host Commands** in the UI decide which shims are mounted for each repository. If `HOSTEXEC_TOKEN` is set, enter `HOSTEXEC_TOKEN` as the bearer token env var name in Settings.
+
+The daemon writes JSON event logs for capability checks and command execution lifecycle events. Logs include command names, task/repository ids, cwd-relative paths, exit codes, signals, durations, and rejection reasons. Tokens and command arguments are not logged.

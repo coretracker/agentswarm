@@ -49,7 +49,7 @@ const createRepository = (input: CreateRepositoryInput, overrides: Partial<Repos
   githubIntegrationBotLogin: input.githubIntegrationBotLogin ?? null,
   githubPrAllowedUsers: input.githubPrAllowedUsers ?? [],
   githubPrRequireBotMention: input.githubPrRequireBotMention === true,
-  githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge === true,
+  githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge !== false,
   githubPrInitialInstructions: input.githubPrInitialInstructions ?? null,
   githubPrFeedbackInstructions: input.githubPrFeedbackInstructions ?? null,
   githubPrReviewInstructions: input.githubPrReviewInstructions ?? null,
@@ -158,7 +158,7 @@ test("repository create allows the authenticated user as GitHub-created task own
   await app.close();
 });
 
-test("repository create accepts GitHub PR auto-archive setting", async () => {
+test("repository create accepts disabled GitHub PR auto-archive setting", async () => {
   const authUser = createAuthUser({ id: "user-1" });
   const { app } = createTestApp({ authUser, users: [createUser({ id: "user-1" })] });
 
@@ -168,7 +168,26 @@ test("repository create accepts GitHub PR auto-archive setting", async () => {
     payload: {
       name: "repo",
       url: "https://github.com/acme/repo.git",
-      githubPrAutoArchiveOnMerge: true
+      githubPrAutoArchiveOnMerge: false
+    }
+  });
+
+  assert.equal(response.statusCode, 201);
+  assert.equal(JSON.parse(response.body).githubPrAutoArchiveOnMerge, false);
+
+  await app.close();
+});
+
+test("repository create defaults GitHub PR auto-archive on", async () => {
+  const authUser = createAuthUser({ id: "user-1" });
+  const { app } = createTestApp({ authUser, users: [createUser({ id: "user-1" })] });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/repositories",
+    payload: {
+      name: "repo",
+      url: "https://github.com/acme/repo.git"
     }
   });
 

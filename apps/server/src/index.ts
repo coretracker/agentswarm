@@ -128,7 +128,8 @@ const bootstrap = async (): Promise<void> => {
       postgresAutoMigrate: AUTO_RUN_POSTGRES_MIGRATIONS,
       logRequests: env.LOG_REQUESTS,
       taskWorkspaceRoot: env.TASK_WORKSPACE_ROOT,
-      taskWorkspaceDockerSource: env.TASK_WORKSPACE_DOCKER_SOURCE
+      taskWorkspaceDockerSource: env.TASK_WORKSPACE_DOCKER_SOURCE,
+      taskWorkspaceHostSource: env.TASK_WORKSPACE_HOST_SOURCE
     }
   );
 
