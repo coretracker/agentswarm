@@ -218,7 +218,7 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
     >
       {canListTasks ? (
         <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
-          <div style={{ padding: 16, borderBottom: `1px solid ${token.colorBorderSecondary}` }}>
+          <div style={{ padding: 8, borderBottom: `1px solid ${token.colorBorderSecondary}` }}>
             <Flex vertical gap={12}>
               <Input
                 allowClear
@@ -234,7 +234,7 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
               ) : null}
             </Flex>
           </div>
-          <div style={{ minHeight: 0, overflowY: "auto", padding: 16 }}>
+          <div style={{ minHeight: 0, overflowY: "auto", padding: 8 }}>
             {loading ? (
               <Flex align="center" justify="center" style={{ minHeight: 160 }}>
                 <Spin tip="Loading tasks" />

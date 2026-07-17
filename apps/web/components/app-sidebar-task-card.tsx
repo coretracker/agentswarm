@@ -117,7 +117,7 @@ export function AppSidebarTaskCard({
       style={{
         position: "relative",
         overflow: "hidden",
-        padding: "11px 12px 11px 16px",
+        padding: "11px 12px 11px 20px",
         borderRadius: token.borderRadiusLG + 2,
         border: `1px solid ${selected ? token.colorPrimaryBorder : "transparent"}`,
         background: selected ? `linear-gradient(135deg, ${token.colorPrimaryBg}, ${token.colorBgContainer})` : token.colorBgContainer,
@@ -140,6 +140,13 @@ export function AppSidebarTaskCard({
         }}
       />
       <Flex vertical gap={8} style={{ minWidth: 0 }}>
+        <Typography.Text
+          type="secondary"
+          ellipsis={{ tooltip: task.repoName }}
+          style={{ fontSize: 12, display: "block", lineHeight: 1.2, marginBlockStart: -4 }}
+        >
+          {task.repoName}
+        </Typography.Text>
         <Flex align="start" justify="space-between" gap={8}>
           <Typography.Text
             strong
@@ -179,13 +186,6 @@ export function AppSidebarTaskCard({
             />
           ) : null}
         </Flex>
-        <Typography.Text
-          type="secondary"
-          ellipsis={{ tooltip: task.repoName }}
-          style={{ fontSize: 12, display: "block", lineHeight: 1.2, marginBlockStart: -4 }}
-        >
-          {task.repoName}
-        </Typography.Text>
         <Flex justify="space-between" align="center" gap={8} wrap={false} style={{ minWidth: 0 }}>
           <Flex align="center" gap={6} style={{ minWidth: 0 }}>
             <span
