@@ -154,7 +154,7 @@ export function AppSidebarTaskCard({
             style={{
               display: "-webkit-box",
               WebkitBoxOrient: "vertical",
-              WebkitLineClamp: 2,
+              WebkitLineClamp: 1,
               overflow: "hidden",
               lineHeight: 1.28,
               minWidth: 0,
