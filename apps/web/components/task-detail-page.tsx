@@ -3964,6 +3964,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     .filter((part): part is string => Boolean(part))
     .join(" · ");
   const chatComposer = (
+    <Card size="small">
     <Flex vertical gap={12}>
       <Flex gap={8} align="center" wrap="wrap">
         <Button onClick={() => setAiSettingsModalOpen(true)}>Settings</Button>
@@ -4141,6 +4142,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         {isActive ? " Settings will be applied on next run." : ""}
       </Typography.Text>
     </Flex>
+    </Card>
   );
 
   const chatPreparingNotice = isPreparingWorkspace ? (
@@ -6014,9 +6016,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
                 <Flex vertical gap={16}>
                   {chatPreparingNotice}
-                  <Card bordered={false}>
-                    <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff" | "files")} items={mainTabItems} />
-                  </Card>
+                  <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff" | "files")} items={mainTabItems} />
                   <div ref={bottomScrollAnchorRef} aria-hidden="true" style={{ height: 0, width: "100%", flexShrink: 0 }} />
                 </Flex>
               </Flex>
