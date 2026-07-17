@@ -120,7 +120,7 @@ import { CheckpointFileEditorModal } from "./checkpoint-file-editor-modal";
 import { TaskFilesTab } from "./task-files-tab";
 import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 import { TaskCreateModal } from "./task-create-modal";
-import { TaskHistoryGroupedAutoRunCard } from "./task-history-grouped-auto-run-card";
+import { TaskHistoryGroupedAutoRunCard, type TaskHistoryCheckpointDiffActions } from "./task-history-grouped-auto-run-card";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 import { useThemeMode } from "./theme-provider";
 import { getPrismTheme } from "../src/theme/code-highlighting";
@@ -4717,7 +4717,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       />
     ) : null;
 
-  const renderCheckpointDiffSection = (proposal: TaskChangeProposal, keyPrefix: string) => {
+  const getCheckpointDiffActions = (proposal: TaskChangeProposal): TaskHistoryCheckpointDiffActions => {
     const canRevertApplied = proposal.status === "applied" && !proposal.diffTruncated;
     const canRevertThisCheckpointNow = canRevertApplied && proposal.id === latestAppliedChangeProposalId;
     const diffTrimmed = proposal.diff.trim();
@@ -4727,9 +4727,117 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       diffTrimmed.length > 0 &&
       diffTrimmed !== "(no changes)";
     const showCheckpointApply = (proposal.status === "pending" || canReapplyReverted) && canEditTask && task && !isArchived;
-    const showCheckpointEditor = proposal.status === "pending" && canEditTask && task && !isArchived && proposal.changedFiles.length > 0;
     const blockOlderCheckpointWhilePending = !!pendingChangeProposal && proposal.id !== pendingChangeProposal.id;
     const olderCheckpointPendingTooltip = "Apply or reject the current pending checkpoint first.";
+    const blockedTooltip = blockOlderCheckpointWhilePending
+      ? olderCheckpointPendingTooltip
+      : checkpointDiffActionsBlocked
+        ? checkpointDiffActionsBlockedReason ?? undefined
+        : undefined;
+
+    if (!canEditTask || !task || isArchived) {
+      return { disabled: blockOlderCheckpointWhilePending };
+    }
+
+    return {
+      disabled: blockOlderCheckpointWhilePending,
+      apply: {
+        visible: Boolean(showCheckpointApply),
+        label: canReapplyReverted ? "Apply again" : "Apply",
+        primary: true,
+        disabled: checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending,
+        loading: proposalBusy?.id === proposal.id && proposalBusy.kind === "apply",
+        tooltip: blockedTooltip,
+        onClick: () => openApplyCheckpointModal(proposal)
+      },
+      reject: {
+        visible: proposal.status === "pending" && Boolean(showCheckpointApply),
+        label: "Reject",
+        danger: true,
+        disabled: checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending,
+        loading: proposalBusy?.id === proposal.id && proposalBusy.kind === "reject",
+        tooltip: blockedTooltip,
+        onClick: () => handleRejectCheckpoint(proposal)
+      },
+      revert: {
+        visible: canRevertApplied,
+        label: "Revert",
+        disabled: checkpointDiffActionsBlocked || !canRevertThisCheckpointNow || blockOlderCheckpointWhilePending,
+        loading: proposalBusy?.id === proposal.id && proposalBusy.kind === "revert",
+        tooltip: blockOlderCheckpointWhilePending
+          ? olderCheckpointPendingTooltip
+          : checkpointDiffActionsBlocked
+            ? checkpointDiffActionsBlockedReason ?? undefined
+            : canRevertThisCheckpointNow
+              ? undefined
+              : "A newer applied checkpoint must be reverted first. Undo in reverse apply order.",
+        onClick: () => {
+          if (checkpointDiffActionsBlocked || !canRevertThisCheckpointNow || blockOlderCheckpointWhilePending) {
+            return;
+          }
+          handleRevertCheckpoint(proposal);
+        }
+      }
+    };
+  };
+
+  const renderCheckpointDiffContent = (proposal: TaskChangeProposal) => {
+    const showCheckpointEditor = proposal.status === "pending" && canEditTask && task && !isArchived && proposal.changedFiles.length > 0;
+    const blockOlderCheckpointWhilePending = !!pendingChangeProposal && proposal.id !== pendingChangeProposal.id;
+
+    return (
+      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        {renderParsedDiff(proposal.diff, "No diff text.", {
+          collapseFiles: true,
+          taskId: proposal.taskId,
+          previewRefs: {
+            before: proposal.fromRef,
+            after: proposal.toRef,
+            useWorkspaceAfter:
+              proposal.status !== "reverted" &&
+              (proposal.sourceType === "interactive_session" ||
+                (proposal.sourceType === "build_run" && proposal.status === "pending"))
+          },
+          renderFileActions:
+            showCheckpointEditor && !checkpointDiffActionsBlocked && !blockOlderCheckpointWhilePending
+              ? (file) => {
+                  const editableFilePath = resolveCheckpointEditableFilePath(file, proposal.changedFiles);
+                  if (!editableFilePath) {
+                    return null;
+                  }
+
+                  return (
+                    <Space size={6}>
+                      <Button
+                        size="small"
+                        icon={<EditOutlined />}
+                        onClick={() => openCheckpointFileEditorModal(proposal, editableFilePath)}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        size="small"
+                        danger
+                        icon={<RollbackOutlined />}
+                        loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "revert_file"}
+                        onClick={() => handleRevertCheckpointFile(proposal, editableFilePath)}
+                      >
+                        Revert
+                      </Button>
+                    </Space>
+                  );
+                }
+              : undefined
+        })}
+      </Space>
+    );
+  };
+
+  const renderCheckpointDiffSection = (proposal: TaskChangeProposal, keyPrefix: string) => {
+    const diffActions = getCheckpointDiffActions(proposal);
+    const visibleDiffActions = [diffActions.apply, diffActions.reject, diffActions.revert].filter(
+      (action): action is NonNullable<typeof action> => !!action?.visible
+    );
 
     return (
       <Collapse
@@ -4739,137 +4847,31 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           {
             key: `${keyPrefix}-diff`,
             label: `Diff${proposal.changedFiles.length > 0 ? ` (${proposal.changedFiles.length})` : ""}`,
-            collapsible: blockOlderCheckpointWhilePending ? "disabled" : undefined,
+            collapsible: diffActions.disabled ? "disabled" : undefined,
             extra:
-              canEditTask && task && !isArchived && (showCheckpointApply || canRevertApplied) ? (
+              visibleDiffActions.length > 0 ? (
                 <span onClick={(event) => event.stopPropagation()}>
                   <Space size={4} wrap>
-                    {showCheckpointApply ? (
-                      <>
-                        <Tooltip
-                          title={
-                            blockOlderCheckpointWhilePending
-                              ? olderCheckpointPendingTooltip
-                              : checkpointDiffActionsBlocked
-                                ? checkpointDiffActionsBlockedReason
-                                : undefined
-                          }
-                        >
-                          <span>
-                              <Button
-                              type="primary"
-                              size="small"
-                              disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending}
-                              loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "apply"}
-                              onClick={() => openApplyCheckpointModal(proposal)}
-                            >
-                              {canReapplyReverted ? "Apply again" : "Apply"}
-                            </Button>
-                          </span>
-                        </Tooltip>
-                        {proposal.status === "pending" ? (
-                          <Tooltip
-                            title={
-                              blockOlderCheckpointWhilePending
-                                ? olderCheckpointPendingTooltip
-                                : checkpointDiffActionsBlocked
-                                  ? checkpointDiffActionsBlockedReason
-                                  : undefined
-                            }
-                          >
-                            <span>
-                              <Button
-                                danger
-                                size="small"
-                                disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending}
-                                loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "reject"}
-                                onClick={() => handleRejectCheckpoint(proposal)}
-                              >
-                                Reject
-                              </Button>
-                            </span>
-                          </Tooltip>
-                        ) : null}
-                      </>
-                    ) : null}
-                    {canRevertApplied ? (
-                      <Tooltip
-                        title={
-                          blockOlderCheckpointWhilePending
-                            ? olderCheckpointPendingTooltip
-                            : checkpointDiffActionsBlocked
-                              ? checkpointDiffActionsBlockedReason ?? undefined
-                              : canRevertThisCheckpointNow
-                                ? undefined
-                                : "A newer applied checkpoint must be reverted first. Undo in reverse apply order."
-                        }
-                      >
+                    {visibleDiffActions.map((action) => (
+                      <Tooltip key={action.label} title={action.tooltip}>
                         <span>
                           <Button
+                            type={action.primary ? "primary" : "default"}
                             size="small"
-                            disabled={checkpointDiffActionsBlocked || !canRevertThisCheckpointNow || blockOlderCheckpointWhilePending}
-                            loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "revert"}
-                            onClick={() => {
-                              if (checkpointDiffActionsBlocked || !canRevertThisCheckpointNow || blockOlderCheckpointWhilePending) {
-                                return;
-                              }
-                              handleRevertCheckpoint(proposal);
-                            }}
+                            danger={action.danger}
+                            disabled={action.disabled}
+                            loading={action.loading}
+                            onClick={action.onClick}
                           >
-                            Revert
+                            {action.label}
                           </Button>
                         </span>
                       </Tooltip>
-                    ) : null}
+                    ))}
                   </Space>
                 </span>
               ) : null,
-            children: (
-              <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                {renderParsedDiff(proposal.diff, "No diff text.", {
-                  collapseFiles: true,
-                  taskId: proposal.taskId,
-                  previewRefs: {
-                    before: proposal.fromRef,
-                    after: proposal.toRef,
-                    useWorkspaceAfter:
-                      proposal.status !== "reverted" &&
-                      (proposal.sourceType === "interactive_session" ||
-                        (proposal.sourceType === "build_run" && proposal.status === "pending"))
-                  },
-                  renderFileActions:
-                    showCheckpointEditor && !checkpointDiffActionsBlocked && !blockOlderCheckpointWhilePending
-                      ? (file) => {
-                          const editableFilePath = resolveCheckpointEditableFilePath(file, proposal.changedFiles);
-                          if (!editableFilePath) {
-                            return null;
-                          }
-
-                          return (
-                            <Space size={6}>
-                              <Button
-                                size="small"
-                                icon={<EditOutlined />}
-                                onClick={() => openCheckpointFileEditorModal(proposal, editableFilePath)}
-                              >
-                                Edit
-                              </Button>
-                              <Button
-                                size="small"
-                                danger
-                                icon={<RollbackOutlined />}
-                                loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "revert_file"}
-                                onClick={() => handleRevertCheckpointFile(proposal, editableFilePath)}
-                              >
-                                Revert
-                              </Button>
-                            </Space>
-                          );
-                        }
-                      : undefined
-                })}
-              </Space>
-            )
+            children: renderCheckpointDiffContent(proposal)
           }
         ]}
       />
@@ -5171,7 +5173,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         entryKey={entryKey}
         entry={entry}
         cardStyle={getHistoryContextCardStyle(entryKey)}
-        headStyle={historyCardHeadStyle}
         showCheckpointState={showCheckpointState}
         showRunCancel={showRunCancel}
         cancelLoading={submitting === "cancel"}
@@ -5183,8 +5184,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         )}
         renderRunErrorNotice={renderRunErrorNotice}
         renderRunTimelineCollapse={renderRunTimelineCollapse}
-        renderSummaryCopyButton={renderSummaryCopyButton}
-        renderCheckpointDiffSection={renderCheckpointDiffSection}
+        onCopySummary={(markdown) => void copyMarkdownToClipboard(markdown, "Summary markdown")}
+        renderCheckpointDiffContent={renderCheckpointDiffContent}
+        getCheckpointDiffActions={getCheckpointDiffActions}
       />
     );
   };
