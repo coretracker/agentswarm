@@ -97,6 +97,13 @@ import { useSettings } from "../src/hooks/useSettings";
 import { useSocket } from "../src/hooks/useSocket";
 import { isImageDiffPath, normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
 import {
+  checkpointStatusColor,
+  checkpointStatusLabel,
+  formatRunDuration,
+  getNormalizedRunSummary,
+  taskRunStatusColor
+} from "../src/utils/task-history-display";
+import {
   encodeTaskPromptImageFiles,
   formatAttachmentSize,
   type SelectedTaskPromptImageFile
@@ -113,16 +120,10 @@ import { CheckpointFileEditorModal } from "./checkpoint-file-editor-modal";
 import { TaskFilesTab } from "./task-files-tab";
 import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 import { TaskCreateModal } from "./task-create-modal";
+import { TaskHistoryGroupedAutoRunCard } from "./task-history-grouped-auto-run-card";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 import { useThemeMode } from "./theme-provider";
 import { getPrismTheme } from "../src/theme/code-highlighting";
-
-const runStatusColor: Record<TaskRun["status"], string> = {
-  running: "processing",
-  succeeded: "green",
-  failed: "red",
-  cancelled: "default"
-};
 
 type ComposerAction = TaskMessageAction | "terminal";
 
@@ -203,20 +204,6 @@ function getProviderConfiguredModels(provider: AgentProvider, settings?: SystemS
   return models && models.length > 0 ? models : getModelsForProvider(provider);
 }
 
-function formatRunDuration(startedAt: string, finishedAt: string | null): string {
-  const start = dayjs(startedAt);
-  const end = finishedAt ? dayjs(finishedAt) : dayjs();
-  const totalSeconds = Math.max(0, end.diff(start, "second"));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-
-  if (minutes > 0) {
-    return `${minutes}m ${seconds}s`;
-  }
-
-  return `${seconds}s`;
-}
-
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: "Codex (OpenAI)", value: "codex" },
   { label: getAgentProviderLabel("claude"), value: "claude" }
@@ -252,40 +239,6 @@ interface CheckpointEditorModalState {
 }
 
 interface TaskGitOperationPayload extends TaskGitOperation {}
-
-function checkpointStatusLabel(status: TaskChangeProposal["status"]): string {
-  switch (status) {
-    case "pending":
-      return "Pending";
-    case "applying":
-      return "Applying";
-    case "applied":
-      return "Applied";
-    case "rejected":
-      return "Rejected";
-    case "reverted":
-      return "Reverted";
-    default:
-      return status;
-  }
-}
-
-function checkpointStatusColor(status: TaskChangeProposal["status"]): string {
-  switch (status) {
-    case "pending":
-      return "orange";
-    case "applying":
-      return "processing";
-    case "applied":
-      return "green";
-    case "reverted":
-      return "blue";
-    case "rejected":
-      return "red";
-    default:
-      return "default";
-  }
-}
 
 function changeProposalSourceLabel(sourceType: TaskChangeProposal["sourceType"]): string {
   return sourceType === "build_run" ? "Build run" : "Terminal session";
@@ -4458,21 +4411,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     });
   };
 
-  const getNormalizedRunSummary = (run: TaskRun): string | null =>
-    run.status === "failed" && run.errorMessage
-      ? (() => {
-          const summary = run.summary?.trim();
-          const errorMessage = run.errorMessage.trim();
-          if (!summary) {
-            return null;
-          }
-          if (summary === errorMessage || summary === `Task failed: ${errorMessage}`) {
-            return null;
-          }
-          return summary;
-        })()
-      : run.summary?.trim() || null;
-
   const renderRunNoChangeNotice = (run: TaskRun) =>
     run.action === "build" && run.status === "succeeded" && run.changeOutcome === "no_change" ? (
       <Typography.Paragraph type="secondary" style={{ margin: "8px 0 0" }}>
@@ -5188,7 +5126,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         <Card size="small" style={getHistoryContextCardStyle(entryKey, { width: "100%" })}>
           <Flex justify="space-between" align="center" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
             <Space wrap size={8}>
-              <Tag color={runStatusColor[run.status]}>{run.status}</Tag>
+              <Tag color={taskRunStatusColor[run.status]}>{run.status}</Tag>
               <Tag>{taskActionLabel[run.action]}</Tag>
               {run.action === "build" && run.changeOutcome === "no_change" ? <Tag color="default">No code changes</Tag> : null}
               <Tag>{getAgentProviderLabel(run.provider)}</Tag>
@@ -5225,77 +5163,29 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   };
 
   const renderGroupedAutoRunEntry = (entryKey: string, entry: Extract<(typeof chatTimeline)[number], { kind: "grouped_auto_run" }>) => {
-    const normalizedRunSummary = getNormalizedRunSummary(entry.run);
-    const summaryTitle = entry.run.action === "build" ? "Implementation Summary" : "Summary";
-    const promptText = entry.promptText;
-    const runStatusLabel = entry.run.status;
-    const runStatusTagColor = runStatusColor[entry.run.status];
     const showRunCancel = canCancel && activeAutoRunHistoryEntry?.key === entry.key && !isArchived;
 
     return (
-      <Card
+      <TaskHistoryGroupedAutoRunCard
         key={entryKey}
-        size="small"
-        style={getHistoryContextCardStyle(entryKey)}
+        entryKey={entryKey}
+        entry={entry}
+        cardStyle={getHistoryContextCardStyle(entryKey)}
         headStyle={historyCardHeadStyle}
-        title={
-          <Space wrap>
-            <Tag color={runStatusTagColor}>{runStatusLabel}</Tag>
-            <Tag>{taskActionLabel[entry.run.action]}</Tag>
-            {entry.run.action === "build" && entry.run.changeOutcome === "no_change" ? <Tag color="default">No code changes</Tag> : null}
-            <Tag>{getAgentProviderLabel(entry.run.provider)}</Tag>
-            {showCheckpointState && entry.proposal ? <Tag color={checkpointStatusColor(entry.proposal.status)}>{checkpointStatusLabel(entry.proposal.status)}</Tag> : null}
-            {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
-          </Space>
-        }
-        extra={
-          <Space size={8} wrap style={{ justifyContent: "flex-end" }}>
-            <Typography.Text type="secondary">
-              {dayjs(entry.run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(entry.run.startedAt, entry.run.finishedAt)}
-            </Typography.Text>
-            {showRunCancel ? (
-              <Button size="small" danger onClick={() => void handleCancelTask()} loading={submitting === "cancel"}>
-                Cancel
-              </Button>
-            ) : null}
-          </Space>
-        }
-      >
-        <Flex vertical gap="middle">
-          <div>
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-              {promptText}
-            </ReactMarkdown>
-          </div>
-          {renderRunErrorNotice(entry.run)}
-          {renderRunTimelineCollapse(entry.run)}
-          <Collapse
-            size="small"
-            defaultActiveKey={[`${entryKey}-summary`]}
-            items={[
-              {
-                key: `${entryKey}-summary`,
-                label: summaryTitle,
-                extra: normalizedRunSummary ? renderSummaryCopyButton(normalizedRunSummary) : null,
-                children: normalizedRunSummary ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                    {normalizedRunSummary}
-                  </ReactMarkdown>
-                ) : (
-                  <Typography.Text type="secondary">
-                    {entry.run.status === "running"
-                      ? "Summary will appear when the run finishes."
-                      : entry.run.action === "build" && entry.run.changeOutcome === "no_change"
-                        ? "No code changes were needed for this run."
-                      : "No summary was captured for this run."}
-                  </Typography.Text>
-                )
-              }
-            ]}
-          />
-          {entry.proposal ? renderCheckpointDiffSection(entry.proposal, entryKey) : null}
-        </Flex>
-      </Card>
+        showCheckpointState={showCheckpointState}
+        showRunCancel={showRunCancel}
+        cancelLoading={submitting === "cancel"}
+        onCancel={() => void handleCancelTask()}
+        renderMarkdown={(markdown) => (
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            {markdown}
+          </ReactMarkdown>
+        )}
+        renderRunErrorNotice={renderRunErrorNotice}
+        renderRunTimelineCollapse={renderRunTimelineCollapse}
+        renderSummaryCopyButton={renderSummaryCopyButton}
+        renderCheckpointDiffSection={renderCheckpointDiffSection}
+      />
     );
   };
 
