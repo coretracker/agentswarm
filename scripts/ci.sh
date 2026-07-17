@@ -17,9 +17,9 @@ cleanup() {
 
 trap cleanup EXIT INT TERM
 
-tty_args=()
+tty_arg=""
 if [[ -t 1 ]]; then
-  tty_args=(-t)
+  tty_arg="-t"
 fi
 
 echo "[ci] image: ${IMAGE}"
@@ -27,7 +27,7 @@ echo "[ci] container: ${CONTAINER_NAME}"
 echo "[ci] repo: ${REPO_ROOT}"
 echo "[ci] running npm ci, lint, build, and tests in a single Node container"
 
-docker run --rm "${tty_args[@]}" \
+docker run --rm ${tty_arg:+"${tty_arg}"} \
   --name "${CONTAINER_NAME}" \
   --user "$(id -u):$(id -g)" \
   -e CI=1 \

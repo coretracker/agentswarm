@@ -97,6 +97,13 @@ import { useSettings } from "../src/hooks/useSettings";
 import { useSocket } from "../src/hooks/useSocket";
 import { isImageDiffPath, normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/diff";
 import {
+  checkpointStatusColor,
+  checkpointStatusLabel,
+  formatRunDuration,
+  getNormalizedRunSummary,
+  taskRunStatusColor
+} from "../src/utils/task-history-display";
+import {
   encodeTaskPromptImageFiles,
   formatAttachmentSize,
   type SelectedTaskPromptImageFile
@@ -113,16 +120,10 @@ import { CheckpointFileEditorModal } from "./checkpoint-file-editor-modal";
 import { TaskFilesTab } from "./task-files-tab";
 import { WorkspaceFilePreviewModal } from "./workspace-file-preview-modal";
 import { TaskCreateModal } from "./task-create-modal";
+import { TaskHistoryGroupedAutoRunCard, type TaskHistoryCheckpointDiffActions } from "./task-history-grouped-auto-run-card";
 import { parseWorkspaceFileLink, type WorkspaceFileLinkTarget } from "../src/utils/workspace-file-links";
 import { useThemeMode } from "./theme-provider";
 import { getPrismTheme } from "../src/theme/code-highlighting";
-
-const runStatusColor: Record<TaskRun["status"], string> = {
-  running: "processing",
-  succeeded: "green",
-  failed: "red",
-  cancelled: "default"
-};
 
 type ComposerAction = TaskMessageAction | "terminal";
 
@@ -203,20 +204,6 @@ function getProviderConfiguredModels(provider: AgentProvider, settings?: SystemS
   return models && models.length > 0 ? models : getModelsForProvider(provider);
 }
 
-function formatRunDuration(startedAt: string, finishedAt: string | null): string {
-  const start = dayjs(startedAt);
-  const end = finishedAt ? dayjs(finishedAt) : dayjs();
-  const totalSeconds = Math.max(0, end.diff(start, "second"));
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-
-  if (minutes > 0) {
-    return `${minutes}m ${seconds}s`;
-  }
-
-  return `${seconds}s`;
-}
-
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: "Codex (OpenAI)", value: "codex" },
   { label: getAgentProviderLabel("claude"), value: "claude" }
@@ -252,40 +239,6 @@ interface CheckpointEditorModalState {
 }
 
 interface TaskGitOperationPayload extends TaskGitOperation {}
-
-function checkpointStatusLabel(status: TaskChangeProposal["status"]): string {
-  switch (status) {
-    case "pending":
-      return "Pending";
-    case "applying":
-      return "Applying";
-    case "applied":
-      return "Applied";
-    case "rejected":
-      return "Rejected";
-    case "reverted":
-      return "Reverted";
-    default:
-      return status;
-  }
-}
-
-function checkpointStatusColor(status: TaskChangeProposal["status"]): string {
-  switch (status) {
-    case "pending":
-      return "orange";
-    case "applying":
-      return "processing";
-    case "applied":
-      return "green";
-    case "reverted":
-      return "blue";
-    case "rejected":
-      return "red";
-    default:
-      return "default";
-  }
-}
 
 function changeProposalSourceLabel(sourceType: TaskChangeProposal["sourceType"]): string {
   return sourceType === "build_run" ? "Build run" : "Terminal session";
@@ -4011,6 +3964,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     .filter((part): part is string => Boolean(part))
     .join(" · ");
   const chatComposer = (
+    <Card size="small">
     <Flex vertical gap={12}>
       <Flex gap={8} align="center" wrap="wrap">
         <Button onClick={() => setAiSettingsModalOpen(true)}>Settings</Button>
@@ -4188,6 +4142,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         {isActive ? " Settings will be applied on next run." : ""}
       </Typography.Text>
     </Flex>
+    </Card>
   );
 
   const chatPreparingNotice = isPreparingWorkspace ? (
@@ -4457,21 +4412,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       }
     });
   };
-
-  const getNormalizedRunSummary = (run: TaskRun): string | null =>
-    run.status === "failed" && run.errorMessage
-      ? (() => {
-          const summary = run.summary?.trim();
-          const errorMessage = run.errorMessage.trim();
-          if (!summary) {
-            return null;
-          }
-          if (summary === errorMessage || summary === `Task failed: ${errorMessage}`) {
-            return null;
-          }
-          return summary;
-        })()
-      : run.summary?.trim() || null;
 
   const renderRunNoChangeNotice = (run: TaskRun) =>
     run.action === "build" && run.status === "succeeded" && run.changeOutcome === "no_change" ? (
@@ -4779,7 +4719,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       />
     ) : null;
 
-  const renderCheckpointDiffSection = (proposal: TaskChangeProposal, keyPrefix: string) => {
+  const getCheckpointDiffActions = (proposal: TaskChangeProposal): TaskHistoryCheckpointDiffActions => {
     const canRevertApplied = proposal.status === "applied" && !proposal.diffTruncated;
     const canRevertThisCheckpointNow = canRevertApplied && proposal.id === latestAppliedChangeProposalId;
     const diffTrimmed = proposal.diff.trim();
@@ -4789,9 +4729,117 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       diffTrimmed.length > 0 &&
       diffTrimmed !== "(no changes)";
     const showCheckpointApply = (proposal.status === "pending" || canReapplyReverted) && canEditTask && task && !isArchived;
-    const showCheckpointEditor = proposal.status === "pending" && canEditTask && task && !isArchived && proposal.changedFiles.length > 0;
     const blockOlderCheckpointWhilePending = !!pendingChangeProposal && proposal.id !== pendingChangeProposal.id;
     const olderCheckpointPendingTooltip = "Apply or reject the current pending checkpoint first.";
+    const blockedTooltip = blockOlderCheckpointWhilePending
+      ? olderCheckpointPendingTooltip
+      : checkpointDiffActionsBlocked
+        ? checkpointDiffActionsBlockedReason ?? undefined
+        : undefined;
+
+    if (!canEditTask || !task || isArchived) {
+      return { disabled: blockOlderCheckpointWhilePending };
+    }
+
+    return {
+      disabled: blockOlderCheckpointWhilePending,
+      apply: {
+        visible: Boolean(showCheckpointApply),
+        label: canReapplyReverted ? "Apply again" : "Apply",
+        primary: true,
+        disabled: checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending,
+        loading: proposalBusy?.id === proposal.id && proposalBusy.kind === "apply",
+        tooltip: blockedTooltip,
+        onClick: () => openApplyCheckpointModal(proposal)
+      },
+      reject: {
+        visible: proposal.status === "pending" && Boolean(showCheckpointApply),
+        label: "Reject",
+        danger: true,
+        disabled: checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending,
+        loading: proposalBusy?.id === proposal.id && proposalBusy.kind === "reject",
+        tooltip: blockedTooltip,
+        onClick: () => handleRejectCheckpoint(proposal)
+      },
+      revert: {
+        visible: canRevertApplied,
+        label: "Revert",
+        disabled: checkpointDiffActionsBlocked || !canRevertThisCheckpointNow || blockOlderCheckpointWhilePending,
+        loading: proposalBusy?.id === proposal.id && proposalBusy.kind === "revert",
+        tooltip: blockOlderCheckpointWhilePending
+          ? olderCheckpointPendingTooltip
+          : checkpointDiffActionsBlocked
+            ? checkpointDiffActionsBlockedReason ?? undefined
+            : canRevertThisCheckpointNow
+              ? undefined
+              : "A newer applied checkpoint must be reverted first. Undo in reverse apply order.",
+        onClick: () => {
+          if (checkpointDiffActionsBlocked || !canRevertThisCheckpointNow || blockOlderCheckpointWhilePending) {
+            return;
+          }
+          handleRevertCheckpoint(proposal);
+        }
+      }
+    };
+  };
+
+  const renderCheckpointDiffContent = (proposal: TaskChangeProposal) => {
+    const showCheckpointEditor = proposal.status === "pending" && canEditTask && task && !isArchived && proposal.changedFiles.length > 0;
+    const blockOlderCheckpointWhilePending = !!pendingChangeProposal && proposal.id !== pendingChangeProposal.id;
+
+    return (
+      <Space direction="vertical" size={12} style={{ width: "100%" }}>
+        {renderParsedDiff(proposal.diff, "No diff text.", {
+          collapseFiles: true,
+          taskId: proposal.taskId,
+          previewRefs: {
+            before: proposal.fromRef,
+            after: proposal.toRef,
+            useWorkspaceAfter:
+              proposal.status !== "reverted" &&
+              (proposal.sourceType === "interactive_session" ||
+                (proposal.sourceType === "build_run" && proposal.status === "pending"))
+          },
+          renderFileActions:
+            showCheckpointEditor && !checkpointDiffActionsBlocked && !blockOlderCheckpointWhilePending
+              ? (file) => {
+                  const editableFilePath = resolveCheckpointEditableFilePath(file, proposal.changedFiles);
+                  if (!editableFilePath) {
+                    return null;
+                  }
+
+                  return (
+                    <Space size={6}>
+                      <Button
+                        size="small"
+                        icon={<EditOutlined />}
+                        onClick={() => openCheckpointFileEditorModal(proposal, editableFilePath)}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        size="small"
+                        danger
+                        icon={<RollbackOutlined />}
+                        loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "revert_file"}
+                        onClick={() => handleRevertCheckpointFile(proposal, editableFilePath)}
+                      >
+                        Revert
+                      </Button>
+                    </Space>
+                  );
+                }
+              : undefined
+        })}
+      </Space>
+    );
+  };
+
+  const renderCheckpointDiffSection = (proposal: TaskChangeProposal, keyPrefix: string) => {
+    const diffActions = getCheckpointDiffActions(proposal);
+    const visibleDiffActions = [diffActions.apply, diffActions.reject, diffActions.revert].filter(
+      (action): action is NonNullable<typeof action> => !!action?.visible
+    );
 
     return (
       <Collapse
@@ -4801,137 +4849,31 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           {
             key: `${keyPrefix}-diff`,
             label: `Diff${proposal.changedFiles.length > 0 ? ` (${proposal.changedFiles.length})` : ""}`,
-            collapsible: blockOlderCheckpointWhilePending ? "disabled" : undefined,
+            collapsible: diffActions.disabled ? "disabled" : undefined,
             extra:
-              canEditTask && task && !isArchived && (showCheckpointApply || canRevertApplied) ? (
+              visibleDiffActions.length > 0 ? (
                 <span onClick={(event) => event.stopPropagation()}>
                   <Space size={4} wrap>
-                    {showCheckpointApply ? (
-                      <>
-                        <Tooltip
-                          title={
-                            blockOlderCheckpointWhilePending
-                              ? olderCheckpointPendingTooltip
-                              : checkpointDiffActionsBlocked
-                                ? checkpointDiffActionsBlockedReason
-                                : undefined
-                          }
-                        >
-                          <span>
-                              <Button
-                              type="primary"
-                              size="small"
-                              disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending}
-                              loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "apply"}
-                              onClick={() => openApplyCheckpointModal(proposal)}
-                            >
-                              {canReapplyReverted ? "Apply again" : "Apply"}
-                            </Button>
-                          </span>
-                        </Tooltip>
-                        {proposal.status === "pending" ? (
-                          <Tooltip
-                            title={
-                              blockOlderCheckpointWhilePending
-                                ? olderCheckpointPendingTooltip
-                                : checkpointDiffActionsBlocked
-                                  ? checkpointDiffActionsBlockedReason
-                                  : undefined
-                            }
-                          >
-                            <span>
-                              <Button
-                                danger
-                                size="small"
-                                disabled={checkpointDiffActionsBlocked || blockOlderCheckpointWhilePending}
-                                loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "reject"}
-                                onClick={() => handleRejectCheckpoint(proposal)}
-                              >
-                                Reject
-                              </Button>
-                            </span>
-                          </Tooltip>
-                        ) : null}
-                      </>
-                    ) : null}
-                    {canRevertApplied ? (
-                      <Tooltip
-                        title={
-                          blockOlderCheckpointWhilePending
-                            ? olderCheckpointPendingTooltip
-                            : checkpointDiffActionsBlocked
-                              ? checkpointDiffActionsBlockedReason ?? undefined
-                              : canRevertThisCheckpointNow
-                                ? undefined
-                                : "A newer applied checkpoint must be reverted first. Undo in reverse apply order."
-                        }
-                      >
+                    {visibleDiffActions.map((action) => (
+                      <Tooltip key={action.label} title={action.tooltip}>
                         <span>
                           <Button
+                            type={action.primary ? "primary" : "default"}
                             size="small"
-                            disabled={checkpointDiffActionsBlocked || !canRevertThisCheckpointNow || blockOlderCheckpointWhilePending}
-                            loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "revert"}
-                            onClick={() => {
-                              if (checkpointDiffActionsBlocked || !canRevertThisCheckpointNow || blockOlderCheckpointWhilePending) {
-                                return;
-                              }
-                              handleRevertCheckpoint(proposal);
-                            }}
+                            danger={action.danger}
+                            disabled={action.disabled}
+                            loading={action.loading}
+                            onClick={action.onClick}
                           >
-                            Revert
+                            {action.label}
                           </Button>
                         </span>
                       </Tooltip>
-                    ) : null}
+                    ))}
                   </Space>
                 </span>
               ) : null,
-            children: (
-              <Space direction="vertical" size={12} style={{ width: "100%" }}>
-                {renderParsedDiff(proposal.diff, "No diff text.", {
-                  collapseFiles: true,
-                  taskId: proposal.taskId,
-                  previewRefs: {
-                    before: proposal.fromRef,
-                    after: proposal.toRef,
-                    useWorkspaceAfter:
-                      proposal.status !== "reverted" &&
-                      (proposal.sourceType === "interactive_session" ||
-                        (proposal.sourceType === "build_run" && proposal.status === "pending"))
-                  },
-                  renderFileActions:
-                    showCheckpointEditor && !checkpointDiffActionsBlocked && !blockOlderCheckpointWhilePending
-                      ? (file) => {
-                          const editableFilePath = resolveCheckpointEditableFilePath(file, proposal.changedFiles);
-                          if (!editableFilePath) {
-                            return null;
-                          }
-
-                          return (
-                            <Space size={6}>
-                              <Button
-                                size="small"
-                                icon={<EditOutlined />}
-                                onClick={() => openCheckpointFileEditorModal(proposal, editableFilePath)}
-                              >
-                                Edit
-                              </Button>
-                              <Button
-                                size="small"
-                                danger
-                                icon={<RollbackOutlined />}
-                                loading={proposalBusy?.id === proposal.id && proposalBusy.kind === "revert_file"}
-                                onClick={() => handleRevertCheckpointFile(proposal, editableFilePath)}
-                              >
-                                Revert
-                              </Button>
-                            </Space>
-                          );
-                        }
-                      : undefined
-                })}
-              </Space>
-            )
+            children: renderCheckpointDiffContent(proposal)
           }
         ]}
       />
@@ -5188,7 +5130,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         <Card size="small" style={getHistoryContextCardStyle(entryKey, { width: "100%" })}>
           <Flex justify="space-between" align="center" gap={12} wrap="wrap" style={{ marginBottom: 8 }}>
             <Space wrap size={8}>
-              <Tag color={runStatusColor[run.status]}>{run.status}</Tag>
+              <Tag color={taskRunStatusColor[run.status]}>{run.status}</Tag>
               <Tag>{taskActionLabel[run.action]}</Tag>
               {run.action === "build" && run.changeOutcome === "no_change" ? <Tag color="default">No code changes</Tag> : null}
               <Tag>{getAgentProviderLabel(run.provider)}</Tag>
@@ -5225,77 +5167,29 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   };
 
   const renderGroupedAutoRunEntry = (entryKey: string, entry: Extract<(typeof chatTimeline)[number], { kind: "grouped_auto_run" }>) => {
-    const normalizedRunSummary = getNormalizedRunSummary(entry.run);
-    const summaryTitle = entry.run.action === "build" ? "Implementation Summary" : "Summary";
-    const promptText = entry.promptText;
-    const runStatusLabel = entry.run.status;
-    const runStatusTagColor = runStatusColor[entry.run.status];
     const showRunCancel = canCancel && activeAutoRunHistoryEntry?.key === entry.key && !isArchived;
 
     return (
-      <Card
+      <TaskHistoryGroupedAutoRunCard
         key={entryKey}
-        size="small"
-        style={getHistoryContextCardStyle(entryKey)}
-        headStyle={historyCardHeadStyle}
-        title={
-          <Space wrap>
-            <Tag color={runStatusTagColor}>{runStatusLabel}</Tag>
-            <Tag>{taskActionLabel[entry.run.action]}</Tag>
-            {entry.run.action === "build" && entry.run.changeOutcome === "no_change" ? <Tag color="default">No code changes</Tag> : null}
-            <Tag>{getAgentProviderLabel(entry.run.provider)}</Tag>
-            {showCheckpointState && entry.proposal ? <Tag color={checkpointStatusColor(entry.proposal.status)}>{checkpointStatusLabel(entry.proposal.status)}</Tag> : null}
-            {entry.proposal?.diffTruncated ? <Tag>Truncated preview</Tag> : null}
-          </Space>
-        }
-        extra={
-          <Space size={8} wrap style={{ justifyContent: "flex-end" }}>
-            <Typography.Text type="secondary">
-              {dayjs(entry.run.startedAt).format("YYYY-MM-DD HH:mm:ss")} · {formatRunDuration(entry.run.startedAt, entry.run.finishedAt)}
-            </Typography.Text>
-            {showRunCancel ? (
-              <Button size="small" danger onClick={() => void handleCancelTask()} loading={submitting === "cancel"}>
-                Cancel
-              </Button>
-            ) : null}
-          </Space>
-        }
-      >
-        <Flex vertical gap="middle">
-          <div>
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-              {promptText}
-            </ReactMarkdown>
-          </div>
-          {renderRunErrorNotice(entry.run)}
-          {renderRunTimelineCollapse(entry.run)}
-          <Collapse
-            size="small"
-            defaultActiveKey={[`${entryKey}-summary`]}
-            items={[
-              {
-                key: `${entryKey}-summary`,
-                label: summaryTitle,
-                extra: normalizedRunSummary ? renderSummaryCopyButton(normalizedRunSummary) : null,
-                children: normalizedRunSummary ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
-                    {normalizedRunSummary}
-                  </ReactMarkdown>
-                ) : (
-                  <Typography.Text type="secondary">
-                    {entry.run.status === "running"
-                      ? "Summary will appear when the run finishes."
-                      : entry.run.action === "build" && entry.run.changeOutcome === "no_change"
-                        ? "No code changes were needed for this run."
-                      : "No summary was captured for this run."}
-                  </Typography.Text>
-                )
-              }
-            ]}
-          />
-          {entry.proposal ? renderCheckpointDiffSection(entry.proposal, entryKey) : null}
-        </Flex>
-      </Card>
+        entryKey={entryKey}
+        entry={entry}
+        cardStyle={getHistoryContextCardStyle(entryKey)}
+        showCheckpointState={showCheckpointState}
+        showRunCancel={showRunCancel}
+        cancelLoading={submitting === "cancel"}
+        onCancel={() => void handleCancelTask()}
+        renderMarkdown={(markdown) => (
+          <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+            {markdown}
+          </ReactMarkdown>
+        )}
+        renderRunErrorNotice={renderRunErrorNotice}
+        renderRunTimelineCollapse={renderRunTimelineCollapse}
+        onCopySummary={(markdown) => void copyMarkdownToClipboard(markdown, "Summary markdown")}
+        renderCheckpointDiffContent={renderCheckpointDiffContent}
+        getCheckpointDiffActions={getCheckpointDiffActions}
+      />
     );
   };
 
@@ -6122,9 +6016,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
                 <Flex vertical gap={16}>
                   {chatPreparingNotice}
-                  <Card bordered={false}>
-                    <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff" | "files")} items={mainTabItems} />
-                  </Card>
+                  <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff" | "files")} items={mainTabItems} />
                   <div ref={bottomScrollAnchorRef} aria-hidden="true" style={{ height: 0, width: "100%", flexShrink: 0 }} />
                 </Flex>
               </Flex>

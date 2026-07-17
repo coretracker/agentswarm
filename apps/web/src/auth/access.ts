@@ -9,8 +9,8 @@ export interface NavigationRoute {
 export const navigationRoutes: NavigationRoute[] = [
   { key: "/tasks", label: "Tasks", requiredScopes: ["task:list"] },
   { key: "/repositories", label: "Repositories", requiredScopes: ["repo:list"] },
-  { key: "/settings", label: "Settings", requiredScopes: ["settings:read"] },
-  { key: "/users", label: "Users", requiredScopes: ["user:list"] }
+  { key: "/users", label: "Users", requiredScopes: ["user:list"] },
+  { key: "/settings", label: "Settings", requiredScopes: ["settings:read"] }
 ];
 
 export const isPublicPathname = (pathname: string): boolean => pathname === "/login";
