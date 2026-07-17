@@ -1,6 +1,6 @@
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { CopyOutlined } from "@ant-design/icons";
-import { Button, Card, Flex, Space, Tag, Tooltip, Typography, theme as antTheme } from "antd";
+import { Button, Card, Flex, Space, Tooltip, Typography, theme as antTheme } from "antd";
 import dayjs from "dayjs";
 import { getAgentProviderLabel, type TaskChangeProposal, type TaskRun } from "@verft/shared-types";
 import type { GroupedAutoRunHistoryEntry } from "../src/utils/task-history";
@@ -158,6 +158,20 @@ export function TaskHistoryGroupedAutoRunCard({
             <Typography.Text type="secondary" style={{ fontSize: 13 }}>
               {taskRunActionLabel[entry.run.action]} by {providerLabel}
             </Typography.Text>
+            {checkpointLabel ? (
+              <>
+                <Typography.Text type="secondary" style={{ fontSize: 13 }}>·</Typography.Text>
+                <Typography.Text style={{ fontSize: 13, fontWeight: 500, color: checkpointStatusColor(entry.proposal!.status) === "orange" ? token.colorWarning : checkpointStatusColor(entry.proposal!.status) === "green" ? token.colorSuccess : token.colorTextSecondary }}>
+                  {checkpointLabel}
+                </Typography.Text>
+              </>
+            ) : null}
+            {entry.run.action === "build" && entry.run.changeOutcome === "no_change" ? (
+              <>
+                <Typography.Text type="secondary" style={{ fontSize: 13 }}>·</Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 13 }}>No code changes</Typography.Text>
+              </>
+            ) : null}
           </Flex>
           <Tooltip title={dayjs(entry.run.startedAt).format("YYYY-MM-DD HH:mm:ss")}>
             <Typography.Text type="secondary" style={{ fontSize: 13, whiteSpace: "nowrap" }}>
@@ -173,23 +187,6 @@ export function TaskHistoryGroupedAutoRunCard({
           </div>
           {renderRunErrorNotice(entry.run)}
         </Flex>
-
-        {/* Status tags – only rendered when at least one is visible */}
-        {(checkpointLabel || (entry.run.action === "build" && entry.run.changeOutcome === "no_change") || entry.proposal?.diffTruncated) ? (
-          <Flex gap={6} wrap="wrap" style={{ padding: "10px 20px 0" }}>
-            {checkpointLabel ? (
-              <Tag color={checkpointStatusColor(entry.proposal!.status)} style={{ margin: 0 }}>
-                {checkpointLabel}
-              </Tag>
-            ) : null}
-            {entry.run.action === "build" && entry.run.changeOutcome === "no_change" ? (
-              <Tag color="default" style={{ margin: 0 }}>No code changes</Tag>
-            ) : null}
-            {entry.proposal?.diffTruncated ? (
-              <Tag style={{ margin: 0 }}>Truncated preview</Tag>
-            ) : null}
-          </Flex>
-        ) : null}
 
         {/* Footer: section toggles + action buttons */}
         <Flex
