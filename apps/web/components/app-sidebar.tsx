@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   App,
   Button,
@@ -11,24 +11,18 @@ import {
   Typography,
   theme as antTheme
 } from "antd";
-import { PushpinFilled, PushpinOutlined, SearchOutlined } from "@ant-design/icons";
-import {
-  getTaskExecutionStatusLabel,
-  getTaskTerminalSessionLabel,
-  isTaskWorking,
-  type Task
-} from "@verft/shared-types";
-import dayjs from "dayjs";
+import { SearchOutlined } from "@ant-design/icons";
+import { isTaskWorking, type Task } from "@verft/shared-types";
 import { api } from "../src/api/client";
 import { useTasks } from "../src/hooks/useTasks";
 import {
   getSeenTaskVersions,
-  isTaskSeen,
   markTaskSeen,
   migrateSeenTaskVersions,
   subscribeToSeenTasks,
   type SeenTaskVersions
 } from "../src/utils/seen-tasks";
+import { AppSidebarTaskCard } from "./app-sidebar-task-card";
 import { useAuth } from "./auth-provider";
 import { TaskCreateModal } from "./task-create-modal";
 
@@ -39,46 +33,6 @@ interface AppSidebarProps {
 
 function isLiveTask(task: Task): boolean {
   return isTaskWorking(task);
-}
-
-function getTaskStatusText(task: Task): string {
-  if (task.activeInteractiveSession) {
-    return `${getTaskTerminalSessionLabel("terminal")} Running`;
-  }
-
-  return getTaskExecutionStatusLabel(task.executionStatus);
-}
-
-function getStatusAccentColor(task: Task, token: ReturnType<typeof antTheme.useToken>["token"]): string {
-  if (isLiveTask(task)) {
-    return token.colorPrimary;
-  }
-
-  if (task.executionStatus === "failed") {
-    return token.colorError;
-  }
-
-  if (task.executionStatus === "cancelled") {
-    return token.colorWarning;
-  }
-
-  if (task.executionStatus === "idle") {
-    return token.colorSuccess;
-  }
-
-  return token.colorTextSecondary;
-}
-
-function getTaskAttentionMarker(task: Task, seenTaskVersions: SeenTaskVersions): { color: string; label: string } | null {
-  if (task.hasPendingCheckpoint) {
-    return { color: "#FA8C16", label: "Pending checkpoint" };
-  }
-
-  if (!isTaskSeen(task, seenTaskVersions)) {
-    return { color: "#1C8057", label: "Unseen task" };
-  }
-
-  return null;
 }
 
 function getSelectedTaskId(pathname: string): string | null {
@@ -115,15 +69,6 @@ function TaskSection({
     return null;
   }
 
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>, task: Task) => {
-    if (event.key !== "Enter" && event.key !== " ") {
-      return;
-    }
-
-    event.preventDefault();
-    onOpenTask(task);
-  };
-
   return (
     <Flex vertical gap={8}>
       <Typography.Text
@@ -140,96 +85,18 @@ function TaskSection({
       <Flex vertical gap={8}>
         {tasks.map((task) => {
           const selected = task.id === selectedTaskId;
-          const statusAccentColor = getStatusAccentColor(task, token);
-          const attentionMarker = getTaskAttentionMarker(task, seenTaskVersions);
-          const showIndicator = isLiveTask(task) || attentionMarker !== null;
 
           return (
-            <div
+            <AppSidebarTaskCard
               key={task.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => onOpenTask(task)}
-              onKeyDown={(event) => onKeyDown(event, task)}
-              style={{
-                padding: "10px 12px",
-                borderRadius: token.borderRadiusLG,
-                border: `1px solid ${selected ? token.colorPrimaryBorder : token.colorBorderSecondary}`,
-                background: selected ? token.colorPrimaryBg : token.colorBgContainer,
-                cursor: "pointer",
-                transition: "border-color 0.2s ease, background-color 0.2s ease"
-              }}
-            >
-              <Flex vertical gap={2} style={{ minWidth: 0 }}>
-                <Flex align="start" justify="space-between" gap={6}>
-                  <Flex align="center" gap={6} style={{ minWidth: 0, flex: 1 }}>
-                    {showIndicator ? (
-                      <span
-                        style={{
-                          width: 10,
-                          height: 10,
-                          display: "inline-flex",
-                          alignItems: "center",
-                          justifyContent: "center",
-                          flex: "0 0 auto"
-                        }}
-                      >
-                        {isLiveTask(task) ? (
-                          <Spin size="small" />
-                        ) : attentionMarker ? (
-                          <span
-                            aria-label={attentionMarker.label}
-                            title={attentionMarker.label}
-                            style={{
-                              width: 8,
-                              height: 8,
-                              borderRadius: "50%",
-                              background: attentionMarker.color,
-                              display: "inline-block"
-                            }}
-                          />
-                        ) : null}
-                      </span>
-                    ) : null}
-                    <Typography.Text strong ellipsis={{ tooltip: task.title }} style={{ display: "block", lineHeight: 1.25, minWidth: 0 }}>
-                      {task.title}
-                    </Typography.Text>
-                  </Flex>
-                  {canEditTask ? (
-                    <Button
-                      type="text"
-                      size="small"
-                      aria-label={task.pinned ? "Unpin task" : "Pin task"}
-                      icon={task.pinned ? <PushpinFilled style={{ color: token.colorPrimary }} /> : <PushpinOutlined />}
-                      loading={pinningTaskId === task.id}
-                      style={{ marginInlineEnd: -8 }}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        onTogglePin(task);
-                      }}
-                    />
-                  ) : null}
-                </Flex>
-                <Typography.Text
-                  type="secondary"
-                  ellipsis={{ tooltip: task.repoName }}
-                  style={{ fontSize: 12, display: "block", lineHeight: 1.2 }}
-                >
-                  {task.repoName}
-                </Typography.Text>
-                <Flex justify="space-between" align="center" gap={8} wrap={false}>
-                  <Typography.Text
-                    ellipsis={{ tooltip: getTaskStatusText(task) }}
-                    style={{ fontSize: 12, color: statusAccentColor, flex: 1, minWidth: 0, lineHeight: 1.2 }}
-                  >
-                    {getTaskStatusText(task)}
-                  </Typography.Text>
-                  <Typography.Text type="secondary" style={{ fontSize: 11, whiteSpace: "nowrap", lineHeight: 1.2 }}>
-                    {dayjs(task.updatedAt).format("MMM D, HH:mm")}
-                  </Typography.Text>
-                </Flex>
-              </Flex>
-            </div>
+              task={task}
+              selected={selected}
+              canEditTask={canEditTask}
+              pinningTaskId={pinningTaskId}
+              seenTaskVersions={seenTaskVersions}
+              onOpenTask={onOpenTask}
+              onTogglePin={onTogglePin}
+            />
           );
         })}
       </Flex>

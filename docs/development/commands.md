@@ -54,6 +54,8 @@ Notes:
   - `npm run -w @verft/web dev`
   - `npm run -w @verft/web start`
   - `npm run -w @verft/web build`
+  - `npm run -w @verft/web storybook`
+  - `npm run -w @verft/web build-storybook`
   - `npm run -w @verft/web lint`
   - `npm run -w @verft/web test`
 - Shared types (`@verft/shared-types`):
