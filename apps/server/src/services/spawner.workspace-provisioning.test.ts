@@ -85,6 +85,17 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
   });
 
+  it("uses the host workspace source for hostexec workspace paths", () => {
+    const originalHostSource = env.TASK_WORKSPACE_HOST_SOURCE;
+    env.TASK_WORKSPACE_HOST_SOURCE = "/Users/andreas/verft/task-workspaces";
+    try {
+      const spawner = createSpawner() as any;
+      assert.equal(spawner.resolveWorkspaceHostPath("task-123"), "/Users/andreas/verft/task-workspaces/task-123");
+    } finally {
+      env.TASK_WORKSPACE_HOST_SOURCE = originalHostSource;
+    }
+  });
+
   it("mounts provider state from a task-scoped agent home path", () => {
     const spawner = createSpawner() as any;
     const paths = {

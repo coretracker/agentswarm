@@ -407,6 +407,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
     terminalSessionId = started.sessionId;
     const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
     const dockerBindSource = path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, taskId);
+    const hostWorkspacePath = path.join(env.TASK_WORKSPACE_HOST_SOURCE, taskId);
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
     const linkedWorkspaceMountPlan = await buildLinkedWorkspaceMountPlan({
       rootWorkspacePath: workspaceOnServer,
@@ -467,7 +468,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       taskId,
       repoId: task.repoId,
       containerWorkspacePath: INTERACTIVE_WORKSPACE_PATH,
-      hostWorkspacePath: dockerBindSource,
+      hostWorkspacePath,
       sharedNetworkWithCurrentContainer: runtimeMcpDockerArgs.includes("--network")
     });
     const dockerSocketRunArgs = resolveDockerSocketRunArgs(resolveDockerSocketAccessPolicy("codex"));
@@ -478,7 +479,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
     })) {
       dockerEnv.push("-e", `${name}=${value}`);
     }
-    dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${dockerBindSource}`, "-e", `TASK_WORSPACE_PATH=${dockerBindSource}`);
+    dockerEnv.push("-e", `TASK_WORKSPACE_PATH=${hostWorkspacePath}`, "-e", `TASK_WORSPACE_PATH=${hostWorkspacePath}`);
 
     const dockerArgs = [
       "run",

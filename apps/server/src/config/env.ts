@@ -31,6 +31,7 @@ const envSchema = z.object({
   REPOSITORY_ENV_FILE_STORE_ROOT: z.string().default("/secrets/repository-env-files"),
   TASK_WORKSPACE_ROOT: z.string().default("/task-workspaces"),
   TASK_WORKSPACE_DOCKER_SOURCE: z.string().optional(),
+  TASK_WORKSPACE_HOST_SOURCE: z.string().optional(),
   AGENT_RUNTIME_IMAGE: z
     .string()
     .default(
@@ -95,6 +96,12 @@ const taskWorkspaceDockerSource =
     : parsed.TASK_WORKSPACE_ROOT !== "/task-workspaces"
       ? parsed.TASK_WORKSPACE_ROOT
       : path.join(repoRoot, "task-workspaces"));
+const configuredTaskWorkspaceHostSource = parsed.TASK_WORKSPACE_HOST_SOURCE?.trim();
+const taskWorkspaceHostSource =
+  configuredTaskWorkspaceHostSource ||
+  (taskWorkspaceDockerSource.startsWith("/host_mnt/")
+    ? taskWorkspaceDockerSource.slice("/host_mnt".length)
+    : taskWorkspaceDockerSource);
 
 export const AUTO_RUN_POSTGRES_MIGRATIONS = true;
 export const DEPLOYMENT_ENVIRONMENT_LABEL = "local";
@@ -104,4 +111,8 @@ export const DEFAULT_GIT_COMMIT_IDENTITY = {
 } as const;
 export const AGENT_RUNTIME_IMAGE = parsed.AGENT_RUNTIME_IMAGE;
 
-export const env = { ...parsed, TASK_WORKSPACE_DOCKER_SOURCE: taskWorkspaceDockerSource };
+export const env = {
+  ...parsed,
+  TASK_WORKSPACE_DOCKER_SOURCE: taskWorkspaceDockerSource,
+  TASK_WORKSPACE_HOST_SOURCE: taskWorkspaceHostSource
+};
