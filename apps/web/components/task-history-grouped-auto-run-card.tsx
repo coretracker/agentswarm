@@ -179,7 +179,12 @@ export function TaskHistoryGroupedAutoRunCard({
             {renderMarkdown(entry.promptText)}
           </div>
           {normalizedRunSummary ? (
-            <div style={{ color: token.colorTextSecondary }}>
+            <div style={{
+              color: token.colorTextSecondary,
+              borderLeft: `2px solid ${token.colorBorder}`,
+              paddingLeft: 14,
+              marginTop: 4
+            }}>
               {renderMarkdown(normalizedRunSummary)}
             </div>
           ) : summaryFallback ? (
