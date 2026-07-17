@@ -332,7 +332,12 @@ const server = http.createServer(async (request, response) => {
 
   if (request.method === "GET" && url.pathname === "/capabilities") {
     logEvent("info", "hostexec.capabilities.requested", { requestId, remoteAddress });
-    sendJson(response, 200, { allowAll: allowAllCommands, commands: configuredCommands });
+    sendJson(response, 200, {
+      allowAll: allowAllCommands,
+      commands: configuredCommands,
+      platform: process.platform,
+      arch: process.arch
+    });
     return;
   }
 

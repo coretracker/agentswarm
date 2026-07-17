@@ -3,7 +3,12 @@ import { mkdir, readFile, rm } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { env } from "../config/env.js";
-import { buildHostexecRuntimeConfig, HOSTEXEC_CONTAINER_BIN_PATH, HOSTEXEC_SHELL_ENV_PATH } from "./hostexec-runtime.js";
+import {
+  buildHostexecRuntimeConfig,
+  HOSTEXEC_CONTAINER_BIN_PATH,
+  HOSTEXEC_SHELL_ENV_PATH,
+  normalizeHostexecHostWorkspacePath
+} from "./hostexec-runtime.js";
 
 const originalFetch = globalThis.fetch;
 const originalRuntimePayloadRoot = env.RUNTIME_PAYLOAD_ROOT;
@@ -26,6 +31,17 @@ describe("buildHostexecRuntimeConfig", () => {
       await rm(payloadDir, { recursive: true, force: true });
     }
   }
+
+  it("normalizes Docker Desktop macOS mount paths for hostexec cwd", () => {
+    assert.equal(
+      normalizeHostexecHostWorkspacePath("/host_mnt/Users/andreas/project/task-workspaces/task-1", "darwin"),
+      "/Users/andreas/project/task-workspaces/task-1"
+    );
+    assert.equal(
+      normalizeHostexecHostWorkspacePath("/host_mnt/Users/andreas/project/task-workspaces/task-1", "linux"),
+      "/host_mnt/Users/andreas/project/task-workspaces/task-1"
+    );
+  });
 
   it("creates read-only shims only for daemon-allowed repository commands", async () => {
     process.env.HOSTEXEC_TOKEN_TEST = "secret-token";
@@ -103,6 +119,35 @@ describe("buildHostexecRuntimeConfig", () => {
       assert.equal(result.enabled, true);
       assert.deepEqual(result.commands, ["xcodebuild", "security"]);
       assert.match(await readFile(path.join(payloadDir, "hostexec-bin", "security"), "utf8"), /security/);
+    });
+  });
+
+  it("passes normalized macOS host cwd to the hostexec proxy", async () => {
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      assert.equal(String(input), "http://hostexec.test/capabilities");
+      return new Response(JSON.stringify({ allowAll: true, commands: [], platform: "darwin", arch: "arm64" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }) as typeof fetch;
+
+    await withPayloadDir(async (payloadDir) => {
+      const result = await buildHostexecRuntimeConfig({
+        settings: {
+          enabled: true,
+          url: "http://hostexec.test",
+          bearerTokenEnvVar: null
+        },
+        repositoryCommands: ["xcodebuild"],
+        payloadDir,
+        taskId: "task-1",
+        repoId: "repo-1",
+        containerWorkspacePath: "/task-workspaces/task-1",
+        hostWorkspacePath: "/host_mnt/Users/andreas/project/task-workspaces/task-1"
+      });
+
+      const resultEnv = Object.fromEntries(result.envEntries);
+      assert.equal(resultEnv.HOSTEXEC_HOST_WORKSPACE_ROOT, "/Users/andreas/project/task-workspaces/task-1");
     });
   });
 

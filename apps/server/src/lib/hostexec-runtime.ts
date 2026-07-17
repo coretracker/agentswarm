@@ -13,6 +13,7 @@ export const HOSTEXEC_CONTAINER_BIN_PATH = "/hostexec/bin";
 export const HOSTEXEC_PROXY_BIN = "/usr/local/bin/hostexec-proxy.mjs";
 export const HOSTEXEC_SHELL_ENV_PATH = `${HOSTEXEC_CONTAINER_BIN_PATH}/.hostexec-shell-env`;
 const DEFAULT_RUNTIME_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+const DOCKER_DESKTOP_MAC_HOST_PREFIX = "/host_mnt";
 
 export interface HostexecRuntimeConfig {
   enabled: boolean;
@@ -39,6 +40,13 @@ function buildHostexecShellEnv(): string {
     "esac",
     ""
   ].join("\n");
+}
+
+export function normalizeHostexecHostWorkspacePath(hostWorkspacePath: string, daemonPlatform?: string): string {
+  if (daemonPlatform === "darwin" && hostWorkspacePath.startsWith(`${DOCKER_DESKTOP_MAC_HOST_PREFIX}/`)) {
+    return hostWorkspacePath.slice(DOCKER_DESKTOP_MAC_HOST_PREFIX.length);
+  }
+  return hostWorkspacePath;
 }
 
 export async function buildHostexecRuntimeConfig(options: {
@@ -122,7 +130,7 @@ export async function buildHostexecRuntimeConfig(options: {
       ["HOSTEXEC_TASK_ID", options.taskId],
       ["HOSTEXEC_REPO_ID", options.repoId],
       ["HOSTEXEC_WORKSPACE_ROOT", options.containerWorkspacePath],
-      ["HOSTEXEC_HOST_WORKSPACE_ROOT", options.hostWorkspacePath],
+      ["HOSTEXEC_HOST_WORKSPACE_ROOT", normalizeHostexecHostWorkspacePath(options.hostWorkspacePath, capabilities.platform)],
       ["HOSTEXEC_BIN_PATH", HOSTEXEC_CONTAINER_BIN_PATH],
       ["BASH_ENV", HOSTEXEC_SHELL_ENV_PATH],
       ["PATH", `${HOSTEXEC_CONTAINER_BIN_PATH}:${DEFAULT_RUNTIME_PATH}`]

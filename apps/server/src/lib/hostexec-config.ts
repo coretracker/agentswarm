@@ -14,6 +14,8 @@ export const defaultHostexecSettings: HostexecSettings = {
 export interface HostexecCapabilities {
   allowAll: boolean;
   commands: string[];
+  platform?: string;
+  arch?: string;
 }
 
 export function normalizeHostexecSettings(value: Partial<HostexecSettings> | null | undefined): HostexecSettings {
@@ -70,8 +72,15 @@ export function normalizeHostCommands(value: unknown): string[] {
 
 export function normalizeHostexecCapabilities(value: unknown): HostexecCapabilities {
   const record = value && typeof value === "object" ? (value as Record<string, unknown>) : {};
-  return {
+  const capabilities: HostexecCapabilities = {
     allowAll: record.allowAll === true,
     commands: normalizeHostCommands(record.commands)
   };
+  if (typeof record.platform === "string" && record.platform.trim()) {
+    capabilities.platform = record.platform.trim();
+  }
+  if (typeof record.arch === "string" && record.arch.trim()) {
+    capabilities.arch = record.arch.trim();
+  }
+  return capabilities;
 }
