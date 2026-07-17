@@ -102,7 +102,7 @@ const emptyValues = (): RepositoryFormValues => ({
   clearGithubPrWebhookSecret: false,
   githubIntegrationBotLogin: "",
   githubPrAllowedUsers: "",
-  githubPrRequireBotMention: false,
+  githubPrRequireBotMention: true,
   githubPrAutoArchiveOnMerge: true,
   githubPrInitialInstructions: DEFAULT_GITHUB_PR_INITIAL_INSTRUCTIONS,
   githubPrFeedbackInstructions: DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
