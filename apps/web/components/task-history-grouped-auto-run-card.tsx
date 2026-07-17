@@ -76,13 +76,6 @@ export function TaskHistoryGroupedAutoRunCard({
   const timelineDisplayCount = buildTimelineDisplayItems(entry.run.timelineEvents ?? []).length;
   const timelineMeta = `Timeline ${timelineEventCount > 0 ? `${timelineDisplayCount}/${timelineEventCount}` : "0"}`;
   const diffMeta = entry.proposal ? `Diff ${entry.proposal.changedFiles.length}` : null;
-  const summaryFallback = normalizedRunSummary
-    ? null
-    : entry.run.status === "running"
-      ? "Summary will appear when the run finishes."
-      : entry.run.action === "build" && entry.run.changeOutcome === "no_change"
-        ? "No code changes were needed for this run."
-        : null;
   const diffActions = entry.proposal ? getCheckpointDiffActions?.(entry.proposal) : undefined;
   const visibleDiffActions = [diffActions?.apply, diffActions?.reject, diffActions?.revert].filter(
     (action): action is TaskHistoryCheckpointDiffAction => !!action?.visible
@@ -178,20 +171,6 @@ export function TaskHistoryGroupedAutoRunCard({
           <div style={{ fontSize: 15, lineHeight: 1.6, fontWeight: 500 }}>
             {renderMarkdown(entry.promptText)}
           </div>
-          {normalizedRunSummary ? (
-            <div style={{
-              color: token.colorTextSecondary,
-              borderLeft: `2px solid ${token.colorBorder}`,
-              paddingLeft: 14,
-              marginTop: 4
-            }}>
-              {renderMarkdown(normalizedRunSummary)}
-            </div>
-          ) : summaryFallback ? (
-            <Typography.Text type="secondary" style={{ fontSize: 14, lineHeight: 1.5 }}>
-              {summaryFallback}
-            </Typography.Text>
-          ) : null}
           {renderRunErrorNotice(entry.run)}
         </Flex>
 
