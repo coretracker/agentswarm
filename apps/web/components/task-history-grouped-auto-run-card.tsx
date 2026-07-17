@@ -76,8 +76,8 @@ export function TaskHistoryGroupedAutoRunCard({
   const timelineDisplayCount = buildTimelineDisplayItems(entry.run.timelineEvents ?? []).length;
   const timelineMeta = `Timeline ${timelineEventCount > 0 ? `${timelineDisplayCount}/${timelineEventCount}` : "0"}`;
   const diffMeta = entry.proposal ? `Diff ${entry.proposal.changedFiles.length}` : null;
-  const summaryPreview = normalizedRunSummary
-    ? normalizedRunSummary.replace(/[`*_#[\]()]/g, "").replace(/\s+/g, " ").trim()
+  const summaryFallback = normalizedRunSummary
+    ? null
     : entry.run.status === "running"
       ? "Summary will appear when the run finishes."
       : entry.run.action === "build" && entry.run.changeOutcome === "no_change"
@@ -174,13 +174,17 @@ export function TaskHistoryGroupedAutoRunCard({
         </Flex>
 
         {/* Content: prompt + summary */}
-        <Flex vertical gap={4} style={{ padding: "12px 20px 0" }}>
-          <Typography.Text style={{ fontSize: 15, lineHeight: 1.5, fontWeight: 500 }} ellipsis={{ tooltip: entry.promptText }}>
-            {entry.promptText}
-          </Typography.Text>
-          {summaryPreview ? (
-            <Typography.Text type="secondary" ellipsis={{ tooltip: summaryPreview }} style={{ fontSize: 14, lineHeight: 1.5 }}>
-              {summaryPreview}
+        <Flex vertical style={{ padding: "12px 20px 0" }}>
+          <div style={{ fontSize: 15, lineHeight: 1.6, fontWeight: 500 }}>
+            {renderMarkdown(entry.promptText)}
+          </div>
+          {normalizedRunSummary ? (
+            <div style={{ color: token.colorTextSecondary }}>
+              {renderMarkdown(normalizedRunSummary)}
+            </div>
+          ) : summaryFallback ? (
+            <Typography.Text type="secondary" style={{ fontSize: 14, lineHeight: 1.5 }}>
+              {summaryFallback}
             </Typography.Text>
           ) : null}
           {renderRunErrorNotice(entry.run)}
