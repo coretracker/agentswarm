@@ -228,6 +228,22 @@ function runCommand(response, payload, context) {
     sendText(response, 400, error instanceof Error ? error.message : "invalid cwd");
     return;
   }
+  if (!existsSync(cwd)) {
+    logEvent("warn", "hostexec.exec.rejected", {
+      requestId: context.requestId,
+      command,
+      reason: "missing_cwd",
+      cwd,
+      cwdRelativePath: cwdRelativePath || ".",
+      hostWorkspaceRoot: path.resolve(hostWorkspaceRoot),
+      hostWorkspaceRootExists: existsSync(path.resolve(hostWorkspaceRoot)),
+      remoteAddress: context.remoteAddress,
+      taskId,
+      repoId
+    });
+    sendText(response, 400, `cwd does not exist: ${cwdRelativePath || "."}`);
+    return;
+  }
 
   const startedAt = Date.now();
   logEvent("info", "hostexec.exec.started", {

@@ -197,4 +197,42 @@ describe("hostexec daemon", () => {
       await rm(emptyPathDir, { recursive: true, force: true });
     }
   });
+
+  it("rejects a missing cwd before spawning the command", async () => {
+    const port = await findFreePort();
+    const workspaceRoot = await mkdtemp(path.join(tmpdir(), "hostexec-daemon-workspace-"));
+    const daemon = startDaemon(port);
+
+    try {
+      await daemon.waitForStdout((line) => line.includes("hostexec daemon listening"));
+      const response = await fetch(`http://127.0.0.1:${port}/exec`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          command: "node",
+          argv: ["-e", "process.stdout.write('should-not-run')"],
+          cwdRelativePath: "missing",
+          hostWorkspaceRoot: workspaceRoot,
+          taskId: "task-3",
+          repoId: "repo-3"
+        })
+      });
+
+      assert.equal(response.status, 400);
+      assert.equal(await response.text(), "cwd does not exist: missing\n");
+      const rejected = JSON.parse(await daemon.waitForStderr((line) => line.includes("hostexec.exec.rejected"))) as Record<
+        string,
+        unknown
+      >;
+
+      assert.equal(rejected.reason, "missing_cwd");
+      assert.equal(rejected.cwdRelativePath, "missing");
+      assert.equal(rejected.hostWorkspaceRoot, workspaceRoot);
+      assert.equal(rejected.hostWorkspaceRootExists, true);
+      assert.equal(JSON.stringify(rejected).includes("should-not-run"), false);
+    } finally {
+      daemon.child.kill("SIGTERM");
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
 });
