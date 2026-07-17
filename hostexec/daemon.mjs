@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { accessSync, constants, existsSync, readFileSync } from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -93,6 +93,52 @@ function logEvent(level, event, data = {}) {
     ...data
   };
   console[level](JSON.stringify(payload));
+}
+
+function getPathEntries(env = process.env) {
+  return String(env.PATH ?? "")
+    .split(path.delimiter)
+    .filter(Boolean);
+}
+
+function isExecutable(filePath) {
+  try {
+    accessSync(filePath, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveExecutable(command, env = process.env) {
+  for (const entry of getPathEntries(env)) {
+    const candidate = path.resolve(entry, command);
+    if (isExecutable(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+function buildSpawnDiagnostics(command, cwd, env = process.env) {
+  const pathEntries = getPathEntries(env);
+  const resolvedExecutable = resolveExecutable(command, env);
+  const diagnostics = {
+    platform: process.platform,
+    arch: process.arch,
+    cwdExists: existsSync(cwd),
+    pathSet: typeof env.PATH === "string" && env.PATH.length > 0,
+    pathEntryCount: pathEntries.length,
+    pathEntries,
+    resolvedExecutable
+  };
+
+  if (process.platform === "darwin") {
+    diagnostics.pathIncludesUsrBin = pathEntries.includes("/usr/bin");
+    diagnostics.usrBinXcodebuildExecutable = command === "xcodebuild" ? isExecutable("/usr/bin/xcodebuild") : undefined;
+  }
+
+  return diagnostics;
 }
 
 async function readJsonBody(request) {
@@ -190,6 +236,7 @@ function runCommand(response, payload, context) {
     argc: argv.length,
     cwdRelativePath: cwdRelativePath || ".",
     remoteAddress: context.remoteAddress,
+    spawn: buildSpawnDiagnostics(command, cwd),
     taskId,
     repoId
   });
@@ -209,6 +256,10 @@ function runCommand(response, payload, context) {
       command,
       durationMs: Date.now() - startedAt,
       error: error.message,
+      errorCode: error.code,
+      syscall: error.syscall,
+      spawnPath: error.path,
+      spawn: buildSpawnDiagnostics(command, cwd),
       taskId,
       repoId
     });
