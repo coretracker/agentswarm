@@ -120,7 +120,7 @@ export function AppSidebarTaskCard({
         padding: "11px 12px 11px 20px",
         borderRadius: token.borderRadiusLG + 2,
         border: `1px solid ${selected ? token.colorPrimaryBorder : "transparent"}`,
-        background: selected ? `linear-gradient(135deg, ${token.colorPrimaryBg}, ${token.colorBgContainer})` : token.colorBgContainer,
+        background: selected ? `linear-gradient(135deg, ${token.colorPrimaryBg}, ${token.colorBgContainer})` : token.colorBgElevated,
         boxShadow: selected ? `inset 0 0 0 1px ${token.colorPrimaryBorder}` : "none",
         cursor: "pointer",
         fontFamily: token.fontFamily,
