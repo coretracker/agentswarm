@@ -116,6 +116,7 @@ const createTestApp = ({
       updateRepository: async () => null,
       getRepositoryWebhookTarget: async () => null,
       getRepositoryGitHubPrWebhookSecret: async () => null,
+      getRepositoryInboundWebhookSecret: async () => null,
       recordWebhookDeliveryResult: async () => null,
       deleteRepository: async () => false
     },

@@ -233,6 +233,7 @@ const createRepositorySchema = z.object({
   webhookEnabled: z.boolean().optional(),
   webhookSecret: z.string().trim().min(1).optional(),
   githubPrWebhookSecret: z.string().trim().min(1).optional(),
+  inboundWebhookSecret: z.string().trim().min(1).optional(),
   githubIntegrationBotLogin: z.string().trim().max(255).nullable().optional(),
   githubPrAllowedUsers: githubAllowedUsersSchema.optional(),
   githubPrRequireBotMention: z.boolean().optional(),
@@ -257,7 +258,9 @@ const createRepositorySchema = z.object({
 
 const updateRepositorySchema = createRepositorySchema.partial().extend({
   clearWebhookSecret: z.boolean().optional(),
-  clearGithubPrWebhookSecret: z.boolean().optional()
+  clearGithubPrWebhookSecret: z.boolean().optional(),
+  inboundWebhookSecret: z.string().trim().min(1).optional(),
+  clearInboundWebhookSecret: z.boolean().optional()
 });
 
 type ParsedRepositoryInput = z.infer<typeof createRepositorySchema>;

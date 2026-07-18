@@ -4,13 +4,20 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import type {
   AgentProvider,
+  CreateIntegrationRuleInput,
   CreateRepositoryInput,
+  IntegrationRule,
+  IntegrationRuleExecution,
+  IntegrationRuleFilterCondition,
+  IntegrationRuleFilterOp,
+  IntegrationRuleFilterSource,
   McpServerTransport,
   ProviderProfile,
   Repository,
   RepositoryEnvSecretInput,
   RepositoryEnvVarInput,
-  User
+  User,
+  WebhookInboxEntry
 } from "@verft/shared-types";
 import {
   DEFAULT_GITHUB_PR_FEEDBACK_INSTRUCTIONS,
@@ -23,8 +30,8 @@ import {
   getAgentProviderLabel,
   getEffortOptionsForProvider
 } from "@verft/shared-types";
-import { Alert, Button, Card, Checkbox, Flex, Form, Input, Result, Select, Space, Spin, Switch, Tabs, Typography, Upload, message } from "antd";
-import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, Checkbox, Flex, Form, Input, Modal, Result, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, Upload, message } from "antd";
+import { DeleteOutlined, EditOutlined, EyeOutlined, PlusOutlined } from "@ant-design/icons";
 import { ApiError, api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useSettings } from "../src/hooks/useSettings";
@@ -75,6 +82,8 @@ type RepositoryFormValues = {
   slackFeedbackInstructions: string;
   slackTaskCreatedReplyTemplate: string;
   slackTaskOwnerUserId: string;
+  inboundWebhookSecret: string;
+  clearInboundWebhookSecret: boolean;
   harnessWhatExists: string;
   harnessAllowedActions: string;
   harnessNotAllowedActions: string;
@@ -114,6 +123,8 @@ const emptyValues = (): RepositoryFormValues => ({
   slackFeedbackInstructions: DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS,
   slackTaskCreatedReplyTemplate: DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
   slackTaskOwnerUserId: "",
+  inboundWebhookSecret: "",
+  clearInboundWebhookSecret: false,
   harnessWhatExists: "",
   harnessAllowedActions: "",
   harnessNotAllowedActions: "",
@@ -198,6 +209,8 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
       ? values.slackTaskCreatedReplyTemplate
       : DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
   slackTaskOwnerUserId: typeof values?.slackTaskOwnerUserId === "string" ? values.slackTaskOwnerUserId : "",
+  inboundWebhookSecret: typeof values?.inboundWebhookSecret === "string" ? values.inboundWebhookSecret : "",
+  clearInboundWebhookSecret: values?.clearInboundWebhookSecret === true,
   harnessWhatExists: typeof values?.harnessWhatExists === "string" ? values.harnessWhatExists : "",
   harnessAllowedActions: typeof values?.harnessAllowedActions === "string" ? values.harnessAllowedActions : "",
   harnessNotAllowedActions: typeof values?.harnessNotAllowedActions === "string" ? values.harnessNotAllowedActions : "",
@@ -325,12 +338,241 @@ const readUploadedEnvValueFile = async (file: File): Promise<{ fileName: string;
   };
 };
 
+const filterSourceOptions: Array<{ label: string; value: IntegrationRuleFilterSource }> = [
+  { label: "Header", value: "header" },
+  { label: "Body", value: "body" }
+];
+
+const filterOpOptions: Array<{ label: string; value: IntegrationRuleFilterOp }> = [
+  { label: "Equals", value: "equals" },
+  { label: "Contains", value: "contains" },
+  { label: "Exists", value: "exists" },
+  { label: "Regex", value: "regex" }
+];
+
+interface RuleEditorFormValues {
+  name: string;
+  enabled: boolean;
+  conditions: Array<{
+    source: IntegrationRuleFilterSource;
+    field: string;
+    op: IntegrationRuleFilterOp;
+    value: string;
+  }>;
+  mappingTitle: string;
+  mappingInstructions: string;
+  mappingBranch: string;
+  executionProvider: string;
+  executionModel: string;
+  executionProviderProfile: string;
+  correlationField: string;
+  taskOwnerUserId: string;
+}
+
+function IntegrationRuleEditorModal({
+  open,
+  rule,
+  users,
+  onClose,
+  onSave
+}: {
+  open: boolean;
+  rule: IntegrationRule | null;
+  users: User[];
+  onClose: () => void;
+  onSave: (input: CreateIntegrationRuleInput) => Promise<void>;
+}) {
+  const [form] = Form.useForm<RuleEditorFormValues>();
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!open) return;
+    if (rule) {
+      form.setFieldsValue({
+        name: rule.name,
+        enabled: rule.enabled,
+        conditions: (rule.filter.conditions ?? []).map((c) => ({
+          source: c.source,
+          field: c.field,
+          op: c.op,
+          value: c.value ?? ""
+        })),
+        mappingTitle: rule.mapping.title ?? "",
+        mappingInstructions: rule.mapping.instructions ?? "",
+        mappingBranch: rule.mapping.branch ?? "",
+        executionProvider: rule.execution?.provider ?? "",
+        executionModel: rule.execution?.model ?? "",
+        executionProviderProfile: rule.execution?.providerProfile ?? "",
+        correlationField: rule.correlationField ?? "",
+        taskOwnerUserId: rule.taskOwnerUserId ?? ""
+      });
+    } else {
+      form.resetFields();
+      form.setFieldsValue({
+        name: "",
+        enabled: true,
+        conditions: [{ source: "body", field: "", op: "equals", value: "" }],
+        mappingTitle: "",
+        mappingInstructions: "",
+        mappingBranch: "",
+        executionProvider: "",
+        executionModel: "",
+        executionProviderProfile: "",
+        correlationField: "",
+        taskOwnerUserId: ""
+      });
+    }
+  }, [open, rule, form]);
+
+  return (
+    <Modal
+      open={open}
+      title={rule ? "Edit Integration Rule" : "Create Integration Rule"}
+      onCancel={onClose}
+      width={720}
+      footer={[
+        <Button key="cancel" onClick={onClose}>Cancel</Button>,
+        <Button key="save" type="primary" loading={saving} onClick={async () => {
+          try {
+            const values = await form.validateFields();
+            setSaving(true);
+            const conditions: IntegrationRuleFilterCondition[] = values.conditions
+              .filter((c) => c.field.trim().length > 0)
+              .map((c) => ({
+                source: c.source,
+                field: c.field.trim(),
+                op: c.op,
+                ...(c.op !== "exists" && c.value.trim().length > 0 ? { value: c.value.trim() } : {})
+              }));
+            if (conditions.length === 0) {
+              form.setFields([{ name: ["conditions", 0, "field"], errors: ["At least one condition is required."] }]);
+              setSaving(false);
+              return;
+            }
+            const execution: IntegrationRuleExecution = {};
+            const providerValue = values.executionProvider.trim();
+            if (providerValue === "codex" || providerValue === "claude") execution.provider = providerValue;
+            if (values.executionModel.trim()) execution.model = values.executionModel.trim();
+            const profileValue = values.executionProviderProfile.trim();
+            if (profileValue === "low" || profileValue === "medium" || profileValue === "high" || profileValue === "max") execution.providerProfile = profileValue;
+
+            await onSave({
+              name: values.name.trim(),
+              enabled: values.enabled,
+              filter: { conditions },
+              mapping: {
+                ...(values.mappingTitle.trim() ? { title: values.mappingTitle.trim() } : {}),
+                ...(values.mappingInstructions.trim() ? { instructions: values.mappingInstructions.trim() } : {}),
+                ...(values.mappingBranch.trim() ? { branch: values.mappingBranch.trim() } : {})
+              },
+              ...(Object.keys(execution).length > 0 ? { execution } : { execution: null }),
+              correlationField: values.correlationField.trim() || null,
+              taskOwnerUserId: values.taskOwnerUserId.trim() || null
+            });
+          } catch {
+            // validation or save error
+          } finally {
+            setSaving(false);
+          }
+        }}>Save</Button>
+      ]}
+    >
+      <Form form={form} layout="vertical">
+        <Form.Item name="name" label="Rule Name" rules={[{ required: true, message: "Name is required" }]}>
+          <Input placeholder="e.g. Jira Issue Created" />
+        </Form.Item>
+        <Form.Item name="enabled" label="Enabled" valuePropName="checked">
+          <Switch />
+        </Form.Item>
+
+        <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>Filter Conditions</Typography.Text>
+        <Typography.Text type="secondary" style={{ display: "block", marginBottom: 12 }}>
+          All conditions must match (AND logic). At least one condition is required.
+        </Typography.Text>
+        <Form.List name="conditions">
+          {(fields, { add, remove }) => (
+            <>
+              {fields.map(({ key, name, ...restField }) => (
+                <Flex key={key} gap={8} align="start" style={{ marginBottom: 8 }}>
+                  <Form.Item {...restField} name={[name, "source"]} style={{ width: 110, marginBottom: 0 }}>
+                    <Select options={filterSourceOptions} />
+                  </Form.Item>
+                  <Form.Item
+                    {...restField}
+                    name={[name, "field"]}
+                    style={{ flex: 1, marginBottom: 0 }}
+                    rules={[{ required: true, message: "Field required" }]}
+                  >
+                    <Input placeholder="e.g. event_type or issue.key" />
+                  </Form.Item>
+                  <Form.Item {...restField} name={[name, "op"]} style={{ width: 110, marginBottom: 0 }}>
+                    <Select options={filterOpOptions} />
+                  </Form.Item>
+                  <Form.Item {...restField} name={[name, "value"]} style={{ flex: 1, marginBottom: 0 }}>
+                    <Input placeholder="Value" />
+                  </Form.Item>
+                  <Button icon={<DeleteOutlined />} onClick={() => remove(name)} disabled={fields.length <= 1} />
+                </Flex>
+              ))}
+              <Button type="dashed" onClick={() => add({ source: "body", field: "", op: "equals", value: "" })} icon={<PlusOutlined />} style={{ marginBottom: 16 }}>
+                Add Condition
+              </Button>
+            </>
+          )}
+        </Form.List>
+
+        <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>Mapping</Typography.Text>
+        <Typography.Text type="secondary" style={{ display: "block", marginBottom: 12 }}>
+          Use {"{{body.path.to.field}}"} and {"{{header.X-Name}}"} placeholders to interpolate values from the webhook payload.
+        </Typography.Text>
+        <Form.Item name="mappingTitle" label="Task Title Template">
+          <Input placeholder={"e.g. {{body.issue.summary}}"} />
+        </Form.Item>
+        <Form.Item name="mappingInstructions" label="Task Instructions Template">
+          <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder={"e.g. Work on: {{body.issue.description}}"} />
+        </Form.Item>
+        <Form.Item name="mappingBranch" label="Branch Template (optional)">
+          <Input placeholder={"e.g. feature/{{body.issue.key}}"} />
+        </Form.Item>
+
+        <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>Execution (optional)</Typography.Text>
+        <Flex gap={8}>
+          <Form.Item name="executionProvider" label="Provider" style={{ flex: 1 }}>
+            <Input placeholder="e.g. claude" />
+          </Form.Item>
+          <Form.Item name="executionModel" label="Model" style={{ flex: 1 }}>
+            <Input placeholder="e.g. claude-sonnet-4-20250514" />
+          </Form.Item>
+          <Form.Item name="executionProviderProfile" label="Effort" style={{ flex: 1 }}>
+            <Input placeholder="e.g. medium" />
+          </Form.Item>
+        </Flex>
+
+        <Form.Item
+          name="correlationField"
+          label="Correlation Field"
+          extra="Dot-path to the field that identifies the external entity for deduplication, e.g. body.issue.key"
+        >
+          <Input placeholder="e.g. body.issue.key" />
+        </Form.Item>
+        <Form.Item name="taskOwnerUserId" label="Task Owner">
+          <Select
+            allowClear
+            placeholder="Select user (optional)"
+            options={users.map((u) => ({ label: u.name || u.email, value: u.id }))}
+          />
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
 export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPageProps) {
   const router = useRouter();
   const { settings } = useSettings();
   const [form] = Form.useForm<RepositoryFormValues>();
   const [messageApi, contextHolder] = message.useMessage();
-  const [activeTab, setActiveTab] = useState<"general" | "ai" | "github" | "slack" | "webhooks">("general");
+  const [activeTab, setActiveTab] = useState<"general" | "ai" | "github" | "slack" | "webhooks" | "integrations">("general");
   const [submitting, setSubmitting] = useState(false);
   const [loading, setLoading] = useState(mode === "edit");
   const [notFound, setNotFound] = useState(false);
@@ -339,6 +581,12 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const [githubWebhookSecretVisible, setGithubWebhookSecretVisible] = useState(false);
   const [users, setUsers] = useState<User[]>([]);
   const [usersLoadError, setUsersLoadError] = useState<string | null>(null);
+  const [integrationRules, setIntegrationRules] = useState<IntegrationRule[]>([]);
+  const [inboxEntries, setInboxEntries] = useState<WebhookInboxEntry[]>([]);
+  const [integrationsLoaded, setIntegrationsLoaded] = useState(false);
+  const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
+  const [editingRule, setEditingRule] = useState<IntegrationRule | null>(null);
+  const [inboxDetailEntry, setInboxDetailEntry] = useState<WebhookInboxEntry | null>(null);
   const [initialSnapshot, setInitialSnapshot] = useState("");
   const watchedValues = Form.useWatch([], form) as RepositoryFormValues | undefined;
   const selectedDefaultProvider =
@@ -455,6 +703,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           slackFeedbackInstructions: repository.slackFeedbackInstructions ?? DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS,
           slackTaskCreatedReplyTemplate: repository.slackTaskCreatedReplyTemplate ?? DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
           slackTaskOwnerUserId: repository.slackTaskOwnerUserId ?? "",
+          inboundWebhookSecret: "",
+          clearInboundWebhookSecret: false,
           harnessWhatExists: repository.harnessWhatExists ?? "",
           harnessAllowedActions: repository.harnessAllowedActions ?? "",
           harnessNotAllowedActions: repository.harnessNotAllowedActions ?? "",
@@ -529,6 +779,34 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
     }
     form.setFieldValue("defaultProviderProfile", undefined);
   }, [allowedDefaultEffortOptions, form, selectedDefaultProviderProfile]);
+
+  useEffect(() => {
+    if (activeTab !== "integrations" || !editingRepository || integrationsLoaded) {
+      return;
+    }
+    setIntegrationsLoaded(true);
+    void Promise.all([
+      api.listIntegrationRules(editingRepository.id),
+      api.listWebhookInbox(editingRepository.id, { limit: 50 })
+    ]).then(([rules, entries]) => {
+      setIntegrationRules(rules);
+      setInboxEntries(entries);
+    }).catch(() => {});
+  }, [activeTab, editingRepository, integrationsLoaded]);
+
+  const loadIntegrationRules = async (repoId: string) => {
+    try {
+      const rules = await api.listIntegrationRules(repoId);
+      setIntegrationRules(rules);
+    } catch {}
+  };
+
+  const loadInboxEntries = async (repoId: string) => {
+    try {
+      const entries = await api.listWebhookInbox(repoId, { limit: 50 });
+      setInboxEntries(entries);
+    } catch {}
+  };
 
   const confirmLeave = (): boolean => {
     if (!hasUnsavedChanges || typeof window === "undefined") {
@@ -832,6 +1110,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               ...(editingRepository && normalized.clearWebhookSecret ? { clearWebhookSecret: true } : {}),
               ...(normalized.githubPrWebhookSecret.trim().length > 0 ? { githubPrWebhookSecret: normalized.githubPrWebhookSecret.trim() } : {}),
               ...(editingRepository && normalized.clearGithubPrWebhookSecret ? { clearGithubPrWebhookSecret: true } : {}),
+              ...(normalized.inboundWebhookSecret.trim().length > 0 ? { inboundWebhookSecret: normalized.inboundWebhookSecret.trim() } : {}),
+              ...(editingRepository && normalized.clearInboundWebhookSecret ? { clearInboundWebhookSecret: true } : {}),
               githubIntegrationBotLogin: normalized.githubIntegrationBotLogin.trim().replace(/^@+/, "") || null,
               githubPrAllowedUsers: parseAllowedGitHubUsers(normalized.githubPrAllowedUsers),
               githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
@@ -903,7 +1183,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               { key: "ai", label: "AI" },
               { key: "github", label: "Github" },
               { key: "slack", label: "Slack" },
-              { key: "webhooks", label: "Webhooks" }
+              { key: "webhooks", label: "Webhooks" },
+              { key: "integrations", label: "Integrations" }
             ]}
           />
 
@@ -1704,6 +1985,242 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 </Form.Item>
               ) : null}
             </Card>
+          ) : null}
+
+          {activeTab === "integrations" ? (
+            mode === "edit" && editingRepository ? (
+              <Flex vertical gap={16}>
+                <Card bordered={false} title="Inbound Webhook Endpoint">
+                  <Form.Item label="Webhook URL">
+                    <Input
+                      readOnly
+                      value={buildApiUrl(`/integrations/webhooks/${editingRepository.id}`)}
+                      addonAfter={
+                        <Button
+                          type="link"
+                          size="small"
+                          style={{ padding: 0 }}
+                          onClick={() => {
+                            void navigator.clipboard.writeText(buildApiUrl(`/integrations/webhooks/${editingRepository.id}`));
+                            messageApi.success("Webhook URL copied");
+                          }}
+                        >
+                          Copy
+                        </Button>
+                      }
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    name="inboundWebhookSecret"
+                    label={
+                      editingRepository.inboundWebhookSecretConfigured
+                        ? "Webhook Signature Secret (leave blank to keep existing)"
+                        : "Webhook Signature Secret (optional)"
+                    }
+                    extra="When set, incoming webhooks must include a valid HMAC-SHA256 signature in the X-Webhook-Signature header."
+                  >
+                    <Input.Password />
+                  </Form.Item>
+                  {editingRepository.inboundWebhookSecretConfigured ? (
+                    <Form.Item name="clearInboundWebhookSecret" valuePropName="checked">
+                      <Checkbox>Clear stored inbound webhook secret</Checkbox>
+                    </Form.Item>
+                  ) : null}
+                </Card>
+
+                <Card
+                  bordered={false}
+                  title="Integration Rules"
+                  extra={
+                    <Button
+                      type="primary"
+                      icon={<PlusOutlined />}
+                      onClick={() => {
+                        setEditingRule(null);
+                        setRuleEditorOpen(true);
+                      }}
+                    >
+                      Add Rule
+                    </Button>
+                  }
+                >
+                  {integrationRules.length === 0 ? (
+                    <Typography.Text type="secondary">No integration rules configured. Add a rule to match incoming webhook payloads and create tasks automatically.</Typography.Text>
+                  ) : (
+                    <Flex vertical gap={8}>
+                      {integrationRules.map((rule) => (
+                        <Card key={rule.id} size="small" bordered>
+                          <Flex justify="space-between" align="center">
+                            <Flex align="center" gap={12}>
+                              <Switch
+                                checked={rule.enabled}
+                                size="small"
+                                onChange={async (checked) => {
+                                  try {
+                                    await api.updateIntegrationRule(editingRepository.id, rule.id, { enabled: checked });
+                                    await loadIntegrationRules(editingRepository.id);
+                                  } catch {
+                                    messageApi.error("Failed to toggle rule");
+                                  }
+                                }}
+                              />
+                              <Typography.Text strong>{rule.name}</Typography.Text>
+                              <Tag>{rule.filter.conditions.length} condition{rule.filter.conditions.length !== 1 ? "s" : ""}</Tag>
+                            </Flex>
+                            <Space>
+                              <Button
+                                icon={<EditOutlined />}
+                                size="small"
+                                onClick={() => {
+                                  setEditingRule(rule);
+                                  setRuleEditorOpen(true);
+                                }}
+                              />
+                              <Button
+                                icon={<DeleteOutlined />}
+                                size="small"
+                                danger
+                                onClick={async () => {
+                                  try {
+                                    await api.deleteIntegrationRule(editingRepository.id, rule.id);
+                                    await loadIntegrationRules(editingRepository.id);
+                                    messageApi.success("Rule deleted");
+                                  } catch {
+                                    messageApi.error("Failed to delete rule");
+                                  }
+                                }}
+                              />
+                            </Space>
+                          </Flex>
+                        </Card>
+                      ))}
+                    </Flex>
+                  )}
+                </Card>
+
+                <Card bordered={false} title="Webhook Inbox" extra={
+                  <Button size="small" onClick={() => void loadInboxEntries(editingRepository.id)}>Refresh</Button>
+                }>
+                  {inboxEntries.length === 0 ? (
+                    <Typography.Text type="secondary">No webhook deliveries received yet.</Typography.Text>
+                  ) : (
+                    <Table
+                      dataSource={inboxEntries}
+                      rowKey="id"
+                      size="small"
+                      pagination={false}
+                      columns={[
+                        {
+                          title: "Received",
+                          dataIndex: "receivedAt",
+                          width: 180,
+                          render: (value: string) => new Date(value).toLocaleString()
+                        },
+                        {
+                          title: "Source IP",
+                          dataIndex: "sourceIp",
+                          width: 140,
+                          render: (value: string | null) => value ?? "-"
+                        },
+                        {
+                          title: "Body Preview",
+                          dataIndex: "body",
+                          ellipsis: true,
+                          render: (value: unknown) => {
+                            const text = typeof value === "object" ? JSON.stringify(value) : String(value ?? "");
+                            return text.length > 80 ? `${text.slice(0, 80)}...` : text;
+                          }
+                        },
+                        {
+                          title: "Matched",
+                          dataIndex: "matchedRuleId",
+                          width: 100,
+                          render: (value: string | null) => value ? <Tag color="green">Yes</Tag> : <Tag>No</Tag>
+                        },
+                        {
+                          title: "",
+                          width: 80,
+                          render: (_: unknown, record: WebhookInboxEntry) => (
+                            <Space>
+                              <Button icon={<EyeOutlined />} size="small" onClick={() => setInboxDetailEntry(record)} />
+                              <Button icon={<DeleteOutlined />} size="small" danger onClick={async () => {
+                                try {
+                                  await api.deleteWebhookInboxEntry(editingRepository.id, record.id);
+                                  await loadInboxEntries(editingRepository.id);
+                                } catch {
+                                  messageApi.error("Failed to delete entry");
+                                }
+                              }} />
+                            </Space>
+                          )
+                        }
+                      ]}
+                    />
+                  )}
+                </Card>
+
+                <IntegrationRuleEditorModal
+                  open={ruleEditorOpen}
+                  rule={editingRule}
+                  users={users}
+                  onClose={() => setRuleEditorOpen(false)}
+                  onSave={async (input: CreateIntegrationRuleInput) => {
+                    try {
+                      if (editingRule) {
+                        await api.updateIntegrationRule(editingRepository.id, editingRule.id, input);
+                      } else {
+                        await api.createIntegrationRule(editingRepository.id, input);
+                      }
+                      setRuleEditorOpen(false);
+                      await loadIntegrationRules(editingRepository.id);
+                      messageApi.success(editingRule ? "Rule updated" : "Rule created");
+                    } catch {
+                      messageApi.error("Failed to save rule");
+                    }
+                  }}
+                />
+
+                <Modal
+                  open={Boolean(inboxDetailEntry)}
+                  title="Webhook Delivery Detail"
+                  onCancel={() => setInboxDetailEntry(null)}
+                  footer={[
+                    <Button
+                      key="create-rule"
+                      onClick={() => {
+                        if (!inboxDetailEntry) return;
+                        setEditingRule(null);
+                        setRuleEditorOpen(true);
+                        setInboxDetailEntry(null);
+                      }}
+                    >
+                      Create Rule from This
+                    </Button>,
+                    <Button key="close" type="primary" onClick={() => setInboxDetailEntry(null)}>Close</Button>
+                  ]}
+                  width={720}
+                >
+                  {inboxDetailEntry ? (
+                    <Flex vertical gap={16}>
+                      <div>
+                        <Typography.Text strong>Headers</Typography.Text>
+                        <pre style={{ maxHeight: 200, overflow: "auto", fontSize: 12, background: "#f5f5f5", padding: 8, borderRadius: 4 }}>
+                          {JSON.stringify(inboxDetailEntry.headers, null, 2)}
+                        </pre>
+                      </div>
+                      <div>
+                        <Typography.Text strong>Body</Typography.Text>
+                        <pre style={{ maxHeight: 400, overflow: "auto", fontSize: 12, background: "#f5f5f5", padding: 8, borderRadius: 4 }}>
+                          {JSON.stringify(inboxDetailEntry.body, null, 2)}
+                        </pre>
+                      </div>
+                    </Flex>
+                  ) : null}
+                </Modal>
+              </Flex>
+            ) : (
+              <Alert message="Integration rules can be configured after the repository is created." type="info" showIcon />
+            )
           ) : null}
 
           {mode === "edit" && editingRepository ? (

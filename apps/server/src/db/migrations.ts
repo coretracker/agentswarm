@@ -732,5 +732,42 @@ Feedback:
       DROP COLUMN IF EXISTS workspace_notes,
       DROP COLUMN IF EXISTS workspace_notes_updated_at;
     `
+  },
+  {
+    id: "20260717_01_integration_rules_and_webhook_inbox",
+    sql: `
+      CREATE TABLE IF NOT EXISTS integration_rules (
+        id text PRIMARY KEY,
+        repository_id text NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+        name text NOT NULL,
+        enabled boolean NOT NULL DEFAULT true,
+        filter jsonb NOT NULL DEFAULT '{"conditions":[]}'::jsonb,
+        mapping jsonb NOT NULL DEFAULT '{}'::jsonb,
+        execution jsonb NULL,
+        correlation_field text NULL,
+        task_owner_user_id text NULL REFERENCES users(id) ON DELETE SET NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS integration_rules_repository_id_idx ON integration_rules(repository_id);
+
+      CREATE TABLE IF NOT EXISTS webhook_inbox (
+        id text PRIMARY KEY,
+        repository_id text NOT NULL REFERENCES repositories(id) ON DELETE CASCADE,
+        headers jsonb NOT NULL DEFAULT '{}'::jsonb,
+        body jsonb NOT NULL DEFAULT '{}'::jsonb,
+        source_ip text NULL,
+        matched_rule_id text NULL,
+        task_id text NULL,
+        received_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS webhook_inbox_repository_id_received_at_idx ON webhook_inbox(repository_id, received_at DESC);
+      CREATE INDEX IF NOT EXISTS webhook_inbox_unmatched_idx ON webhook_inbox(repository_id, received_at DESC) WHERE matched_rule_id IS NULL;
+
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS inbound_webhook_secret text NULL;
+    `
   }
 ];
