@@ -350,6 +350,13 @@ const filterOpOptions: Array<{ label: string; value: IntegrationRuleFilterOp }> 
   { label: "Regex", value: "regex" }
 ];
 
+const formatJsonValue = (value: unknown): string => JSON.stringify(value, null, 2) ?? String(value ?? "");
+
+type WebhookJsonModalState = {
+  title: string;
+  value: unknown;
+} | null;
+
 interface RuleEditorFormValues {
   name: string;
   enabled: boolean;
@@ -587,6 +594,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<IntegrationRule | null>(null);
   const [inboxDetailEntry, setInboxDetailEntry] = useState<WebhookInboxEntry | null>(null);
+  const [inboxJsonModal, setInboxJsonModal] = useState<WebhookJsonModalState>(null);
   const [initialSnapshot, setInitialSnapshot] = useState("");
   const watchedValues = Form.useWatch([], form) as RepositoryFormValues | undefined;
   const selectedDefaultProvider =
@@ -2123,12 +2131,40 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                           render: (value: string | null) => value ?? "-"
                         },
                         {
+                          title: "Headers",
+                          dataIndex: "headers",
+                          width: 110,
+                          render: (value: WebhookInboxEntry["headers"], record: WebhookInboxEntry) => (
+                            <Button
+                              icon={<EyeOutlined />}
+                              size="small"
+                              onClick={() => setInboxJsonModal({ title: `Headers - ${new Date(record.receivedAt).toLocaleString()}`, value })}
+                            >
+                              Headers
+                            </Button>
+                          )
+                        },
+                        {
                           title: "Body Preview",
                           dataIndex: "body",
                           ellipsis: true,
-                          render: (value: unknown) => {
-                            const text = typeof value === "object" ? JSON.stringify(value) : String(value ?? "");
-                            return text.length > 80 ? `${text.slice(0, 80)}...` : text;
+                          render: (value: unknown, record: WebhookInboxEntry) => {
+                            const text = formatJsonValue(value).replace(/\s+/g, " ");
+                            const preview = text.length > 80 ? `${text.slice(0, 80)}...` : text;
+                            return (
+                              <Flex align="center" justify="space-between" gap={8}>
+                                <Typography.Text ellipsis style={{ minWidth: 0 }}>
+                                  {preview}
+                                </Typography.Text>
+                                <Button
+                                  icon={<EyeOutlined />}
+                                  size="small"
+                                  onClick={() => setInboxJsonModal({ title: `Body - ${new Date(record.receivedAt).toLocaleString()}`, value })}
+                                >
+                                  Body
+                                </Button>
+                              </Flex>
+                            );
                           }
                         },
                         {
@@ -2205,16 +2241,41 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                       <div>
                         <Typography.Text strong>Headers</Typography.Text>
                         <pre style={{ maxHeight: 200, overflow: "auto", fontSize: 12, background: "#f5f5f5", padding: 8, borderRadius: 4 }}>
-                          {JSON.stringify(inboxDetailEntry.headers, null, 2)}
+                          {formatJsonValue(inboxDetailEntry.headers)}
                         </pre>
                       </div>
                       <div>
                         <Typography.Text strong>Body</Typography.Text>
                         <pre style={{ maxHeight: 400, overflow: "auto", fontSize: 12, background: "#f5f5f5", padding: 8, borderRadius: 4 }}>
-                          {JSON.stringify(inboxDetailEntry.body, null, 2)}
+                          {formatJsonValue(inboxDetailEntry.body)}
                         </pre>
                       </div>
                     </Flex>
+                  ) : null}
+                </Modal>
+
+                <Modal
+                  open={Boolean(inboxJsonModal)}
+                  title={inboxJsonModal?.title ?? "Webhook JSON"}
+                  onCancel={() => setInboxJsonModal(null)}
+                  footer={<Button type="primary" onClick={() => setInboxJsonModal(null)}>Close</Button>}
+                  width={860}
+                  styles={{ body: { paddingTop: 12 } }}
+                >
+                  {inboxJsonModal ? (
+                    <pre
+                      style={{
+                        maxHeight: "70vh",
+                        overflow: "auto",
+                        fontSize: 12,
+                        background: "#f5f5f5",
+                        padding: 12,
+                        borderRadius: 4,
+                        whiteSpace: "pre"
+                      }}
+                    >
+                      {formatJsonValue(inboxJsonModal.value)}
+                    </pre>
                   ) : null}
                 </Modal>
               </Flex>
