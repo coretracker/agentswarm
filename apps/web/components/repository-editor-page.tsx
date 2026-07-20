@@ -391,6 +391,11 @@ function IntegrationRuleEditorModal({
 }) {
   const [form] = Form.useForm<RuleEditorFormValues>();
   const [saving, setSaving] = useState(false);
+  const executionProvider = Form.useWatch("executionProvider", form) as AgentProvider | undefined;
+  const selectedExecutionProvider = executionProvider === "claude" ? "claude" : "codex";
+  const { models: executionProviderModels, loading: executionProviderModelsLoading, source: executionProviderModelsSource } =
+    useProviderModels(selectedExecutionProvider);
+  const executionEffortOptions = executionProvider ? getEffortOptionsForProvider(executionProvider) : [];
 
   useEffect(() => {
     if (!open) return;
@@ -457,10 +462,11 @@ function IntegrationRuleEditorModal({
               return;
             }
             const execution: IntegrationRuleExecution = {};
-            const providerValue = values.executionProvider.trim();
+            const providerValue = values.executionProvider?.trim() ?? "";
             if (providerValue === "codex" || providerValue === "claude") execution.provider = providerValue;
-            if (values.executionModel.trim()) execution.model = values.executionModel.trim();
-            const profileValue = values.executionProviderProfile.trim();
+            const modelValue = values.executionModel?.trim() ?? "";
+            if (modelValue) execution.model = modelValue;
+            const profileValue = values.executionProviderProfile?.trim() ?? "";
             if (profileValue === "low" || profileValue === "medium" || profileValue === "high" || profileValue === "max") execution.providerProfile = profileValue;
 
             await onSave({
@@ -545,13 +551,50 @@ function IntegrationRuleEditorModal({
         <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>Execution (optional)</Typography.Text>
         <Flex gap={8}>
           <Form.Item name="executionProvider" label="Provider" style={{ flex: 1 }}>
-            <Input placeholder="e.g. claude" />
+            <Select
+              allowClear
+              placeholder="Repository default"
+              options={repositoryDefaultProviderOptions}
+              onChange={(value: AgentProvider | undefined) => {
+                form.setFieldValue("executionModel", "");
+                form.setFieldValue("executionProviderProfile", "");
+                if (!value) return;
+                const nextEfforts = getEffortOptionsForProvider(value);
+                if (!nextEfforts.some((option) => option.value === form.getFieldValue("executionProviderProfile"))) {
+                  form.setFieldValue("executionProviderProfile", "");
+                }
+              }}
+            />
           </Form.Item>
-          <Form.Item name="executionModel" label="Model" style={{ flex: 1 }}>
-            <Input placeholder="e.g. claude-sonnet-4-20250514" />
+          <Form.Item
+            name="executionModel"
+            label="Model"
+            style={{ flex: 1 }}
+            extra={
+              executionProvider
+                ? executionProviderModelsSource === "api"
+                  ? "Model suggestions were refreshed from the provider."
+                  : "Model choices come from the model list in Settings."
+                : undefined
+            }
+          >
+            <Select
+              allowClear
+              showSearch
+              disabled={!executionProvider}
+              loading={Boolean(executionProvider) && executionProviderModelsLoading}
+              options={executionProviderModels}
+              optionFilterProp="label"
+              placeholder={executionProvider ? "Repository default" : "Select provider first"}
+            />
           </Form.Item>
           <Form.Item name="executionProviderProfile" label="Effort" style={{ flex: 1 }}>
-            <Input placeholder="e.g. medium" />
+            <Select
+              allowClear
+              disabled={!executionProvider}
+              options={executionEffortOptions}
+              placeholder={executionProvider ? "Repository default" : "Select provider first"}
+            />
           </Form.Item>
         </Flex>
 
