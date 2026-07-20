@@ -2017,7 +2017,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                         ? "Webhook Signature Secret (leave blank to keep existing)"
                         : "Webhook Signature Secret (optional)"
                     }
-                    extra="When set, incoming webhooks must include a valid HMAC-SHA256 signature in the X-Webhook-Signature header."
+                    extra="Optional. Use this only for webhook sources that support HMAC-SHA256 signatures. When set, matching requests must include X-Webhook-Signature or GitHub's X-Hub-Signature-256."
                   >
                     <Input.Password />
                   </Form.Item>

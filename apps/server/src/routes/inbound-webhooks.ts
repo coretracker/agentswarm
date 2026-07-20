@@ -41,6 +41,9 @@ const verifySignature = (rawBody: string, signatureHeader: string | null, secret
   return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
 };
 
+const readSignatureHeader = (request: FastifyRequest): string | null =>
+  readHeader(request.headers["x-webhook-signature"]) ?? readHeader(request.headers["x-hub-signature-256"]);
+
 const flattenHeaders = (headers: Record<string, string | string[] | undefined>): Record<string, string> => {
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
@@ -74,7 +77,7 @@ export const registerInboundWebhookRoutes = (
     const secret = await deps.repositoryStore.getRepositoryInboundWebhookSecret(repository.id);
     if (secret) {
       const rawBody = (request as RawBodyRequest).rawBody ?? "";
-      const signature = readHeader(request.headers["x-webhook-signature"]);
+      const signature = readSignatureHeader(request);
       if (!verifySignature(rawBody, signature, secret)) {
         return reply.status(401).send({ message: "Invalid webhook signature." });
       }
