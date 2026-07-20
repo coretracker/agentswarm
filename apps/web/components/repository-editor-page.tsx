@@ -290,6 +290,8 @@ const repositoryDefaultProviderOptions: Array<{ label: string; value: AgentProvi
   { label: getAgentProviderLabel("claude"), value: "claude" }
 ];
 
+const WEBHOOK_INBOX_LIMIT = 30;
+
 const GITHUB_TEMPLATE_MARKER_HELP =
   "Template markers: {{target_label}}, {{target_ref}}, {{title}}, {{title_line}}, {{feedback_type}}, {{author}}, {{requested_reviewer}}, {{requested_reviewer_line}}, {{issue_title_line}}, {{review_state_line}}, {{file_line}}, {{url_line}}, {{diff_context_block}}, {{feedback_body}}.";
 
@@ -838,7 +840,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
     setIntegrationsLoaded(true);
     void Promise.all([
       api.listIntegrationRules(editingRepository.id),
-      api.listWebhookInbox(editingRepository.id, { limit: 50 })
+      api.listWebhookInbox(editingRepository.id, { limit: WEBHOOK_INBOX_LIMIT })
     ]).then(([rules, entries]) => {
       setIntegrationRules(rules);
       setInboxEntries(entries);
@@ -854,7 +856,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
 
   const loadInboxEntries = async (repoId: string) => {
     try {
-      const entries = await api.listWebhookInbox(repoId, { limit: 50 });
+      const entries = await api.listWebhookInbox(repoId, { limit: WEBHOOK_INBOX_LIMIT });
       setInboxEntries(entries);
     } catch {}
   };
