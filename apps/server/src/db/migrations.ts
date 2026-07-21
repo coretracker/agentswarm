@@ -734,6 +734,13 @@ Feedback:
     `
   },
   {
+    id: "20260716_01_repository_github_pr_require_bot_mention_default",
+    sql: `
+      ALTER TABLE repositories
+      ALTER COLUMN github_pr_require_bot_mention SET DEFAULT true;
+    `
+  },
+  {
     id: "20260717_01_integration_rules_and_webhook_inbox",
     sql: `
       CREATE TABLE IF NOT EXISTS integration_rules (
