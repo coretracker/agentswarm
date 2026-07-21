@@ -5163,6 +5163,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           {normalizedRunSummary ? (
             isCollapsibleSummaryRun ? (
               <Collapse
+                key={`${run.id}-${isLastSummary ? "latest-summary" : "summary"}`}
                 size="small"
                 defaultActiveKey={isLastSummary ? summaryCollapseItems.map((item) => item.key) : []}
                 items={summaryCollapseItems}
