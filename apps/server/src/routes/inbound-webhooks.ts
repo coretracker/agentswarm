@@ -51,7 +51,24 @@ const extractSha256Digest = (signatureHeader: string | null): string | null => {
   return null;
 };
 
-const verifySignature = (rawBody: string, signatureHeader: string | null, secret: string): boolean => {
+const verifySlackSignature = (rawBody: string, timestamp: string | null, signatureHeader: string, secret: string): boolean => {
+  if (!timestamp) {
+    return false;
+  }
+  const timestampSeconds = Number(timestamp);
+  if (!Number.isFinite(timestampSeconds) || Math.abs(Date.now() / 1000 - timestampSeconds) > 60 * 5) {
+    return false;
+  }
+  const expected = `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${rawBody}`).digest("hex")}`;
+  const expectedBuffer = Buffer.from(expected);
+  const actualBuffer = Buffer.from(signatureHeader.trim());
+  return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
+};
+
+const verifySignature = (rawBody: string, signatureHeader: string | null, secret: string, slackTimestamp: string | null): boolean => {
+  if (signatureHeader?.trim().startsWith("v0=")) {
+    return verifySlackSignature(rawBody, slackTimestamp, signatureHeader, secret);
+  }
   const digest = extractSha256Digest(signatureHeader);
   if (!digest) {
     return false;
@@ -85,6 +102,17 @@ const flattenHeaders = (headers: Record<string, string | string[] | undefined>):
   return result;
 };
 
+const isSlackUrlVerificationPayload = (body: unknown): body is { challenge: string } =>
+  Boolean(
+    body &&
+      typeof body === "object" &&
+      "type" in body &&
+      body.type === "url_verification" &&
+      "challenge" in body &&
+      typeof body.challenge === "string" &&
+      body.challenge.trim().length > 0
+  );
+
 export const registerInboundWebhookRoutes = (
   app: FastifyInstance,
   deps: {
@@ -116,13 +144,18 @@ export const registerInboundWebhookRoutes = (
     if (secret) {
       const rawBody = (request as RawBodyRequest).rawBody ?? "";
       const signature = readSignatureHeader(request, repository.inboundWebhookSignatureHeaders);
-      if (!verifySignature(rawBody, signature, secret)) {
+      const slackTimestamp = readHeader(request.headers["x-slack-request-timestamp"]);
+      if (!verifySignature(rawBody, signature, secret, slackTimestamp)) {
         return reply.status(401).send({ message: "Invalid webhook signature." });
       }
     }
 
-    const headers = flattenHeaders(request.headers);
     const body = request.body ?? {};
+    if (isSlackUrlVerificationPayload(body)) {
+      return reply.status(200).send({ challenge: body.challenge });
+    }
+
+    const headers = flattenHeaders(request.headers);
     const sourceIp = request.ip || null;
 
     const inboxEntry = await deps.webhookInboxStore.insertEntry({
