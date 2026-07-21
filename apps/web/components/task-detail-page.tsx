@@ -4685,6 +4685,21 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   };
 
+  const renderRunTimelineContent = (run: TaskRun) => (
+    <Flex vertical gap={12}>
+      {run.hasRawJson ? (
+        <Flex justify="flex-end">
+          <Tooltip title="Download raw provider JSONL">
+            <Button size="small" type="text" icon={<DownloadOutlined />} href={api.getTaskRunRawJsonUrl(taskId, run.id)}>
+              Raw JSON
+            </Button>
+          </Tooltip>
+        </Flex>
+      ) : null}
+      {renderRunTimelinePanel(run)}
+    </Flex>
+  );
+
   const renderRunErrorNotice = (run: TaskRun) =>
     run.errorMessage ? (
       <div
@@ -5186,7 +5201,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </ReactMarkdown>
         )}
         renderRunErrorNotice={renderRunErrorNotice}
-        renderRunTimelineCollapse={renderRunTimelineCollapse}
+        renderRunTimelineContent={renderRunTimelineContent}
+        onTimelineOpen={(run) => {
+          window.requestAnimationFrame(() => scrollRunTimelineToBottom(run.id));
+        }}
         onCopySummary={(markdown) => void copyMarkdownToClipboard(markdown, "Summary markdown")}
         renderCheckpointDiffContent={renderCheckpointDiffContent}
         getCheckpointDiffActions={getCheckpointDiffActions}

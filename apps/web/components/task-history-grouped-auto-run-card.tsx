@@ -27,7 +27,8 @@ export interface TaskHistoryGroupedAutoRunCardProps {
   onCancel?: () => void;
   renderMarkdown: (markdown: string) => ReactNode;
   renderRunErrorNotice: (run: TaskRun) => ReactNode;
-  renderRunTimelineCollapse: (run: TaskRun) => ReactNode;
+  renderRunTimelineContent: (run: TaskRun) => ReactNode;
+  onTimelineOpen?: (run: TaskRun) => void;
   onCopySummary: (markdown: string) => void;
   renderCheckpointDiffContent: (proposal: TaskChangeProposal) => ReactNode;
   getCheckpointDiffActions?: (proposal: TaskChangeProposal) => TaskHistoryCheckpointDiffActions;
@@ -62,7 +63,8 @@ export function TaskHistoryGroupedAutoRunCard({
   onCancel,
   renderMarkdown,
   renderRunErrorNotice,
-  renderRunTimelineCollapse,
+  renderRunTimelineContent,
+  onTimelineOpen,
   onCopySummary,
   renderCheckpointDiffContent,
   getCheckpointDiffActions
@@ -97,6 +99,9 @@ export function TaskHistoryGroupedAutoRunCard({
     fontSize: 13
   });
   const toggleSection = (section: HistoryDetailSection) => {
+    if (section === "timeline" && activeSection !== "timeline") {
+      onTimelineOpen?.(entry.run);
+    }
     setActiveSection((current) => (current === section ? null : section));
   };
   const renderDiffAction = (action: TaskHistoryCheckpointDiffAction) => (
@@ -229,7 +234,7 @@ export function TaskHistoryGroupedAutoRunCard({
         {/* Expanded section content */}
         {activeSection ? (
           <div style={{ padding: 20, background: token.colorFillQuaternary }}>
-            {activeSection === "timeline" ? renderRunTimelineCollapse(entry.run) : null}
+            {activeSection === "timeline" ? renderRunTimelineContent(entry.run) : null}
             {activeSection === "summary" ? (
               normalizedRunSummary ? (
                 <div
