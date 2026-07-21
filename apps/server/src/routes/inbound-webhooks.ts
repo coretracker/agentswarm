@@ -140,23 +140,31 @@ export const registerInboundWebhookRoutes = (
       return reply.status(404).send({ message: "Repository not found" });
     }
 
+    const body = request.body ?? {};
+    const headers = flattenHeaders(request.headers);
+    const sourceIp = request.ip || null;
+
     const secret = await deps.repositoryStore.getRepositoryInboundWebhookSecret(repository.id);
     if (secret) {
       const rawBody = (request as RawBodyRequest).rawBody ?? "";
       const signature = readSignatureHeader(request, repository.inboundWebhookSignatureHeaders);
       const slackTimestamp = readHeader(request.headers["x-slack-request-timestamp"]);
       if (!verifySignature(rawBody, signature, secret, slackTimestamp)) {
+        await deps.webhookInboxStore.insertEntry({
+          repositoryId: repository.id,
+          headers,
+          body,
+          sourceIp,
+          status: "rejected",
+          reason: "invalid_signature"
+        });
         return reply.status(401).send({ message: "Invalid webhook signature." });
       }
     }
 
-    const body = request.body ?? {};
     if (isSlackUrlVerificationPayload(body)) {
       return reply.status(200).send({ challenge: body.challenge });
     }
-
-    const headers = flattenHeaders(request.headers);
-    const sourceIp = request.ip || null;
 
     const inboxEntry = await deps.webhookInboxStore.insertEntry({
       repositoryId: repository.id,
@@ -172,6 +180,7 @@ export const registerInboundWebhookRoutes = (
     const matchedRule = findMatchingRule(rules, headers, body);
 
     if (!matchedRule) {
+      await deps.webhookInboxStore.markDropped(inboxEntry.id, "no_matching_rule");
       return reply.status(202).send({ received: true, matched: false });
     }
 
@@ -234,6 +243,7 @@ export const registerInboundWebhookRoutes = (
       resolvedOwnerUserId = adminUser?.id ?? null;
     }
     if (!resolvedOwnerUserId) {
+      await deps.webhookInboxStore.markDropped(inboxEntry.id, "no_task_owner", matchedRule.id);
       return reply.status(202).send({ received: true, matched: true, ruleId: matchedRule.id, created: false, reason: "no_task_owner" });
     }
 
@@ -308,6 +318,7 @@ export const registerInboundWebhookRoutes = (
       }
     );
     if (!startResult.ok) {
+      await deps.webhookInboxStore.markDropped(inboxEntry.id, "task_start_failed", matchedRule.id);
       return reply.status(startResult.statusCode).send({ message: startResult.message });
     }
 

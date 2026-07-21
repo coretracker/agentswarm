@@ -455,6 +455,22 @@ const getWebhookPayloadPreview = (entry: WebhookInboxEntry): string => {
   return text.length > 96 ? `${text.slice(0, 96)}...` : text;
 };
 
+const webhookStatusConfig: Record<WebhookInboxEntry["status"], { label: string; color?: string }> = {
+  accepted: { label: "Accepted", color: "green" },
+  dropped: { label: "Dropped", color: "orange" },
+  rejected: { label: "Rejected", color: "red" }
+};
+
+const formatWebhookReason = (reason: string | null): string | null => {
+  if (!reason) {
+    return null;
+  }
+  return reason
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+};
+
 const summarizeCondition = (condition: IntegrationRuleFilterCondition): string => {
   const prefix = condition.source === "header" ? "header" : "body";
   const target = `${prefix}.${condition.field}`;
@@ -2550,6 +2566,21 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                           dataIndex: "sourceIp",
                           width: 150,
                           render: (value: string | null) => value ?? "-"
+                        },
+                        {
+                          title: "Status",
+                          dataIndex: "status",
+                          width: 160,
+                          render: (_: unknown, record: WebhookInboxEntry) => {
+                            const config = webhookStatusConfig[record.status] ?? webhookStatusConfig.accepted;
+                            const reason = formatWebhookReason(record.reason);
+                            return (
+                              <Space size={6} wrap>
+                                <Tag color={config.color}>{config.label}</Tag>
+                                {reason ? <Tag>{reason}</Tag> : null}
+                              </Space>
+                            );
+                          }
                         },
                         {
                           title: "Payload",

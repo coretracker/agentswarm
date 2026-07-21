@@ -569,6 +569,8 @@ export interface WebhookInboxEntry {
   headers: Record<string, string>;
   body: unknown;
   sourceIp: string | null;
+  status: "accepted" | "rejected" | "dropped";
+  reason: string | null;
   matchedRuleId: string | null;
   taskId: string | null;
   receivedAt: string;
