@@ -29,6 +29,7 @@ const envSchema = z.object({
   VERFT_AI_STATE_HOST_ROOT: z.string().optional(),
   VERFT_CODEX_STATE_HOST_PATH: z.string().optional(),
   VERFT_CLAUDE_STATE_HOST_PATH: z.string().optional(),
+  VERFT_CLAUDE_CONFIG_HOST_PATH: z.string().optional(),
   RUNTIME_PAYLOAD_ROOT: z.string().default("/runtime-payloads"),
   RUNTIME_PAYLOAD_VOLUME: z.string().default("verft_runtime_payloads"),
   REPOSITORY_ENV_FILE_STORE_ROOT: z.string().default("/secrets/repository-env-files"),

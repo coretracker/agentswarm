@@ -13,6 +13,9 @@ describe("buildProviderTerminalScript", () => {
       assert.equal(result.status, 0, result.stderr || `expected ${provider} settings terminal script to parse`);
       assert.match(script, /VERFT_BASE_ROOT/);
       assert.match(script, /trap sync_base_state EXIT HUP INT TERM/);
+      assert.match(script, /VERFT_BASE_SOURCE/);
+      assert.doesNotMatch(script, /chown -R agent:agent "\$BASE_ROOT" "\$HOME"/);
+      assert.doesNotMatch(script, /chown -R agent:agent "\$HOME" "\$BASE_ROOT"/);
       assert.match(script, /su-exec agent:agent/);
       if (provider === "setup") {
         assert.match(script, /codex/);
