@@ -4616,31 +4616,60 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     return renderTimelineEventContent(item.event);
   };
 
+  const renderRawJsonButton = (run: TaskRun) =>
+    run.hasRawJson ? (
+      <Tooltip title="Download raw provider JSONL">
+        <Button
+          className="task-run-timeline-raw-json-button"
+          size="small"
+          type="text"
+          icon={<DownloadOutlined />}
+          href={api.getTaskRunRawJsonUrl(taskId, run.id)}
+          onClick={(event) => event.stopPropagation()}
+          style={{
+            position: "absolute",
+            top: 10,
+            right: 8,
+            zIndex: 1,
+            background: token.colorBgElevated,
+            boxShadow: `0 0 0 1px ${token.colorBorderSecondary}`
+          }}
+        >
+          Raw JSON
+        </Button>
+      </Tooltip>
+    ) : null;
+
   const renderRunTimelinePanel = (run: TaskRun) => {
     const events = run.timelineEvents ?? [];
     const items = buildTimelineDisplayItems(events);
-    if (events.length === 0) {
-      return <Typography.Text type="secondary">No parsed timeline events captured for this run.</Typography.Text>;
-    }
 
     return (
-      <div
-        ref={(element) => {
-          runTimelineScrollRefs.current[run.id] = element;
-        }}
-        style={{
-          maxHeight: 420,
-          overflowY: "auto",
-          paddingRight: 8
-        }}
-      >
-        <Timeline
-          items={items.map((item) => ({
-            key: item.id,
-            color: getTimelineDisplayItemColor(item),
-            children: renderTimelineDisplayItemContent(item)
-          }))}
-        />
+      <div className="task-run-timeline-panel">
+        {renderRawJsonButton(run)}
+        <div
+          ref={(element) => {
+            runTimelineScrollRefs.current[run.id] = element;
+          }}
+          style={{
+            maxHeight: 420,
+            overflowY: "auto",
+            paddingRight: 8,
+            paddingTop: 10
+          }}
+        >
+          {events.length === 0 ? (
+            <Typography.Text type="secondary">No parsed timeline events captured for this run.</Typography.Text>
+          ) : (
+            <Timeline
+              items={items.map((item) => ({
+                key: item.id,
+                color: getTimelineDisplayItemColor(item),
+                children: renderTimelineDisplayItemContent(item)
+              }))}
+            />
+          )}
+        </div>
       </div>
     );
   };
@@ -4665,19 +4694,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           {
             key: run.id,
             label: `Timeline${count > 0 ? ` (${displayCount}/${count})` : ""}`,
-            extra: run.hasRawJson ? (
-              <Tooltip title="Download raw provider JSONL">
-                <Button
-                  size="small"
-                  type="text"
-                  icon={<DownloadOutlined />}
-                  href={api.getTaskRunRawJsonUrl(taskId, run.id)}
-                  onClick={(event) => event.stopPropagation()}
-                >
-                  Raw JSON
-                </Button>
-              </Tooltip>
-            ) : null,
             children: renderRunTimelinePanel(run)
           }
         ]}
@@ -4685,20 +4701,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   };
 
-  const renderRunTimelineContent = (run: TaskRun) => (
-    <Flex vertical gap={12}>
-      {run.hasRawJson ? (
-        <Flex justify="flex-end">
-          <Tooltip title="Download raw provider JSONL">
-            <Button size="small" type="text" icon={<DownloadOutlined />} href={api.getTaskRunRawJsonUrl(taskId, run.id)}>
-              Raw JSON
-            </Button>
-          </Tooltip>
-        </Flex>
-      ) : null}
-      {renderRunTimelinePanel(run)}
-    </Flex>
-  );
+  const renderRunTimelineContent = (run: TaskRun) => renderRunTimelinePanel(run);
 
   const renderRunErrorNotice = (run: TaskRun) =>
     run.errorMessage ? (
