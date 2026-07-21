@@ -431,6 +431,13 @@ const summarizeRuleMapping = (rule: IntegrationRule): string =>
 const getWebhookPayloadModalValue = (state: WebhookPayloadModalState): unknown =>
   state?.activeKey === "headers" ? state.entry.headers : state?.entry.body;
 
+type IntegrationBranchMode = "create_feature_branch" | "work_on_existing";
+
+const integrationBranchModeOptions: Array<{ label: string; value: IntegrationBranchMode }> = [
+  { label: "Create new feature branch", value: "create_feature_branch" },
+  { label: "Work on existing branch from payload", value: "work_on_existing" }
+];
+
 interface RuleEditorFormValues {
   name: string;
   enabled: boolean;
@@ -442,10 +449,12 @@ interface RuleEditorFormValues {
   }>;
   mappingTitle: string;
   mappingInstructions: string;
+  branchMode: IntegrationBranchMode;
   mappingBranch: string;
   executionProvider: string;
   executionModel: string;
   executionProviderProfile: string;
+  dedupeEnabled: boolean;
   correlationField: string;
   taskOwnerUserId: string;
 }
@@ -470,6 +479,8 @@ function IntegrationRuleEditorModal({
   const { models: executionProviderModels, loading: executionProviderModelsLoading, source: executionProviderModelsSource } =
     useProviderModels(selectedExecutionProvider);
   const executionEffortOptions = executionProvider ? getEffortOptionsForProvider(executionProvider) : [];
+  const branchMode = Form.useWatch("branchMode", form) as IntegrationBranchMode | undefined;
+  const dedupeEnabled = Form.useWatch("dedupeEnabled", form) === true;
 
   useEffect(() => {
     if (!open) return;
@@ -485,10 +496,12 @@ function IntegrationRuleEditorModal({
         })),
         mappingTitle: rule.mapping.title ?? "",
         mappingInstructions: rule.mapping.instructions ?? "",
+        branchMode: rule.mapping.branch ? "work_on_existing" : "create_feature_branch",
         mappingBranch: rule.mapping.branch ?? "",
         executionProvider: rule.execution?.provider ?? "",
         executionModel: rule.execution?.model ?? "",
         executionProviderProfile: rule.execution?.providerProfile ?? "",
+        dedupeEnabled: Boolean(rule.correlationField),
         correlationField: rule.correlationField ?? "",
         taskOwnerUserId: rule.taskOwnerUserId ?? ""
       });
@@ -500,10 +513,12 @@ function IntegrationRuleEditorModal({
         conditions: [{ source: "body", field: "", op: "equals", value: "" }],
         mappingTitle: "",
         mappingInstructions: "",
+        branchMode: "create_feature_branch",
         mappingBranch: "",
         executionProvider: "",
         executionModel: "",
         executionProviderProfile: "",
+        dedupeEnabled: false,
         correlationField: "",
         taskOwnerUserId: ""
       });
@@ -542,6 +557,8 @@ function IntegrationRuleEditorModal({
             if (modelValue) execution.model = modelValue;
             const profileValue = values.executionProviderProfile?.trim() ?? "";
             if (profileValue === "low" || profileValue === "medium" || profileValue === "high" || profileValue === "max") execution.providerProfile = profileValue;
+            const branchValue = values.branchMode === "work_on_existing" ? values.mappingBranch.trim() : "";
+            const correlationValue = values.dedupeEnabled ? values.correlationField.trim() : "";
 
             await onSave({
               name: values.name.trim(),
@@ -550,10 +567,10 @@ function IntegrationRuleEditorModal({
               mapping: {
                 ...(values.mappingTitle.trim() ? { title: values.mappingTitle.trim() } : {}),
                 ...(values.mappingInstructions.trim() ? { instructions: values.mappingInstructions.trim() } : {}),
-                ...(values.mappingBranch.trim() ? { branch: values.mappingBranch.trim() } : {})
+                ...(branchValue ? { branch: branchValue } : {})
               },
               ...(Object.keys(execution).length > 0 ? { execution } : { execution: null }),
-              correlationField: values.correlationField.trim() || null,
+              correlationField: correlationValue || null,
               taskOwnerUserId: values.taskOwnerUserId.trim() || null
             });
           } catch {
@@ -619,12 +636,29 @@ function IntegrationRuleEditorModal({
           <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder={"e.g. Work on: {{body.issue.description}}"} />
         </Form.Item>
         <Form.Item
-          name="mappingBranch"
-          label="Work-On Branch Template"
-          extra="Optional existing branch for the created task to work on. Leave empty to create a normal feature branch from the repository default branch."
+          name="branchMode"
+          label="Branch Behavior"
+          extra="Choose whether each new webhook task gets its own feature branch or works directly on an existing branch from the payload."
         >
-          <Input placeholder={"e.g. {{body.pull_request.head.ref}}"} />
+          <Select
+            options={integrationBranchModeOptions}
+            onChange={(value: IntegrationBranchMode) => {
+              if (value === "create_feature_branch") {
+                form.setFieldValue("mappingBranch", "");
+              }
+            }}
+          />
         </Form.Item>
+        {branchMode === "work_on_existing" ? (
+          <Form.Item
+            name="mappingBranch"
+            label="Existing Branch Template"
+            extra="Template that resolves to the branch the task should work on, for example a pull request source branch."
+            rules={[{ required: true, whitespace: true, message: "Branch template is required when working on an existing branch." }]}
+          >
+            <Input placeholder={"e.g. {{body.pull_request.head.ref}}"} />
+          </Form.Item>
+        ) : null}
 
         <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>Execution (optional)</Typography.Text>
         <Flex gap={8}>
@@ -676,13 +710,31 @@ function IntegrationRuleEditorModal({
           </Form.Item>
         </Flex>
 
+        <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>Task Deduplication</Typography.Text>
         <Form.Item
-          name="correlationField"
-          label="Correlation Field"
-          extra="Dot-path to the field that identifies the external entity for deduplication, e.g. body.issue.key"
+          name="dedupeEnabled"
+          label="Queue follow-up deliveries on the same task"
+          valuePropName="checked"
+          extra="When enabled, Verft uses the correlation field below to find an existing webhook-created task and queue new deliveries as messages instead of creating another task."
         >
-          <Input placeholder="e.g. body.issue.key" />
+          <Switch
+            onChange={(checked) => {
+              if (!checked) {
+                form.setFieldValue("correlationField", "");
+              }
+            }}
+          />
         </Form.Item>
+        {dedupeEnabled ? (
+          <Form.Item
+            name="correlationField"
+            label="Correlation Field"
+            extra="Dot-path that identifies the external entity. Use a stable issue, PR, ticket, or alert id."
+            rules={[{ required: true, whitespace: true, message: "Correlation field is required when task deduplication is enabled." }]}
+          >
+            <Input placeholder="e.g. body.issue.key" />
+          </Form.Item>
+        ) : null}
         <Form.Item name="taskOwnerUserId" label="Task Owner">
           <Select
             allowClear
@@ -2255,6 +2307,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                                 <Typography.Text strong>{rule.name}</Typography.Text>
                                 <Tag color={rule.enabled ? "green" : undefined}>{rule.enabled ? "Enabled" : "Paused"}</Tag>
                                 <Tag>{rule.filter.conditions.length} condition{rule.filter.conditions.length !== 1 ? "s" : ""}</Tag>
+                                <Tag>{rule.mapping.branch ? "Existing branch" : "New branch"}</Tag>
+                                {rule.correlationField ? <Tag color="blue">Dedupes tasks</Tag> : null}
                                 {rule.execution?.provider ? <Tag>{getAgentProviderLabel(rule.execution.provider)}</Tag> : null}
                                 {rule.execution?.providerProfile ? <Tag>{rule.execution.providerProfile}</Tag> : null}
                               </Flex>
