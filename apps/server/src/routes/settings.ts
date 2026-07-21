@@ -7,7 +7,8 @@ import type { AuthService } from "../lib/auth.js";
 import { discoverHostexecEndpoint } from "../lib/hostexec-discovery.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
-import { AGENT_RUNTIME_IMAGE, env } from "../config/env.js";
+import { AGENT_RUNTIME_IMAGE } from "../config/env.js";
+import { buildVerftBaseVolumeMountArgs, resolveVerftBaseStateSource } from "../lib/verft-base-mounts.js";
 
 interface ProviderModelEntry {
   label: string;
@@ -209,27 +210,27 @@ async function getProviderBaseStateStatus(): Promise<{ volume: string; files: Re
   ].join("\n");
 
   return new Promise((resolve) => {
-    const child = spawnChild(
-      "docker",
-      ["run", "--rm", "-v", `${env.VERFT_BASE_VOLUME}:/verft-base:ro`, AGENT_RUNTIME_IMAGE, "sh", "-lc", script],
-      { stdio: ["ignore", "pipe", "ignore"] }
-    );
+    const source = resolveVerftBaseStateSource();
+    const sourceLabel = source.type === "host" ? source.root || "host" : source.name;
+    const child = spawnChild("docker", ["run", "--rm", ...buildVerftBaseVolumeMountArgs("ro"), AGENT_RUNTIME_IMAGE, "sh", "-lc", script], {
+      stdio: ["ignore", "pipe", "ignore"]
+    });
     let stdout = "";
     child.stdout.on("data", (chunk) => {
       stdout += chunk.toString("utf8");
     });
     child.on("error", () => {
-      resolve({ volume: env.VERFT_BASE_VOLUME, files: Object.fromEntries(files.map((file) => [file, false])) });
+      resolve({ volume: sourceLabel, files: Object.fromEntries(files.map((file) => [file, false])) });
     });
     child.on("close", (code) => {
       if (code !== 0) {
-        resolve({ volume: env.VERFT_BASE_VOLUME, files: Object.fromEntries(files.map((file) => [file, false])) });
+        resolve({ volume: sourceLabel, files: Object.fromEntries(files.map((file) => [file, false])) });
         return;
       }
       try {
-        resolve({ volume: env.VERFT_BASE_VOLUME, files: JSON.parse(stdout) as Record<string, boolean> });
+        resolve({ volume: sourceLabel, files: JSON.parse(stdout) as Record<string, boolean> });
       } catch {
-        resolve({ volume: env.VERFT_BASE_VOLUME, files: Object.fromEntries(files.map((file) => [file, false])) });
+        resolve({ volume: sourceLabel, files: Object.fromEntries(files.map((file) => [file, false])) });
       }
     });
   });
