@@ -216,11 +216,11 @@ export function TaskHistoryGroupedAutoRunCard({
           }}
         >
           <Space size={16} wrap>
-            <Button type="link" size="small" style={sectionButtonStyle("timeline")} onClick={() => toggleSection("timeline")}>
-              {timelineMeta}
-            </Button>
             <Button type="link" size="small" style={sectionButtonStyle("summary")} onClick={() => toggleSection("summary")}>
               {summaryTitle}
+            </Button>
+            <Button type="link" size="small" style={sectionButtonStyle("timeline")} onClick={() => toggleSection("timeline")}>
+              {timelineMeta}
             </Button>
             {entry.proposal ? (
               <Button type="link" size="small" style={sectionButtonStyle("diff")} disabled={diffActions?.disabled} onClick={() => toggleSection("diff")}>
