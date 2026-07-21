@@ -48,19 +48,36 @@ const createTestApp = (secret: string | null, inboundWebhookSignatureHeaders?: s
       listRules: async () => []
     } as never,
     webhookInboxStore: {
-      insertEntry: async (entry: { repositoryId: string; headers: Record<string, string>; body: unknown; sourceIp: string | null }) => {
+      insertEntry: async (entry: {
+        repositoryId: string;
+        headers: Record<string, string>;
+        body: unknown;
+        sourceIp: string | null;
+        status?: WebhookInboxEntry["status"];
+        reason?: string | null;
+      }) => {
         const inboxEntry: WebhookInboxEntry = {
           id: `entry-${insertedEntries.length + 1}`,
           repositoryId: entry.repositoryId,
           headers: entry.headers,
           body: entry.body,
           sourceIp: entry.sourceIp,
+          status: entry.status ?? "accepted",
+          reason: entry.reason ?? null,
           matchedRuleId: null,
           taskId: null,
           receivedAt: now
         };
         insertedEntries.push(inboxEntry);
         return inboxEntry;
+      },
+      markDropped: async (entryId: string, reason: string, matchedRuleId?: string | null) => {
+        const entry = insertedEntries.find((candidate) => candidate.id === entryId);
+        if (entry) {
+          entry.status = "dropped";
+          entry.reason = reason;
+          entry.matchedRuleId = matchedRuleId ?? entry.matchedRuleId;
+        }
       },
       deleteOldEntries: async () => 0
     } as never,
@@ -185,6 +202,8 @@ test("inbound webhook accepts unsigned deliveries when no secret is configured",
   assert.deepEqual(JSON.parse(response.body), { received: true, matched: false });
   assert.equal(insertedEntries.length, 1);
   assert.deepEqual(insertedEntries[0]?.body, { event: "build" });
+  assert.equal(insertedEntries[0]?.status, "dropped");
+  assert.equal(insertedEntries[0]?.reason, "no_matching_rule");
 
   await app.close();
 });
@@ -200,7 +219,9 @@ test("inbound webhook rejects unsigned deliveries when a secret is configured", 
 
   assert.equal(response.statusCode, 401);
   assert.deepEqual(JSON.parse(response.body), { message: "Invalid webhook signature." });
-  assert.equal(insertedEntries.length, 0);
+  assert.equal(insertedEntries.length, 1);
+  assert.equal(insertedEntries[0]?.status, "rejected");
+  assert.equal(insertedEntries[0]?.reason, "invalid_signature");
 
   await app.close();
 });

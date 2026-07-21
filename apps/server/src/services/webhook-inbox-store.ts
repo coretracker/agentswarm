@@ -8,14 +8,24 @@ const mapRow = (row: Record<string, unknown>): WebhookInboxEntry => ({
   headers: (row.headers as Record<string, string>) ?? {},
   body: row.body ?? {},
   sourceIp: typeof row.source_ip === "string" && row.source_ip.trim().length > 0 ? row.source_ip.trim() : null,
+  status: row.status === "rejected" || row.status === "dropped" ? row.status : "accepted",
+  reason: typeof row.reason === "string" && row.reason.trim().length > 0 ? row.reason.trim() : null,
   matchedRuleId: typeof row.matched_rule_id === "string" && row.matched_rule_id.trim().length > 0 ? row.matched_rule_id.trim() : null,
   taskId: typeof row.task_id === "string" && row.task_id.trim().length > 0 ? row.task_id.trim() : null,
   receivedAt: String(row.received_at)
 });
 
 export interface WebhookInboxStore {
-  insertEntry(entry: { repositoryId: string; headers: Record<string, string>; body: unknown; sourceIp: string | null }): Promise<WebhookInboxEntry>;
+  insertEntry(entry: {
+    repositoryId: string;
+    headers: Record<string, string>;
+    body: unknown;
+    sourceIp: string | null;
+    status?: WebhookInboxEntry["status"];
+    reason?: string | null;
+  }): Promise<WebhookInboxEntry>;
   updateMatchResult(entryId: string, matchedRuleId: string, taskId: string): Promise<void>;
+  markDropped(entryId: string, reason: string, matchedRuleId?: string | null): Promise<void>;
   listEntries(repositoryId: string, options?: { matched?: boolean; limit?: number }): Promise<WebhookInboxEntry[]>;
   getEntry(entryId: string): Promise<WebhookInboxEntry | null>;
   deleteEntry(entryId: string): Promise<boolean>;
@@ -25,14 +35,30 @@ export interface WebhookInboxStore {
 export class PostgresWebhookInboxStore implements WebhookInboxStore {
   constructor(private readonly pool: Pool) {}
 
-  async insertEntry(entry: { repositoryId: string; headers: Record<string, string>; body: unknown; sourceIp: string | null }): Promise<WebhookInboxEntry> {
+  async insertEntry(entry: {
+    repositoryId: string;
+    headers: Record<string, string>;
+    body: unknown;
+    sourceIp: string | null;
+    status?: WebhookInboxEntry["status"];
+    reason?: string | null;
+  }): Promise<WebhookInboxEntry> {
     const id = nanoid();
     const receivedAt = new Date().toISOString();
     const result = await this.pool.query(
-      `INSERT INTO webhook_inbox (id, repository_id, headers, body, source_ip, received_at)
-       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6)
+      `INSERT INTO webhook_inbox (id, repository_id, headers, body, source_ip, status, reason, received_at)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, $8)
        RETURNING *`,
-      [id, entry.repositoryId, JSON.stringify(entry.headers), JSON.stringify(entry.body), entry.sourceIp, receivedAt]
+      [
+        id,
+        entry.repositoryId,
+        JSON.stringify(entry.headers),
+        JSON.stringify(entry.body),
+        entry.sourceIp,
+        entry.status ?? "accepted",
+        entry.reason?.trim() || null,
+        receivedAt
+      ]
     );
     return mapRow(result.rows[0]);
   }
@@ -41,6 +67,13 @@ export class PostgresWebhookInboxStore implements WebhookInboxStore {
     await this.pool.query(
       "UPDATE webhook_inbox SET matched_rule_id = $2, task_id = $3 WHERE id = $1",
       [entryId, matchedRuleId, taskId]
+    );
+  }
+
+  async markDropped(entryId: string, reason: string, matchedRuleId?: string | null): Promise<void> {
+    await this.pool.query(
+      "UPDATE webhook_inbox SET status = 'dropped', reason = $2, matched_rule_id = COALESCE($3, matched_rule_id) WHERE id = $1",
+      [entryId, reason, matchedRuleId ?? null]
     );
   }
 
