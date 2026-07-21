@@ -28,7 +28,7 @@ services:
       - DATABASE_URL=postgres://postgres:postgres@postgres:5432/verft
       - REPO_CACHE_ROOT=/repo-cache
       - REPO_CACHE_VOLUME=verft_repo_cache
-      - VERFT_AI_STATE_HOST_ROOT=${VERFT_AI_STATE_HOST_ROOT:-}
+      - VERFT_AI_STATE_HOST_ROOT=${VERFT_AI_STATE_HOST_ROOT:-${HOME}}
       - VERFT_CODEX_STATE_HOST_PATH=${VERFT_CODEX_STATE_HOST_PATH:-}
       - VERFT_CLAUDE_STATE_HOST_PATH=${VERFT_CLAUDE_STATE_HOST_PATH:-}
       - RUNTIME_PAYLOAD_ROOT=/runtime-payloads
