@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import type {
   AgentProvider,
@@ -30,8 +30,8 @@ import {
   getAgentProviderLabel,
   getEffortOptionsForProvider
 } from "@verft/shared-types";
-import { Alert, Button, Card, Checkbox, Flex, Form, Input, Modal, Result, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, Upload, message } from "antd";
-import { DeleteOutlined, EditOutlined, EyeOutlined, PlusOutlined } from "@ant-design/icons";
+import { Alert, Button, Card, Checkbox, Empty, Flex, Form, Input, Modal, Result, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, Upload, message } from "antd";
+import { DeleteOutlined, EditOutlined, PlusOutlined } from "@ant-design/icons";
 import { ApiError, api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useSettings } from "../src/hooks/useSettings";
@@ -354,10 +354,82 @@ const filterOpOptions: Array<{ label: string; value: IntegrationRuleFilterOp }> 
 
 const formatJsonValue = (value: unknown): string => JSON.stringify(value, null, 2) ?? String(value ?? "");
 
-type WebhookJsonModalState = {
-  title: string;
-  value: unknown;
+type WebhookPayloadModalState = {
+  entry: WebhookInboxEntry;
+  activeKey: "body" | "headers";
 } | null;
+
+const webhookCodeStyle: CSSProperties = {
+  maxHeight: "68vh",
+  overflow: "auto",
+  fontSize: 12,
+  background: "#0f172a",
+  color: "#e5e7eb",
+  padding: 12,
+  borderRadius: 6,
+  whiteSpace: "pre",
+  lineHeight: 1.5
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const readWebhookHeader = (headers: Record<string, string>, key: string): string | null => {
+  const direct = headers[key];
+  if (direct?.trim()) {
+    return direct.trim();
+  }
+  const lowerKey = key.toLowerCase();
+  const entry = Object.entries(headers).find(([headerKey]) => headerKey.toLowerCase() === lowerKey);
+  return entry?.[1]?.trim() || null;
+};
+
+const readWebhookBodyString = (body: unknown, key: string): string | null => {
+  if (!isRecord(body)) {
+    return null;
+  }
+  const value = body[key];
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+};
+
+const getWebhookEventLabel = (entry: WebhookInboxEntry): string =>
+  readWebhookHeader(entry.headers, "x-github-event") ??
+  readWebhookBodyString(entry.body, "event") ??
+  readWebhookBodyString(entry.body, "event_type") ??
+  readWebhookBodyString(entry.body, "type") ??
+  "Webhook";
+
+const getWebhookActionLabel = (entry: WebhookInboxEntry): string | null =>
+  readWebhookBodyString(entry.body, "action") ?? readWebhookBodyString(entry.body, "status");
+
+const getWebhookPayloadPreview = (entry: WebhookInboxEntry): string => {
+  const body = isRecord(entry.body) ? entry.body : {};
+  const issue = isRecord(body.issue) ? body.issue : null;
+  const pullRequest = isRecord(body.pull_request) ? body.pull_request : null;
+  const comment = isRecord(body.comment) ? body.comment : null;
+  const title =
+    (typeof issue?.title === "string" && issue.title.trim()) ||
+    (typeof pullRequest?.title === "string" && pullRequest.title.trim()) ||
+    (typeof comment?.body === "string" && comment.body.trim()) ||
+    "";
+  if (title) {
+    return title.length > 96 ? `${title.slice(0, 96)}...` : title;
+  }
+  const text = formatJsonValue(entry.body).replace(/\s+/g, " ");
+  return text.length > 96 ? `${text.slice(0, 96)}...` : text;
+};
+
+const summarizeCondition = (condition: IntegrationRuleFilterCondition): string => {
+  const prefix = condition.source === "header" ? "header" : "body";
+  const target = `${prefix}.${condition.field}`;
+  return condition.op === "exists" ? `${target} exists` : `${target} ${condition.op} ${condition.value ?? ""}`;
+};
+
+const summarizeRuleMapping = (rule: IntegrationRule): string =>
+  rule.mapping.title?.trim() || rule.mapping.instructions?.trim() || rule.mapping.branch?.trim() || "Creates a task";
+
+const getWebhookPayloadModalValue = (state: WebhookPayloadModalState): unknown =>
+  state?.activeKey === "headers" ? state.entry.headers : state?.entry.body;
 
 interface RuleEditorFormValues {
   name: string;
@@ -638,8 +710,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const [integrationsLoaded, setIntegrationsLoaded] = useState(false);
   const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<IntegrationRule | null>(null);
-  const [inboxDetailEntry, setInboxDetailEntry] = useState<WebhookInboxEntry | null>(null);
-  const [inboxJsonModal, setInboxJsonModal] = useState<WebhookJsonModalState>(null);
+  const [inboxPayloadModal, setInboxPayloadModal] = useState<WebhookPayloadModalState>(null);
   const [initialSnapshot, setInitialSnapshot] = useState("");
   const watchedValues = Form.useWatch([], form) as RepositoryFormValues | undefined;
   const selectedDefaultProvider =
@@ -649,6 +720,10 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const { models: defaultProviderModels, loading: defaultProviderModelsLoading, source: defaultProviderModelsSource } =
     useProviderModels(selectedDefaultProvider);
   const allowedDefaultEffortOptions = getEffortOptionsForProvider(selectedDefaultProvider);
+  const integrationRulesById = useMemo(
+    () => new Map(integrationRules.map((rule) => [rule.id, rule])),
+    [integrationRules]
+  );
 
   const hasUnsavedChanges = useMemo(() => {
     if (!initialSnapshot) {
@@ -2043,26 +2118,52 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           {activeTab === "integrations" ? (
             mode === "edit" && editingRepository ? (
               <Flex vertical gap={16}>
-                <Card bordered={false} title="Inbound Webhook Endpoint">
-                  <Form.Item label="Webhook URL">
-                    <Input
-                      readOnly
-                      value={buildApiUrl(`/integrations/webhooks/${editingRepository.id}`)}
-                      addonAfter={
-                        <Button
-                          type="link"
-                          size="small"
-                          style={{ padding: 0 }}
-                          onClick={() => {
-                            void navigator.clipboard.writeText(buildApiUrl(`/integrations/webhooks/${editingRepository.id}`));
-                            messageApi.success("Webhook URL copied");
-                          }}
-                        >
-                          Copy
-                        </Button>
-                      }
-                    />
-                  </Form.Item>
+                <Card
+                  bordered={false}
+                  title={
+                    <Flex align="center" justify="space-between" gap={12}>
+                      <Space size={8}>
+                        <Typography.Text strong>Inbound Endpoint</Typography.Text>
+                        <Tag color={editingRepository.inboundWebhookSecretConfigured ? "green" : undefined}>
+                          {editingRepository.inboundWebhookSecretConfigured ? "Signed" : "Unsigned"}
+                        </Tag>
+                      </Space>
+                      <Tag>{integrationRules.filter((rule) => rule.enabled).length} active rules</Tag>
+                    </Flex>
+                  }
+                >
+                  <Flex vertical gap={16}>
+                    <div>
+                      <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
+                        Endpoint
+                      </Typography.Text>
+                      <Input
+                        readOnly
+                        value={buildApiUrl(`/integrations/webhooks/${editingRepository.id}`)}
+                        addonAfter={
+                          <Button
+                            type="link"
+                            size="small"
+                            style={{ padding: 0 }}
+                            onClick={() => {
+                              void navigator.clipboard.writeText(buildApiUrl(`/integrations/webhooks/${editingRepository.id}`));
+                              messageApi.success("Webhook URL copied");
+                            }}
+                          >
+                            Copy
+                          </Button>
+                        }
+                      />
+                    </div>
+                    <Flex gap={8} wrap="wrap">
+                      <Tag color="blue">POST</Tag>
+                      <Tag>application/json</Tag>
+                      <Tag>X-Webhook-Signature</Tag>
+                      <Tag>X-Hub-Signature-256</Tag>
+                      <Tag>{inboxEntries.length} recent deliveries</Tag>
+                    </Flex>
+                  </Flex>
+
                   <Form.Item
                     name="inboundWebhookSecret"
                     label={
@@ -2083,7 +2184,14 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
 
                 <Card
                   bordered={false}
-                  title="Integration Rules"
+                  title={
+                    <Flex align="center" justify="space-between">
+                      <Space size={8}>
+                        <Typography.Text strong>Rules</Typography.Text>
+                        <Tag>{integrationRules.length}</Tag>
+                      </Space>
+                    </Flex>
+                  }
                   extra={
                     <Button
                       type="primary"
@@ -2098,27 +2206,60 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   }
                 >
                   {integrationRules.length === 0 ? (
-                    <Typography.Text type="secondary">No integration rules configured. Add a rule to match incoming webhook payloads and create tasks automatically.</Typography.Text>
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description="No integration rules configured"
+                    >
+                      <Button
+                        type="primary"
+                        icon={<PlusOutlined />}
+                        onClick={() => {
+                          setEditingRule(null);
+                          setRuleEditorOpen(true);
+                        }}
+                      >
+                        Add Rule
+                      </Button>
+                    </Empty>
                   ) : (
                     <Flex vertical gap={8}>
                       {integrationRules.map((rule) => (
-                        <Card key={rule.id} size="small" bordered>
-                          <Flex justify="space-between" align="center">
-                            <Flex align="center" gap={12}>
-                              <Switch
-                                checked={rule.enabled}
-                                size="small"
-                                onChange={async (checked) => {
-                                  try {
-                                    await api.updateIntegrationRule(editingRepository.id, rule.id, { enabled: checked });
-                                    await loadIntegrationRules(editingRepository.id);
-                                  } catch {
-                                    messageApi.error("Failed to toggle rule");
-                                  }
-                                }}
-                              />
-                              <Typography.Text strong>{rule.name}</Typography.Text>
-                              <Tag>{rule.filter.conditions.length} condition{rule.filter.conditions.length !== 1 ? "s" : ""}</Tag>
+                        <div
+                          key={rule.id}
+                          style={{
+                            border: "1px solid rgba(5,5,5,0.08)",
+                            borderRadius: 8,
+                            padding: "12px 14px",
+                            background: rule.enabled ? "#fff" : "rgba(0,0,0,0.02)"
+                          }}
+                        >
+                          <Flex justify="space-between" align="start" gap={12}>
+                            <Flex vertical gap={6} style={{ minWidth: 0, flex: 1 }}>
+                              <Flex align="center" gap={8} wrap="wrap">
+                                <Switch
+                                  checked={rule.enabled}
+                                  size="small"
+                                  onChange={async (checked) => {
+                                    try {
+                                      await api.updateIntegrationRule(editingRepository.id, rule.id, { enabled: checked });
+                                      await loadIntegrationRules(editingRepository.id);
+                                    } catch {
+                                      messageApi.error("Failed to toggle rule");
+                                    }
+                                  }}
+                                />
+                                <Typography.Text strong>{rule.name}</Typography.Text>
+                                <Tag color={rule.enabled ? "green" : undefined}>{rule.enabled ? "Enabled" : "Paused"}</Tag>
+                                <Tag>{rule.filter.conditions.length} condition{rule.filter.conditions.length !== 1 ? "s" : ""}</Tag>
+                                {rule.execution?.provider ? <Tag>{getAgentProviderLabel(rule.execution.provider)}</Tag> : null}
+                                {rule.execution?.providerProfile ? <Tag>{rule.execution.providerProfile}</Tag> : null}
+                              </Flex>
+                              <Typography.Text type="secondary" ellipsis>
+                                When {rule.filter.conditions.map(summarizeCondition).join(" and ")}
+                              </Typography.Text>
+                              <Typography.Text ellipsis>
+                                {summarizeRuleMapping(rule)}
+                              </Typography.Text>
                             </Flex>
                             <Space>
                               <Button
@@ -2145,17 +2286,24 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                               />
                             </Space>
                           </Flex>
-                        </Card>
+                        </div>
                       ))}
                     </Flex>
                   )}
                 </Card>
 
-                <Card bordered={false} title="Webhook Inbox" extra={
-                  <Button size="small" onClick={() => void loadInboxEntries(editingRepository.id)}>Refresh</Button>
-                }>
+                <Card
+                  bordered={false}
+                  title={
+                    <Space size={8}>
+                      <Typography.Text strong>Inbox</Typography.Text>
+                      <Tag>Latest {WEBHOOK_INBOX_LIMIT}</Tag>
+                    </Space>
+                  }
+                  extra={<Button size="small" onClick={() => void loadInboxEntries(editingRepository.id)}>Refresh</Button>}
+                >
                   {inboxEntries.length === 0 ? (
-                    <Typography.Text type="secondary">No webhook deliveries received yet.</Typography.Text>
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No webhook deliveries received yet" />
                   ) : (
                     <Table
                       dataSource={inboxEntries}
@@ -2170,60 +2318,50 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                           render: (value: string) => new Date(value).toLocaleString()
                         },
                         {
-                          title: "Source IP",
-                          dataIndex: "sourceIp",
-                          width: 140,
-                          render: (value: string | null) => value ?? "-"
-                        },
-                        {
-                          title: "Headers",
-                          dataIndex: "headers",
-                          width: 110,
-                          render: (value: WebhookInboxEntry["headers"], record: WebhookInboxEntry) => (
-                            <Button
-                              icon={<EyeOutlined />}
-                              size="small"
-                              onClick={() => setInboxJsonModal({ title: `Headers - ${new Date(record.receivedAt).toLocaleString()}`, value })}
-                            >
-                              Headers
-                            </Button>
-                          )
-                        },
-                        {
-                          title: "Body Preview",
-                          dataIndex: "body",
-                          ellipsis: true,
-                          render: (value: unknown, record: WebhookInboxEntry) => {
-                            const text = formatJsonValue(value).replace(/\s+/g, " ");
-                            const preview = text.length > 80 ? `${text.slice(0, 80)}...` : text;
+                          title: "Event",
+                          width: 180,
+                          render: (_: unknown, record: WebhookInboxEntry) => {
+                            const action = getWebhookActionLabel(record);
                             return (
-                              <Flex align="center" justify="space-between" gap={8}>
-                                <Typography.Text ellipsis style={{ minWidth: 0 }}>
-                                  {preview}
-                                </Typography.Text>
-                                <Button
-                                  icon={<EyeOutlined />}
-                                  size="small"
-                                  onClick={() => setInboxJsonModal({ title: `Body - ${new Date(record.receivedAt).toLocaleString()}`, value })}
-                                >
-                                  Body
-                                </Button>
-                              </Flex>
+                              <Space size={6} wrap>
+                                <Tag color="blue">{getWebhookEventLabel(record)}</Tag>
+                                {action ? <Tag>{action}</Tag> : null}
+                              </Space>
                             );
                           }
                         },
                         {
-                          title: "Matched",
+                          title: "Source",
+                          dataIndex: "sourceIp",
+                          width: 150,
+                          render: (value: string | null) => value ?? "-"
+                        },
+                        {
+                          title: "Payload",
+                          render: (_: unknown, record: WebhookInboxEntry) => (
+                            <Flex vertical gap={6}>
+                              <Typography.Text ellipsis>{getWebhookPayloadPreview(record)}</Typography.Text>
+                              <Space size={6}>
+                                <Button size="small" onClick={() => setInboxPayloadModal({ entry: record, activeKey: "body" })}>Body</Button>
+                                <Button size="small" onClick={() => setInboxPayloadModal({ entry: record, activeKey: "headers" })}>Headers</Button>
+                              </Space>
+                            </Flex>
+                          )
+                        },
+                        {
+                          title: "Match",
                           dataIndex: "matchedRuleId",
-                          width: 100,
-                          render: (value: string | null) => value ? <Tag color="green">Yes</Tag> : <Tag>No</Tag>
+                          width: 180,
+                          render: (value: string | null) => {
+                            const rule = value ? integrationRulesById.get(value) : null;
+                            return value ? <Tag color="green">{rule?.name ?? "Matched"}</Tag> : <Tag>Unmatched</Tag>;
+                          }
                         },
                         {
                           title: "",
-                          width: 80,
+                          width: 56,
                           render: (_: unknown, record: WebhookInboxEntry) => (
                             <Space>
-                              <Button icon={<EyeOutlined />} size="small" onClick={() => setInboxDetailEntry(record)} />
                               <Button icon={<DeleteOutlined />} size="small" danger onClick={async () => {
                                 try {
                                   await api.deleteWebhookInboxEntry(editingRepository.id, record.id);
@@ -2262,65 +2400,62 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                 />
 
                 <Modal
-                  open={Boolean(inboxDetailEntry)}
-                  title="Webhook Delivery Detail"
-                  onCancel={() => setInboxDetailEntry(null)}
+                  open={Boolean(inboxPayloadModal)}
+                  title={
+                    inboxPayloadModal
+                      ? `${getWebhookEventLabel(inboxPayloadModal.entry)} - ${new Date(inboxPayloadModal.entry.receivedAt).toLocaleString()}`
+                      : "Webhook Payload"
+                  }
+                  onCancel={() => setInboxPayloadModal(null)}
                   footer={[
                     <Button
                       key="create-rule"
                       onClick={() => {
-                        if (!inboxDetailEntry) return;
+                        if (!inboxPayloadModal) return;
                         setEditingRule(null);
                         setRuleEditorOpen(true);
-                        setInboxDetailEntry(null);
+                        setInboxPayloadModal(null);
                       }}
                     >
                       Create Rule from This
                     </Button>,
-                    <Button key="close" type="primary" onClick={() => setInboxDetailEntry(null)}>Close</Button>
-                  ]}
-                  width={720}
-                >
-                  {inboxDetailEntry ? (
-                    <Flex vertical gap={16}>
-                      <div>
-                        <Typography.Text strong>Headers</Typography.Text>
-                        <pre style={{ maxHeight: 200, overflow: "auto", fontSize: 12, background: "#f5f5f5", padding: 8, borderRadius: 4 }}>
-                          {formatJsonValue(inboxDetailEntry.headers)}
-                        </pre>
-                      </div>
-                      <div>
-                        <Typography.Text strong>Body</Typography.Text>
-                        <pre style={{ maxHeight: 400, overflow: "auto", fontSize: 12, background: "#f5f5f5", padding: 8, borderRadius: 4 }}>
-                          {formatJsonValue(inboxDetailEntry.body)}
-                        </pre>
-                      </div>
-                    </Flex>
-                  ) : null}
-                </Modal>
-
-                <Modal
-                  open={Boolean(inboxJsonModal)}
-                  title={inboxJsonModal?.title ?? "Webhook JSON"}
-                  onCancel={() => setInboxJsonModal(null)}
-                  footer={<Button type="primary" onClick={() => setInboxJsonModal(null)}>Close</Button>}
-                  width={860}
-                  styles={{ body: { paddingTop: 12 } }}
-                >
-                  {inboxJsonModal ? (
-                    <pre
-                      style={{
-                        maxHeight: "70vh",
-                        overflow: "auto",
-                        fontSize: 12,
-                        background: "#f5f5f5",
-                        padding: 12,
-                        borderRadius: 4,
-                        whiteSpace: "pre"
+                    <Button
+                      key="copy"
+                      onClick={() => {
+                        const json = formatJsonValue(getWebhookPayloadModalValue(inboxPayloadModal));
+                        void navigator.clipboard.writeText(json);
+                        messageApi.success("JSON copied");
                       }}
                     >
-                      {formatJsonValue(inboxJsonModal.value)}
-                    </pre>
+                      Copy JSON
+                    </Button>,
+                    <Button key="close" type="primary" onClick={() => setInboxPayloadModal(null)}>Close</Button>
+                  ]}
+                  width={920}
+                  styles={{ body: { paddingTop: 8 } }}
+                >
+                  {inboxPayloadModal ? (
+                    <Tabs
+                      activeKey={inboxPayloadModal.activeKey}
+                      onChange={(activeKey) =>
+                        setInboxPayloadModal({
+                          entry: inboxPayloadModal.entry,
+                          activeKey: activeKey === "headers" ? "headers" : "body"
+                        })
+                      }
+                      items={[
+                        {
+                          key: "body",
+                          label: "Body",
+                          children: <pre style={webhookCodeStyle}>{formatJsonValue(inboxPayloadModal.entry.body)}</pre>
+                        },
+                        {
+                          key: "headers",
+                          label: "Headers",
+                          children: <pre style={webhookCodeStyle}>{formatJsonValue(inboxPayloadModal.entry.headers)}</pre>
+                        }
+                      ]}
+                    />
                   ) : null}
                 </Modal>
               </Flex>
