@@ -20,6 +20,7 @@ export interface TaskHistoryGroupedAutoRunCardProps {
   entryKey: string;
   entry: GroupedAutoRunHistoryEntry;
   cardStyle?: CSSProperties;
+  initialSection?: HistoryDetailSection | null;
   showCheckpointState: boolean;
   showRunCancel: boolean;
   cancelLoading: boolean;
@@ -54,6 +55,7 @@ export function TaskHistoryGroupedAutoRunCard({
   entryKey,
   entry,
   cardStyle,
+  initialSection = null,
   showCheckpointState,
   showRunCancel,
   cancelLoading,
@@ -66,7 +68,7 @@ export function TaskHistoryGroupedAutoRunCard({
   getCheckpointDiffActions
 }: TaskHistoryGroupedAutoRunCardProps) {
   const { token } = antTheme.useToken();
-  const [activeSection, setActiveSection] = useState<HistoryDetailSection | null>(null);
+  const [activeSection, setActiveSection] = useState<HistoryDetailSection | null>(initialSection);
   const [summaryHovered, setSummaryHovered] = useState(false);
   const normalizedRunSummary = getNormalizedRunSummary(entry.run);
   const summaryTitle = entry.run.action === "build" ? "Implementation Summary" : "Summary";
