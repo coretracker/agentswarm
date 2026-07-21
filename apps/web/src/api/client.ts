@@ -58,7 +58,13 @@ import type {
   UpdateRepositoryInput,
   UpdateSettingsInput,
   UpdateUserInput,
-  User
+  User,
+  IntegrationRule,
+  CreateIntegrationRuleInput,
+  UpdateIntegrationRuleInput,
+  CopyIntegrationSetupInput,
+  CopyIntegrationSetupResult,
+  WebhookInboxEntry
 } from "@verft/shared-types";
 export type { TaskWorkspaceFilePreview } from "@verft/shared-types";
 import { buildApiUrl } from "../lib/public-url";
@@ -549,5 +555,47 @@ export const api = {
     request<SystemSettings>("/settings/credentials", {
       method: "PATCH",
       body: JSON.stringify(input)
+    }),
+
+  // --- Integration Rules ---
+  listIntegrationRules: (repositoryId: string) =>
+    request<IntegrationRule[]>(`/repositories/${encodeURIComponent(repositoryId)}/integration-rules`),
+  createIntegrationRule: (repositoryId: string, input: CreateIntegrationRuleInput) =>
+    request<IntegrationRule>(`/repositories/${encodeURIComponent(repositoryId)}/integration-rules`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateIntegrationRule: (repositoryId: string, ruleId: string, input: UpdateIntegrationRuleInput) =>
+    request<IntegrationRule>(`/repositories/${encodeURIComponent(repositoryId)}/integration-rules/${encodeURIComponent(ruleId)}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteIntegrationRule: (repositoryId: string, ruleId: string) =>
+    request<void>(`/repositories/${encodeURIComponent(repositoryId)}/integration-rules/${encodeURIComponent(ruleId)}`, {
+      method: "DELETE"
+    }),
+  copyIntegrationSetup: (repositoryId: string, input: CopyIntegrationSetupInput) =>
+    request<CopyIntegrationSetupResult>(`/repositories/${encodeURIComponent(repositoryId)}/integration-setup/copy`, {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+
+  // --- Webhook Inbox ---
+  listWebhookInbox: (repositoryId: string, options?: { matched?: boolean; limit?: number }) => {
+    const params = new URLSearchParams();
+    if (options?.matched !== undefined) {
+      params.set("matched", String(options.matched));
+    }
+    if (options?.limit != null && Number.isFinite(options.limit)) {
+      params.set("limit", String(options.limit));
+    }
+    const query = params.toString();
+    return request<WebhookInboxEntry[]>(`/repositories/${encodeURIComponent(repositoryId)}/webhook-inbox${query ? `?${query}` : ""}`);
+  },
+  getWebhookInboxEntry: (repositoryId: string, entryId: string) =>
+    request<WebhookInboxEntry>(`/repositories/${encodeURIComponent(repositoryId)}/webhook-inbox/${encodeURIComponent(entryId)}`),
+  deleteWebhookInboxEntry: (repositoryId: string, entryId: string) =>
+    request<void>(`/repositories/${encodeURIComponent(repositoryId)}/webhook-inbox/${encodeURIComponent(entryId)}`, {
+      method: "DELETE"
     })
 };
