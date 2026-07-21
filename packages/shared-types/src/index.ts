@@ -549,6 +549,20 @@ export interface UpdateIntegrationRuleInput {
   taskOwnerUserId?: string | null;
 }
 
+export interface CopyIntegrationSetupInput {
+  sourceRepositoryId: string;
+  copyRules?: boolean;
+  replaceRules?: boolean;
+  copyInboundWebhookSecret?: boolean;
+}
+
+export interface CopyIntegrationSetupResult {
+  rulesCopied: number;
+  rulesDeleted: number;
+  inboundWebhookSecretCopied: boolean;
+  inboundWebhookSecretCleared: boolean;
+}
+
 export interface WebhookInboxEntry {
   id: string;
   repositoryId: string;

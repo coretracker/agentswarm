@@ -207,7 +207,7 @@ const bootstrap = async (): Promise<void> => {
   registerGitHubPrWebhookRoutes(app, { repositoryStore, taskStore, taskQueueStore, scheduler, settingsStore, spawner, userStore });
   registerSlackWebhookRoutes(app, { repositoryStore, taskStore, scheduler, settingsStore, spawner });
   registerInboundWebhookRoutes(app, { repositoryStore, taskStore, integrationRuleStore, webhookInboxStore, scheduler, settingsStore, spawner, userStore });
-  registerIntegrationManagementRoutes(app, { integrationRuleStore, webhookInboxStore, auth });
+  registerIntegrationManagementRoutes(app, { integrationRuleStore, repositoryStore, webhookInboxStore, auth });
   registerSettingsRoutes(app, { settingsStore, scheduler, auth });
   registerMcpRoutes(app, {
     auth,
