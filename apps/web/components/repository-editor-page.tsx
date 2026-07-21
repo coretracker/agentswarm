@@ -438,6 +438,13 @@ const integrationBranchModeOptions: Array<{ label: string; value: IntegrationBra
   { label: "Work on existing branch from payload", value: "work_on_existing" }
 ];
 
+interface CopyIntegrationSetupFormValues {
+  sourceRepositoryId?: string;
+  copyRules: boolean;
+  replaceRules: boolean;
+  copyInboundWebhookSecret: boolean;
+}
+
 interface RuleEditorFormValues {
   name: string;
   enabled: boolean;
@@ -751,6 +758,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const router = useRouter();
   const { settings } = useSettings();
   const [form] = Form.useForm<RepositoryFormValues>();
+  const [copyIntegrationForm] = Form.useForm<CopyIntegrationSetupFormValues>();
   const [messageApi, contextHolder] = message.useMessage();
   const [activeTab, setActiveTab] = useState<"general" | "ai" | "github" | "slack" | "webhooks" | "integrations">("general");
   const [submitting, setSubmitting] = useState(false);
@@ -767,12 +775,17 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const [ruleEditorOpen, setRuleEditorOpen] = useState(false);
   const [editingRule, setEditingRule] = useState<IntegrationRule | null>(null);
   const [inboxPayloadModal, setInboxPayloadModal] = useState<WebhookPayloadModalState>(null);
+  const [copyIntegrationOpen, setCopyIntegrationOpen] = useState(false);
+  const [copyIntegrationRepositories, setCopyIntegrationRepositories] = useState<Repository[]>([]);
+  const [copyIntegrationRepositoriesLoading, setCopyIntegrationRepositoriesLoading] = useState(false);
+  const [copyingIntegrationSetup, setCopyingIntegrationSetup] = useState(false);
   const [initialSnapshot, setInitialSnapshot] = useState("");
   const watchedValues = Form.useWatch([], form) as RepositoryFormValues | undefined;
   const selectedDefaultProvider =
     (Form.useWatch("defaultProvider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
   const selectedDefaultModel = Form.useWatch("defaultModel", form) as string | undefined;
   const selectedDefaultProviderProfile = Form.useWatch("defaultProviderProfile", form) as ProviderProfile | undefined;
+  const copyRulesEnabled = Form.useWatch("copyRules", copyIntegrationForm) !== false;
   const { models: defaultProviderModels, loading: defaultProviderModelsLoading, source: defaultProviderModelsSource } =
     useProviderModels(selectedDefaultProvider);
   const allowedDefaultEffortOptions = getEffortOptionsForProvider(selectedDefaultProvider);
@@ -807,6 +820,40 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!copyIntegrationOpen || !editingRepository) {
+      return;
+    }
+    let active = true;
+    setCopyIntegrationRepositoriesLoading(true);
+    copyIntegrationForm.setFieldsValue({
+      sourceRepositoryId: undefined,
+      copyRules: true,
+      replaceRules: true,
+      copyInboundWebhookSecret: false
+    });
+    void api
+      .listRepositories()
+      .then((repositories) => {
+        if (active) {
+          setCopyIntegrationRepositories(repositories.filter((repository) => repository.id !== editingRepository.id));
+        }
+      })
+      .catch(() => {
+        if (active) {
+          messageApi.error("Failed to load repositories");
+        }
+      })
+      .finally(() => {
+        if (active) {
+          setCopyIntegrationRepositoriesLoading(false);
+        }
+      });
+    return () => {
+      active = false;
+    };
+  }, [copyIntegrationForm, copyIntegrationOpen, editingRepository, messageApi]);
 
   useEffect(() => {
     if (mode !== "create") {
@@ -2249,16 +2296,19 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     </Flex>
                   }
                   extra={
-                    <Button
-                      type="primary"
-                      icon={<PlusOutlined />}
-                      onClick={() => {
-                        setEditingRule(null);
-                        setRuleEditorOpen(true);
-                      }}
-                    >
-                      Add Rule
-                    </Button>
+                    <Space>
+                      <Button onClick={() => setCopyIntegrationOpen(true)}>Copy From Repo</Button>
+                      <Button
+                        type="primary"
+                        icon={<PlusOutlined />}
+                        onClick={() => {
+                          setEditingRule(null);
+                          setRuleEditorOpen(true);
+                        }}
+                      >
+                        Add Rule
+                      </Button>
+                    </Space>
                   }
                 >
                   {integrationRules.length === 0 ? (
@@ -2456,6 +2506,94 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     }
                   }}
                 />
+
+                <Modal
+                  open={copyIntegrationOpen}
+                  title="Copy Integration Setup"
+                  onCancel={() => setCopyIntegrationOpen(false)}
+                  footer={[
+                    <Button key="cancel" onClick={() => setCopyIntegrationOpen(false)}>Cancel</Button>,
+                    <Button
+                      key="copy"
+                      type="primary"
+                      loading={copyingIntegrationSetup}
+                      onClick={async () => {
+                        try {
+                          const values = await copyIntegrationForm.validateFields();
+                          if (values.copyRules === false && values.copyInboundWebhookSecret !== true) {
+                            messageApi.error("Select at least one integration setting to copy.");
+                            return;
+                          }
+                          setCopyingIntegrationSetup(true);
+                          const result = await api.copyIntegrationSetup(editingRepository.id, {
+                            sourceRepositoryId: values.sourceRepositoryId!,
+                            copyRules: values.copyRules,
+                            replaceRules: values.replaceRules,
+                            copyInboundWebhookSecret: values.copyInboundWebhookSecret
+                          });
+                          const [rules, repository] = await Promise.all([
+                            api.listIntegrationRules(editingRepository.id),
+                            values.copyInboundWebhookSecret ? api.getRepository(editingRepository.id) : Promise.resolve(editingRepository)
+                          ]);
+                          setIntegrationRules(rules);
+                          setEditingRepository(repository);
+                          form.setFieldsValue({
+                            inboundWebhookSecret: "",
+                            clearInboundWebhookSecret: false
+                          });
+                          setCopyIntegrationOpen(false);
+                          messageApi.success(
+                            `Copied ${result.rulesCopied} rule${result.rulesCopied === 1 ? "" : "s"}${result.inboundWebhookSecretCopied ? " and webhook secret" : ""}.`
+                          );
+                        } catch (error) {
+                          if (error instanceof Error) {
+                            messageApi.error(error.message);
+                          }
+                        } finally {
+                          setCopyingIntegrationSetup(false);
+                        }
+                      }}
+                    >
+                      Copy Setup
+                    </Button>
+                  ]}
+                >
+                  <Form form={copyIntegrationForm} layout="vertical">
+                    <Form.Item
+                      name="sourceRepositoryId"
+                      label="Source Repository"
+                      rules={[{ required: true, message: "Select a source repository." }]}
+                    >
+                      <Select
+                        loading={copyIntegrationRepositoriesLoading}
+                        placeholder="Select repository"
+                        showSearch
+                        optionFilterProp="label"
+                        options={copyIntegrationRepositories.map((repository) => ({
+                          label: repository.name,
+                          value: repository.id
+                        }))}
+                      />
+                    </Form.Item>
+                    {copyIntegrationRepositories.length === 0 && !copyIntegrationRepositoriesLoading ? (
+                      <Alert type="info" showIcon message="No other repositories are available to copy from." style={{ marginBottom: 16 }} />
+                    ) : null}
+                    <Form.Item name="copyRules" valuePropName="checked">
+                      <Checkbox>Copy integration rules</Checkbox>
+                    </Form.Item>
+                    <Form.Item name="replaceRules" valuePropName="checked">
+                      <Checkbox disabled={!copyRulesEnabled}>Replace existing rules in this repository</Checkbox>
+                    </Form.Item>
+                    <Form.Item name="copyInboundWebhookSecret" valuePropName="checked">
+                      <Checkbox>Copy inbound webhook signature secret</Checkbox>
+                    </Form.Item>
+                    <Alert
+                      type="warning"
+                      showIcon
+                      message="Copying the secret makes both repositories accept the same signed webhook secret."
+                    />
+                  </Form>
+                </Modal>
 
                 <Modal
                   open={Boolean(inboxPayloadModal)}

@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AuthService } from "../lib/auth.js";
 import type { IntegrationRuleStore } from "../services/integration-rule-store.js";
+import type { RepositoryStore } from "../services/repository-store.js";
 import type { WebhookInboxStore } from "../services/webhook-inbox-store.js";
 
 const filterConditionSchema = z.object({
@@ -50,10 +51,23 @@ const updateRuleSchema = z.object({
   taskOwnerUserId: z.string().trim().nullable().optional()
 });
 
+const copyIntegrationSetupSchema = z
+  .object({
+    sourceRepositoryId: z.string().trim().min(1),
+    copyRules: z.boolean().optional(),
+    replaceRules: z.boolean().optional(),
+    copyInboundWebhookSecret: z.boolean().optional()
+  })
+  .refine(
+    (input) => input.copyRules !== false || input.copyInboundWebhookSecret === true,
+    "Select at least one integration setting to copy."
+  );
+
 export const registerIntegrationManagementRoutes = (
   app: FastifyInstance,
   deps: {
     integrationRuleStore: IntegrationRuleStore;
+    repositoryStore: RepositoryStore;
     webhookInboxStore: WebhookInboxStore;
     auth: AuthService;
   }
@@ -88,6 +102,81 @@ export const registerIntegrationManagementRoutes = (
         return reply.status(404).send({ message: "Integration rule not found" });
       }
       return rule;
+    }
+  );
+
+  app.post<{ Params: { repositoryId: string } }>(
+    "/repositories/:repositoryId/integration-setup/copy",
+    { preHandler: deps.auth.requireAllScopes(["repo:edit"]) },
+    async (request, reply) => {
+      const parsed = copyIntegrationSetupSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ message: parsed.error.message });
+      }
+      const input = parsed.data;
+      const targetRepositoryId = request.params.repositoryId;
+      const sourceRepositoryId = input.sourceRepositoryId;
+
+      if (sourceRepositoryId === targetRepositoryId) {
+        return reply.status(400).send({ message: "Choose a different source repository." });
+      }
+
+      const [sourceRepository, targetRepository] = await Promise.all([
+        deps.repositoryStore.getRepository(sourceRepositoryId),
+        deps.repositoryStore.getRepository(targetRepositoryId)
+      ]);
+      if (!sourceRepository || !targetRepository) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+
+      let rulesCopied = 0;
+      let rulesDeleted = 0;
+      if (input.copyRules !== false) {
+        if (input.replaceRules !== false) {
+          const targetRules = await deps.integrationRuleStore.listRules(targetRepositoryId);
+          for (const rule of targetRules) {
+            if (await deps.integrationRuleStore.deleteRule(rule.id)) {
+              rulesDeleted += 1;
+            }
+          }
+        }
+
+        const sourceRules = await deps.integrationRuleStore.listRules(sourceRepositoryId);
+        for (const rule of sourceRules) {
+          await deps.integrationRuleStore.createRule(targetRepositoryId, {
+            name: rule.name,
+            enabled: rule.enabled,
+            filter: rule.filter,
+            mapping: rule.mapping,
+            execution: rule.execution,
+            correlationField: rule.correlationField,
+            taskOwnerUserId: rule.taskOwnerUserId
+          });
+          rulesCopied += 1;
+        }
+      }
+
+      let inboundWebhookSecretCopied = false;
+      let inboundWebhookSecretCleared = false;
+      if (input.copyInboundWebhookSecret === true) {
+        const sourceSecret = await deps.repositoryStore.getRepositoryInboundWebhookSecret(sourceRepositoryId);
+        const updated = await deps.repositoryStore.updateRepository(
+          targetRepositoryId,
+          sourceSecret ? { inboundWebhookSecret: sourceSecret } : { clearInboundWebhookSecret: true }
+        );
+        if (!updated) {
+          return reply.status(404).send({ message: "Repository not found" });
+        }
+        inboundWebhookSecretCopied = Boolean(sourceSecret);
+        inboundWebhookSecretCleared = !sourceSecret;
+      }
+
+      return {
+        rulesCopied,
+        rulesDeleted,
+        inboundWebhookSecretCopied,
+        inboundWebhookSecretCleared
+      };
     }
   );
 
