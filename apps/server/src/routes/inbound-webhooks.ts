@@ -68,6 +68,14 @@ export const registerInboundWebhookRoutes = (
     userStore: UserStore;
   }
 ): void => {
+  app.head<{ Params: { repositoryId: string } }>("/integrations/webhooks/:repositoryId", async (request, reply) => {
+    const repository = await deps.repositoryStore.getRepository(request.params.repositoryId);
+    if (!repository) {
+      return reply.status(404).send();
+    }
+    return reply.status(200).send();
+  });
+
   app.post<{ Params: { repositoryId: string } }>("/integrations/webhooks/:repositoryId", async (request, reply) => {
     const repository = await deps.repositoryStore.getRepository(request.params.repositoryId);
     if (!repository) {

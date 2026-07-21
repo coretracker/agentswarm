@@ -73,6 +73,36 @@ const createTestApp = (secret: string | null) => {
   return { app, insertedEntries };
 };
 
+test("inbound webhook validation HEAD returns ok for an existing repository", async () => {
+  const { app, insertedEntries } = createTestApp("webhook-secret");
+
+  const response = await app.inject({
+    method: "HEAD",
+    url: "/integrations/webhooks/repo-1"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.body, "");
+  assert.equal(insertedEntries.length, 0);
+
+  await app.close();
+});
+
+test("inbound webhook validation HEAD returns not found for unknown repositories", async () => {
+  const { app, insertedEntries } = createTestApp(null);
+
+  const response = await app.inject({
+    method: "HEAD",
+    url: "/integrations/webhooks/missing"
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.equal(response.body, "");
+  assert.equal(insertedEntries.length, 0);
+
+  await app.close();
+});
+
 test("inbound webhook accepts unsigned deliveries when no secret is configured", async () => {
   const { app, insertedEntries } = createTestApp(null);
 
