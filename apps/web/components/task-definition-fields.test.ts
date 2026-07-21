@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Repository, SystemSettings } from "@verft/shared-types";
-import { getTaskDefinitionInitialValues, hasClaudeTaskCredentials } from "./task-definition-fields";
+import { getTaskDefinitionInitialValues } from "./task-definition-fields";
 
 const settings: SystemSettings = {
   defaultProvider: "codex",
@@ -98,23 +98,5 @@ test("getTaskDefinitionInitialValues falls back to system defaults when reposito
       codexCredentialSource: "auto",
       branchStrategy: "feature_branch"
     }
-  );
-});
-
-test("hasClaudeTaskCredentials accepts Anthropic API key or Claude base credentials", () => {
-  assert.equal(hasClaudeTaskCredentials({ anthropicApiKeyConfigured: true }, null), true);
-  assert.equal(
-    hasClaudeTaskCredentials(
-      { anthropicApiKeyConfigured: false },
-      { files: { "claude/.credentials.json": true } }
-    ),
-    true
-  );
-  assert.equal(
-    hasClaudeTaskCredentials(
-      { anthropicApiKeyConfigured: false },
-      { files: { "claude/.credentials.json": false } }
-    ),
-    false
   );
 });

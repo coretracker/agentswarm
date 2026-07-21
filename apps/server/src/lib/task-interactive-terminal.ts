@@ -1,6 +1,6 @@
 import { spawn as spawnChild } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, constants, rm, writeFile } from "node:fs/promises";
+import { access, constants, rm } from "node:fs/promises";
 import type { IncomingMessage, Server as HttpServer } from "node:http";
 import path from "node:path";
 import type { Duplex } from "node:stream";
@@ -39,9 +39,7 @@ import { buildDockerWorkspaceMountArgs } from "./docker-workspace-mounts.js";
 import { buildHostexecRuntimeConfig } from "./hostexec-runtime.js";
 import type { UserStore } from "../services/user-store.js";
 import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
-import { ensureTaskProviderStatePaths } from "./task-provider-state.js";
-import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
-import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "./verft-base-mounts.js";
+import { buildHostProviderStateMountArgs } from "./verft-base-mounts.js";
 import { resolveDockerSocketAccessPolicy, resolveDockerSocketRunArgs } from "./docker-socket-access.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/terminal$/;
@@ -417,16 +415,12 @@ async function initializeTaskInteractiveTerminalWebSocket(
       credentials,
       settings,
       repositoryRuntimeEnvEntries,
-      repositoryHostCommands,
-      codexProviderStatePaths,
-      claudeProviderStatePaths
+      repositoryHostCommands
     ] = await Promise.all([
       deps.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto"),
       deps.settingsStore.getSettings(),
       deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
-      deps.repositoryStore.getRepositoryHostCommands(task.repoId),
-      ensureTaskProviderStatePaths(task.id, "codex"),
-      ensureTaskProviderStatePaths(task.id, "claude")
+      deps.repositoryStore.getRepositoryHostCommands(task.repoId)
     ]);
     const gitIdentity = resolveTaskGitCommitIdentity(settings, {
       ...DEFAULT_GIT_COMMIT_IDENTITY
@@ -436,20 +430,6 @@ async function initializeTaskInteractiveTerminalWebSocket(
       throw new Error(runtime.reason);
     }
     const runtimeMcp = await deps.spawner.buildRuntimeMcpConfigForTask(task, terminalSessionId);
-    const codexProviderDefinition = getProviderRuntimeDefinition("codex");
-    const claudeProviderDefinition = getProviderRuntimeDefinition("claude");
-    await Promise.all([
-      writeFile(
-        path.join(codexProviderStatePaths.serverPath, "config.toml"),
-        codexProviderDefinition.getProviderConfig(runtimeMcp.servers),
-        "utf8"
-      ),
-      writeFile(
-        path.join(claudeProviderStatePaths.serverPath, "mcp-config.json"),
-        claudeProviderDefinition.getProviderConfig(runtimeMcp.servers),
-        "utf8"
-      )
-    ]);
 
     const sessionName = `aswterm-${randomUUID().replace(/-/g, "").slice(0, 28)}`;
     const repositoryEnvDir = path.join(env.RUNTIME_PAYLOAD_ROOT, "terminal-env", taskId, terminalSessionId);
@@ -495,15 +475,9 @@ async function initializeTaskInteractiveTerminalWebSocket(
       ...linkedWorkspaceMountPlan.mountArgs,
       ...gitRuntimeMounts,
       ...hostexecRuntime.mountArgs,
-      ...buildVerftBaseVolumeMountArgs(),
-      ...buildTaskWorkspaceMountArgs(
-        path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, codexProviderStatePaths.homeHostPath),
-        "/home/agent",
-        "rw"
-      ),
+      ...buildHostProviderStateMountArgs(),
       ...dockerSocketRunArgs,
       ...dockerEnv,
-      ...buildVerftBaseEnvArgs(),
       runtime.image,
       "sh",
       "-lc",

@@ -1,99 +1,52 @@
-import { existsSync } from "node:fs";
 import path from "node:path";
 
 import { env } from "../config/env.js";
 
-export const VERFT_BASE_CONTAINER_ROOT = "/verft-base";
-
-type MountMode = "ro" | "rw";
-
-export type VerftBaseStateSource =
-  | { type: "volume"; name: string }
-  | {
-      type: "host";
-      root: string;
-      volume: string;
-      codexPath: string | null;
-      claudePath: string | null;
-      claudeConfigPath: string | null;
-    };
+const AGENT_HOME = "/home/agent";
 
 function trimPath(value: string | undefined | null): string | null {
   const normalized = value?.trim();
   return normalized && normalized.length > 0 ? normalized : null;
 }
 
-export function evaluateVerftBaseStateSource(input: {
-  volume: string;
-  hostRoot?: string;
-  codexHostPath?: string;
-  claudeHostPath?: string;
-  claudeConfigHostPath?: string;
-  pathExists?: (candidate: string) => boolean;
-}): VerftBaseStateSource {
+function mountReadOnly(source: string, target: string): string[] {
+  return ["--mount", `type=bind,src=${source},dst=${target},readonly`];
+}
+
+export function resolveHostProviderStatePaths(input: {
+  hostRoot?: string | null;
+  codexHostPath?: string | null;
+  claudeHostPath?: string | null;
+  claudeConfigHostPath?: string | null;
+}): { codexPath: string | null; claudePath: string | null; claudeConfigPath: string | null } {
   const hostRoot = trimPath(input.hostRoot);
   const codexPath = trimPath(input.codexHostPath) ?? (hostRoot ? path.join(hostRoot, ".codex") : null);
   const claudePath = trimPath(input.claudeHostPath) ?? (hostRoot ? path.join(hostRoot, ".claude") : null);
-  const configuredClaudeConfigPath = trimPath(input.claudeConfigHostPath);
-  const inferredClaudeConfigPath =
-    configuredClaudeConfigPath ?? (claudePath ? path.join(path.dirname(claudePath), ".claude.json") : null);
-  const pathExists = input.pathExists ?? (() => false);
   const claudeConfigPath =
-    inferredClaudeConfigPath && pathExists(inferredClaudeConfigPath) ? inferredClaudeConfigPath : null;
+    trimPath(input.claudeConfigHostPath) ?? (hostRoot ? path.join(hostRoot, ".claude.json") : null);
 
-  if (codexPath || claudePath || claudeConfigPath) {
-    return {
-      type: "host",
-      root: hostRoot ?? "",
-      volume: input.volume,
-      codexPath,
-      claudePath,
-      claudeConfigPath
-    };
-  }
-
-  return { type: "volume", name: input.volume };
+  return { codexPath, claudePath, claudeConfigPath };
 }
 
-export function resolveVerftBaseStateSource(): VerftBaseStateSource {
-  return evaluateVerftBaseStateSource({
-    volume: env.VERFT_BASE_VOLUME,
-    hostRoot: env.VERFT_AI_STATE_HOST_ROOT,
-    codexHostPath: env.VERFT_CODEX_STATE_HOST_PATH,
-    claudeHostPath: env.VERFT_CLAUDE_STATE_HOST_PATH,
-    claudeConfigHostPath: env.VERFT_CLAUDE_CONFIG_HOST_PATH,
-    pathExists: existsSync
-  });
-}
-
-export function buildVerftBaseMountArgsForSource(source: VerftBaseStateSource, mode: MountMode = "ro"): string[] {
-  if (source.type === "volume") {
-    return ["-v", `${source.name}:${VERFT_BASE_CONTAINER_ROOT}:${mode}`];
-  }
-
+export function buildHostProviderStateMountArgsForPaths(input: {
+  codexPath: string | null;
+  claudePath: string | null;
+  claudeConfigPath: string | null;
+}): string[] {
   return [
-    "-v",
-    `${source.volume}:${VERFT_BASE_CONTAINER_ROOT}:${mode}`,
-    ...(source.codexPath ? ["-v", `${source.codexPath}:${VERFT_BASE_CONTAINER_ROOT}/codex:${mode}`] : []),
-    ...(source.claudePath ? ["-v", `${source.claudePath}:${VERFT_BASE_CONTAINER_ROOT}/claude:${mode}`] : []),
-    ...(source.claudeConfigPath
-      ? ["-v", `${source.claudeConfigPath}:${VERFT_BASE_CONTAINER_ROOT}/claude/.claude.json:${mode}`]
-      : [])
+    ...(input.codexPath ? mountReadOnly(input.codexPath, path.join(AGENT_HOME, ".codex")) : []),
+    ...(input.claudePath ? mountReadOnly(input.claudePath, path.join(AGENT_HOME, ".claude")) : []),
+    ...(input.claudeConfigPath ? mountReadOnly(input.claudeConfigPath, path.join(AGENT_HOME, ".claude.json")) : [])
   ];
 }
 
-export function buildVerftBaseVolumeMountArgs(mode: MountMode = "ro"): string[] {
-  return buildVerftBaseMountArgsForSource(resolveVerftBaseStateSource(), mode);
-}
-
-export function buildVerftBaseEnvArgs(): string[] {
-  const source = resolveVerftBaseStateSource();
-  return [
-    "-e",
-    `VERFT_BASE_ROOT=${VERFT_BASE_CONTAINER_ROOT}`,
-    "-e",
-    `VERFT_AI_STATE_ROOT=${VERFT_BASE_CONTAINER_ROOT}`,
-    "-e",
-    `VERFT_BASE_SOURCE=${source.type === "host" ? "host" : "volume"}`
-  ];
+export function buildHostProviderStateMountArgs(): string[] {
+  return buildHostProviderStateMountArgsForPaths(
+    resolveHostProviderStatePaths({
+      hostRoot: env.VERFT_AI_STATE_HOST_ROOT,
+      codexHostPath: env.VERFT_CODEX_STATE_HOST_PATH,
+      claudeHostPath: env.VERFT_CLAUDE_STATE_HOST_PATH,
+      claudeConfigHostPath: env.VERFT_CLAUDE_CONFIG_HOST_PATH
+    })
+  );
 }

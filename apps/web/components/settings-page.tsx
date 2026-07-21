@@ -46,7 +46,6 @@ import {
   Typography
 } from "antd";
 import { api } from "../src/api/client";
-import type { ProviderBaseStateStatus } from "../src/api/client";
 import { useSettings } from "../src/hooks/useSettings";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useAuth } from "./auth-provider";
@@ -292,8 +291,6 @@ export function SettingsPage() {
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [checkingHostexec, setCheckingHostexec] = useState(false);
   const [hostexecAvailability, setHostexecAvailability] = useState<HostexecAvailability | null>(null);
-  const [providerBaseStateStatus, setProviderBaseStateStatus] = useState<ProviderBaseStateStatus | null>(null);
-  const [providerBaseStateLoading, setProviderBaseStateLoading] = useState(false);
   const [autoFillingProvider, setAutoFillingProvider] = useState<AgentProvider | null>(null);
   const [savingRole, setSavingRole] = useState(false);
   const [savingResponsePreferencePreset, setSavingResponsePreferencePreset] = useState(false);
@@ -604,26 +601,12 @@ export function SettingsPage() {
     }
   }, [generalForm, message]);
 
-  const loadProviderBaseStateStatus = useCallback(async (options: { silent?: boolean } = {}) => {
-    setProviderBaseStateLoading(true);
-    try {
-      setProviderBaseStateStatus(await api.getProviderBaseStateStatus());
-    } catch (error) {
-      if (!options.silent) {
-        message.error(error instanceof Error ? error.message : "Failed to load provider base state");
-      }
-    } finally {
-      setProviderBaseStateLoading(false);
-    }
-  }, [message]);
-
   useEffect(() => {
     if (!settings) {
       return;
     }
     void checkHostexec({ silent: true });
-    void loadProviderBaseStateStatus({ silent: true });
-  }, [checkHostexec, loadProviderBaseStateStatus, settings]);
+  }, [checkHostexec, settings]);
 
   const confirmLeave = (): boolean => {
     if (!hasUnsavedChanges || typeof window === "undefined") {
@@ -650,41 +633,6 @@ export function SettingsPage() {
       setCredentialDirtyTabs([]);
     }
     setActiveTab(nextTab);
-  };
-
-  const openLoginTerminalWindow = (path: string): void => {
-    const w = Math.min(960, window.screen.availWidth - 48);
-    const h = Math.min(640, window.screen.availHeight - 48);
-    const features = [
-      "popup=yes",
-      `width=${w}`,
-      `height=${h}`,
-      "menubar=no",
-      "toolbar=no",
-      "location=yes",
-      "status=no",
-      "resizable=yes",
-      "scrollbars=yes"
-    ].join(",");
-    window.open(path, "_blank", `${features},noopener,noreferrer`);
-  };
-
-  const openProviderSetupTerminalWindow = (): void => {
-    const url = `${window.location.origin}/settings/provider-setup-terminal`;
-    const w = Math.min(1280, window.screen.availWidth - 48);
-    const h = Math.min(840, window.screen.availHeight - 48);
-    const features = [
-      "popup=yes",
-      `width=${w}`,
-      `height=${h}`,
-      "menubar=no",
-      "toolbar=no",
-      "location=yes",
-      "status=no",
-      "resizable=yes",
-      "scrollbars=yes"
-    ].join(",");
-    window.open(url, "_blank", `${features},noopener,noreferrer`);
   };
 
   const renderSaveBar = (options: { dirty: boolean; label: string; loading: boolean; onSave: () => void; statusText?: string }) => (
@@ -1249,36 +1197,8 @@ export function SettingsPage() {
               showIcon
               style={{ marginBottom: 16 }}
               message="Credentials are write-only"
-              description="GitHub tokens and provider API keys are encrypted in Verft settings and never returned by the API. The setup terminal stores Codex and Claude login and plugin files in the shared base volume so new tasks can reuse them."
+              description="GitHub tokens and provider API keys are encrypted in Verft settings and never returned by the API. Provider CLI login state comes from the Docker host."
             />
-            <Flex vertical gap={8} style={{ marginBottom: 16 }}>
-              <Flex align="center" justify="space-between" gap={12} wrap="wrap">
-                <Typography.Text strong>Shared base files</Typography.Text>
-                <Button
-                  size="small"
-                  icon={<ReloadOutlined />}
-                  loading={providerBaseStateLoading}
-                  onClick={() => void loadProviderBaseStateStatus()}
-                >
-                  Refresh
-                </Button>
-              </Flex>
-              <Space wrap>
-                {Object.entries(providerBaseStateStatus?.files ?? {}).map(([file, exists]) => (
-                  <Tag key={file} color={exists ? "green" : "default"}>
-                    {file} {exists ? "Present" : "Missing"}
-                  </Tag>
-                ))}
-                {!providerBaseStateStatus && !providerBaseStateLoading ? (
-                  <Typography.Text type="secondary">Base file status not loaded.</Typography.Text>
-                ) : null}
-              </Space>
-              {providerBaseStateStatus ? (
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  Volume: {providerBaseStateStatus.volume}
-                </Typography.Text>
-              ) : null}
-            </Flex>
             <Form
               form={credentialForm}
               layout="vertical"
@@ -1348,21 +1268,6 @@ export function SettingsPage() {
                     Clear Anthropic Key
                   </Button>
                 </Popconfirm>
-                <Button
-                  disabled={!canEditSettings}
-                  onClick={() => openLoginTerminalWindow(`${window.location.origin}/settings/codex-login-terminal`)}
-                >
-                  Sign in Codex
-                </Button>
-                <Button
-                  disabled={!canEditSettings}
-                  onClick={() => openLoginTerminalWindow(`${window.location.origin}/settings/claude-login-terminal`)}
-                >
-                  Sign in Claude
-                </Button>
-                <Button disabled={!canEditSettings} onClick={openProviderSetupTerminalWindow}>
-                  Open Provider Setup Terminal
-                </Button>
               </Space>
             </Form>
           </Card>

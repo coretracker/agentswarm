@@ -20,9 +20,9 @@ describe("buildTerminalStartScript", () => {
     assert.match(script, /\n\s+printf '%s\\n'/);
     assert.doesNotMatch(script, /then;\s/);
     assert.match(script, /Full toolbox shell available/);
-    assert.match(script, /mkdir -p "\$HOME\/\.codex" "\$HOME\/\.claude"/);
-    assert.match(script, /\$\{VERFT_BASE_ROOT:-\/verft-base\}\/codex\/auth\.json/);
-    assert.match(script, /chown -R agent:agent "\$HOME" "\$TASK_INTERACTIVE_WORKSPACE"/);
+    assert.doesNotMatch(script, /VERFT_BASE_ROOT/);
+    assert.doesNotMatch(script, /mkdir -p "\$HOME\/\.codex" "\$HOME\/\.claude"/);
+    assert.match(script, /chown -R agent:agent "\$TASK_INTERACTIVE_WORKSPACE"/);
     assert.match(script, /\$HOME\/\.claude\/mcp-config\.json/);
     assert.match(script, /\/tmp\/verft-bin\/claude/);
     assert.match(script, /chown -R agent:agent \/tmp\/verft-bin/);
@@ -47,7 +47,7 @@ describe("buildTerminalStartScript", () => {
     assert.doesNotMatch(dockerfile, /\bdocker\.io\b/);
     assert.match(dockerfile, /COPY run-task-codex\.mjs/);
     assert.match(dockerfile, /COPY run-task-claude\.mjs/);
-    assert.match(dockerfile, /COPY verft-base-state\.mjs/);
+    assert.doesNotMatch(dockerfile, /COPY verft-base-state\.mjs/);
     assert.match(dockerfile, /COPY hostexec-proxy\.mjs/);
   });
 });

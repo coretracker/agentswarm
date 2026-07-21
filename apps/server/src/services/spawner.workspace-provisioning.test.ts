@@ -85,36 +85,6 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
   });
 
-  it("mounts provider state from a task-scoped agent home path", () => {
-    const spawner = createSpawner() as any;
-    const paths = {
-      hostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/Task-AbC/agent-home/.claude"),
-      homeHostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/Task-AbC/agent-home")
-    };
-
-    assert.equal(
-      spawner.resolveProviderStateMountSourceRelativePath("Task AbC", "claude", paths),
-      ".task-state/Task-AbC/agent-home"
-    );
-    assert.equal(spawner.resolveProviderStateContainerPath("codex"), "/home/agent/.codex");
-    assert.equal(spawner.resolveProviderStateContainerPath("claude"), "/home/agent/.claude");
-    assert.equal(spawner.resolveProviderHomeContainerPath("codex"), "/home/agent");
-    assert.equal(spawner.resolveProviderHomeContainerPath("claude"), "/home/agent");
-  });
-
-  it("rejects provider state mounts that resolve to repository .claude", () => {
-    const spawner = createSpawner() as any;
-    const paths = {
-      hostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, "task-1/.claude"),
-      homeHostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, "task-1/.claude")
-    };
-
-    assert.throws(
-      () => spawner.resolveProviderStateMountSourceRelativePath("task-1", "claude", paths),
-      /Refusing to mount unsafe provider state path/
-    );
-  });
-
   it("injects Verft MCP into task runtime config", async () => {
     const createdTokens: unknown[] = [];
     const spawner = new SpawnerService(

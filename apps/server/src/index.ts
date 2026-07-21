@@ -22,7 +22,6 @@ import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerGitHubPrWebhookRoutes } from "./routes/github-pr-webhooks.js";
 import { registerSlackWebhookRoutes } from "./routes/slack-webhooks.js";
 import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-terminal.js";
-import { attachSettingsProviderTerminalUpgrade } from "./lib/settings-provider-terminal.js";
 import { registerInboundWebhookRoutes } from "./routes/inbound-webhooks.js";
 import { registerIntegrationManagementRoutes } from "./routes/integration-management.js";
 import { registerMcpRoutes } from "./mcp/server.js";
@@ -249,7 +248,6 @@ const bootstrap = async (): Promise<void> => {
     userStore,
     repositoryStore
   });
-  attachSettingsProviderTerminalUpgrade(app.server, { auth, settingsStore });
 
   const io = new SocketIOServer(app.server, {
     cors: {

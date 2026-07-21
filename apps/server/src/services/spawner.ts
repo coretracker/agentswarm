@@ -71,8 +71,8 @@ import type { OperationalLogger } from "../lib/operational-logger.js";
 import { buildDockerWorkspaceMountArgs } from "../lib/docker-workspace-mounts.js";
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { buildHostexecRuntimeConfig } from "../lib/hostexec-runtime.js";
-import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
-import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "../lib/verft-base-mounts.js";
+import { resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
+import { buildHostProviderStateMountArgs } from "../lib/verft-base-mounts.js";
 import { AGENT_RUNTIME_IMAGE, DEFAULT_GIT_COMMIT_IDENTITY, env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 import { executeOpenAiDiffAssist } from "./openai-diff-assist-service.js";
@@ -1753,44 +1753,6 @@ export class SpawnerService {
     });
 
     return true;
-  }
-
-  private resolveProviderStateContainerPath(provider: AgentProvider): string {
-    return provider === "claude" ? "/home/agent/.claude" : "/home/agent/.codex";
-  }
-
-  private resolveProviderHomeContainerPath(_provider: AgentProvider): string {
-    return "/home/agent";
-  }
-
-  private resolveProviderStateMountSourceRelativePath(
-    taskId: string,
-    provider: AgentProvider,
-    providerStatePaths: Awaited<ReturnType<typeof ensureTaskProviderStatePaths>>
-  ): string {
-    const mountHostPath = providerStatePaths.homeHostPath;
-    if (!mountHostPath) {
-      throw new Error(`Provider state mount path is not available for ${provider}.`);
-    }
-
-    const sourceRelativePath = path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, mountHostPath);
-    const normalizedSource = sourceRelativePath.split(path.sep).join(path.posix.sep);
-    const expectedRoot = path
-      .relative(env.TASK_WORKSPACE_DOCKER_SOURCE, resolveTaskStateRootPaths(taskId).hostPath)
-      .split(path.sep)
-      .join(path.posix.sep);
-    const expectedPrefix = `${expectedRoot}/`;
-    if (
-      normalizedSource === ".claude" ||
-      normalizedSource.endsWith("/.claude") ||
-      normalizedSource === ".codex" ||
-      normalizedSource.endsWith("/.codex") ||
-      !normalizedSource.startsWith(expectedPrefix)
-    ) {
-      throw new Error(`Refusing to mount unsafe provider state path for ${provider}: ${normalizedSource}`);
-    }
-
-    return sourceRelativePath;
   }
 
   private resolveRepoCachePath(task: Task): string {
@@ -5586,15 +5548,6 @@ export class SpawnerService {
         containerWorkspacePath: workspace.workspacePath,
         linkedWorkspaces: task.linkedWorkspaces
       });
-      const providerStateContainerPath = this.resolveProviderStateContainerPath(task.provider);
-      const providerHomeContainerPath = this.resolveProviderHomeContainerPath(task.provider);
-      const providerStateMountContainerPath = providerHomeContainerPath;
-      const providerStatePaths = await ensureTaskProviderStatePaths(task.id, task.provider);
-      const providerStateMountSourceRelativePath = this.resolveProviderStateMountSourceRelativePath(
-        task.id,
-        task.provider,
-        providerStatePaths
-      );
       const dockerSocketPolicy = resolveDockerSocketAccessPolicy(task.provider);
       const dockerSocketMountArgs = resolveDockerSocketMountArgs(dockerSocketPolicy);
       const dockerSocketEnvEntries = resolveDockerSocketEnvEntries(dockerSocketPolicy);
@@ -5645,12 +5598,7 @@ export class SpawnerService {
         ...linkedWorkspaceMountPlan.mountArgs,
         ...gitRuntimeMounts,
         ...hostexecRuntime.mountArgs,
-        ...buildVerftBaseVolumeMountArgs(),
-        ...this.buildTaskWorkspaceMountArgs(
-          providerStateMountSourceRelativePath,
-          providerStateMountContainerPath,
-          "rw"
-        ),
+        ...buildHostProviderStateMountArgs(),
         ...dockerSocketMountArgs,
         "-e",
         `TASK_MANIFEST_FILE=${payloadPaths.manifestPath}`,
@@ -5661,10 +5609,7 @@ export class SpawnerService {
         "-e",
         `TASK_WORSPACE_PATH=${workspace.hostWorkspacePath}`,
         "-e",
-        `TASK_PROVIDER_STATE_PATH=${providerStateContainerPath}`,
-        "-e",
-        `TASK_PROVIDER_HOME=${providerHomeContainerPath}`,
-        ...buildVerftBaseEnvArgs()
+        "TASK_PROVIDER_HOME=/home/agent"
       ];
 
       const addRuntimeEnv = (name: string, value: string): void => {

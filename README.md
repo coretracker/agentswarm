@@ -185,10 +185,10 @@ Durable application data is stored in Postgres. Redis is required for sessions, 
 | Variable | Description | Default |
 | --- | --- | --- |
 | `AGENT_RUNTIME_IMAGE` | Unified toolbox image for automated Codex/Claude runs, interactive terminals, utility runs, and Git worker containers. | `verft-agent-toolbox:latest` |
-| `VERFT_AI_STATE_HOST_ROOT` | Optional host home root used to derive `.codex`, `.claude`, and sibling `.claude.json` provider mounts. Normal task and utility runtimes mount host state read-only; settings login terminals mount it read-write. | unset |
-| `VERFT_CODEX_STATE_HOST_PATH` | Optional host path override to mount as `/verft-base/codex`. | unset |
-| `VERFT_CLAUDE_STATE_HOST_PATH` | Optional host path override to mount as `/verft-base/claude`. When a sibling `.claude.json` exists, it is also mounted as `/verft-base/claude/.claude.json`. | unset |
-| `VERFT_CLAUDE_CONFIG_HOST_PATH` | Optional host path override for Claude's sidecar `.claude.json` config mount. | unset |
+| `VERFT_AI_STATE_HOST_ROOT` | Host home root used to derive `.codex`, `.claude`, and `.claude.json` provider mounts. These are Docker daemon host paths and are mounted read-only into spawned agent/toolbox containers. | `$HOME` |
+| `VERFT_CODEX_STATE_HOST_PATH` | Optional host path override mounted read-only as `/home/agent/.codex`. | unset |
+| `VERFT_CLAUDE_STATE_HOST_PATH` | Optional host path override mounted read-only as `/home/agent/.claude`. | unset |
+| `VERFT_CLAUDE_CONFIG_HOST_PATH` | Optional host path override mounted read-only as `/home/agent/.claude.json`. | unset |
 
 The toolbox image includes Codex CLI, Claude Code, Git, GitHub CLI (`gh`), Docker CLI, Python, Node/npm, shell tools, and common build dependencies. Runtime image contents and mounted capabilities are part of the operator security boundary. GitHub CLI authentication is supplied at runtime from configured GitHub credentials; credentials are not baked into the image.
 

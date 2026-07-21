@@ -1,8 +1,7 @@
 import { createWriteStream } from "node:fs";
-import { access, chmod, constants, copyFile, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, constants, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { hasVerftBaseLogin, importVerftBaseState } from "./verft-base-state.mjs";
 
 const AGENT_IDENTITY = "agent:agent";
 const AGENT_HOME = "/home/agent";
@@ -18,11 +17,6 @@ if (!providerConfigPath) {
   console.error("PROVIDER_CONFIG_FILE is required");
   process.exit(1);
 }
-if (!anthropicApiKey && !(await hasVerftBaseLogin("claude"))) {
-  console.error("ANTHROPIC_API_KEY or Claude base login is required");
-  process.exit(1);
-}
-
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
 const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
@@ -35,7 +29,6 @@ if (anthropicApiKey) {
   delete process.env.ANTHROPIC_API_KEY;
 }
 process.env.GIT_OPTIONAL_LOCKS = "0";
-const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
 const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
 const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -66,27 +59,7 @@ const writePersistedSessionId = async (sessionIdPath, sessionId) => {
     return;
   }
 
-  await writeFile(sessionIdPath, `${sessionId.trim()}\n`, "utf8");
-};
-
-const restoreClaudeProjectConfig = async (runtimeHome, providerStatePath) => {
-  const persistedConfigPath = path.join(providerStatePath, "verft-claude.json");
-  const homeConfigPath = path.join(runtimeHome, ".claude.json");
-  await copyFile(persistedConfigPath, homeConfigPath).catch((error) => {
-    if (error?.code !== "ENOENT") {
-      throw error;
-    }
-  });
-};
-
-const persistClaudeProjectConfig = async (runtimeHome, providerStatePath) => {
-  const homeConfigPath = path.join(runtimeHome, ".claude.json");
-  const persistedConfigPath = path.join(providerStatePath, "verft-claude.json");
-  await copyFile(homeConfigPath, persistedConfigPath).catch((error) => {
-    if (error?.code !== "ENOENT") {
-      throw error;
-    }
-  });
+  await writeFile(sessionIdPath, `${sessionId.trim()}\n`, "utf8").catch(() => undefined);
 };
 
 const runCommand = (command, args, options = {}) =>
@@ -294,13 +267,13 @@ if (manifest.resolvedModel) {
 
 const runtimeIdentity = AGENT_IDENTITY;
 const runtimeHome = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : AGENT_HOME;
-const providerStatePath = configuredStatePath && configuredStatePath.length > 0
-  ? configuredStatePath
-  : path.join(runtimeHome, ".claude");
+const providerStatePath = path.join(runtimeHome, ".claude");
 await mkdir(runtimeHome, { recursive: true });
 await mkdir(providerStatePath, { recursive: true });
-await importVerftBaseState({ provider: "claude", homeDir: runtimeHome });
-await restoreClaudeProjectConfig(runtimeHome, providerStatePath);
+if (!anthropicApiKey && !(await pathExists(path.join(providerStatePath, ".credentials.json")))) {
+  console.error("ANTHROPIC_API_KEY or Claude host login is required");
+  process.exit(1);
+}
 preserveHostexecPath();
 await ensureGitAskPass(runtimeHome);
 const sessionIdFilePath = path.join(providerStatePath, "verft-session-id.txt");
@@ -314,19 +287,9 @@ console.log(
   `[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""} session=${persistedSessionId ?? "new"}`
 );
 console.log(`[runtime] claude thinking_budget_tokens=${manifest.resolvedThinkingBudgetTokens ?? "default"}`);
-await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
+await runCommand("chown", ["-R", runtimeIdentity, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
 if (!isAsk) {
   await runCommand("chown", ["-R", runtimeIdentity, manifest.workspacePath]).catch(() => undefined);
-}
-// Claude stores installed plugins as git clones under <state>/plugins/cache.
-// The tree is copied from the shared base as root and its git objects are
-// read-only (mode 0444). Explicitly hand the whole plugins tree to the agent
-// user and make every directory traversable / file writable so Claude's
-// startup chmod of the plugin cache does not fail with EACCES/EPERM.
-const pluginsStateDir = path.join(providerStatePath, "plugins");
-if (await pathExists(pluginsStateDir)) {
-  await runCommand("chown", ["-R", runtimeIdentity, pluginsStateDir]).catch(() => undefined);
-  await runCommand("chmod", ["-R", "u+rwX", pluginsStateDir]).catch(() => undefined);
 }
 console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
 
@@ -597,7 +560,6 @@ await new Promise((resolve, reject) => {
 }).catch((error) => {
   claudeProcessError = error;
 });
-await persistClaudeProjectConfig(runtimeHome, providerStatePath);
 await new Promise((resolve, reject) => {
   rawEventsStream.end(() => resolve());
   rawEventsStream.on("error", reject);

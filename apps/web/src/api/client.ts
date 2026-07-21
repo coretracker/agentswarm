@@ -74,11 +74,6 @@ export interface ProviderModelsResponse {
   source: "api" | "cache" | "fallback";
 }
 
-export interface ProviderBaseStateStatus {
-  volume: string;
-  files: Record<string, boolean>;
-}
-
 export interface TaskInteractiveTerminalStatus {
   available: boolean;
   reason?: string;
@@ -542,7 +537,6 @@ export const api = {
       method: "DELETE"
     }),
   getSettings: () => request<SystemSettings>("/settings"),
-  getProviderBaseStateStatus: () => request<ProviderBaseStateStatus>("/settings/provider-base-state"),
   checkHostexec: () => request<HostexecAvailability>("/settings/hostexec/check"),
   listModels: (provider: AgentProvider, options?: { refresh?: boolean }) =>
     request<ProviderModelsResponse>(`/settings/models?provider=${encodeURIComponent(provider)}${options?.refresh ? "&refresh=1" : ""}`),

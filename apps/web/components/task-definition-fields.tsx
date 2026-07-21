@@ -23,7 +23,6 @@ import {
 } from "@verft/shared-types";
 import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Row, Select, Typography, message } from "antd";
 import { RobotOutlined } from "@ant-design/icons";
-import type { ProviderBaseStateStatus } from "../src/api/client";
 import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
@@ -55,9 +54,9 @@ export interface TaskDefinitionFieldsProps {
   onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
 }
 
-const providerOptions = (hasClaudeCredentials: boolean): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
+const providerOptions = (): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
   { label: "Codex (OpenAI)", value: "codex" },
-  { label: getAgentProviderLabel("claude"), value: "claude", disabled: !hasClaudeCredentials }
+  { label: getAgentProviderLabel("claude"), value: "claude" }
 ];
 
 const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
@@ -77,11 +76,6 @@ const getProviderConfiguredModels = (provider: AgentProvider, settings?: SystemS
   const models = provider === "claude" ? settings?.claudeModels : settings?.codexModels;
   return models && models.length > 0 ? models : getModelsForProvider(provider);
 };
-
-export const hasClaudeTaskCredentials = (
-  settings?: Pick<SystemSettings, "anthropicApiKeyConfigured"> | null,
-  providerBaseState?: Pick<ProviderBaseStateStatus, "files"> | null
-): boolean => Boolean(settings?.anthropicApiKeyConfigured || providerBaseState?.files["claude/.credentials.json"]);
 
 const getResolvedProviderForDefaults = (
   repository?: Repository | null,
@@ -178,7 +172,6 @@ export function TaskDefinitionFields({
   const { can, session } = useAuth();
   const { repositories } = useRepositories();
   const { settings } = useSettings();
-  const [providerBaseState, setProviderBaseState] = useState<ProviderBaseStateStatus | null>(null);
   const [magicPromptLoading, setMagicPromptLoading] = useState(false);
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
@@ -193,13 +186,10 @@ export function TaskDefinitionFields({
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
   const effectiveTaskType = selectedTaskType;
   const isImplementationTask = effectiveTaskType === "build";
-  const hasClaudeCredentials = hasClaudeTaskCredentials(settings, providerBaseState);
-  const providerMissingCredentials =
-    selectedProvider === "codex" ? false : !hasClaudeCredentials;
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
   const roleAllowedModels = session?.user.allowedModels ?? [];
   const roleAllowedEfforts = session?.user.allowedEfforts ?? [];
-  const providerSelectOptions = providerOptions(hasClaudeCredentials).map(
+  const providerSelectOptions = providerOptions().map(
     (option) => ({
       ...option,
       disabled: Boolean(option.disabled || (roleAllowedProviders.length > 0 && !roleAllowedProviders.includes(option.value)))
@@ -215,26 +205,6 @@ export function TaskDefinitionFields({
     ...(canBuildTasks ? [{ label: "Build", value: "build" as const }] : []),
     ...(canAskTasks ? [{ label: "Ask", value: "ask" as const }] : [])
   ];
-
-  useEffect(() => {
-    let active = true;
-    void api
-      .getProviderBaseStateStatus()
-      .then((status) => {
-        if (active) {
-          setProviderBaseState(status);
-        }
-      })
-      .catch(() => {
-        if (active) {
-          setProviderBaseState(null);
-        }
-      });
-
-    return () => {
-      active = false;
-    };
-  }, []);
 
   useEffect(() => {
     if (!settings || !syncSettingsDefaults) {
@@ -508,20 +478,6 @@ export function TaskDefinitionFields({
               <Form.Item name="codexCredentialSource" label="Codex Credential Source" rules={[{ required: true }]}>
                 <Select options={codexCredentialSourceOptions} />
               </Form.Item>
-            ) : null}
-
-            {providerMissingCredentials ? (
-              <Alert
-                type="warning"
-                showIcon
-                style={{ marginBottom: 16 }}
-                message={`${selectedProvider === "codex" ? "Codex" : "Anthropic"} credentials are missing`}
-                description={
-                selectedProvider === "codex"
-                  ? "Configure a Codex login terminal or set an OpenAI API key in Settings before running this task."
-                  : "Configure the provider credential in Settings before running this task."
-                }
-              />
             ) : null}
 
             <Form.Item name="baseBranch" label="Base Branch" rules={[{ required: true }]}>

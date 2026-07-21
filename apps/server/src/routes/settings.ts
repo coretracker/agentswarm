@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { spawn as spawnChild } from "node:child_process";
 import type { FastifyInstance } from "fastify";
 import type { AgentProvider, HostexecAvailability, HostexecSettings } from "@verft/shared-types";
 import { CODEX_MODELS, CLAUDE_MODELS } from "@verft/shared-types";
@@ -7,8 +6,6 @@ import type { AuthService } from "../lib/auth.js";
 import { discoverHostexecEndpoint } from "../lib/hostexec-discovery.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { SettingsStore } from "../services/settings-store.js";
-import { AGENT_RUNTIME_IMAGE } from "../config/env.js";
-import { buildVerftBaseVolumeMountArgs, resolveVerftBaseStateSource } from "../lib/verft-base-mounts.js";
 
 interface ProviderModelEntry {
   label: string;
@@ -187,55 +184,6 @@ const updateCredentialsSchema = z.object({
   clearSlackBotToken: z.boolean().optional()
 });
 
-async function getProviderBaseStateStatus(): Promise<{ volume: string; files: Record<string, boolean> }> {
-  const files = [
-    "codex/auth.json",
-    "codex/config.toml",
-    "codex/plugins",
-    "codex/skills",
-    "claude/.credentials.json",
-    "claude/.claude.json",
-    "claude/settings.json",
-    "claude/plugins"
-  ];
-  const script = [
-    "set -eu",
-    "printf '{'",
-    files
-      .map((file, index) =>
-        `[ -e "/verft-base/${file}" ] && v=true || v=false; printf '${index === 0 ? "" : ","}"${file}":%s' "$v"`
-      )
-      .join("\n"),
-    "printf '}'"
-  ].join("\n");
-
-  return new Promise((resolve) => {
-    const source = resolveVerftBaseStateSource();
-    const sourceLabel = source.type === "host" ? source.root || "host" : source.name;
-    const child = spawnChild("docker", ["run", "--rm", ...buildVerftBaseVolumeMountArgs("ro"), AGENT_RUNTIME_IMAGE, "sh", "-lc", script], {
-      stdio: ["ignore", "pipe", "ignore"]
-    });
-    let stdout = "";
-    child.stdout.on("data", (chunk) => {
-      stdout += chunk.toString("utf8");
-    });
-    child.on("error", () => {
-      resolve({ volume: sourceLabel, files: Object.fromEntries(files.map((file) => [file, false])) });
-    });
-    child.on("close", (code) => {
-      if (code !== 0) {
-        resolve({ volume: sourceLabel, files: Object.fromEntries(files.map((file) => [file, false])) });
-        return;
-      }
-      try {
-        resolve({ volume: sourceLabel, files: JSON.parse(stdout) as Record<string, boolean> });
-      } catch {
-        resolve({ volume: sourceLabel, files: Object.fromEntries(files.map((file) => [file, false])) });
-      }
-    });
-  });
-}
-
 async function checkHostexecAvailability(settings: HostexecSettings): Promise<HostexecAvailability> {
   const discovery = await discoverHostexecEndpoint(settings);
   const endpoint = discovery.endpoint;
@@ -276,10 +224,6 @@ export const registerSettingsRoutes = (
   }
 ): void => {
   app.get("/settings", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => deps.settingsStore.getSettings());
-
-  app.get("/settings/provider-base-state", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () =>
-    getProviderBaseStateStatus()
-  );
 
   app.get("/settings/hostexec/check", { preHandler: deps.auth.requireAllScopes(["settings:read"]) }, async () => {
     const settings = await deps.settingsStore.getSettings();
