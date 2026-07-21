@@ -618,8 +618,12 @@ function IntegrationRuleEditorModal({
         <Form.Item name="mappingInstructions" label="Task Instructions Template">
           <Input.TextArea autoSize={{ minRows: 3, maxRows: 8 }} placeholder={"e.g. Work on: {{body.issue.description}}"} />
         </Form.Item>
-        <Form.Item name="mappingBranch" label="Branch Template (optional)">
-          <Input placeholder={"e.g. feature/{{body.issue.key}}"} />
+        <Form.Item
+          name="mappingBranch"
+          label="Work-On Branch Template"
+          extra="Optional existing branch for the created task to work on. Leave empty to create a normal feature branch from the repository default branch."
+        >
+          <Input placeholder={"e.g. {{body.pull_request.head.ref}}"} />
         </Form.Item>
 
         <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>Execution (optional)</Typography.Text>
