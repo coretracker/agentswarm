@@ -41,7 +41,7 @@ const createRule = (id: string, repositoryId: string, name: string): Integration
   updatedAt: now
 });
 
-test("copy integration setup replaces target rules and copies inbound secret", async () => {
+const registerCopyIntegrationSetupTestApp = (options: { repositoryIds: string[] }) => {
   const app = Fastify();
   const repositories = new Map([
     ["source", createRepository("source", "source")],
@@ -76,7 +76,7 @@ test("copy integration setup replaces target rules and copies inbound secret", a
               active: true,
               agentResponsePreference: {},
               roles: [],
-              repositoryIds: [],
+              repositoryIds: options.repositoryIds,
               scopes: ["repo:edit"],
               allowedProviders: [],
               allowedModels: [],
@@ -129,6 +129,12 @@ test("copy integration setup replaces target rules and copies inbound secret", a
     webhookInboxStore: {} as never
   });
 
+  return { app, secrets, rules };
+};
+
+test("copy integration setup replaces target rules and copies inbound secret", async () => {
+  const { app, secrets, rules } = registerCopyIntegrationSetupTestApp({ repositoryIds: ["source", "target"] });
+
   const response = await app.inject({
     method: "POST",
     url: "/repositories/target/integration-setup/copy",
@@ -149,6 +155,45 @@ test("copy integration setup replaces target rules and copies inbound secret", a
   });
   assert.equal(secrets.get("target"), "source-secret");
   assert.deepEqual(rules.filter((rule) => rule.repositoryId === "target").map((rule) => rule.name), ["Source Rule"]);
+
+  await app.close();
+});
+
+test("copy integration setup rejects inaccessible source repositories", async () => {
+  const { app, secrets, rules } = registerCopyIntegrationSetupTestApp({ repositoryIds: ["target"] });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/repositories/target/integration-setup/copy",
+    payload: {
+      sourceRepositoryId: "source",
+      copyRules: true,
+      replaceRules: true,
+      copyInboundWebhookSecret: true
+    }
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.equal(secrets.get("target"), null);
+  assert.deepEqual(rules.filter((rule) => rule.repositoryId === "target").map((rule) => rule.name), ["Target Rule"]);
+
+  await app.close();
+});
+
+test("copy integration setup rejects invalid copy options", async () => {
+  const { app } = registerCopyIntegrationSetupTestApp({ repositoryIds: ["source", "target"] });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/repositories/target/integration-setup/copy",
+    payload: {
+      sourceRepositoryId: "source",
+      copyRules: false,
+      copyInboundWebhookSecret: false
+    }
+  });
+
+  assert.equal(response.statusCode, 400);
 
   await app.close();
 });

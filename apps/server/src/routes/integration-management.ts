@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { AuthService } from "../lib/auth.js";
+import { canUserAccessRepository } from "../lib/task-ownership.js";
 import type { IntegrationRuleStore } from "../services/integration-rule-store.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { WebhookInboxStore } from "../services/webhook-inbox-store.js";
@@ -126,6 +127,12 @@ export const registerIntegrationManagementRoutes = (
         deps.repositoryStore.getRepository(targetRepositoryId)
       ]);
       if (!sourceRepository || !targetRepository) {
+        return reply.status(404).send({ message: "Repository not found" });
+      }
+      if (
+        !canUserAccessRepository(request.auth?.user, sourceRepositoryId) ||
+        !canUserAccessRepository(request.auth?.user, targetRepositoryId)
+      ) {
         return reply.status(404).send({ message: "Repository not found" });
       }
 

@@ -384,18 +384,26 @@ const readWebhookHeader = (headers: Record<string, string>, key: string): string
   return entry?.[1]?.trim() || null;
 };
 
-const readWebhookBodyString = (body: unknown, key: string): string | null => {
-  if (!isRecord(body)) {
-    return null;
-  }
-  const value = body[key];
+const readWebhookBodyString = (body: unknown, path: string): string | null => {
+  const value = path.split(".").reduce<unknown>((current, part) => {
+    if (!isRecord(current)) {
+      return undefined;
+    }
+    return current[part];
+  }, body);
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 };
 
 const getWebhookEventLabel = (entry: WebhookInboxEntry): string =>
   readWebhookHeader(entry.headers, "x-github-event") ??
+  readWebhookHeader(entry.headers, "x-gitlab-event") ??
+  readWebhookHeader(entry.headers, "linear-event") ??
   readWebhookBodyString(entry.body, "event") ??
+  readWebhookBodyString(entry.body, "event.type") ??
+  readWebhookBodyString(entry.body, "event.event_type") ??
   readWebhookBodyString(entry.body, "event_type") ??
+  readWebhookBodyString(entry.body, "webhookEvent") ??
+  readWebhookBodyString(entry.body, "object_kind") ??
   readWebhookBodyString(entry.body, "type") ??
   "Webhook";
 
@@ -408,6 +416,10 @@ const getWebhookPayloadPreview = (entry: WebhookInboxEntry): string => {
   const pullRequest = isRecord(body.pull_request) ? body.pull_request : null;
   const comment = isRecord(body.comment) ? body.comment : null;
   const title =
+    readWebhookBodyString(entry.body, "issue.fields.summary") ||
+    readWebhookBodyString(entry.body, "data.title") ||
+    readWebhookBodyString(entry.body, "data.issue.title") ||
+    readWebhookBodyString(entry.body, "event.summary") ||
     (typeof issue?.title === "string" && issue.title.trim()) ||
     (typeof pullRequest?.title === "string" && pullRequest.title.trim()) ||
     (typeof comment?.body === "string" && comment.body.trim()) ||
