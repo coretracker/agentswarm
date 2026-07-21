@@ -22,6 +22,7 @@ const GITHUB_LOGIN_PATTERN = /^@?[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
 const SLACK_CHANNEL_ID_PATTERN = /^[CG][A-Z0-9]{2,}$/;
 const HOST_COMMAND_MAX_COUNT = 80;
 const HOST_COMMAND_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
+const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 const normalizeMcpServerNameForComparison = (value: string): string =>
   value
@@ -105,6 +106,18 @@ const hostCommandsSchema = z
       }
     }
   });
+
+const inboundWebhookSignatureHeadersSchema = z
+  .array(
+    z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .regex(HTTP_HEADER_NAME_PATTERN, "Header names must be valid HTTP field names.")
+  )
+  .max(10)
+  .optional();
 
 const repositoryEnvKeySchema = z
   .string()
@@ -234,6 +247,7 @@ const createRepositorySchema = z.object({
   webhookSecret: z.string().trim().min(1).optional(),
   githubPrWebhookSecret: z.string().trim().min(1).optional(),
   inboundWebhookSecret: z.string().trim().min(1).optional(),
+  inboundWebhookSignatureHeaders: inboundWebhookSignatureHeadersSchema,
   githubIntegrationBotLogin: z.string().trim().max(255).nullable().optional(),
   githubPrAllowedUsers: githubAllowedUsersSchema.optional(),
   githubPrRequireBotMention: z.boolean().optional(),

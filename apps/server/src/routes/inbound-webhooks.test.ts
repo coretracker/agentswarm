@@ -28,9 +28,10 @@ const repository: Repository = {
   updatedAt: now
 };
 
-const createTestApp = (secret: string | null) => {
+const createTestApp = (secret: string | null, inboundWebhookSignatureHeaders?: string[]) => {
   const app = Fastify();
   const insertedEntries: WebhookInboxEntry[] = [];
+  const testRepository = { ...repository, inboundWebhookSignatureHeaders };
 
   app.addContentTypeParser("application/json", { parseAs: "string" }, (request: FastifyRequest, body: string | Buffer, done) => {
     const rawBody = typeof body === "string" ? body : body.toString("utf8");
@@ -40,7 +41,7 @@ const createTestApp = (secret: string | null) => {
 
   registerInboundWebhookRoutes(app, {
     repositoryStore: {
-      getRepository: async (repositoryId: string) => (repositoryId === repository.id ? repository : null),
+      getRepository: async (repositoryId: string) => (repositoryId === repository.id ? testRepository : null),
       getRepositoryInboundWebhookSecret: async () => secret
     } as never,
     integrationRuleStore: {
@@ -157,6 +158,52 @@ test("inbound webhook accepts GitHub sha256 signature header", async () => {
   assert.deepEqual(JSON.parse(response.body), { received: true, matched: false });
   assert.equal(insertedEntries.length, 1);
   assert.deepEqual(insertedEntries[0]?.body, { action: "created", comment: { body: "build this" } });
+
+  await app.close();
+});
+
+test("inbound webhook accepts configured vendor signature header with bare sha256 digest", async () => {
+  const secret = "webhook-secret";
+  const { app, insertedEntries } = createTestApp(secret, ["x-linear-signature"]);
+  const payload = JSON.stringify({ action: "created", data: { issue: { id: "LIN-123" } } });
+  const signature = createHmac("sha256", secret).update(payload).digest("hex");
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/integrations/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-linear-signature": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { received: true, matched: false });
+  assert.equal(insertedEntries.length, 1);
+
+  await app.close();
+});
+
+test("inbound webhook accepts configured vendor signature header with keyed digest", async () => {
+  const secret = "webhook-secret";
+  const { app, insertedEntries } = createTestApp(secret, ["x-vendor-signature"]);
+  const payload = JSON.stringify({ event: "deployment" });
+  const digest = createHmac("sha256", secret).update(payload).digest("hex");
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/integrations/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-vendor-signature": `t=123,v1=${digest}`
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { received: true, matched: false });
+  assert.equal(insertedEntries.length, 1);
 
   await app.close();
 });
