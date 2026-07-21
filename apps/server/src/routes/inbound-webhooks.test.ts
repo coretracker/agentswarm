@@ -104,6 +104,74 @@ test("inbound webhook validation HEAD returns not found for unknown repositories
   await app.close();
 });
 
+test("inbound webhook responds to Slack url_verification challenge", async () => {
+  const { app, insertedEntries } = createTestApp(null);
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/integrations/webhooks/repo-1",
+    payload: {
+      token: "deprecated-token",
+      challenge: "slack-challenge",
+      type: "url_verification"
+    }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), { challenge: "slack-challenge" });
+  assert.equal(insertedEntries.length, 0);
+
+  await app.close();
+});
+
+test("inbound webhook accepts signed Slack url_verification challenge", async () => {
+  const secret = "slack-signing-secret";
+  const { app, insertedEntries } = createTestApp(secret, ["x-slack-signature"]);
+  const payload = JSON.stringify({
+    token: "deprecated-token",
+    challenge: "signed-slack-challenge",
+    type: "url_verification"
+  });
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const signature = `v0=${createHmac("sha256", secret).update(`v0:${timestamp}:${payload}`).digest("hex")}`;
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/integrations/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-slack-request-timestamp": timestamp,
+      "x-slack-signature": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), { challenge: "signed-slack-challenge" });
+  assert.equal(insertedEntries.length, 0);
+
+  await app.close();
+});
+
+test("inbound Slack url_verification still returns not found for unknown repositories", async () => {
+  const { app, insertedEntries } = createTestApp(null);
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/integrations/webhooks/missing",
+    payload: {
+      challenge: "slack-challenge",
+      type: "url_verification"
+    }
+  });
+
+  assert.equal(response.statusCode, 404);
+  assert.deepEqual(JSON.parse(response.body), { message: "Repository not found" });
+  assert.equal(insertedEntries.length, 0);
+
+  await app.close();
+});
+
 test("inbound webhook accepts unsigned deliveries when no secret is configured", async () => {
   const { app, insertedEntries } = createTestApp(null);
 
