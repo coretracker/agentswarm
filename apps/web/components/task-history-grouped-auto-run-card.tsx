@@ -1,4 +1,4 @@
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import { CopyOutlined } from "@ant-design/icons";
 import { Button, Card, Flex, Space, Tooltip, Typography, theme as antTheme } from "antd";
 import dayjs from "dayjs";
@@ -104,6 +104,13 @@ export function TaskHistoryGroupedAutoRunCard({
     }
     setActiveSection((current) => (current === section ? null : section));
   };
+
+  useEffect(() => {
+    if (initialSection) {
+      setActiveSection(initialSection);
+    }
+  }, [initialSection]);
+
   const renderDiffAction = (action: TaskHistoryCheckpointDiffAction) => (
     <Tooltip key={action.label} title={action.tooltip}>
       <span>
