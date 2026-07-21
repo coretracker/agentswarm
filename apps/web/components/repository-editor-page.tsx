@@ -31,11 +31,12 @@ import {
   getEffortOptionsForProvider
 } from "@verft/shared-types";
 import { Alert, Button, Card, Checkbox, Empty, Flex, Form, Input, Modal, Result, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, Upload, message } from "antd";
-import { DeleteOutlined, EditOutlined, PlusOutlined } from "@ant-design/icons";
+import { DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined, UploadOutlined } from "@ant-design/icons";
 import { ApiError, api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useSettings } from "../src/hooks/useSettings";
 import { buildApiUrl } from "../src/lib/public-url";
+import { parseIntegrationRulesYaml, serializeIntegrationRulesToYaml } from "../src/utils/integration-yaml";
 import { HarnessMarkdownField } from "./harness-markdown-field";
 
 interface RepositoryEditorPageProps {
@@ -791,6 +792,10 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
   const [copyIntegrationRepositories, setCopyIntegrationRepositories] = useState<Repository[]>([]);
   const [copyIntegrationRepositoriesLoading, setCopyIntegrationRepositoriesLoading] = useState(false);
   const [copyingIntegrationSetup, setCopyingIntegrationSetup] = useState(false);
+  const [integrationImportOpen, setIntegrationImportOpen] = useState(false);
+  const [integrationImportYaml, setIntegrationImportYaml] = useState("");
+  const [integrationImportReplace, setIntegrationImportReplace] = useState(false);
+  const [importingIntegrationRules, setImportingIntegrationRules] = useState(false);
   const [initialSnapshot, setInitialSnapshot] = useState("");
   const watchedValues = Form.useWatch([], form) as RepositoryFormValues | undefined;
   const selectedDefaultProvider =
@@ -1049,6 +1054,60 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
       const entries = await api.listWebhookInbox(repoId, { limit: WEBHOOK_INBOX_LIMIT });
       setInboxEntries(entries);
     } catch {}
+  };
+
+  const exportIntegrationRulesYaml = () => {
+    if (!editingRepository || typeof window === "undefined") {
+      return;
+    }
+    const yaml = serializeIntegrationRulesToYaml(integrationRules);
+    const blob = new Blob([yaml], { type: "application/yaml;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${editingRepository.name || "repository"}-integration-rules.yaml`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.URL.revokeObjectURL(url);
+  };
+
+  const importIntegrationRulesYaml = async () => {
+    if (!editingRepository) {
+      return;
+    }
+    let parsedRules: CreateIntegrationRuleInput[];
+    try {
+      parsedRules = parseIntegrationRulesYaml(integrationImportYaml);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Invalid YAML");
+      return;
+    }
+    if (parsedRules.length === 0) {
+      messageApi.error("YAML does not contain any rules.");
+      return;
+    }
+
+    setImportingIntegrationRules(true);
+    try {
+      if (integrationImportReplace) {
+        for (const rule of integrationRules) {
+          await api.deleteIntegrationRule(editingRepository.id, rule.id);
+        }
+      }
+      for (const rule of parsedRules) {
+        await api.createIntegrationRule(editingRepository.id, rule);
+      }
+      await loadIntegrationRules(editingRepository.id);
+      setIntegrationImportOpen(false);
+      setIntegrationImportYaml("");
+      setIntegrationImportReplace(false);
+      messageApi.success(`Imported ${parsedRules.length} rule${parsedRules.length === 1 ? "" : "s"}.`);
+    } catch (error) {
+      messageApi.error(error instanceof Error ? error.message : "Failed to import rules");
+    } finally {
+      setImportingIntegrationRules(false);
+    }
   };
 
   const confirmLeave = (): boolean => {
@@ -2310,6 +2369,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                   extra={
                     <Space>
                       <Button onClick={() => setCopyIntegrationOpen(true)}>Copy From Repo</Button>
+                      <Button icon={<UploadOutlined />} onClick={() => setIntegrationImportOpen(true)}>Import YAML</Button>
+                      <Button icon={<DownloadOutlined />} onClick={exportIntegrationRulesYaml}>Export YAML</Button>
                       <Button
                         type="primary"
                         icon={<PlusOutlined />}
@@ -2518,6 +2579,90 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     }
                   }}
                 />
+
+                <Modal
+                  open={integrationImportOpen}
+                  title="Import Integration Rules YAML"
+                  onCancel={() => {
+                    setIntegrationImportOpen(false);
+                    setIntegrationImportYaml("");
+                    setIntegrationImportReplace(false);
+                  }}
+                  width={760}
+                  footer={[
+                    <Button
+                      key="cancel"
+                      onClick={() => {
+                        setIntegrationImportOpen(false);
+                        setIntegrationImportYaml("");
+                        setIntegrationImportReplace(false);
+                      }}
+                    >
+                      Cancel
+                    </Button>,
+                    <Button
+                      key="import"
+                      type="primary"
+                      loading={importingIntegrationRules}
+                      disabled={!integrationImportYaml.trim()}
+                      onClick={() => void importIntegrationRulesYaml()}
+                    >
+                      Import Rules
+                    </Button>
+                  ]}
+                >
+                  <Flex vertical gap={12}>
+                    <Space wrap>
+                      <Upload
+                        accept=".yaml,.yml,application/yaml,text/yaml,text/plain"
+                        maxCount={1}
+                        showUploadList={false}
+                        beforeUpload={(file) => {
+                          void file
+                            .text()
+                            .then(setIntegrationImportYaml)
+                            .catch(() => messageApi.error("Failed to read YAML file"));
+                          return false;
+                        }}
+                      >
+                        <Button icon={<UploadOutlined />}>Choose File</Button>
+                      </Upload>
+                      <Button onClick={() => setIntegrationImportYaml(serializeIntegrationRulesToYaml(integrationRules))}>
+                        Use Current Rules
+                      </Button>
+                    </Space>
+                    <Input.TextArea
+                      rows={18}
+                      value={integrationImportYaml}
+                      onChange={(event) => setIntegrationImportYaml(event.target.value)}
+                      spellCheck={false}
+                      placeholder={[
+                        "version: 1",
+                        "rules:",
+                        "  - name: GitHub bot mention",
+                        "    enabled: true",
+                        "    filter:",
+                        "      conditions:",
+                        "        - source: body",
+                        "          field: comment.body",
+                        "          op: regex",
+                        "          value: '(^|[^A-Za-z0-9_])@verftbot(?=$|[^A-Za-z0-9_])'"
+                      ].join("\n")}
+                      style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}
+                    />
+                    <Checkbox
+                      checked={integrationImportReplace}
+                      onChange={(event) => setIntegrationImportReplace(event.target.checked)}
+                    >
+                      Replace existing rules before import
+                    </Checkbox>
+                    <Alert
+                      type="info"
+                      showIcon
+                      message="Secrets are not imported from YAML. Imported rules use the repository's existing inbound webhook secret."
+                    />
+                  </Flex>
+                </Modal>
 
                 <Modal
                   open={copyIntegrationOpen}
