@@ -5165,7 +5165,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   };
 
-  const renderRawRunEntry = (entryKey: string, run: TaskRun) => {
+  const renderRawRunEntry = (entryKey: string, run: TaskRun, isLastSummary = false) => {
     const normalizedRunSummary = getNormalizedRunSummary(run);
     const isCollapsibleSummaryRun = run.action === "build" || run.action === "ask";
     const summaryCollapseItems = normalizedRunSummary
@@ -5207,7 +5207,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             isCollapsibleSummaryRun ? (
               <Collapse
                 size="small"
-                defaultActiveKey={summaryCollapseItems.map((item) => item.key)}
+                defaultActiveKey={isLastSummary ? summaryCollapseItems.map((item) => item.key) : []}
                 items={summaryCollapseItems}
                 style={{ marginTop: 12 }}
               />
@@ -5224,7 +5224,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     );
   };
 
-  const renderGroupedAutoRunEntry = (entryKey: string, entry: Extract<(typeof chatTimeline)[number], { kind: "grouped_auto_run" }>) => {
+  const renderGroupedAutoRunEntry = (entryKey: string, entry: Extract<(typeof chatTimeline)[number], { kind: "grouped_auto_run" }>, isLastSummary = false) => {
     const normalizedRunSummary = getNormalizedRunSummary(entry.run);
     const summaryTitle = entry.run.action === "build" ? "Implementation Summary" : "Summary";
     const promptText = entry.promptText;
@@ -5268,10 +5268,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             </ReactMarkdown>
           </div>
           {renderRunErrorNotice(entry.run)}
-          {renderRunTimelineCollapse(entry.run)}
           <Collapse
             size="small"
-            defaultActiveKey={[`${entryKey}-summary`]}
+            defaultActiveKey={isLastSummary ? [`${entryKey}-summary`] : []}
             items={[
               {
                 key: `${entryKey}-summary`,
@@ -5420,6 +5419,19 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Flex>
     ) : null;
 
+  const lastSummaryEntryKey = (() => {
+    for (let i = visibleChatHistoryTimeline.length - 1; i >= 0; i--) {
+      const entry = visibleChatHistoryTimeline[i];
+      if (
+        (entry.kind === "grouped_auto_run" || entry.kind === "run") &&
+        getNormalizedRunSummary(entry.run)
+      ) {
+        return entry.key;
+      }
+    }
+    return null;
+  })();
+
   const chatTimelineBlock = historicalChatTimeline.length > 0 ? (
     <Flex vertical gap={12} style={{ width: "100%" }}>
       {visibleChatHistoryTimeline.map((entry) => {
@@ -5432,14 +5444,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }
 
         if (entry.kind === "grouped_auto_run") {
-          return renderGroupedAutoRunEntry(entry.key, entry);
+          return renderGroupedAutoRunEntry(entry.key, entry, entry.key === lastSummaryEntryKey);
         }
 
         if (entry.kind === "grouped_terminal_session") {
           return renderGroupedTerminalEntry(entry.key, entry);
         }
 
-        return renderRawRunEntry(entry.key, entry.run);
+        return renderRawRunEntry(entry.key, entry.run, entry.key === lastSummaryEntryKey);
       })}
     </Flex>
   ) : null;
