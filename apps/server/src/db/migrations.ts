@@ -776,5 +776,12 @@ Feedback:
       ALTER TABLE repositories
       ADD COLUMN IF NOT EXISTS inbound_webhook_secret text NULL;
     `
+  },
+  {
+    id: "20260721_01_inbound_webhook_signature_headers",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS inbound_webhook_signature_headers jsonb NOT NULL DEFAULT '["x-webhook-signature","x-hub-signature-256"]'::jsonb;
+    `
   }
 ];

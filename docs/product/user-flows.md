@@ -42,6 +42,7 @@ Notes:
 - GitHub Integration adds an `eyes` reaction to accepted issue comments, pull request conversation comments, and inline pull request review comments, but skips the hidden task-created comment that Verft posts after opening a task.
 - GitHub Integration supports separate editable agent templates for newly created GitHub tasks, feedback comments on linked tasks, and requested PR reviews. Templates can include markers such as `{{target_ref}}`, `{{title}}`, `{{title_line}}`, `{{author}}`, `{{requested_reviewer}}`, `{{url_line}}`, and `{{feedback_body}}`.
 - GitHub Integration supports an editable task-created comment template for the public GitHub reply posted after Verft creates a new task. The server appends the hidden duplicate-detection marker automatically.
+- Inbound Integration webhooks can keep the default `x-webhook-signature` / `x-hub-signature-256` HMAC-SHA256 headers or configure repository-specific signature header names for other vendors.
 
 ## Settings And Credentials Flow (Current)
 1. Open `/settings`.

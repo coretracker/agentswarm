@@ -84,6 +84,7 @@ type RepositoryFormValues = {
   slackTaskCreatedReplyTemplate: string;
   slackTaskOwnerUserId: string;
   inboundWebhookSecret: string;
+  inboundWebhookSignatureHeaders: string;
   clearInboundWebhookSecret: boolean;
   harnessWhatExists: string;
   harnessAllowedActions: string;
@@ -125,6 +126,7 @@ const emptyValues = (): RepositoryFormValues => ({
   slackTaskCreatedReplyTemplate: DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
   slackTaskOwnerUserId: "",
   inboundWebhookSecret: "",
+  inboundWebhookSignatureHeaders: "x-webhook-signature\nx-hub-signature-256",
   clearInboundWebhookSecret: false,
   harnessWhatExists: "",
   harnessAllowedActions: "",
@@ -211,6 +213,10 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
       : DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
   slackTaskOwnerUserId: typeof values?.slackTaskOwnerUserId === "string" ? values.slackTaskOwnerUserId : "",
   inboundWebhookSecret: typeof values?.inboundWebhookSecret === "string" ? values.inboundWebhookSecret : "",
+  inboundWebhookSignatureHeaders:
+    typeof values?.inboundWebhookSignatureHeaders === "string"
+      ? values.inboundWebhookSignatureHeaders
+      : "x-webhook-signature\nx-hub-signature-256",
   clearInboundWebhookSecret: values?.clearInboundWebhookSecret === true,
   harnessWhatExists: typeof values?.harnessWhatExists === "string" ? values.harnessWhatExists : "",
   harnessAllowedActions: typeof values?.harnessAllowedActions === "string" ? values.harnessAllowedActions : "",
@@ -285,6 +291,23 @@ const parseAllowedGitHubUsers = (value: string): string[] => {
   }
   return users;
 };
+
+const parseInboundWebhookSignatureHeaders = (value: string): string[] => {
+  const seen = new Set<string>();
+  const headers: string[] = [];
+  for (const entry of value.split(/[\n,]+/)) {
+    const normalized = entry.trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    headers.push(normalized);
+    seen.add(normalized);
+  }
+  return headers.length > 0 ? headers : ["x-webhook-signature", "x-hub-signature-256"];
+};
+
+const formatInboundWebhookSignatureHeaders = (headers?: string[] | null): string =>
+  (headers && headers.length > 0 ? headers : ["x-webhook-signature", "x-hub-signature-256"]).join("\n");
 
 const repositoryDefaultProviderOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: "Codex (OpenAI)", value: "codex" },
@@ -952,6 +975,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           slackTaskCreatedReplyTemplate: repository.slackTaskCreatedReplyTemplate ?? DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
           slackTaskOwnerUserId: repository.slackTaskOwnerUserId ?? "",
           inboundWebhookSecret: "",
+          inboundWebhookSignatureHeaders: formatInboundWebhookSignatureHeaders(repository.inboundWebhookSignatureHeaders),
           clearInboundWebhookSecret: false,
           harnessWhatExists: repository.harnessWhatExists ?? "",
           harnessAllowedActions: repository.harnessAllowedActions ?? "",
@@ -1413,6 +1437,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               ...(normalized.githubPrWebhookSecret.trim().length > 0 ? { githubPrWebhookSecret: normalized.githubPrWebhookSecret.trim() } : {}),
               ...(editingRepository && normalized.clearGithubPrWebhookSecret ? { clearGithubPrWebhookSecret: true } : {}),
               ...(normalized.inboundWebhookSecret.trim().length > 0 ? { inboundWebhookSecret: normalized.inboundWebhookSecret.trim() } : {}),
+              inboundWebhookSignatureHeaders: parseInboundWebhookSignatureHeaders(normalized.inboundWebhookSignatureHeaders),
               ...(editingRepository && normalized.clearInboundWebhookSecret ? { clearInboundWebhookSecret: true } : {}),
               githubIntegrationBotLogin: normalized.githubIntegrationBotLogin.trim().replace(/^@+/, "") || null,
               githubPrAllowedUsers: parseAllowedGitHubUsers(normalized.githubPrAllowedUsers),
@@ -2332,11 +2357,20 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     <Flex gap={8} wrap="wrap">
                       <Tag color="blue">POST</Tag>
                       <Tag>application/json</Tag>
-                      <Tag>X-Webhook-Signature</Tag>
-                      <Tag>X-Hub-Signature-256</Tag>
+                      {parseInboundWebhookSignatureHeaders(String(form.getFieldValue("inboundWebhookSignatureHeaders") ?? "")).map((header) => (
+                        <Tag key={header}>{header}</Tag>
+                      ))}
                       <Tag>{inboxEntries.length} recent deliveries</Tag>
                     </Flex>
                   </Flex>
+
+                  <Form.Item
+                    name="inboundWebhookSignatureHeaders"
+                    label="Signature Headers"
+                    extra="Header names to check when a signature secret is set. Values may be sha256=<digest>, a bare SHA256 digest, or a keyed digest such as v1=<digest>."
+                  >
+                    <Input.TextArea autoSize={{ minRows: 2, maxRows: 6 }} />
+                  </Form.Item>
 
                   <Form.Item
                     name="inboundWebhookSecret"
@@ -2345,7 +2379,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                         ? "Webhook Signature Secret (leave blank to keep existing)"
                         : "Webhook Signature Secret (optional)"
                     }
-                    extra="Optional. Use this only for webhook sources that support HMAC-SHA256 signatures. When set, matching requests must include X-Webhook-Signature or GitHub's X-Hub-Signature-256."
+                    extra="Optional. Use this only for webhook sources that support HMAC-SHA256 signatures. When set, matching requests must include one configured signature header."
                   >
                     <Input.Password />
                   </Form.Item>

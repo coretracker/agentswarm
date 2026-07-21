@@ -72,6 +72,27 @@ describe("RedisRepositoryStore MCP servers", () => {
     assert.equal(disabled.githubPrAutoArchiveOnMerge, false);
   });
 
+  it("persists normalized inbound webhook signature headers", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const created = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git",
+      inboundWebhookSignatureHeaders: ["X-Linear-Signature", "x-linear-signature", " X-Vendor-Signature "]
+    });
+
+    assert.deepEqual(created.inboundWebhookSignatureHeaders, ["x-linear-signature", "x-vendor-signature"]);
+
+    const updated = await store.updateRepository(created.id, {
+      inboundWebhookSignatureHeaders: []
+    });
+
+    assert.deepEqual(updated?.inboundWebhookSignatureHeaders, ["x-webhook-signature", "x-hub-signature-256"]);
+  });
+
   it("persists nullable repository default agent settings", async () => {
     const store = new RedisRepositoryStore(
       new FakeRedis() as never,

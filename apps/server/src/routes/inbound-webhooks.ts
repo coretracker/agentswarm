@@ -31,18 +31,48 @@ const readHeader = (value: string | string[] | undefined): string | null => {
   return null;
 };
 
+const extractSha256Digest = (signatureHeader: string | null): string | null => {
+  if (!signatureHeader) {
+    return null;
+  }
+
+  const trimmed = signatureHeader.trim();
+  if (/^[a-fA-F0-9]{64}$/.test(trimmed)) {
+    return trimmed.toLowerCase();
+  }
+
+  for (const part of trimmed.split(/[,\s]+/)) {
+    const [_key, value] = part.split("=", 2);
+    if (value && /^[a-fA-F0-9]{64}$/.test(value)) {
+      return value.toLowerCase();
+    }
+  }
+
+  return null;
+};
+
 const verifySignature = (rawBody: string, signatureHeader: string | null, secret: string): boolean => {
-  if (!signatureHeader?.startsWith("sha256=")) {
+  const digest = extractSha256Digest(signatureHeader);
+  if (!digest) {
     return false;
   }
-  const expected = `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
+  const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
   const expectedBuffer = Buffer.from(expected);
-  const actualBuffer = Buffer.from(signatureHeader);
+  const actualBuffer = Buffer.from(digest);
   return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
 };
 
-const readSignatureHeader = (request: FastifyRequest): string | null =>
-  readHeader(request.headers["x-webhook-signature"]) ?? readHeader(request.headers["x-hub-signature-256"]);
+const readSignatureHeader = (request: FastifyRequest, headerNames: string[] | undefined): string | null => {
+  const configuredHeaderNames =
+    Array.isArray(headerNames) && headerNames.length > 0 ? headerNames : ["x-webhook-signature", "x-hub-signature-256"];
+  for (const headerName of configuredHeaderNames) {
+    const headerValue = readHeader(request.headers[headerName.toLowerCase()]);
+    if (headerValue) {
+      return headerValue;
+    }
+  }
+  return null;
+};
 
 const flattenHeaders = (headers: Record<string, string | string[] | undefined>): Record<string, string> => {
   const result: Record<string, string> = {};
@@ -85,7 +115,7 @@ export const registerInboundWebhookRoutes = (
     const secret = await deps.repositoryStore.getRepositoryInboundWebhookSecret(repository.id);
     if (secret) {
       const rawBody = (request as RawBodyRequest).rawBody ?? "";
-      const signature = readSignatureHeader(request);
+      const signature = readSignatureHeader(request, repository.inboundWebhookSignatureHeaders);
       if (!verifySignature(rawBody, signature, secret)) {
         return reply.status(401).send({ message: "Invalid webhook signature." });
       }
