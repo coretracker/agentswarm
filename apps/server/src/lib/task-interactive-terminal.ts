@@ -39,7 +39,7 @@ import { buildDockerWorkspaceMountArgs } from "./docker-workspace-mounts.js";
 import { buildHostexecRuntimeConfig } from "./hostexec-runtime.js";
 import type { UserStore } from "../services/user-store.js";
 import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
-import { buildHostProviderStateMountArgs } from "./verft-base-mounts.js";
+import { buildStagedHostProviderStateMountArgs } from "./verft-base-mounts.js";
 import { resolveDockerSocketAccessPolicy, resolveDockerSocketRunArgs } from "./docker-socket-access.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/terminal$/;
@@ -475,7 +475,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       ...linkedWorkspaceMountPlan.mountArgs,
       ...gitRuntimeMounts,
       ...hostexecRuntime.mountArgs,
-      ...buildHostProviderStateMountArgs(),
+      ...buildStagedHostProviderStateMountArgs(),
       ...dockerSocketRunArgs,
       ...dockerEnv,
       runtime.image,

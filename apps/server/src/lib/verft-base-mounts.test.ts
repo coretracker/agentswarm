@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { buildHostProviderStateMountArgsForPaths, resolveHostProviderStatePaths } from "./verft-base-mounts.js";
+import {
+  buildHostProviderStateMountArgsForPaths,
+  buildStagedHostProviderStateMountArgsForPaths,
+  resolveHostProviderStatePaths
+} from "./verft-base-mounts.js";
 
 describe("resolveHostProviderStatePaths", () => {
   it("derives provider paths from the host root without filesystem checks", () => {
@@ -43,6 +47,24 @@ describe("buildHostProviderStateMountArgsForPaths", () => {
         "type=bind,src=/Users/dev/.claude,dst=/home/agent/.claude,readonly",
         "--mount",
         "type=bind,src=/Users/dev/.claude.json,dst=/home/agent/.claude.json,readonly"
+      ]
+    );
+  });
+
+  it("can stage host provider state outside the writable agent home", () => {
+    assert.deepEqual(
+      buildStagedHostProviderStateMountArgsForPaths({
+        codexPath: "/Users/dev/.codex",
+        claudePath: "/Users/dev/.claude",
+        claudeConfigPath: "/Users/dev/.claude.json"
+      }),
+      [
+        "--mount",
+        "type=bind,src=/Users/dev/.codex,dst=/verft-base/codex,readonly",
+        "--mount",
+        "type=bind,src=/Users/dev/.claude,dst=/verft-base/claude,readonly",
+        "--mount",
+        "type=bind,src=/Users/dev/.claude.json,dst=/verft-base/claude.json,readonly"
       ]
     );
   });

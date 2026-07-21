@@ -20,9 +20,10 @@ describe("buildTerminalStartScript", () => {
     assert.match(script, /\n\s+printf '%s\\n'/);
     assert.doesNotMatch(script, /then;\s/);
     assert.match(script, /Full toolbox shell available/);
-    assert.doesNotMatch(script, /VERFT_BASE_ROOT/);
-    assert.doesNotMatch(script, /mkdir -p "\$HOME\/\.codex" "\$HOME\/\.claude"/);
-    assert.match(script, /chown -R agent:agent "\$TASK_INTERACTIVE_WORKSPACE"/);
+    assert.match(script, /cp -a \/verft-base\/codex "\$HOME\/\.codex"/);
+    assert.match(script, /cp -a \/verft-base\/claude "\$HOME\/\.claude"/);
+    assert.match(script, /cp -a \/verft-base\/claude\.json "\$HOME\/\.claude\.json"/);
+    assert.match(script, /chown -R agent:agent "\$HOME" "\$TASK_INTERACTIVE_WORKSPACE"/);
     assert.match(script, /\$HOME\/\.claude\/mcp-config\.json/);
     assert.match(script, /\/tmp\/verft-bin\/claude/);
     assert.match(script, /chown -R agent:agent \/tmp\/verft-bin/);

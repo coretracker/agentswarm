@@ -2,7 +2,12 @@ export function buildTerminalStartScript(): string {
   return [
     'cd "$TASK_INTERACTIVE_WORKSPACE"',
     'printf "\\033[90mTerminal ready in %s. Full toolbox shell available.\\033[0m\\n" "$PWD"',
-    'chown -R agent:agent "$TASK_INTERACTIVE_WORKSPACE" 2>/dev/null || true',
+    [
+      'if [ -d /verft-base/codex ]; then cp -a /verft-base/codex "$HOME/.codex"; fi',
+      'if [ -d /verft-base/claude ]; then cp -a /verft-base/claude "$HOME/.claude"; fi',
+      'if [ -f /verft-base/claude.json ]; then cp -a /verft-base/claude.json "$HOME/.claude.json"; fi',
+      'chown -R agent:agent "$HOME" "$TASK_INTERACTIVE_WORKSPACE" 2>/dev/null || true'
+    ].join("\n"),
     [
       'if [ -n "${GIT_TOKEN:-}" ]; then',
       "  printf '%s\\n' '#!/bin/sh' 'case \"$1\" in' '  *sername*) echo \"${GIT_USERNAME:-x-access-token}\" ;;' '  *assword*) echo \"${GIT_TOKEN:-}\" ;;' '  *) echo \"\" ;;' 'esac' > \"$HOME/verft-git-askpass.sh\"",

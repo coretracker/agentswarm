@@ -3,6 +3,7 @@ import path from "node:path";
 import { env } from "../config/env.js";
 
 const AGENT_HOME = "/home/agent";
+export const VERFT_BASE_CONTAINER_ROOT = "/verft-base";
 
 function trimPath(value: string | undefined | null): string | null {
   const normalized = value?.trim();
@@ -40,13 +41,33 @@ export function buildHostProviderStateMountArgsForPaths(input: {
   ];
 }
 
+export function buildStagedHostProviderStateMountArgsForPaths(input: {
+  codexPath: string | null;
+  claudePath: string | null;
+  claudeConfigPath: string | null;
+}): string[] {
+  return [
+    ...(input.codexPath ? mountReadOnly(input.codexPath, path.join(VERFT_BASE_CONTAINER_ROOT, "codex")) : []),
+    ...(input.claudePath ? mountReadOnly(input.claudePath, path.join(VERFT_BASE_CONTAINER_ROOT, "claude")) : []),
+    ...(input.claudeConfigPath
+      ? mountReadOnly(input.claudeConfigPath, path.join(VERFT_BASE_CONTAINER_ROOT, "claude.json"))
+      : [])
+  ];
+}
+
+function resolveConfiguredHostProviderStatePaths(): ReturnType<typeof resolveHostProviderStatePaths> {
+  return resolveHostProviderStatePaths({
+    hostRoot: env.VERFT_AI_STATE_HOST_ROOT,
+    codexHostPath: env.VERFT_CODEX_STATE_HOST_PATH,
+    claudeHostPath: env.VERFT_CLAUDE_STATE_HOST_PATH,
+    claudeConfigHostPath: env.VERFT_CLAUDE_CONFIG_HOST_PATH
+  });
+}
+
 export function buildHostProviderStateMountArgs(): string[] {
-  return buildHostProviderStateMountArgsForPaths(
-    resolveHostProviderStatePaths({
-      hostRoot: env.VERFT_AI_STATE_HOST_ROOT,
-      codexHostPath: env.VERFT_CODEX_STATE_HOST_PATH,
-      claudeHostPath: env.VERFT_CLAUDE_STATE_HOST_PATH,
-      claudeConfigHostPath: env.VERFT_CLAUDE_CONFIG_HOST_PATH
-    })
-  );
+  return buildHostProviderStateMountArgsForPaths(resolveConfiguredHostProviderStatePaths());
+}
+
+export function buildStagedHostProviderStateMountArgs(): string[] {
+  return buildStagedHostProviderStateMountArgsForPaths(resolveConfiguredHostProviderStatePaths());
 }
