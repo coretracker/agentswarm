@@ -42,6 +42,11 @@ const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
 const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
 const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
 const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
+const DEFAULT_GITHUB_PR_REQUIRE_BOT_MENTION = true;
+export const DEFAULT_INBOUND_WEBHOOK_SIGNATURE_HEADERS = ["x-webhook-signature", "x-hub-signature-256"] as const;
+const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const INBOUND_WEBHOOK_SIGNATURE_HEADER_MAX_COUNT = 10;
+const INBOUND_WEBHOOK_SIGNATURE_HEADER_MAX_LENGTH = 128;
 
 const nowIso = (): string => new Date().toISOString();
 
@@ -105,6 +110,31 @@ const normalizeUserId = (value: string | null | undefined): string | null => {
   return normalized.length > 0 ? normalized : null;
 };
 
+export const normalizeInboundWebhookSignatureHeaders = (value: unknown): string[] => {
+  if (!Array.isArray(value)) {
+    return [...DEFAULT_INBOUND_WEBHOOK_SIGNATURE_HEADERS];
+  }
+
+  const headers: string[] = [];
+  const seen = new Set<string>();
+  for (const rawHeader of value) {
+    const header = typeof rawHeader === "string" ? rawHeader.trim().toLowerCase() : "";
+    if (!header || seen.has(header)) {
+      continue;
+    }
+    if (header.length > INBOUND_WEBHOOK_SIGNATURE_HEADER_MAX_LENGTH || !HTTP_HEADER_NAME_PATTERN.test(header)) {
+      throw new HttpError(400, `Invalid inbound webhook signature header: ${rawHeader}`);
+    }
+    headers.push(header);
+    seen.add(header);
+    if (headers.length >= INBOUND_WEBHOOK_SIGNATURE_HEADER_MAX_COUNT) {
+      break;
+    }
+  }
+
+  return headers.length > 0 ? headers : [...DEFAULT_INBOUND_WEBHOOK_SIGNATURE_HEADERS];
+};
+
 export type RepositoryRuntimeEnvEntry =
   | {
       key: string;
@@ -136,16 +166,18 @@ type StoredRepositoryEnvValue = StoredRepositoryEnvTextValue | StoredRepositoryE
 
 type StoredRepository = Omit<
   Repository,
-  "webhookSecretConfigured" | "githubPrWebhookSecretConfigured" | "envVars" | "envSecrets"
+  "webhookSecretConfigured" | "githubPrWebhookSecretConfigured" | "inboundWebhookSecretConfigured" | "envVars" | "envSecrets"
 > & {
   envVars: StoredRepositoryEnvValue[];
   envSecrets: StoredRepositoryEnvValue[];
   webhookSecret: string | null;
   githubPrWebhookSecret: string | null;
+  inboundWebhookSecret: string | null;
   slackSigningSecret: string | null;
   slackBotToken: string | null;
   webhookSecretConfigured?: boolean;
   githubPrWebhookSecretConfigured?: boolean;
+  inboundWebhookSecretConfigured?: boolean;
 } & Record<string, unknown>;
 
 const normalizeRepositoryEnvFileName = (value: unknown): string | null => {
@@ -602,6 +634,7 @@ export interface RepositoryStore {
   updateRepository(repositoryId: string, input: UpdateRepositoryInput): Promise<Repository | null>;
   getRepositoryWebhookTarget(repositoryId: string): Promise<RepositoryWebhookTarget | null>;
   getRepositoryGitHubPrWebhookSecret(repositoryId: string): Promise<string | null>;
+  getRepositoryInboundWebhookSecret(repositoryId: string): Promise<string | null>;
   recordWebhookDeliveryResult(
     repositoryId: string,
     input: { status: "success" | "failed"; attemptedAt: string; errorMessage?: string | null }
@@ -711,6 +744,8 @@ export class RedisRepositoryStore implements RepositoryStore {
   private normalizeStoredRepository(repository: StoredRepository): StoredRepository {
     const webhookSecret = this.normalizeWebhookSecret(repository.webhookSecret);
     const githubPrWebhookSecret = this.normalizeWebhookSecret(repository.githubPrWebhookSecret);
+    const inboundWebhookSecret = this.normalizeWebhookSecret(repository.inboundWebhookSecret);
+    const inboundWebhookSignatureHeaders = normalizeInboundWebhookSignatureHeaders(repository.inboundWebhookSignatureHeaders);
     const githubIntegrationBotLogin = normalizeGitHubLogin(repository.githubIntegrationBotLogin);
     const githubPrAllowedUsers = normalizeGitHubAllowedUsers(repository.githubPrAllowedUsers);
     const githubPrInitialInstructions = normalizeGitHubInstructions(
@@ -779,6 +814,8 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookEnabled,
       webhookSecret,
       githubPrWebhookSecret,
+      inboundWebhookSecret,
+      inboundWebhookSignatureHeaders,
       githubIntegrationBotLogin,
       githubPrAllowedUsers,
       githubPrInitialInstructions,
@@ -826,6 +863,8 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookEnabled: normalized.webhookEnabled,
       webhookSecretConfigured: Boolean(normalized.webhookSecret),
       githubPrWebhookSecretConfigured: Boolean(normalized.githubPrWebhookSecret),
+      inboundWebhookSecretConfigured: Boolean(normalized.inboundWebhookSecret),
+      inboundWebhookSignatureHeaders: normalized.inboundWebhookSignatureHeaders,
       githubIntegrationBotLogin: normalized.githubIntegrationBotLogin ?? null,
       githubPrAllowedUsers: normalized.githubPrAllowedUsers,
       githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
@@ -868,6 +907,8 @@ export class RedisRepositoryStore implements RepositoryStore {
     const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
     const githubPrWebhookSecret = this.normalizeWebhookSecret(input.githubPrWebhookSecret);
+    const inboundWebhookSecret = this.normalizeWebhookSecret(input.inboundWebhookSecret);
+    const inboundWebhookSignatureHeaders = normalizeInboundWebhookSignatureHeaders(input.inboundWebhookSignatureHeaders);
     const githubIntegrationBotLogin = normalizeGitHubLogin(input.githubIntegrationBotLogin);
     const githubPrAllowedUsers = normalizeGitHubAllowedUsers(input.githubPrAllowedUsers);
     const githubPrInitialInstructions = normalizeGitHubInstructions(
@@ -927,9 +968,11 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookEnabled,
       webhookSecret,
       githubPrWebhookSecret,
+      inboundWebhookSecret,
+      inboundWebhookSignatureHeaders,
       githubIntegrationBotLogin,
       githubPrAllowedUsers,
-      githubPrRequireBotMention: input.githubPrRequireBotMention === true,
+      githubPrRequireBotMention: input.githubPrRequireBotMention ?? DEFAULT_GITHUB_PR_REQUIRE_BOT_MENTION,
       githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge !== false,
       githubPrInitialInstructions,
       githubPrFeedbackInstructions,
@@ -1044,6 +1087,16 @@ export class RedisRepositoryStore implements RepositoryStore {
         : input.githubPrWebhookSecret !== undefined
           ? this.normalizeWebhookSecret(input.githubPrWebhookSecret)
           : current.githubPrWebhookSecret;
+    const nextInboundWebhookSecret =
+      input.clearInboundWebhookSecret === true
+        ? null
+        : input.inboundWebhookSecret !== undefined
+          ? this.normalizeWebhookSecret(input.inboundWebhookSecret)
+          : current.inboundWebhookSecret;
+    const nextInboundWebhookSignatureHeaders =
+      input.inboundWebhookSignatureHeaders !== undefined
+        ? normalizeInboundWebhookSignatureHeaders(input.inboundWebhookSignatureHeaders)
+        : normalizeInboundWebhookSignatureHeaders(current.inboundWebhookSignatureHeaders);
     const nextGithubIntegrationBotLogin =
       input.githubIntegrationBotLogin !== undefined
         ? normalizeGitHubLogin(input.githubIntegrationBotLogin)
@@ -1161,6 +1214,8 @@ export class RedisRepositoryStore implements RepositoryStore {
       webhookEnabled: nextWebhookEnabled,
       webhookSecret: nextWebhookSecret,
       githubPrWebhookSecret: nextGithubPrWebhookSecret,
+      inboundWebhookSecret: nextInboundWebhookSecret,
+      inboundWebhookSignatureHeaders: nextInboundWebhookSignatureHeaders,
       githubIntegrationBotLogin: nextGithubIntegrationBotLogin,
       githubPrAllowedUsers: nextGithubPrAllowedUsers,
       githubPrRequireBotMention: nextGithubPrRequireBotMention,
@@ -1221,6 +1276,11 @@ export class RedisRepositoryStore implements RepositoryStore {
   async getRepositoryGitHubPrWebhookSecret(repositoryId: string): Promise<string | null> {
     const stored = await this.getStoredRepository(repositoryId);
     return stored?.githubPrWebhookSecret ?? null;
+  }
+
+  async getRepositoryInboundWebhookSecret(repositoryId: string): Promise<string | null> {
+    const stored = await this.getStoredRepository(repositoryId);
+    return stored?.inboundWebhookSecret ?? null;
   }
 
   async recordWebhookDeliveryResult(
@@ -1320,6 +1380,9 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookSecretConfigured: typeof row.webhook_secret === "string" && row.webhook_secret.trim().length > 0,
       githubPrWebhookSecretConfigured:
         typeof row.github_pr_webhook_secret === "string" && row.github_pr_webhook_secret.trim().length > 0,
+      inboundWebhookSecretConfigured:
+        typeof row.inbound_webhook_secret === "string" && row.inbound_webhook_secret.trim().length > 0,
+      inboundWebhookSignatureHeaders: normalizeInboundWebhookSignatureHeaders(row.inbound_webhook_signature_headers),
       githubIntegrationBotLogin:
         typeof row.github_integration_bot_login === "string" && row.github_integration_bot_login.trim().length > 0
           ? row.github_integration_bot_login.trim()
@@ -1410,6 +1473,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
     const webhookUrl = this.normalizeWebhookUrl(input.webhookUrl);
     const webhookSecret = this.normalizeWebhookSecret(input.webhookSecret);
     const githubPrWebhookSecret = this.normalizeWebhookSecret(input.githubPrWebhookSecret);
+    const inboundWebhookSecret = this.normalizeWebhookSecret(input.inboundWebhookSecret);
+    const inboundWebhookSignatureHeaders = normalizeInboundWebhookSignatureHeaders(input.inboundWebhookSignatureHeaders);
     const githubIntegrationBotLogin = normalizeGitHubLogin(input.githubIntegrationBotLogin);
     const githubPrAllowedUsers = normalizeGitHubAllowedUsers(input.githubPrAllowedUsers);
     const githubPrInitialInstructions = normalizeGitHubInstructions(
@@ -1469,9 +1534,11 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookEnabled,
       webhookSecretConfigured: Boolean(webhookSecret),
       githubPrWebhookSecretConfigured: Boolean(githubPrWebhookSecret),
+      inboundWebhookSecretConfigured: Boolean(inboundWebhookSecret),
+      inboundWebhookSignatureHeaders,
       githubIntegrationBotLogin,
       githubPrAllowedUsers,
-      githubPrRequireBotMention: input.githubPrRequireBotMention === true,
+      githubPrRequireBotMention: input.githubPrRequireBotMention ?? DEFAULT_GITHUB_PR_REQUIRE_BOT_MENTION,
       githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge !== false,
       githubPrInitialInstructions,
       githubPrFeedbackInstructions,
@@ -1518,6 +1585,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
             webhook_enabled,
             webhook_secret,
             github_pr_webhook_secret,
+            inbound_webhook_secret,
+            inbound_webhook_signature_headers,
             github_integration_bot_login,
             github_pr_allowed_users,
             github_pr_require_bot_mention,
@@ -1546,7 +1615,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
             created_at,
             updated_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16, $17::jsonb, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb, $10::jsonb, $11::jsonb, $12, $13, $14, $15, $16, $17::jsonb, $18, $19::jsonb, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44)
         `,
         [
           repository.id,
@@ -1564,6 +1633,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
           repository.webhookEnabled,
           webhookSecret,
           githubPrWebhookSecret,
+          inboundWebhookSecret,
+          JSON.stringify(repository.inboundWebhookSignatureHeaders),
           repository.githubIntegrationBotLogin,
           JSON.stringify(repository.githubPrAllowedUsers),
           repository.githubPrRequireBotMention,
@@ -1653,6 +1724,10 @@ export class PostgresRepositoryStore implements RepositoryStore {
       typeof currentRow.github_pr_webhook_secret === "string" && currentRow.github_pr_webhook_secret.trim().length > 0
         ? currentRow.github_pr_webhook_secret.trim()
         : null;
+    const currentInboundWebhookSecret =
+      typeof currentRow.inbound_webhook_secret === "string" && currentRow.inbound_webhook_secret.trim().length > 0
+        ? currentRow.inbound_webhook_secret.trim()
+        : null;
     const currentSlackSigningSecret =
       typeof currentRow.slack_signing_secret === "string" && currentRow.slack_signing_secret.trim().length > 0
         ? currentRow.slack_signing_secret.trim()
@@ -1675,6 +1750,16 @@ export class PostgresRepositoryStore implements RepositoryStore {
         : input.githubPrWebhookSecret !== undefined
           ? this.normalizeWebhookSecret(input.githubPrWebhookSecret)
           : currentGithubPrWebhookSecret;
+    const nextInboundWebhookSecret =
+      input.clearInboundWebhookSecret === true
+        ? null
+        : input.inboundWebhookSecret !== undefined
+          ? this.normalizeWebhookSecret(input.inboundWebhookSecret)
+          : currentInboundWebhookSecret;
+    const nextInboundWebhookSignatureHeaders =
+      input.inboundWebhookSignatureHeaders !== undefined
+        ? normalizeInboundWebhookSignatureHeaders(input.inboundWebhookSignatureHeaders)
+        : normalizeInboundWebhookSignatureHeaders(current.inboundWebhookSignatureHeaders);
     const nextGithubIntegrationBotLogin =
       input.githubIntegrationBotLogin !== undefined
         ? normalizeGitHubLogin(input.githubIntegrationBotLogin)
@@ -1792,6 +1877,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
       webhookEnabled: nextWebhookEnabled,
       webhookSecretConfigured: Boolean(nextWebhookSecret),
       githubPrWebhookSecretConfigured: Boolean(nextGithubPrWebhookSecret),
+      inboundWebhookSecretConfigured: Boolean(nextInboundWebhookSecret),
+      inboundWebhookSignatureHeaders: nextInboundWebhookSignatureHeaders,
       githubIntegrationBotLogin: nextGithubIntegrationBotLogin,
       githubPrAllowedUsers: nextGithubPrAllowedUsers,
       githubPrRequireBotMention: nextGithubPrRequireBotMention,
@@ -1837,33 +1924,35 @@ export class PostgresRepositoryStore implements RepositoryStore {
             webhook_enabled = $13,
             webhook_secret = $14,
             github_pr_webhook_secret = $15,
-            github_integration_bot_login = $16,
-            github_pr_allowed_users = $17::jsonb,
-            github_pr_require_bot_mention = $18,
-            github_pr_auto_archive_on_merge = $19,
-            github_pr_initial_instructions = $20,
-            github_pr_feedback_instructions = $21,
-            github_pr_review_instructions = $22,
-            github_pr_task_created_comment_template = $23,
-            github_pr_task_owner_user_id = $24,
-            slack_signing_secret = $25,
-            slack_bot_token = $26,
-            slack_channel_id = $27,
-            slack_initial_instructions = $28,
-            slack_feedback_instructions = $29,
-            slack_task_created_reply_template = $30,
-            slack_task_owner_user_id = $31,
-            harness_what_exists = $32,
-            harness_allowed_actions = $33,
-            harness_not_allowed_actions = $34,
-            harness_how_to_work = $35,
-            harness_definition_of_done = $36,
-            harness_evidence_expectations = $37,
-            webhook_last_attempt_at = $38,
-            webhook_last_status = $39,
-            webhook_last_error = $40,
-            created_at = $41,
-            updated_at = $42
+            inbound_webhook_secret = $16,
+            inbound_webhook_signature_headers = $17::jsonb,
+            github_integration_bot_login = $18,
+            github_pr_allowed_users = $19::jsonb,
+            github_pr_require_bot_mention = $20,
+            github_pr_auto_archive_on_merge = $21,
+            github_pr_initial_instructions = $22,
+            github_pr_feedback_instructions = $23,
+            github_pr_review_instructions = $24,
+            github_pr_task_created_comment_template = $25,
+            github_pr_task_owner_user_id = $26,
+            slack_signing_secret = $27,
+            slack_bot_token = $28,
+            slack_channel_id = $29,
+            slack_initial_instructions = $30,
+            slack_feedback_instructions = $31,
+            slack_task_created_reply_template = $32,
+            slack_task_owner_user_id = $33,
+            harness_what_exists = $34,
+            harness_allowed_actions = $35,
+            harness_not_allowed_actions = $36,
+            harness_how_to_work = $37,
+            harness_definition_of_done = $38,
+            harness_evidence_expectations = $39,
+            webhook_last_attempt_at = $40,
+            webhook_last_status = $41,
+            webhook_last_error = $42,
+            created_at = $43,
+            updated_at = $44
           WHERE id = $1
         `,
         [
@@ -1882,6 +1971,8 @@ export class PostgresRepositoryStore implements RepositoryStore {
           next.webhookEnabled,
           nextWebhookSecret,
           nextGithubPrWebhookSecret,
+          nextInboundWebhookSecret,
+          JSON.stringify(next.inboundWebhookSignatureHeaders),
           next.githubIntegrationBotLogin,
           JSON.stringify(next.githubPrAllowedUsers),
           next.githubPrRequireBotMention,
@@ -1949,6 +2040,16 @@ export class PostgresRepositoryStore implements RepositoryStore {
     }
     return typeof row.github_pr_webhook_secret === "string" && row.github_pr_webhook_secret.trim().length > 0
       ? row.github_pr_webhook_secret.trim()
+      : null;
+  }
+
+  async getRepositoryInboundWebhookSecret(repositoryId: string): Promise<string | null> {
+    const row = await this.getStoredRepositoryRow(repositoryId);
+    if (!row) {
+      return null;
+    }
+    return typeof row.inbound_webhook_secret === "string" && row.inbound_webhook_secret.trim().length > 0
+      ? row.inbound_webhook_secret.trim()
       : null;
   }
 

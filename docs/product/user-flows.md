@@ -32,6 +32,7 @@ Notes:
 - Repository default agent provider/model/effort values are fallback values. Task payload values win first, then matching user profile defaults, then repository defaults, then system settings.
 - Installations that previously used global MCP server settings must recreate the intended MCP servers on each repository that should expose them.
 - GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
+- New repositories default GitHub comment processing to require a configured bot mention; repository settings can disable that filter.
 - GitHub Integration archives linked tasks by default when a GitHub pull request webhook reports the PR as merged; repositories can disable this in GitHub settings.
 - Archived tasks are automatically deleted after the configured retention window; the setting defaults to 7 days and can be disabled.
 - GitHub Integration creates or queues build-mode tasks when a `pull_request.review_requested` webhook targets the configured integration bot.
@@ -41,6 +42,7 @@ Notes:
 - GitHub Integration adds an `eyes` reaction to accepted issue comments, pull request conversation comments, and inline pull request review comments, but skips the hidden task-created comment that Verft posts after opening a task.
 - GitHub Integration supports separate editable agent templates for newly created GitHub tasks, feedback comments on linked tasks, and requested PR reviews. Templates can include markers such as `{{target_ref}}`, `{{title}}`, `{{title_line}}`, `{{author}}`, `{{requested_reviewer}}`, `{{url_line}}`, and `{{feedback_body}}`.
 - GitHub Integration supports an editable task-created comment template for the public GitHub reply posted after Verft creates a new task. The server appends the hidden duplicate-detection marker automatically.
+- Inbound Integration webhooks can keep the default `x-webhook-signature` / `x-hub-signature-256` HMAC-SHA256 headers or configure repository-specific signature header names for other vendors.
 
 ## Settings And Credentials Flow (Current)
 1. Open `/settings`.

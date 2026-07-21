@@ -20,13 +20,15 @@ export interface TaskHistoryGroupedAutoRunCardProps {
   entryKey: string;
   entry: GroupedAutoRunHistoryEntry;
   cardStyle?: CSSProperties;
+  initialSection?: HistoryDetailSection | null;
   showCheckpointState: boolean;
   showRunCancel: boolean;
   cancelLoading: boolean;
   onCancel?: () => void;
   renderMarkdown: (markdown: string) => ReactNode;
   renderRunErrorNotice: (run: TaskRun) => ReactNode;
-  renderRunTimelineCollapse: (run: TaskRun) => ReactNode;
+  renderRunTimelineContent: (run: TaskRun) => ReactNode;
+  onTimelineOpen?: (run: TaskRun) => void;
   onCopySummary: (markdown: string) => void;
   renderCheckpointDiffContent: (proposal: TaskChangeProposal) => ReactNode;
   getCheckpointDiffActions?: (proposal: TaskChangeProposal) => TaskHistoryCheckpointDiffActions;
@@ -54,19 +56,21 @@ export function TaskHistoryGroupedAutoRunCard({
   entryKey,
   entry,
   cardStyle,
+  initialSection = null,
   showCheckpointState,
   showRunCancel,
   cancelLoading,
   onCancel,
   renderMarkdown,
   renderRunErrorNotice,
-  renderRunTimelineCollapse,
+  renderRunTimelineContent,
+  onTimelineOpen,
   onCopySummary,
   renderCheckpointDiffContent,
   getCheckpointDiffActions
 }: TaskHistoryGroupedAutoRunCardProps) {
   const { token } = antTheme.useToken();
-  const [activeSection, setActiveSection] = useState<HistoryDetailSection | null>(null);
+  const [activeSection, setActiveSection] = useState<HistoryDetailSection | null>(initialSection);
   const [summaryHovered, setSummaryHovered] = useState(false);
   const normalizedRunSummary = getNormalizedRunSummary(entry.run);
   const summaryTitle = entry.run.action === "build" ? "Implementation Summary" : "Summary";
@@ -95,6 +99,9 @@ export function TaskHistoryGroupedAutoRunCard({
     fontSize: 13
   });
   const toggleSection = (section: HistoryDetailSection) => {
+    if (section === "timeline" && activeSection !== "timeline") {
+      onTimelineOpen?.(entry.run);
+    }
     setActiveSection((current) => (current === section ? null : section));
   };
   const renderDiffAction = (action: TaskHistoryCheckpointDiffAction) => (
@@ -227,7 +234,7 @@ export function TaskHistoryGroupedAutoRunCard({
         {/* Expanded section content */}
         {activeSection ? (
           <div style={{ padding: 20, background: token.colorFillQuaternary }}>
-            {activeSection === "timeline" ? renderRunTimelineCollapse(entry.run) : null}
+            {activeSection === "timeline" ? renderRunTimelineContent(entry.run) : null}
             {activeSection === "summary" ? (
               normalizedRunSummary ? (
                 <div

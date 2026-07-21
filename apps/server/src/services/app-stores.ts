@@ -1,4 +1,5 @@
 import type { CredentialStore } from "./credential-store.js";
+import type { IntegrationRuleStore } from "./integration-rule-store.js";
 import type { RepositoryStore } from "./repository-store.js";
 import type { RoleStore } from "./role-store.js";
 import type { SessionStore } from "./session-store.js";
@@ -7,6 +8,7 @@ import type { TaskQueueStore } from "./task-queue-store.js";
 import type { TaskStore } from "./task-store.js";
 import type { UserStore } from "./user-store.js";
 import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
+import type { WebhookInboxStore } from "./webhook-inbox-store.js";
 import type { PersonalAccessTokenStore } from "./personal-access-token-store.js";
 
 export interface AppStores {
@@ -20,4 +22,6 @@ export interface AppStores {
   personalAccessTokenStore: PersonalAccessTokenStore;
   sessionStore: SessionStore;
   settingsStore: SettingsStore;
+  integrationRuleStore: IntegrationRuleStore;
+  webhookInboxStore: WebhookInboxStore;
 }

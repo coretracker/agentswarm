@@ -229,7 +229,7 @@ function TaskHistoryList() {
             </ReactMarkdown>
           )}
           renderRunErrorNotice={() => null}
-          renderRunTimelineCollapse={() => (
+          renderRunTimelineContent={() => (
             <Flex vertical gap={12}>
               <Flex justify="space-between" align="center">
                 <Typography.Text type="secondary" style={{ fontSize: 13 }}>{item.timelineLabel}</Typography.Text>

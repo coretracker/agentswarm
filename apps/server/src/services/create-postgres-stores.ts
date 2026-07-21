@@ -3,6 +3,7 @@ import type { EventBus } from "../lib/events.js";
 import type { RedisClients } from "../lib/redis.js";
 import type { AppStores } from "./app-stores.js";
 import { PostgresCredentialStore } from "./credential-store.js";
+import { PostgresIntegrationRuleStore } from "./integration-rule-store.js";
 import { PostgresRepositoryStore } from "./repository-store.js";
 import { PostgresRoleStore } from "./role-store.js";
 import { RedisSessionStore } from "./session-store.js";
@@ -11,6 +12,7 @@ import { RedisTaskQueueStore } from "./task-queue-store.js";
 import { PostgresTaskStore } from "./task-store.js";
 import { PostgresUserStore } from "./user-store.js";
 import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
+import { PostgresWebhookInboxStore } from "./webhook-inbox-store.js";
 import { PostgresPersonalAccessTokenStore } from "./personal-access-token-store.js";
 
 export const createPostgresStores = (
@@ -29,6 +31,8 @@ export const createPostgresStores = (
   const personalAccessTokenStore = new PostgresPersonalAccessTokenStore(pool, userStore);
   const sessionStore = new RedisSessionStore(redisClients.command, sessionTtlDays);
   const settingsStore = new PostgresSettingsStore(pool, eventBus, credentialStore);
+  const integrationRuleStore = new PostgresIntegrationRuleStore(pool);
+  const webhookInboxStore = new PostgresWebhookInboxStore(pool);
 
   return {
     taskStore,
@@ -40,6 +44,8 @@ export const createPostgresStores = (
     userStore,
     personalAccessTokenStore,
     sessionStore,
-    settingsStore
+    settingsStore,
+    integrationRuleStore,
+    webhookInboxStore
   };
 };

@@ -486,6 +486,94 @@ export interface RepositoryEnvSecretInputFile {
 }
 
 export type RepositoryEnvSecretInput = RepositoryEnvSecretInputText | RepositoryEnvSecretInputFile;
+
+// --- Integration Rules ---
+
+export type IntegrationRuleFilterSource = "header" | "body";
+export type IntegrationRuleFilterOp = "equals" | "contains" | "exists" | "regex";
+
+export interface IntegrationRuleFilterCondition {
+  source: IntegrationRuleFilterSource;
+  field: string;
+  op: IntegrationRuleFilterOp;
+  value?: string;
+}
+
+export interface IntegrationRuleFilter {
+  conditions: IntegrationRuleFilterCondition[];
+}
+
+export interface IntegrationRuleMapping {
+  title?: string;
+  instructions?: string;
+  branch?: string;
+}
+
+export interface IntegrationRuleExecution {
+  provider?: AgentProvider;
+  model?: string;
+  providerProfile?: ProviderProfile;
+}
+
+export interface IntegrationRule {
+  id: string;
+  repositoryId: string;
+  name: string;
+  enabled: boolean;
+  filter: IntegrationRuleFilter;
+  mapping: IntegrationRuleMapping;
+  execution: IntegrationRuleExecution | null;
+  correlationField: string | null;
+  taskOwnerUserId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateIntegrationRuleInput {
+  name: string;
+  enabled?: boolean;
+  filter: IntegrationRuleFilter;
+  mapping: IntegrationRuleMapping;
+  execution?: IntegrationRuleExecution | null;
+  correlationField?: string | null;
+  taskOwnerUserId?: string | null;
+}
+
+export interface UpdateIntegrationRuleInput {
+  name?: string;
+  enabled?: boolean;
+  filter?: IntegrationRuleFilter;
+  mapping?: IntegrationRuleMapping;
+  execution?: IntegrationRuleExecution | null;
+  correlationField?: string | null;
+  taskOwnerUserId?: string | null;
+}
+
+export interface CopyIntegrationSetupInput {
+  sourceRepositoryId: string;
+  copyRules?: boolean;
+  replaceRules?: boolean;
+  copyInboundWebhookSecret?: boolean;
+}
+
+export interface CopyIntegrationSetupResult {
+  rulesCopied: number;
+  rulesDeleted: number;
+  inboundWebhookSecretCopied: boolean;
+  inboundWebhookSecretCleared: boolean;
+}
+
+export interface WebhookInboxEntry {
+  id: string;
+  repositoryId: string;
+  headers: Record<string, string>;
+  body: unknown;
+  sourceIp: string | null;
+  matchedRuleId: string | null;
+  taskId: string | null;
+  receivedAt: string;
+}
+
 export interface Repository {
   id: string;
   name: string;
@@ -502,6 +590,8 @@ export interface Repository {
   webhookEnabled: boolean;
   webhookSecretConfigured: boolean;
   githubPrWebhookSecretConfigured?: boolean;
+  inboundWebhookSecretConfigured?: boolean;
+  inboundWebhookSignatureHeaders?: string[];
   githubIntegrationBotLogin?: string | null;
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
@@ -737,7 +827,7 @@ export interface TaskMessage {
   content: string;
   action: TaskMessageAction | null;
   queueState?: "pending" | null;
-  queueSource?: "user" | "github_pr" | "github_issue" | "slack_thread" | null;
+  queueSource?: "user" | "github_pr" | "github_issue" | "slack_thread" | "webhook" | null;
   externalId?: string | null;
   /** Optional saved image attachments that were attached when the user submitted this message. */
   attachments?: TaskPromptAttachment[];
@@ -979,6 +1069,8 @@ export interface CreateRepositoryInput {
   webhookEnabled?: boolean;
   webhookSecret?: string;
   githubPrWebhookSecret?: string;
+  inboundWebhookSecret?: string;
+  inboundWebhookSignatureHeaders?: string[];
   githubIntegrationBotLogin?: string | null;
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
@@ -1018,6 +1110,9 @@ export interface UpdateRepositoryInput {
   clearWebhookSecret?: boolean;
   githubPrWebhookSecret?: string;
   clearGithubPrWebhookSecret?: boolean;
+  inboundWebhookSecret?: string;
+  clearInboundWebhookSecret?: boolean;
+  inboundWebhookSignatureHeaders?: string[];
   githubIntegrationBotLogin?: string | null;
   githubPrAllowedUsers?: string[];
   githubPrRequireBotMention?: boolean;
