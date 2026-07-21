@@ -42,6 +42,7 @@ const REPOSITORY_ENV_SECRET_KEY_PATTERN = REPOSITORY_ENV_VAR_KEY_PATTERN;
 const REPOSITORY_ENV_SECRET_MAX_COUNT = REPOSITORY_ENV_VAR_MAX_COUNT;
 const REPOSITORY_ENV_SECRET_KEY_MAX_LENGTH = REPOSITORY_ENV_VAR_KEY_MAX_LENGTH;
 const REPOSITORY_ENV_SECRET_VALUE_MAX_LENGTH = REPOSITORY_ENV_VAR_VALUE_MAX_LENGTH;
+const DEFAULT_GITHUB_PR_REQUIRE_BOT_MENTION = true;
 
 const nowIso = (): string => new Date().toISOString();
 
@@ -937,7 +938,7 @@ export class RedisRepositoryStore implements RepositoryStore {
       inboundWebhookSecret,
       githubIntegrationBotLogin,
       githubPrAllowedUsers,
-      githubPrRequireBotMention: input.githubPrRequireBotMention === true,
+      githubPrRequireBotMention: input.githubPrRequireBotMention ?? DEFAULT_GITHUB_PR_REQUIRE_BOT_MENTION,
       githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge !== false,
       githubPrInitialInstructions,
       githubPrFeedbackInstructions,
@@ -1495,7 +1496,7 @@ export class PostgresRepositoryStore implements RepositoryStore {
       inboundWebhookSecretConfigured: Boolean(inboundWebhookSecret),
       githubIntegrationBotLogin,
       githubPrAllowedUsers,
-      githubPrRequireBotMention: input.githubPrRequireBotMention === true,
+      githubPrRequireBotMention: input.githubPrRequireBotMention ?? DEFAULT_GITHUB_PR_REQUIRE_BOT_MENTION,
       githubPrAutoArchiveOnMerge: input.githubPrAutoArchiveOnMerge !== false,
       githubPrInitialInstructions,
       githubPrFeedbackInstructions,

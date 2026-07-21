@@ -62,6 +62,8 @@ import type {
   IntegrationRule,
   CreateIntegrationRuleInput,
   UpdateIntegrationRuleInput,
+  CopyIntegrationSetupInput,
+  CopyIntegrationSetupResult,
   WebhookInboxEntry
 } from "@verft/shared-types";
 export type { TaskWorkspaceFilePreview } from "@verft/shared-types";
@@ -571,6 +573,11 @@ export const api = {
   deleteIntegrationRule: (repositoryId: string, ruleId: string) =>
     request<void>(`/repositories/${encodeURIComponent(repositoryId)}/integration-rules/${encodeURIComponent(ruleId)}`, {
       method: "DELETE"
+    }),
+  copyIntegrationSetup: (repositoryId: string, input: CopyIntegrationSetupInput) =>
+    request<CopyIntegrationSetupResult>(`/repositories/${encodeURIComponent(repositoryId)}/integration-setup/copy`, {
+      method: "POST",
+      body: JSON.stringify(input)
     }),
 
   // --- Webhook Inbox ---

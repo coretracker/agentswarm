@@ -151,11 +151,8 @@ export function AppSidebarTaskCard({
           <Typography.Text
             strong
             title={task.title}
+            ellipsis
             style={{
-              display: "-webkit-box",
-              WebkitBoxOrient: "vertical",
-              WebkitLineClamp: 2,
-              overflow: "hidden",
               lineHeight: 1.28,
               minWidth: 0,
               color: token.colorTextHeading
