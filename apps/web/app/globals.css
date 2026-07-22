@@ -118,6 +118,22 @@ pre {
   padding-top: 4px;
 }
 
+.task-run-timeline-panel {
+  position: relative;
+}
+
+.task-run-timeline-raw-json-button {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.15s ease;
+}
+
+.task-run-timeline-panel:hover .task-run-timeline-raw-json-button,
+.task-run-timeline-panel:focus-within .task-run-timeline-raw-json-button {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 .diff-hunk + .diff-hunk .diff-line:first-child td,
 .diff-hunk + .diff-hunk .diff-widget:first-child td,
 .diff-hunk + .diff-hunk .diff-decoration:first-child td {
