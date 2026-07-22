@@ -6,7 +6,7 @@ import type { ProviderProfile } from "@verft/shared-types";
 import { AGENT_RUNTIME_IMAGE, env } from "../config/env.js";
 import { resolveDockerSocketAccessPolicy, resolveDockerSocketRunArgs } from "../lib/docker-socket-access.js";
 import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
-import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "../lib/verft-base-mounts.js";
+import { buildHostProviderStateMountArgs } from "../lib/verft-base-mounts.js";
 import type { SettingsRuntimeCredentials } from "./settings-store.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -35,26 +35,11 @@ export class CodexUtilityError extends Error {
 const codexUtilityScript = `
 set -eu
 mkdir -p "$HOME/.codex"
-[ -f "\${VERFT_BASE_ROOT:-/verft-base}/codex/auth.json" ] && cp "\${VERFT_BASE_ROOT:-/verft-base}/codex/auth.json" "$HOME/.codex/auth.json"
-cat > "$HOME/.codex/config.toml" <<'EOF'
-sandbox_mode = "read-only"
-approval_policy = "never"
-
-[notice]
-hide_rate_limit_model_nudge = true
-hide_gpt5_1_migration_prompt = true
-"hide_gpt-5.1-codex-max_migration_prompt" = true
-EOF
-if [ -n "\${OPENAI_API_KEY:-}" ]; then
-  chown -R agent:agent "$HOME" "$CODEX_UTILITY_WORKDIR" 2>/dev/null || true
-  printf %s "$OPENAI_API_KEY" | su-exec agent:agent codex login --with-api-key -c cli_auth_credentials_store=file
-elif [ ! -f "$HOME/.codex/auth.json" ]; then
+if [ -z "\${OPENAI_API_KEY:-}" ] && [ ! -f "$HOME/.codex/auth.json" ]; then
   echo "OpenAI API key or Codex auth.json is not configured." >&2
   exit 64
-else
-  :
 fi
-chown -R agent:agent "$HOME" "$CODEX_UTILITY_WORKDIR" 2>/dev/null || true
+chown -R agent:agent "$CODEX_UTILITY_WORKDIR" 2>/dev/null || true
 su-exec agent:agent codex exec \\
   --ephemeral \\
   --skip-git-repo-check \\
@@ -62,7 +47,8 @@ su-exec agent:agent codex exec \\
   --sandbox read-only \\
   -C "$CODEX_UTILITY_WORKDIR" \\
   -m "$CODEX_MODEL" \\
-  -c cli_auth_credentials_store=file \\
+  -c sandbox_mode=read-only \\
+  -c approval_policy=never \\
   -c "model_reasoning_effort=\\"$CODEX_REASONING_EFFORT\\"" \\
   -o "$CODEX_UTILITY_WORKDIR/output.txt" \\
   - < "$CODEX_UTILITY_WORKDIR/prompt.txt"
@@ -114,10 +100,9 @@ export async function executeCodexUtility(input: {
     ...(input.credentials.openaiApiKey ? ["-e", `OPENAI_API_KEY=${input.credentials.openaiApiKey}`] : []),
     ...(input.credentials.openaiBaseUrl ? ["-e", `OPENAI_BASE_URL=${input.credentials.openaiBaseUrl}`] : []),
     ...dockerSocketRunArgs,
-    ...buildVerftBaseEnvArgs(),
     "-v",
     `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
-    ...buildVerftBaseVolumeMountArgs(),
+    ...buildHostProviderStateMountArgs(),
     "-w",
     tempDir,
     image,

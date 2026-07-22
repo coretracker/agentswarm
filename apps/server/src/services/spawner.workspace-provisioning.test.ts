@@ -6,7 +6,12 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import type { Task } from "@verft/shared-types";
 import { env } from "../config/env.js";
-import { SpawnerService } from "./spawner.js";
+import {
+  appendRuntimeOutputTail,
+  buildRuntimeFailureLogDetails,
+  RuntimeContainerExitError,
+  SpawnerService
+} from "./spawner.js";
 
 const createTask = (overrides: Partial<Task> = {}): Task =>
   ({
@@ -65,6 +70,29 @@ const createSpawner = (): SpawnerService =>
   );
 
 describe("SpawnerService workspace provisioning", () => {
+  it("keeps the sanitized end of runtime output for failure diagnostics", () => {
+    const tail = appendRuntimeOutputTail("first line\n", "\u001b[31msecond line\u001b[0m\nfinal", 17);
+
+    assert.equal(tail, "second line\nfinal");
+  });
+
+  it("includes stacks for ordinary runtime failures", () => {
+    const details = buildRuntimeFailureLogDetails(new Error("docker spawn failed"));
+
+    assert.match(String(details.errorStack), /docker spawn failed/);
+    assert.equal(details.stderrTail, undefined);
+  });
+
+  it("adds runtime output tails and exit codes to failure log details", () => {
+    const details = buildRuntimeFailureLogDetails(
+      new RuntimeContainerExitError(1, "runtime setup\n", "codex failed\n")
+    );
+
+    assert.equal(details.exitCode, 1);
+    assert.equal(details.stdoutTail, "runtime setup");
+    assert.equal(details.stderrTail, "codex failed");
+  });
+
   it("releases named locks after completion", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;
@@ -83,36 +111,6 @@ describe("SpawnerService workspace provisioning", () => {
 
     assert.equal(mount.hostDir, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/raw-runs"));
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
-  });
-
-  it("mounts provider state from a task-scoped agent home path", () => {
-    const spawner = createSpawner() as any;
-    const paths = {
-      hostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/Task-AbC/agent-home/.claude"),
-      homeHostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/Task-AbC/agent-home")
-    };
-
-    assert.equal(
-      spawner.resolveProviderStateMountSourceRelativePath("Task AbC", "claude", paths),
-      ".task-state/Task-AbC/agent-home"
-    );
-    assert.equal(spawner.resolveProviderStateContainerPath("codex"), "/home/agent/.codex");
-    assert.equal(spawner.resolveProviderStateContainerPath("claude"), "/home/agent/.claude");
-    assert.equal(spawner.resolveProviderHomeContainerPath("codex"), "/home/agent");
-    assert.equal(spawner.resolveProviderHomeContainerPath("claude"), "/home/agent");
-  });
-
-  it("rejects provider state mounts that resolve to repository .claude", () => {
-    const spawner = createSpawner() as any;
-    const paths = {
-      hostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, "task-1/.claude"),
-      homeHostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, "task-1/.claude")
-    };
-
-    assert.throws(
-      () => spawner.resolveProviderStateMountSourceRelativePath("task-1", "claude", paths),
-      /Refusing to mount unsafe provider state path/
-    );
   });
 
   it("injects Verft MCP into task runtime config", async () => {

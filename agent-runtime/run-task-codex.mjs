@@ -1,17 +1,15 @@
 import { createWriteStream } from "node:fs";
-import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { importVerftBaseState } from "./verft-base-state.mjs";
 
 const AGENT_IDENTITY = "agent:agent";
 const AGENT_HOME = "/home/agent";
+const HOST_CODEX_STATE = "/verft-base/codex";
 const manifestPath = process.env.TASK_MANIFEST_FILE;
 const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
 const openAiApiKey = process.env.OPENAI_API_KEY ?? "";
 const openAiBaseUrl = process.env.OPENAI_BASE_URL ?? "";
-const verftBaseRoot = process.env.VERFT_BASE_ROOT?.trim() || "/verft-base";
-const verftBaseCodexAuthPath = path.join(verftBaseRoot, "codex", "auth.json");
 
 const fileExists = async (targetPath) => Boolean((await stat(targetPath).catch(() => null))?.isFile());
 
@@ -23,17 +21,10 @@ if (!providerConfigPath) {
   console.error("PROVIDER_CONFIG_FILE is required");
   process.exit(1);
 }
-if (!openAiApiKey && !(await fileExists(verftBaseCodexAuthPath))) {
-  console.error(`OPENAI_API_KEY or ${verftBaseCodexAuthPath} is required`);
-  process.exit(1);
-}
-
 const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
-const providerConfig = await readFile(providerConfigPath, "utf8").catch(() => "");
-const configuredStatePath = process.env.TASK_PROVIDER_STATE_PATH?.trim();
 const configuredHomeDir = process.env.TASK_PROVIDER_HOME?.trim();
 const homeDir = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : AGENT_HOME;
-const codexDir = configuredStatePath && configuredStatePath.length > 0 ? configuredStatePath : path.join(homeDir, ".codex");
+const codexDir = path.join(homeDir, ".codex");
 const lastMessageFile = path.join(path.dirname(manifest.resultJsonPath), "codex-last-message.txt");
 const sessionIdFile = path.join(codexDir, "verft-session-id.txt");
 const rawEventsJsonlPath = typeof manifest.rawEventsJsonlPath === "string" && manifest.rawEventsJsonlPath.trim()
@@ -69,7 +60,7 @@ const writePersistedSessionId = async (sessionId) => {
     return;
   }
 
-  await writeFile(sessionIdFile, `${sessionId.trim()}\n`, "utf8");
+  await writeFile(sessionIdFile, `${sessionId.trim()}\n`, "utf8").catch(() => undefined);
 };
 
 const listRolloutFiles = async (sessionsRoot) => {
@@ -205,15 +196,19 @@ const runCommand = (command, args, options = {}) =>
   });
 
 await mkdir(homeDir, { recursive: true });
+if ((await stat(HOST_CODEX_STATE).catch(() => null))?.isDirectory()) {
+  await cp(HOST_CODEX_STATE, codexDir, { recursive: true });
+}
 await mkdir(codexDir, { recursive: true });
+await runCommand("node", ["/usr/local/bin/normalize-provider-paths.mjs", homeDir]);
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
 await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
-await importVerftBaseState({ provider: "codex", homeDir, generatedConfig: providerConfig });
 process.env.CODEX_HOME = codexDir;
-console.log("[runtime] wrote Codex config");
-console.log(
-  `[runtime] codex auth base=${(await fileExists(verftBaseCodexAuthPath)) ? "present" : "missing"} home=${(await fileExists(path.join(codexDir, "auth.json"))) ? "present" : "missing"}`
-);
+console.log(`[runtime] codex auth home=${(await fileExists(path.join(codexDir, "auth.json"))) ? "present" : "missing"}`);
+if (!openAiApiKey && !(await fileExists(path.join(codexDir, "auth.json")))) {
+  console.error("OPENAI_API_KEY or Codex host login is required");
+  process.exit(1);
+}
 
 if (openAiBaseUrl) {
   process.env.OPENAI_BASE_URL = openAiBaseUrl;
@@ -318,29 +313,6 @@ if (!isAsk) {
 }
 console.log(`[runtime] prepared codex runtime user=${AGENT_IDENTITY}`);
 
-if (!(await fileExists(path.join(codexDir, "auth.json")))) {
-  await new Promise((resolve, reject) => {
-    const proc = spawn("su-exec", [AGENT_IDENTITY, "codex", "login", "--with-api-key"], {
-      env: process.env,
-      cwd: manifest.workspacePath,
-      stdio: ["pipe", "pipe", "pipe"]
-    });
-    proc.stdin.write(openAiApiKey);
-    proc.stdin.end();
-    proc.stdout.on("data", (chunk) => process.stdout.write(chunk));
-    proc.stderr.on("data", (chunk) => process.stderr.write(chunk));
-    proc.on("error", reject);
-    proc.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      reject(new Error(`codex login exited with ${code ?? "unknown"}`));
-    });
-  });
-}
-
 const prompt = buildPrompt();
 const persistedSessionId = await readPersistedSessionId();
 let resolvedSessionId = persistedSessionId;
@@ -352,8 +324,6 @@ const args = [
   "exec",
   "-C",
   manifest.workspacePath,
-  "-c",
-  "cli_auth_credentials_store=file",
   "--color",
   "never",
   "--json",

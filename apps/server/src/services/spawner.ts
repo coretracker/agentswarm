@@ -71,8 +71,8 @@ import type { OperationalLogger } from "../lib/operational-logger.js";
 import { buildDockerWorkspaceMountArgs } from "../lib/docker-workspace-mounts.js";
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { buildHostexecRuntimeConfig } from "../lib/hostexec-runtime.js";
-import { ensureTaskProviderStatePaths, resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
-import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "../lib/verft-base-mounts.js";
+import { resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
+import { buildStagedHostProviderStateMountArgs } from "../lib/verft-base-mounts.js";
 import { AGENT_RUNTIME_IMAGE, DEFAULT_GIT_COMMIT_IDENTITY, env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 import { executeOpenAiDiffAssist } from "./openai-diff-assist-service.js";
@@ -98,6 +98,7 @@ const VERFT_RUNTIME_MCP_TOKEN_ENV = "VERFT_MCP_OAUTH_TOKEN";
 const VERFT_RUNTIME_MCP_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const VERFT_RUNTIME_DIRNAME = ".verft-runtime";
 const VERFT_RUNTIME_HARNESS_FILE_NAME = "harness.md";
+const RUNTIME_OUTPUT_TAIL_MAX_LENGTH = 12_000;
 const VERFT_RUNTIME_MCP_SCOPES: PermissionScope[] = [
   "repo:list",
   "repo:read",
@@ -113,6 +114,15 @@ const AUTO_APPLY_COMMIT_MESSAGE_PROMPT =
 
 const sanitizeChunk = (chunk: string): string =>
   chunk.replace(/\r/g, "\n").replace(ansiPattern, "").replace(/[^\x09\x0A\x20-\x7E]/g, "");
+
+export const appendRuntimeOutputTail = (
+  current: string,
+  chunk: string,
+  maxLength = RUNTIME_OUTPUT_TAIL_MAX_LENGTH
+): string => {
+  const combined = current + sanitizeChunk(chunk);
+  return combined.length > maxLength ? combined.slice(-maxLength) : combined;
+};
 
 const redactUrlCredentials = (value: string): string =>
   value.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@[^\s/]+/gi, (match, protocol: string) => {
@@ -164,6 +174,28 @@ const sanitizePathSegment = (value: string): string => {
 
 const truncate = (value: string, maxLength: number): string =>
   value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 3))}...` : value;
+
+export class RuntimeContainerExitError extends Error {
+  constructor(
+    readonly exitCode: number | null,
+    readonly stdoutTail: string,
+    readonly stderrTail: string
+  ) {
+    super(`Runtime container exited with code ${exitCode ?? "unknown"}`);
+    this.name = "RuntimeContainerExitError";
+  }
+}
+
+export const buildRuntimeFailureLogDetails = (error: unknown): Record<string, unknown> => ({
+  errorStack: error instanceof Error ? error.stack : undefined,
+  ...(error instanceof RuntimeContainerExitError
+    ? {
+        exitCode: error.exitCode,
+        stdoutTail: error.stdoutTail.trim() || null,
+        stderrTail: error.stderrTail.trim() || null
+      }
+    : {})
+});
 
 const shellSingleQuote = (value: string): string => `'${value.replace(/'/g, `'\"'\"'`)}'`;
 
@@ -1753,44 +1785,6 @@ export class SpawnerService {
     });
 
     return true;
-  }
-
-  private resolveProviderStateContainerPath(provider: AgentProvider): string {
-    return provider === "claude" ? "/home/agent/.claude" : "/home/agent/.codex";
-  }
-
-  private resolveProviderHomeContainerPath(_provider: AgentProvider): string {
-    return "/home/agent";
-  }
-
-  private resolveProviderStateMountSourceRelativePath(
-    taskId: string,
-    provider: AgentProvider,
-    providerStatePaths: Awaited<ReturnType<typeof ensureTaskProviderStatePaths>>
-  ): string {
-    const mountHostPath = providerStatePaths.homeHostPath;
-    if (!mountHostPath) {
-      throw new Error(`Provider state mount path is not available for ${provider}.`);
-    }
-
-    const sourceRelativePath = path.relative(env.TASK_WORKSPACE_DOCKER_SOURCE, mountHostPath);
-    const normalizedSource = sourceRelativePath.split(path.sep).join(path.posix.sep);
-    const expectedRoot = path
-      .relative(env.TASK_WORKSPACE_DOCKER_SOURCE, resolveTaskStateRootPaths(taskId).hostPath)
-      .split(path.sep)
-      .join(path.posix.sep);
-    const expectedPrefix = `${expectedRoot}/`;
-    if (
-      normalizedSource === ".claude" ||
-      normalizedSource.endsWith("/.claude") ||
-      normalizedSource === ".codex" ||
-      normalizedSource.endsWith("/.codex") ||
-      !normalizedSource.startsWith(expectedPrefix)
-    ) {
-      throw new Error(`Refusing to mount unsafe provider state path for ${provider}: ${normalizedSource}`);
-    }
-
-    return sourceRelativePath;
   }
 
   private resolveRepoCachePath(task: Task): string {
@@ -5586,15 +5580,6 @@ export class SpawnerService {
         containerWorkspacePath: workspace.workspacePath,
         linkedWorkspaces: task.linkedWorkspaces
       });
-      const providerStateContainerPath = this.resolveProviderStateContainerPath(task.provider);
-      const providerHomeContainerPath = this.resolveProviderHomeContainerPath(task.provider);
-      const providerStateMountContainerPath = providerHomeContainerPath;
-      const providerStatePaths = await ensureTaskProviderStatePaths(task.id, task.provider);
-      const providerStateMountSourceRelativePath = this.resolveProviderStateMountSourceRelativePath(
-        task.id,
-        task.provider,
-        providerStatePaths
-      );
       const dockerSocketPolicy = resolveDockerSocketAccessPolicy(task.provider);
       const dockerSocketMountArgs = resolveDockerSocketMountArgs(dockerSocketPolicy);
       const dockerSocketEnvEntries = resolveDockerSocketEnvEntries(dockerSocketPolicy);
@@ -5645,12 +5630,7 @@ export class SpawnerService {
         ...linkedWorkspaceMountPlan.mountArgs,
         ...gitRuntimeMounts,
         ...hostexecRuntime.mountArgs,
-        ...buildVerftBaseVolumeMountArgs(),
-        ...this.buildTaskWorkspaceMountArgs(
-          providerStateMountSourceRelativePath,
-          providerStateMountContainerPath,
-          "rw"
-        ),
+        ...buildStagedHostProviderStateMountArgs(),
         ...dockerSocketMountArgs,
         "-e",
         `TASK_MANIFEST_FILE=${payloadPaths.manifestPath}`,
@@ -5661,10 +5641,7 @@ export class SpawnerService {
         "-e",
         `TASK_WORSPACE_PATH=${workspace.hostWorkspacePath}`,
         "-e",
-        `TASK_PROVIDER_STATE_PATH=${providerStateContainerPath}`,
-        "-e",
-        `TASK_PROVIDER_HOME=${providerHomeContainerPath}`,
-        ...buildVerftBaseEnvArgs()
+        "TASK_PROVIDER_HOME=/home/agent"
       ];
 
       const addRuntimeEnv = (name: string, value: string): void => {
@@ -5702,6 +5679,8 @@ export class SpawnerService {
 
         let stdoutRemainder = "";
         let stderrRemainder = "";
+        let stdoutTail = "";
+        let stderrTail = "";
         const processLine = (prefix: "stdout" | "stderr", line: string): void => {
           if (line.trim().length > 0) {
             void this.taskStore.appendLogForRun(task.id, `[${prefix}] ${line}`, runId);
@@ -5729,10 +5708,14 @@ export class SpawnerService {
         };
 
         proc.stdout.on("data", (data) => {
-          pushLines("stdout", data.toString());
+          const chunk = data.toString();
+          stdoutTail = appendRuntimeOutputTail(stdoutTail, chunk);
+          pushLines("stdout", chunk);
         });
         proc.stderr.on("data", (data) => {
-          pushLines("stderr", data.toString());
+          const chunk = data.toString();
+          stderrTail = appendRuntimeOutputTail(stderrTail, chunk);
+          pushLines("stderr", chunk);
         });
 
         proc.on("error", reject);
@@ -5756,7 +5739,7 @@ export class SpawnerService {
             return;
           }
 
-          reject(new Error(`Runtime container exited with code ${code ?? "unknown"}`));
+          reject(new RuntimeContainerExitError(code, stdoutTail, stderrTail));
         });
       });
 
@@ -5934,7 +5917,8 @@ export class SpawnerService {
         status: isCancelled ? "cancelled" : "failed",
         provider: task.provider,
         branchName,
-        errorMessage: isCancelled ? null : message
+        errorMessage: isCancelled ? null : message,
+        ...buildRuntimeFailureLogDetails(error)
       });
       throw error;
     } finally {

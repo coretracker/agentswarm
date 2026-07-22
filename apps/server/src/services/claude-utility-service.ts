@@ -4,7 +4,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { AGENT_RUNTIME_IMAGE, env } from "../config/env.js";
 import { resolveDockerSocketAccessPolicy, resolveDockerSocketRunArgs } from "../lib/docker-socket-access.js";
-import { buildVerftBaseEnvArgs, buildVerftBaseVolumeMountArgs } from "../lib/verft-base-mounts.js";
+import { buildHostProviderStateMountArgs } from "../lib/verft-base-mounts.js";
 import type { SettingsRuntimeCredentials } from "./settings-store.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -33,14 +33,11 @@ export class ClaudeUtilityError extends Error {
 const claudeUtilityScript = `
 set -eu
 mkdir -p "$HOME/.claude"
-[ -f "\${VERFT_BASE_ROOT:-/verft-base}/claude/.credentials.json" ] && cp "\${VERFT_BASE_ROOT:-/verft-base}/claude/.credentials.json" "$HOME/.claude/.credentials.json"
-[ -f "\${VERFT_BASE_ROOT:-/verft-base}/claude/settings.json" ] && cp "\${VERFT_BASE_ROOT:-/verft-base}/claude/settings.json" "$HOME/.claude/settings.json"
-[ -f "\${VERFT_BASE_ROOT:-/verft-base}/claude/.claude.json" ] && cp "\${VERFT_BASE_ROOT:-/verft-base}/claude/.claude.json" "$HOME/.claude.json"
 if [ -z "\${ANTHROPIC_API_KEY:-}" ] && [ ! -f "$HOME/.claude/.credentials.json" ]; then
   echo "Anthropic API key or Claude credentials.json is not configured." >&2
   exit 64
 fi
-chown -R agent:agent "$HOME" "$CLAUDE_UTILITY_WORKDIR" 2>/dev/null || true
+chown -R agent:agent "$CLAUDE_UTILITY_WORKDIR" 2>/dev/null || true
 CLAUDE_REAL="$(command -v claude)"
 su-exec agent:agent "$CLAUDE_REAL" \\
   -p "$(cat "$CLAUDE_UTILITY_WORKDIR/prompt.txt")" \\
@@ -90,10 +87,9 @@ export async function executeClaudeUtility(input: {
     ...(input.credentials.anthropicApiKey ? ["-e", `ANTHROPIC_API_KEY=${input.credentials.anthropicApiKey}`] : []),
     ...(input.credentials.anthropicBaseUrl ? ["-e", `ANTHROPIC_BASE_URL=${input.credentials.anthropicBaseUrl}`] : []),
     ...dockerSocketRunArgs,
-    ...buildVerftBaseEnvArgs(),
     "-v",
     `${env.RUNTIME_PAYLOAD_VOLUME}:${env.RUNTIME_PAYLOAD_ROOT}:rw`,
-    ...buildVerftBaseVolumeMountArgs(),
+    ...buildHostProviderStateMountArgs(),
     "-w",
     tempDir,
     AGENT_RUNTIME_IMAGE,

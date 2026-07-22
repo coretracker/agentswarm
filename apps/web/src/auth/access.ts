@@ -15,14 +15,8 @@ export const navigationRoutes: NavigationRoute[] = [
 
 export const isPublicPathname = (pathname: string): boolean => pathname === "/login";
 
-const settingsTerminalPathnames = new Set([
-  "/settings/provider-setup-terminal",
-  "/settings/codex-login-terminal",
-  "/settings/claude-login-terminal"
-]);
-
 export const isTerminalFullscreenPath = (pathname: string): boolean =>
-  /^\/tasks\/[^/]+\/terminal$/.test(pathname) || settingsTerminalPathnames.has(pathname);
+  /^\/tasks\/[^/]+\/terminal$/.test(pathname);
 
 export const getRequiredScopesForPathname = (pathname: string): PermissionScope[] => {
   if (pathname === "/tasks") {
@@ -35,10 +29,6 @@ export const getRequiredScopesForPathname = (pathname: string): PermissionScope[
 
   if (/^\/tasks\/[^/]+\/terminal$/.test(pathname)) {
     return ["task:edit", "task:terminal"];
-  }
-
-  if (settingsTerminalPathnames.has(pathname)) {
-    return ["settings:edit"];
   }
 
   if (pathname.startsWith("/tasks/")) {
