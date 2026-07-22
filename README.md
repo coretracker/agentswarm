@@ -185,7 +185,7 @@ Durable application data is stored in Postgres. Redis is required for sessions, 
 | Variable | Description | Default |
 | --- | --- | --- |
 | `AGENT_RUNTIME_IMAGE` | Unified toolbox image for automated Codex/Claude runs, interactive terminals, utility runs, and Git worker containers. | `verft-agent-toolbox:latest` |
-| `VERFT_AI_STATE_HOST_ROOT` | Host home root used to derive `.codex`, `.claude`, and `.claude.json` provider mounts. These Docker daemon host paths remain read-only; interactive terminals copy them into the container's writable agent home at startup. | `$HOME` |
+| `VERFT_AI_STATE_HOST_ROOT` | Host home root used to derive `.codex`, `.claude`, and `.claude.json` provider mounts. These Docker daemon host paths remain read-only; task runs and interactive terminals copy them into the container's writable agent home at startup. | `$HOME` |
 | `VERFT_CODEX_STATE_HOST_PATH` | Optional host path override for Codex state. | unset |
 | `VERFT_CLAUDE_STATE_HOST_PATH` | Optional host path override for Claude state. | unset |
 | `VERFT_CLAUDE_CONFIG_HOST_PATH` | Optional host path override for `.claude.json`. | unset |

@@ -6,7 +6,12 @@ import path from "node:path";
 import { describe, it } from "node:test";
 import type { Task } from "@verft/shared-types";
 import { env } from "../config/env.js";
-import { SpawnerService } from "./spawner.js";
+import {
+  appendRuntimeOutputTail,
+  buildRuntimeFailureLogDetails,
+  RuntimeContainerExitError,
+  SpawnerService
+} from "./spawner.js";
 
 const createTask = (overrides: Partial<Task> = {}): Task =>
   ({
@@ -65,6 +70,29 @@ const createSpawner = (): SpawnerService =>
   );
 
 describe("SpawnerService workspace provisioning", () => {
+  it("keeps the sanitized end of runtime output for failure diagnostics", () => {
+    const tail = appendRuntimeOutputTail("first line\n", "\u001b[31msecond line\u001b[0m\nfinal", 17);
+
+    assert.equal(tail, "second line\nfinal");
+  });
+
+  it("includes stacks for ordinary runtime failures", () => {
+    const details = buildRuntimeFailureLogDetails(new Error("docker spawn failed"));
+
+    assert.match(String(details.errorStack), /docker spawn failed/);
+    assert.equal(details.stderrTail, undefined);
+  });
+
+  it("adds runtime output tails and exit codes to failure log details", () => {
+    const details = buildRuntimeFailureLogDetails(
+      new RuntimeContainerExitError(1, "runtime setup\n", "codex failed\n")
+    );
+
+    assert.equal(details.exitCode, 1);
+    assert.equal(details.stdoutTail, "runtime setup");
+    assert.equal(details.stderrTail, "codex failed");
+  });
+
   it("releases named locks after completion", async () => {
     const spawner = createSpawner();
     const spawnerAny = spawner as any;

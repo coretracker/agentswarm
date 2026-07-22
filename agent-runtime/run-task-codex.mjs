@@ -1,10 +1,11 @@
 import { createWriteStream } from "node:fs";
-import { chmod, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
 const AGENT_IDENTITY = "agent:agent";
 const AGENT_HOME = "/home/agent";
+const HOST_CODEX_STATE = "/verft-base/codex";
 const manifestPath = process.env.TASK_MANIFEST_FILE;
 const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
 const openAiApiKey = process.env.OPENAI_API_KEY ?? "";
@@ -195,7 +196,11 @@ const runCommand = (command, args, options = {}) =>
   });
 
 await mkdir(homeDir, { recursive: true });
+if ((await stat(HOST_CODEX_STATE).catch(() => null))?.isDirectory()) {
+  await cp(HOST_CODEX_STATE, codexDir, { recursive: true });
+}
 await mkdir(codexDir, { recursive: true });
+await runCommand("node", ["/usr/local/bin/normalize-provider-paths.mjs", homeDir]);
 await mkdir(path.dirname(manifest.resultJsonPath), { recursive: true });
 await mkdir(path.dirname(rawEventsJsonlPath), { recursive: true });
 process.env.CODEX_HOME = codexDir;
@@ -302,7 +307,7 @@ const buildPrompt = () => {
 };
 
 const isAsk = manifest.action === "ask";
-await runCommand("chown", ["-R", AGENT_IDENTITY, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
+await runCommand("chown", ["-R", AGENT_IDENTITY, homeDir, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
 if (!isAsk) {
   await runCommand("chown", ["-R", AGENT_IDENTITY, manifest.workspacePath]).catch(() => undefined);
 }

@@ -72,7 +72,7 @@ import { buildDockerWorkspaceMountArgs } from "../lib/docker-workspace-mounts.js
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { buildHostexecRuntimeConfig } from "../lib/hostexec-runtime.js";
 import { resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
-import { buildHostProviderStateMountArgs } from "../lib/verft-base-mounts.js";
+import { buildStagedHostProviderStateMountArgs } from "../lib/verft-base-mounts.js";
 import { AGENT_RUNTIME_IMAGE, DEFAULT_GIT_COMMIT_IDENTITY, env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 import { executeOpenAiDiffAssist } from "./openai-diff-assist-service.js";
@@ -98,6 +98,7 @@ const VERFT_RUNTIME_MCP_TOKEN_ENV = "VERFT_MCP_OAUTH_TOKEN";
 const VERFT_RUNTIME_MCP_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const VERFT_RUNTIME_DIRNAME = ".verft-runtime";
 const VERFT_RUNTIME_HARNESS_FILE_NAME = "harness.md";
+const RUNTIME_OUTPUT_TAIL_MAX_LENGTH = 12_000;
 const VERFT_RUNTIME_MCP_SCOPES: PermissionScope[] = [
   "repo:list",
   "repo:read",
@@ -113,6 +114,15 @@ const AUTO_APPLY_COMMIT_MESSAGE_PROMPT =
 
 const sanitizeChunk = (chunk: string): string =>
   chunk.replace(/\r/g, "\n").replace(ansiPattern, "").replace(/[^\x09\x0A\x20-\x7E]/g, "");
+
+export const appendRuntimeOutputTail = (
+  current: string,
+  chunk: string,
+  maxLength = RUNTIME_OUTPUT_TAIL_MAX_LENGTH
+): string => {
+  const combined = current + sanitizeChunk(chunk);
+  return combined.length > maxLength ? combined.slice(-maxLength) : combined;
+};
 
 const redactUrlCredentials = (value: string): string =>
   value.replace(/([a-z][a-z0-9+.-]*:\/\/)[^\s/@]+@[^\s/]+/gi, (match, protocol: string) => {
@@ -164,6 +174,28 @@ const sanitizePathSegment = (value: string): string => {
 
 const truncate = (value: string, maxLength: number): string =>
   value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 3))}...` : value;
+
+export class RuntimeContainerExitError extends Error {
+  constructor(
+    readonly exitCode: number | null,
+    readonly stdoutTail: string,
+    readonly stderrTail: string
+  ) {
+    super(`Runtime container exited with code ${exitCode ?? "unknown"}`);
+    this.name = "RuntimeContainerExitError";
+  }
+}
+
+export const buildRuntimeFailureLogDetails = (error: unknown): Record<string, unknown> => ({
+  errorStack: error instanceof Error ? error.stack : undefined,
+  ...(error instanceof RuntimeContainerExitError
+    ? {
+        exitCode: error.exitCode,
+        stdoutTail: error.stdoutTail.trim() || null,
+        stderrTail: error.stderrTail.trim() || null
+      }
+    : {})
+});
 
 const shellSingleQuote = (value: string): string => `'${value.replace(/'/g, `'\"'\"'`)}'`;
 
@@ -5598,7 +5630,7 @@ export class SpawnerService {
         ...linkedWorkspaceMountPlan.mountArgs,
         ...gitRuntimeMounts,
         ...hostexecRuntime.mountArgs,
-        ...buildHostProviderStateMountArgs(),
+        ...buildStagedHostProviderStateMountArgs(),
         ...dockerSocketMountArgs,
         "-e",
         `TASK_MANIFEST_FILE=${payloadPaths.manifestPath}`,
@@ -5647,6 +5679,8 @@ export class SpawnerService {
 
         let stdoutRemainder = "";
         let stderrRemainder = "";
+        let stdoutTail = "";
+        let stderrTail = "";
         const processLine = (prefix: "stdout" | "stderr", line: string): void => {
           if (line.trim().length > 0) {
             void this.taskStore.appendLogForRun(task.id, `[${prefix}] ${line}`, runId);
@@ -5674,10 +5708,14 @@ export class SpawnerService {
         };
 
         proc.stdout.on("data", (data) => {
-          pushLines("stdout", data.toString());
+          const chunk = data.toString();
+          stdoutTail = appendRuntimeOutputTail(stdoutTail, chunk);
+          pushLines("stdout", chunk);
         });
         proc.stderr.on("data", (data) => {
-          pushLines("stderr", data.toString());
+          const chunk = data.toString();
+          stderrTail = appendRuntimeOutputTail(stderrTail, chunk);
+          pushLines("stderr", chunk);
         });
 
         proc.on("error", reject);
@@ -5701,7 +5739,7 @@ export class SpawnerService {
             return;
           }
 
-          reject(new Error(`Runtime container exited with code ${code ?? "unknown"}`));
+          reject(new RuntimeContainerExitError(code, stdoutTail, stderrTail));
         });
       });
 
@@ -5879,7 +5917,8 @@ export class SpawnerService {
         status: isCancelled ? "cancelled" : "failed",
         provider: task.provider,
         branchName,
-        errorMessage: isCancelled ? null : message
+        errorMessage: isCancelled ? null : message,
+        ...buildRuntimeFailureLogDetails(error)
       });
       throw error;
     } finally {

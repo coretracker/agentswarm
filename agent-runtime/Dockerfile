@@ -53,6 +53,7 @@ ENV HOME=/home/agent \
 WORKDIR /runtime
 COPY run-task-codex.mjs /usr/local/bin/run-task-codex.mjs
 COPY run-task-claude.mjs /usr/local/bin/run-task-claude.mjs
+COPY normalize-provider-paths.mjs /usr/local/bin/normalize-provider-paths.mjs
 COPY hostexec-proxy.mjs /usr/local/bin/hostexec-proxy.mjs
 
 CMD ["bash"]

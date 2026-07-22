@@ -1,10 +1,12 @@
 import { createWriteStream } from "node:fs";
-import { access, chmod, constants, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, constants, cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
 
 const AGENT_IDENTITY = "agent:agent";
 const AGENT_HOME = "/home/agent";
+const HOST_CLAUDE_STATE = "/verft-base/claude";
+const HOST_CLAUDE_CONFIG = "/verft-base/claude.json";
 const manifestPath = process.env.TASK_MANIFEST_FILE;
 const providerConfigPath = process.env.PROVIDER_CONFIG_FILE;
 const anthropicApiKey = process.env.ANTHROPIC_API_KEY ?? "";
@@ -269,7 +271,14 @@ const runtimeIdentity = AGENT_IDENTITY;
 const runtimeHome = configuredHomeDir && configuredHomeDir.length > 0 ? configuredHomeDir : AGENT_HOME;
 const providerStatePath = path.join(runtimeHome, ".claude");
 await mkdir(runtimeHome, { recursive: true });
+if (await pathExists(HOST_CLAUDE_STATE)) {
+  await cp(HOST_CLAUDE_STATE, providerStatePath, { recursive: true });
+}
+if (await pathExists(HOST_CLAUDE_CONFIG)) {
+  await cp(HOST_CLAUDE_CONFIG, path.join(runtimeHome, ".claude.json"));
+}
 await mkdir(providerStatePath, { recursive: true });
+await runCommand("node", ["/usr/local/bin/normalize-provider-paths.mjs", runtimeHome]);
 if (!anthropicApiKey && !(await pathExists(path.join(providerStatePath, ".credentials.json")))) {
   console.error("ANTHROPIC_API_KEY or Claude host login is required");
   process.exit(1);
@@ -287,7 +296,7 @@ console.log(
   `[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""} session=${persistedSessionId ?? "new"}`
 );
 console.log(`[runtime] claude thinking_budget_tokens=${manifest.resolvedThinkingBudgetTokens ?? "default"}`);
-await runCommand("chown", ["-R", runtimeIdentity, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
+await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
 if (!isAsk) {
   await runCommand("chown", ["-R", runtimeIdentity, manifest.workspacePath]).catch(() => undefined);
 }

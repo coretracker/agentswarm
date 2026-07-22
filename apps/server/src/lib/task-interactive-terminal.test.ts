@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { describe, it } from "node:test";
@@ -10,6 +11,9 @@ import { buildTerminalStartScript } from "./task-interactive-terminal-start-scri
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
 const runtimeDockerfilePath = path.join(repoRoot, "agent-runtime/Dockerfile");
+const codexRunnerPath = path.join(repoRoot, "agent-runtime/run-task-codex.mjs");
+const claudeRunnerPath = path.join(repoRoot, "agent-runtime/run-task-claude.mjs");
+const providerPathNormalizerPath = path.join(repoRoot, "agent-runtime/normalize-provider-paths.mjs");
 
 describe("buildTerminalStartScript", () => {
   it("generates shell syntax that parses under sh", () => {
@@ -23,6 +27,7 @@ describe("buildTerminalStartScript", () => {
     assert.match(script, /cp -a \/verft-base\/codex "\$HOME\/\.codex"/);
     assert.match(script, /cp -a \/verft-base\/claude "\$HOME\/\.claude"/);
     assert.match(script, /cp -a \/verft-base\/claude\.json "\$HOME\/\.claude\.json"/);
+    assert.match(script, /normalize-provider-paths\.mjs "\$HOME"/);
     assert.match(script, /chown -R agent:agent "\$HOME" "\$TASK_INTERACTIVE_WORKSPACE"/);
     assert.match(script, /\$HOME\/\.claude\/mcp-config\.json/);
     assert.match(script, /\/tmp\/verft-bin\/claude/);
@@ -48,8 +53,58 @@ describe("buildTerminalStartScript", () => {
     assert.doesNotMatch(dockerfile, /\bdocker\.io\b/);
     assert.match(dockerfile, /COPY run-task-codex\.mjs/);
     assert.match(dockerfile, /COPY run-task-claude\.mjs/);
+    assert.match(dockerfile, /COPY normalize-provider-paths\.mjs/);
     assert.doesNotMatch(dockerfile, /COPY verft-base-state\.mjs/);
     assert.match(dockerfile, /COPY hostexec-proxy\.mjs/);
+  });
+
+  it("stages read-only host provider state into the writable automated-run home", () => {
+    const codexRunner = readFileSync(codexRunnerPath, "utf8");
+    const claudeRunner = readFileSync(claudeRunnerPath, "utf8");
+
+    assert.match(codexRunner, /cp\(HOST_CODEX_STATE, codexDir, \{ recursive: true \}\)/);
+    assert.match(codexRunner, /AGENT_IDENTITY, homeDir/);
+    assert.match(claudeRunner, /cp\(HOST_CLAUDE_STATE, providerStatePath, \{ recursive: true \}\)/);
+    assert.match(claudeRunner, /cp\(HOST_CLAUDE_CONFIG, path\.join\(runtimeHome, "\.claude\.json"\)\)/);
+    assert.match(claudeRunner, /runtimeIdentity, runtimeHome/);
+  });
+
+  it("normalizes copied absolute Claude and Codex paths in text files", () => {
+    const runtimeHome = mkdtempSync(path.join(tmpdir(), "verft-claude-home-"));
+    const pluginsDir = path.join(runtimeHome, ".claude", "plugins");
+    const configPath = path.join(pluginsDir, "known_marketplaces.json");
+    const codexDir = path.join(runtimeHome, ".codex");
+    const codexConfigPath = path.join(codexDir, "config.toml");
+    mkdirSync(pluginsDir, { recursive: true });
+    mkdirSync(codexDir, { recursive: true });
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        installLocation: "/home/coretracker/.claude/plugins/marketplaces/claude-plugins-official",
+        installPath: "/home/coretracker/.claude/plugins/cache/claude-plugins-official/figma/2.2.81"
+      })
+    );
+    writeFileSync(codexConfigPath, 'instructions = "/home/coretracker/.codex/instructions.md"\n');
+
+    try {
+      const result = spawnSync("node", [providerPathNormalizerPath, runtimeHome], { encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+      const normalized = JSON.parse(readFileSync(configPath, "utf8"));
+      assert.equal(
+        normalized.installLocation,
+        path.join(runtimeHome, ".claude", "plugins", "marketplaces", "claude-plugins-official")
+      );
+      assert.equal(
+        normalized.installPath,
+        path.join(runtimeHome, ".claude", "plugins", "cache", "claude-plugins-official", "figma", "2.2.81")
+      );
+      assert.equal(
+        readFileSync(codexConfigPath, "utf8"),
+        `instructions = "${path.join(runtimeHome, ".codex", "instructions.md")}"\n`
+      );
+    } finally {
+      rmSync(runtimeHome, { recursive: true, force: true });
+    }
   });
 });
 
