@@ -785,6 +785,13 @@ Feedback:
     `
   },
   {
+    id: "20260722_01_inbound_webhook_signature_header_secrets",
+    sql: `
+      ALTER TABLE repositories
+      ADD COLUMN IF NOT EXISTS inbound_webhook_signature_header_secrets jsonb NOT NULL DEFAULT '{}'::jsonb;
+    `
+  },
+  {
     id: "20260721_02_webhook_inbox_status",
     sql: `
       ALTER TABLE webhook_inbox

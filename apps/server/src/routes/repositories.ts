@@ -119,6 +119,22 @@ const inboundWebhookSignatureHeadersSchema = z
   .max(10)
   .optional();
 
+const inboundWebhookSignatureHeaderSecretsSchema = z
+  .array(
+    z.object({
+      header: z
+        .string()
+        .trim()
+        .min(1)
+        .max(128)
+        .regex(HTTP_HEADER_NAME_PATTERN, "Header names must be valid HTTP field names."),
+      secret: z.string().trim().min(1).optional(),
+      clearSecret: z.boolean().optional()
+    })
+  )
+  .max(10)
+  .optional();
+
 const repositoryEnvKeySchema = z
   .string()
   .trim()
@@ -248,6 +264,7 @@ const createRepositorySchema = z.object({
   githubPrWebhookSecret: z.string().trim().min(1).optional(),
   inboundWebhookSecret: z.string().trim().min(1).optional(),
   inboundWebhookSignatureHeaders: inboundWebhookSignatureHeadersSchema,
+  inboundWebhookSignatureHeaderSecrets: inboundWebhookSignatureHeaderSecretsSchema,
   githubIntegrationBotLogin: z.string().trim().max(255).nullable().optional(),
   githubPrAllowedUsers: githubAllowedUsersSchema.optional(),
   githubPrRequireBotMention: z.boolean().optional(),

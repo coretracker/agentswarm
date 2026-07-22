@@ -79,16 +79,18 @@ const verifySignature = (rawBody: string, signatureHeader: string | null, secret
   return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
 };
 
-const readSignatureHeader = (request: FastifyRequest, headerNames: string[] | undefined): string | null => {
+const readSignatureHeaders = (request: FastifyRequest, headerNames: string[] | undefined): Array<{ header: string; value: string }> => {
   const configuredHeaderNames =
     Array.isArray(headerNames) && headerNames.length > 0 ? headerNames : ["x-webhook-signature", "x-hub-signature-256"];
+  const signatures: Array<{ header: string; value: string }> = [];
   for (const headerName of configuredHeaderNames) {
-    const headerValue = readHeader(request.headers[headerName.toLowerCase()]);
+    const header = headerName.toLowerCase();
+    const headerValue = readHeader(request.headers[header]);
     if (headerValue) {
-      return headerValue;
+      signatures.push({ header, value: headerValue });
     }
   }
-  return null;
+  return signatures;
 };
 
 const flattenHeaders = (headers: Record<string, string | string[] | undefined>): Record<string, string> => {
@@ -144,12 +146,19 @@ export const registerInboundWebhookRoutes = (
     const headers = flattenHeaders(request.headers);
     const sourceIp = request.ip || null;
 
-    const secret = await deps.repositoryStore.getRepositoryInboundWebhookSecret(repository.id);
-    if (secret) {
+    const [secret, signatureSecrets] = await Promise.all([
+      deps.repositoryStore.getRepositoryInboundWebhookSecret(repository.id),
+      deps.repositoryStore.getRepositoryInboundWebhookSignatureSecrets(repository.id)
+    ]);
+    if (secret || Object.keys(signatureSecrets).length > 0) {
       const rawBody = (request as RawBodyRequest).rawBody ?? "";
-      const signature = readSignatureHeader(request, repository.inboundWebhookSignatureHeaders);
+      const signatures = readSignatureHeaders(request, repository.inboundWebhookSignatureHeaders);
       const slackTimestamp = readHeader(request.headers["x-slack-request-timestamp"]);
-      if (!verifySignature(rawBody, signature, secret, slackTimestamp)) {
+      const valid = signatures.some((signature) => {
+        const signatureSecret = signatureSecrets[signature.header] ?? secret;
+        return signatureSecret ? verifySignature(rawBody, signature.value, signatureSecret, slackTimestamp) : false;
+      });
+      if (!valid) {
         await deps.webhookInboxStore.insertEntry({
           repositoryId: repository.id,
           headers,
