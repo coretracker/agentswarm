@@ -146,7 +146,7 @@ const normalizeInboundWebhookSignatureHeaderSecretMap = (value: unknown): Record
   for (const [rawHeader, rawSecret] of Object.entries(value)) {
     const header = rawHeader.trim().toLowerCase();
     const secret = typeof rawSecret === "string" ? rawSecret.trim() : "";
-    if (!header || !secret) {
+    if (!header) {
       continue;
     }
     if (header.length > INBOUND_WEBHOOK_SIGNATURE_HEADER_MAX_LENGTH || !HTTP_HEADER_NAME_PATTERN.test(header)) {
@@ -179,7 +179,7 @@ const normalizeInboundWebhookSignatureHeaderSecretInputs = (
       continue;
     }
     const secret = typeof input.secret === "string" ? input.secret.trim() : "";
-    if (secret) {
+    if ("secret" in input) {
       next[header] = secret;
     }
   }
@@ -191,7 +191,7 @@ const toConfiguredInboundWebhookSignatureHeaderSecrets = (
 ): InboundWebhookSignatureHeaderSecret[] =>
   Object.keys(value)
     .sort()
-    .map((header) => ({ header, secretConfigured: true }));
+    .map((header) => ({ header, secretConfigured: value[header]?.length > 0 }));
 
 export type RepositoryRuntimeEnvEntry =
   | {
