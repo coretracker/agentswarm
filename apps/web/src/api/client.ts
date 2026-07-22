@@ -111,6 +111,26 @@ export class ApiError extends Error {
   }
 }
 
+export function formatApiErrorMessage(status: number, statusText: string, raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return statusText || `Request failed (${status})`;
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as { message?: unknown; error?: { message?: unknown } };
+    const message = parsed.message ?? parsed.error?.message;
+    if (typeof message === "string" && message.trim()) {
+      return message.trim();
+    }
+  } catch {
+    // Fall through to HTML/text handling.
+  }
+  if (/^\s*</.test(trimmed)) {
+    return statusText ? `${statusText} (${status})` : `Request failed (${status})`;
+  }
+  return trimmed;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body !== undefined && !headers.has("Content-Type")) {
@@ -126,13 +146,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const raw = await response.text();
-    let message = raw || response.statusText;
-    try {
-      const parsed = JSON.parse(raw) as { message?: string };
-      message = parsed.message ?? message;
-    } catch {
-      // Keep the raw response body when the server does not return JSON.
-    }
+    const message = formatApiErrorMessage(response.status, response.statusText, raw);
 
     throw new ApiError(response.status, message);
   }

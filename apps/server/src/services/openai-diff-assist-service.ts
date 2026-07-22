@@ -4,6 +4,7 @@ import type { OpenAiDiffAssistResult, ProviderProfile } from "@verft/shared-type
 import { env } from "../config/env.js";
 import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
 import { readSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
+import { formatOpenAiErrorMessage } from "./openai-error-message.js";
 
 const MAX_SNIPPET = 48_000;
 const MAX_USER_PROMPT = 16_000;
@@ -57,7 +58,7 @@ async function postChatCompletions(
   });
   const raw = await res.text();
   if (!res.ok) {
-    return { ok: false, status: res.status, message: raw.slice(0, 2000) };
+    return { ok: false, status: res.status, message: formatOpenAiErrorMessage(res.status, raw) };
   }
   try {
     return { ok: true, data: JSON.parse(raw) as unknown };

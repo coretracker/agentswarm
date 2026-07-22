@@ -1,4 +1,5 @@
 import type { TaskPromptMagicResult } from "@verft/shared-types";
+import { formatOpenAiErrorMessage } from "./openai-error-message.js";
 
 const MAX_USER_PROMPT = 16_000;
 const DEFAULT_MODEL = "gpt-5.4-mini";
@@ -56,7 +57,7 @@ async function postChatCompletions(
 
   const raw = await response.text();
   if (!response.ok) {
-    return { ok: false, status: response.status, message: raw.slice(0, 2000) };
+    return { ok: false, status: response.status, message: formatOpenAiErrorMessage(response.status, raw) };
   }
 
   try {
