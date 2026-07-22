@@ -13,7 +13,6 @@ const user = {
   defaultModel: null,
   defaultProviderProfile: null,
   active: true,
-  agentResponsePreference: {},
   roles: [],
   repositoryIds: ["repo-1"],
   lastLoginAt: null,

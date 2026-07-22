@@ -6,8 +6,6 @@ import type { Pool } from "pg";
 import {
   ALL_PERMISSION_SCOPES,
   type AgentProvider,
-  type AgentResponsePreference,
-  type AudienceType,
   type AuthSessionUser,
   type CreateUserInput,
   type PermissionScope,
@@ -48,7 +46,6 @@ export interface StoredUserRecord {
   defaultModel: string | null;
   defaultProviderProfile: ProviderProfile | null;
   active: boolean;
-  agentResponsePreference: AgentResponsePreference;
   roleIds: string[];
   repositoryIds: string[];
   passwordHash: string;
@@ -80,57 +77,6 @@ const normalizeDefaultModel = (value: string | null | undefined): string | null 
 };
 const normalizeDefaultProviderProfile = (value: ProviderProfile | string | null | undefined): ProviderProfile | null =>
   value === "low" || value === "medium" || value === "high" || value === "max" ? value : null;
-const DEFAULT_AGENT_RESPONSE_PREFERENCE: AgentResponsePreference = {};
-const RESPONSE_AUDIENCES = new Set<AudienceType>(["technical", "non_technical", "mixed"]);
-const RESPONSE_EXPLANATION_DEPTH = new Set(["one_line", "brief", "standard", "detailed", "deep_dive"]);
-const RESPONSE_JARGON_LEVEL = new Set(["avoid", "balanced", "expert"]);
-const RESPONSE_CODE_PREFERENCE = new Set(["only_when_needed", "prefer_examples", "avoid_code"]);
-const RESPONSE_CLARIFY_BEHAVIOR = new Set(["ask_when_ambiguous", "make_reasonable_assumptions"]);
-const RESPONSE_FORMATTING_STYLE = new Set(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]);
-
-const normalizeAgentResponsePreference = (
-  value: Partial<AgentResponsePreference> | AgentResponsePreference | null | undefined,
-  fallback: AgentResponsePreference = DEFAULT_AGENT_RESPONSE_PREFERENCE
-): AgentResponsePreference => ({
-  audience:
-    (() => {
-      const nextAudience = value?.audience ?? fallback.audience;
-      if (typeof nextAudience === "string" && RESPONSE_AUDIENCES.has(nextAudience as AudienceType)) {
-        return nextAudience as AudienceType;
-      }
-      const legacyStyle = (value as { style?: string } | undefined)?.style ?? (fallback as { style?: string } | undefined)?.style;
-      if (legacyStyle === "technical" || legacyStyle === "non_technical") {
-        return legacyStyle;
-      }
-      return undefined;
-    })(),
-  explanationDepth:
-    typeof (value?.explanationDepth ?? fallback.explanationDepth) === "string" &&
-    RESPONSE_EXPLANATION_DEPTH.has((value?.explanationDepth ?? fallback.explanationDepth) as string)
-      ? (value?.explanationDepth ?? fallback.explanationDepth)
-      : undefined,
-  jargonLevel:
-    typeof (value?.jargonLevel ?? fallback.jargonLevel) === "string" &&
-    RESPONSE_JARGON_LEVEL.has((value?.jargonLevel ?? fallback.jargonLevel) as string)
-      ? (value?.jargonLevel ?? fallback.jargonLevel)
-      : undefined,
-  codePreference:
-    typeof (value?.codePreference ?? fallback.codePreference) === "string" &&
-    RESPONSE_CODE_PREFERENCE.has((value?.codePreference ?? fallback.codePreference) as string)
-      ? (value?.codePreference ?? fallback.codePreference)
-      : undefined,
-  clarifyBehavior:
-    typeof (value?.clarifyBehavior ?? fallback.clarifyBehavior) === "string" &&
-    RESPONSE_CLARIFY_BEHAVIOR.has((value?.clarifyBehavior ?? fallback.clarifyBehavior) as string)
-      ? (value?.clarifyBehavior ?? fallback.clarifyBehavior)
-      : undefined,
-  formattingStyle:
-    typeof (value?.formattingStyle ?? fallback.formattingStyle) === "string" &&
-    RESPONSE_FORMATTING_STYLE.has((value?.formattingStyle ?? fallback.formattingStyle) as string)
-      ? (value?.formattingStyle ?? fallback.formattingStyle)
-      : undefined,
-  extraInstructions: (value?.extraInstructions ?? fallback.extraInstructions)?.trim() || undefined
-});
 
 const sortScopes = (scopes: PermissionScope[]): PermissionScope[] =>
   Array.from(new Set(scopes)).sort((left, right) => (scopeOrder.get(left) ?? 0) - (scopeOrder.get(right) ?? 0));
@@ -208,7 +154,6 @@ export class RedisUserStore implements UserStore {
       defaultModel: normalizeDefaultModel(user.defaultModel),
       defaultProviderProfile: normalizeDefaultProviderProfile(user.defaultProviderProfile),
       active: user.active !== false,
-      agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
       repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
       lastLoginAt: user.lastLoginAt ?? null
@@ -295,7 +240,6 @@ export class RedisUserStore implements UserStore {
       defaultModel: user.defaultModel,
       defaultProviderProfile: user.defaultProviderProfile,
       active: user.active,
-      agentResponsePreference: user.agentResponsePreference,
       roles: this.buildRoleRefs(roles),
       repositoryIds: user.repositoryIds,
       lastLoginAt: user.lastLoginAt,
@@ -442,8 +386,7 @@ export class RedisUserStore implements UserStore {
       scopes,
       allowedProviders,
       allowedModels,
-      allowedEfforts,
-      agentResponsePreference: user.agentResponsePreference
+      allowedEfforts
     };
   }
 
@@ -516,7 +459,6 @@ export class RedisUserStore implements UserStore {
       defaultModel: normalizeDefaultModel(input.defaultModel),
       defaultProviderProfile: normalizeDefaultProviderProfile(input.defaultProviderProfile),
       active: input.active !== false,
-      agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
       repositoryIds,
       passwordHash: passwordState.passwordHash,
@@ -585,10 +527,6 @@ export class RedisUserStore implements UserStore {
           ? current.defaultProviderProfile
           : normalizeDefaultProviderProfile(input.defaultProviderProfile),
       active: nextActive,
-      agentResponsePreference:
-        input.agentResponsePreference === undefined
-          ? current.agentResponsePreference
-          : normalizeAgentResponsePreference(input.agentResponsePreference, current.agentResponsePreference),
       roleIds: nextRoleIds,
       repositoryIds: nextRepositoryIds,
       passwordHash,
@@ -655,11 +593,6 @@ export class PostgresUserStore implements UserStore {
       defaultModel: typeof row.default_model === "string" ? row.default_model : null,
       defaultProviderProfile: normalizeDefaultProviderProfile(row.default_provider_profile as ProviderProfile | string | null | undefined),
       active: row.active !== false,
-      agentResponsePreference: normalizeAgentResponsePreference(
-        row.agent_response_preference && typeof row.agent_response_preference === "object"
-          ? (row.agent_response_preference as Partial<AgentResponsePreference>)
-          : undefined
-      ),
       roleIds,
       repositoryIds,
       passwordHash: String(row.password_hash ?? ""),
@@ -682,7 +615,6 @@ export class PostgresUserStore implements UserStore {
       defaultModel: normalizeDefaultModel(user.defaultModel),
       defaultProviderProfile: normalizeDefaultProviderProfile(user.defaultProviderProfile),
       active: user.active !== false,
-      agentResponsePreference: normalizeAgentResponsePreference(user.agentResponsePreference),
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
       repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
       lastLoginAt: user.lastLoginAt ?? null
@@ -805,7 +737,6 @@ export class PostgresUserStore implements UserStore {
       defaultModel: user.defaultModel,
       defaultProviderProfile: user.defaultProviderProfile,
       active: user.active,
-      agentResponsePreference: user.agentResponsePreference,
       roles: this.buildRoleRefs(roles),
       repositoryIds: user.repositoryIds,
       lastLoginAt: user.lastLoginAt,
@@ -864,14 +795,13 @@ export class PostgresUserStore implements UserStore {
           default_model,
           default_provider_profile,
           active,
-          agent_response_preference,
           password_hash,
           password_salt,
           last_login_at,
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15, $16)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
         ON CONFLICT (id) DO UPDATE
         SET
           name = EXCLUDED.name,
@@ -883,7 +813,6 @@ export class PostgresUserStore implements UserStore {
           default_model = EXCLUDED.default_model,
           default_provider_profile = EXCLUDED.default_provider_profile,
           active = EXCLUDED.active,
-          agent_response_preference = EXCLUDED.agent_response_preference,
           password_hash = EXCLUDED.password_hash,
           password_salt = EXCLUDED.password_salt,
           last_login_at = EXCLUDED.last_login_at,
@@ -901,7 +830,6 @@ export class PostgresUserStore implements UserStore {
         nextUser.defaultModel,
         nextUser.defaultProviderProfile,
         nextUser.active,
-        JSON.stringify(nextUser.agentResponsePreference),
         nextUser.passwordHash,
         nextUser.passwordSalt,
         nextUser.lastLoginAt,
@@ -1057,8 +985,7 @@ export class PostgresUserStore implements UserStore {
       scopes,
       allowedProviders,
       allowedModels,
-      allowedEfforts,
-      agentResponsePreference: user.agentResponsePreference
+      allowedEfforts
     };
   }
 
@@ -1134,7 +1061,6 @@ export class PostgresUserStore implements UserStore {
       defaultModel: normalizeDefaultModel(input.defaultModel),
       defaultProviderProfile: normalizeDefaultProviderProfile(input.defaultProviderProfile),
       active: input.active !== false,
-      agentResponsePreference: normalizeAgentResponsePreference(input.agentResponsePreference),
       roleIds,
       repositoryIds,
       passwordHash: passwordState.passwordHash,
@@ -1206,10 +1132,6 @@ export class PostgresUserStore implements UserStore {
           ? current.defaultProviderProfile
           : normalizeDefaultProviderProfile(input.defaultProviderProfile),
       active: nextActive,
-      agentResponsePreference:
-        input.agentResponsePreference === undefined
-          ? current.agentResponsePreference
-          : normalizeAgentResponsePreference(input.agentResponsePreference, current.agentResponsePreference),
       roleIds: nextRoleIds,
       repositoryIds: nextRepositoryIds,
       passwordHash,
