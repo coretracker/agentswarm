@@ -686,7 +686,7 @@ function IntegrationRuleEditorModal({
 
         <Typography.Text strong style={{ display: "block", marginBottom: 8 }}>Mapping</Typography.Text>
         <Typography.Text type="secondary" style={{ display: "block", marginBottom: 12 }}>
-          Use {"{{body.path.to.field}}"} and {"{{header.X-Name}}"} placeholders to interpolate values from the webhook payload.
+          Use {"{{body.path.to.field}}"} and {"{{header.X-Name}}"} placeholders. Helpers: {"{{slugify(body.title)}}"} and {"{{truncate(body.title, 200)}}"}.
         </Typography.Text>
         <Form.Item name="mappingTitle" label="Task Title Template">
           <Input placeholder={"e.g. {{body.issue.summary}}"} />

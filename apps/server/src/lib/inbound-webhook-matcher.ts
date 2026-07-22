@@ -17,6 +17,20 @@ export const getNestedValue = (obj: unknown, dotPath: string): unknown => {
   return current;
 };
 
+const stringifyTemplateValue = (value: unknown): string =>
+  value !== undefined && value !== null ? String(value) : "";
+
+const slugify = (value: string): string =>
+  value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+
+const truncate = (value: string, maxLength: number): string =>
+  value.slice(0, Math.max(0, maxLength));
+
 const resolveFieldValue = (
   condition: IntegrationRuleFilterCondition,
   headers: Record<string, string>,
@@ -85,27 +99,58 @@ export const findMatchingRule = (
   return null;
 };
 
+const resolveTemplatePath = (
+  path: string,
+  headers: Record<string, string>,
+  body: unknown
+): string | null => {
+  if (path.startsWith("body.")) {
+    return stringifyTemplateValue(getNestedValue(body, path.slice(5)));
+  }
+  if (path.startsWith("header.")) {
+    const headerName = path.slice(7);
+    const lowerName = headerName.toLowerCase();
+    for (const [key, value] of Object.entries(headers)) {
+      if (key.toLowerCase() === lowerName) {
+        return value;
+      }
+    }
+    return "";
+  }
+  return null;
+};
+
+const resolveTemplateExpression = (
+  expression: string,
+  headers: Record<string, string>,
+  body: unknown
+): string | null => {
+  const directValue = resolveTemplatePath(expression, headers, body);
+  if (directValue !== null) {
+    return directValue;
+  }
+
+  const slugifyMatch = expression.match(/^slugify\((body\.[^)]+|header\.[^)]+)\)$/);
+  if (slugifyMatch?.[1]) {
+    return slugify(resolveTemplatePath(slugifyMatch[1], headers, body) ?? "");
+  }
+
+  const truncateMatch = expression.match(/^truncate\((body\.[^)]+|header\.[^)]+),\s*(\d+)\)$/);
+  if (truncateMatch?.[1] && truncateMatch[2]) {
+    return truncate(resolveTemplatePath(truncateMatch[1], headers, body) ?? "", Number(truncateMatch[2]));
+  }
+
+  return null;
+};
+
 export const interpolateTemplate = (
   template: string,
   headers: Record<string, string>,
   body: unknown
 ): string =>
-  template.replace(/\{\{(body\.[^}]+|header\.[^}]+)\}\}/g, (_match, path: string) => {
-    if (path.startsWith("body.")) {
-      const value = getNestedValue(body, path.slice(5));
-      return value !== undefined && value !== null ? String(value) : "";
-    }
-    if (path.startsWith("header.")) {
-      const headerName = path.slice(7);
-      const lowerName = headerName.toLowerCase();
-      for (const [key, value] of Object.entries(headers)) {
-        if (key.toLowerCase() === lowerName) {
-          return value;
-        }
-      }
-      return "";
-    }
-    return "";
+  template.replace(/\{\{([^}]+)\}\}/g, (match, rawExpression: string) => {
+    const resolved = resolveTemplateExpression(rawExpression.trim(), headers, body);
+    return resolved ?? match;
   });
 
 export const resolveCorrelationValue = (
