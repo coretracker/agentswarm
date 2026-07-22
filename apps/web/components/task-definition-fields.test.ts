@@ -62,7 +62,6 @@ test("getTaskDefinitionInitialValues uses user defaults before repository and sy
       provider: "codex",
       model: "gpt-5.4",
       providerProfile: "high",
-      codexCredentialSource: "auto",
       branchStrategy: "feature_branch"
     }
   );
@@ -74,7 +73,6 @@ test("getTaskDefinitionInitialValues uses repository defaults before system defa
     provider: "claude",
     model: "claude-sonnet-4-6",
     providerProfile: "max",
-    codexCredentialSource: "auto",
     branchStrategy: "feature_branch"
   });
 });
@@ -92,7 +90,6 @@ test("getTaskDefinitionInitialValues falls back to system defaults when reposito
       provider: "codex",
       model: "gpt-5.5",
       providerProfile: "medium",
-      codexCredentialSource: "auto",
       branchStrategy: "feature_branch"
     }
   );

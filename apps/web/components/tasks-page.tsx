@@ -299,12 +299,6 @@ export function TasksPage() {
                 render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
               },
               {
-                title: "Deadline",
-                dataIndex: "deadline",
-                sorter: (a, b) => (a.deadline ?? "").localeCompare(b.deadline ?? ""),
-                render: (value: Task["deadline"]) => (value ? dayjs(value).format("YYYY-MM-DD HH:mm") : "None")
-              },
-              {
                 title: "Actions",
                 key: "actions",
                 width: 170,

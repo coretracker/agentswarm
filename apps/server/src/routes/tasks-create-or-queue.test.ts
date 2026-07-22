@@ -43,7 +43,6 @@ const openTask = {
   provider: "codex",
   providerProfile: "high",
   modelOverride: null,
-  codexCredentialSource: "auto",
   title: "Fix CI",
   prompt: "Fix CI",
   createdAt: "2026-07-13T00:00:00.000Z",

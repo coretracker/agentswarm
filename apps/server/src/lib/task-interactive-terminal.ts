@@ -282,7 +282,7 @@ export async function getTaskInteractiveTerminalStatus(
     return { available: false, reason: "No workspace folder on disk for this task yet." };
   }
 
-  const credentials = await settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto");
+  const credentials = await settingsStore.getRuntimeCredentials();
   const runtime = resolveGitTerminalRuntimeConfig(credentials);
   if (!runtime.ok) {
     return { available: false, reason: runtime.reason };
@@ -417,7 +417,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       repositoryRuntimeEnvEntries,
       repositoryHostCommands
     ] = await Promise.all([
-      deps.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto"),
+      deps.settingsStore.getRuntimeCredentials(),
       deps.settingsStore.getSettings(),
       deps.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
       deps.repositoryStore.getRepositoryHostCommands(task.repoId)

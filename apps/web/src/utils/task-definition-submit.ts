@@ -13,13 +13,11 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput, option
     draft: options.draft,
     repoId: definition.repoId,
     prompt: definition.prompt,
-    deadline: definition.deadline,
     attachments: definition.attachments,
     taskType: definition.taskType,
     provider: definition.provider,
     providerProfile: definition.providerProfile,
     modelOverride: definition.model || undefined,
-    codexCredentialSource: definition.codexCredentialSource,
     baseBranch: definition.baseBranch,
     branchStrategy: definition.branchStrategy
   });

@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import dayjs from "dayjs";
 import { getDefaultModelForProvider, type Task, type UpdateTaskDraftInput } from "@verft/shared-types";
 import { App, Button, Form, Modal } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
@@ -25,27 +24,23 @@ interface TaskCreateModalProps {
 
 const getDraftTaskInitialValues = (task: Task): Partial<TaskDefinitionFormValues> => ({
   title: task.title,
-  deadline: task.deadline ? dayjs(task.deadline) : null,
   repoId: task.repoId,
   prompt: task.prompt === "(No prompt provided.)" ? "" : task.prompt,
   taskType: task.taskType,
   provider: task.provider,
   model: task.modelOverride ?? getDefaultModelForProvider(task.provider),
   providerProfile: task.providerProfile,
-  codexCredentialSource: task.codexCredentialSource ?? "auto",
   baseBranch: task.baseBranch,
   branchStrategy: task.branchStrategy,
 });
 
 const buildDraftUpdateInput = (values: TaskDefinitionFormValues): UpdateTaskDraftInput => ({
   title: values.title?.trim() ?? "",
-  deadline: values.deadline ? dayjs(values.deadline).toISOString() : null,
   prompt: values.prompt?.trim() ?? "",
   taskType: values.taskType ?? "build",
   provider: values.provider ?? "codex",
   providerProfile: values.providerProfile ?? "high",
   modelOverride: values.model?.trim() || null,
-  ...(values.provider === "codex" || !values.provider ? { codexCredentialSource: values.codexCredentialSource ?? "auto" } : {}),
   baseBranch: values.baseBranch?.trim() ?? "",
   branchStrategy: values.branchStrategy ?? "feature_branch"
 });

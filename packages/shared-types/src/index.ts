@@ -593,7 +593,6 @@ export interface Repository {
 }
 
 export type TaskTerminalSessionMode = "terminal";
-export type CodexCredentialSource = "auto" | "global";
 
 export interface TaskLinkedWorkspace {
   taskId: string;
@@ -607,7 +606,6 @@ export interface TaskLinkedWorkspace {
 export interface Task {
   id: string;
   title: string;
-  deadline: string | null;
   pinned: boolean;
   hasPendingCheckpoint: boolean;
   autoApplyCheckpoints: boolean;
@@ -630,7 +628,6 @@ export interface Task {
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride: string | null;
-  codexCredentialSource?: CodexCredentialSource;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
   complexity: TaskComplexity;
@@ -1104,7 +1101,6 @@ export interface UpdateRepositoryInput {
 export interface CreateTaskInput {
   title: string;
   draft?: boolean;
-  deadline?: string | null;
   repoId: string;
   prompt: string;
   attachments?: CreateTaskPromptAttachmentInput[];
@@ -1112,7 +1108,6 @@ export interface CreateTaskInput {
   provider?: AgentProvider;
   providerProfile?: ProviderProfile;
   modelOverride?: string;
-  codexCredentialSource?: CodexCredentialSource;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
   autoApplyCheckpoints?: boolean;
@@ -1124,7 +1119,6 @@ export interface CreateTaskInput {
 
 export interface TaskDefinitionInput {
   title: string;
-  deadline?: string | null;
   repoId: string;
   prompt: string;
   attachments?: CreateTaskPromptAttachmentInput[];
@@ -1132,7 +1126,6 @@ export interface TaskDefinitionInput {
   provider: AgentProvider;
   model: string;
   providerProfile: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
 }
@@ -1145,7 +1138,6 @@ export interface UpdateTaskConfigInput {
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride?: string | null;
-  codexCredentialSource?: CodexCredentialSource;
   branchStrategy?: TaskBranchStrategy;
   autoApplyCheckpoints?: boolean;
 }
@@ -1158,19 +1150,13 @@ export interface UpdateTaskTitleInput {
   title: string;
 }
 
-export interface UpdateTaskDeadlineInput {
-  deadline: string | null;
-}
-
 export interface UpdateTaskDraftInput {
   title: string;
-  deadline: string | null;
   prompt: string;
   taskType: TaskType;
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride?: string | null;
-  codexCredentialSource?: CodexCredentialSource;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
 }

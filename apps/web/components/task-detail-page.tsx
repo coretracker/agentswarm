@@ -34,7 +34,6 @@ import {
   type TaskWorkspaceCommit,
   type TaskWorkspaceFilePreview,
   type TaskGitOperation,
-  type CodexCredentialSource,
   type User
 } from "@verft/shared-types";
 import {
@@ -43,7 +42,6 @@ import {
   Card,
   Checkbox,
   Collapse,
-  DatePicker,
   Descriptions,
   Divider,
   Dropdown,
@@ -206,11 +204,6 @@ function getProviderConfiguredModels(provider: AgentProvider, settings?: SystemS
 const providerOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: "Codex (OpenAI)", value: "codex" },
   { label: getAgentProviderLabel("claude"), value: "claude" }
-];
-
-const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
-  { label: "Auto (System credentials)", value: "auto" },
-  { label: "Global OpenAI key or auth.json", value: "global" }
 ];
 
 const branchStrategyOptions: Array<{ label: string; value: TaskBranchStrategy }> = [
@@ -680,7 +673,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [providerInput, setProviderInput] = useState<AgentProvider>("codex");
   const [providerProfileInput, setProviderProfileInput] = useState<ProviderProfile>("high");
   const [modelInput, setModelInput] = useState<string>("gpt-5.4");
-  const [codexCredentialSourceInput, setCodexCredentialSourceInput] = useState<CodexCredentialSource>("auto");
   const [branchStrategyInput, setBranchStrategyInput] = useState<TaskBranchStrategy>("feature_branch");
   const [autoApplyCheckpointsInput, setAutoApplyCheckpointsInput] = useState(false);
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(providerInput);
@@ -709,7 +701,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "message"
     | "pin"
     | "assign"
-    | "deadline"
     | "state"
     | "renameTitle"
     | "linkTask"
@@ -1049,13 +1040,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const currentTaskProviderProfile = task?.providerProfile ?? "high";
   const currentTaskModelOverride = task?.modelOverride?.trim() ?? "";
   const currentTaskModel = currentTaskModelOverride || getProviderDefaultModel(currentTaskProvider, settings);
-  const currentTaskCodexCredentialSource = task?.codexCredentialSource ?? "auto";
   const currentTaskAutoApplyCheckpoints = task?.autoApplyCheckpoints === true;
   const interactiveTerminalConfigDirty =
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
     modelInput !== currentTaskModel ||
-    (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource) ||
     autoApplyCheckpointsInput !== currentTaskAutoApplyCheckpoints;
   const currentTaskBranchStrategy = task?.branchStrategy ?? "feature_branch";
   const hasExecutionContext = Boolean(task?.executionSummary?.trim());
@@ -1063,7 +1052,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
     modelInput !== currentTaskModel ||
-    (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource) ||
     autoApplyCheckpointsInput !== currentTaskAutoApplyCheckpoints ||
     (isImplementationTask && branchStrategyInput !== currentTaskBranchStrategy);
 
@@ -1077,7 +1065,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     setProviderInput(nextTask.provider ?? "codex");
     setProviderProfileInput(nextTask.providerProfile ?? "high");
     setModelInput(nextTask.modelOverride ?? getProviderDefaultModel(nextTask.provider ?? "codex", settings));
-    setCodexCredentialSourceInput(nextTask.codexCredentialSource ?? "auto");
     setBranchStrategyInput(nextTask.branchStrategy ?? "feature_branch");
     setAutoApplyCheckpointsInput(nextTask.autoApplyCheckpoints === true);
   };
@@ -1215,32 +1202,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting((current) => (current === "assign" ? null : current));
     }
   };
-  const handleUpdateDeadline = async (nextDeadline: string | null): Promise<void> => {
-    if (!task || !canEditTask || isArchived) {
-      return;
-    }
-
-    const currentDeadline = task.deadline ? dayjs(task.deadline).toISOString() : null;
-    if (nextDeadline === currentDeadline) {
-      return;
-    }
-
-    setSubmitting("deadline");
-    try {
-      const updatedTask = await api.updateTaskDeadline(task.id, { deadline: nextDeadline });
-      applyUpdatedTask(updatedTask);
-      messageApi.success(updatedTask.deadline ? "Deadline updated" : "Deadline cleared");
-    } catch (error) {
-      showTaskActionError(error, "Failed to update deadline");
-    } finally {
-      setSubmitting((current) => (current === "deadline" ? null : current));
-    }
-  };
   const persistTaskConfig = async ({
     provider,
     providerProfile,
     modelOverride,
-    codexCredentialSource,
     branchStrategy,
     autoApplyCheckpoints,
     notify = true,
@@ -1249,7 +1214,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     provider: AgentProvider;
     providerProfile: ProviderProfile;
     modelOverride: string;
-    codexCredentialSource: CodexCredentialSource;
     branchStrategy?: TaskBranchStrategy;
     autoApplyCheckpoints: boolean;
     notify?: boolean;
@@ -1268,7 +1232,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         provider,
         providerProfile,
         modelOverride: modelOverride || null,
-        codexCredentialSource,
         branchStrategy,
         autoApplyCheckpoints
       });
@@ -1448,7 +1411,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     task?.provider,
     task?.providerProfile,
     task?.modelOverride,
-    task?.codexCredentialSource,
     task?.branchStrategy,
     task?.autoApplyCheckpoints,
     configDirty,
@@ -1486,7 +1448,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         provider: providerInput,
         providerProfile: providerProfileInput,
         modelOverride: modelInput,
-        codexCredentialSource: codexCredentialSourceInput,
         branchStrategy: isImplementationTask ? branchStrategyInput : undefined,
         autoApplyCheckpoints: autoApplyCheckpointsInput,
         notify: false,
@@ -1510,7 +1471,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     providerInput,
     providerProfileInput,
     modelInput,
-    codexCredentialSourceInput,
     isImplementationTask,
     branchStrategyInput,
     autoApplyCheckpointsInput,
@@ -2228,8 +2188,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     !!chatInput.trim() ||
     providerInput !== currentTaskProvider ||
     providerProfileInput !== currentTaskProviderProfile ||
-    modelInput !== currentTaskModel ||
-    (providerInput === "codex" && codexCredentialSourceInput !== currentTaskCodexCredentialSource);
+    modelInput !== currentTaskModel;
   const composerClearDisabled = interactiveTerminalRunning || !composerHasChangesToClear;
   const terminalSubmitDisabled =
     chatClosed ||
@@ -2252,7 +2211,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setProviderInput(nextProvider);
       setModelInput(currentTaskModel);
       setProviderProfileInput(currentTaskProviderProfile);
-      setCodexCredentialSourceInput(currentTaskCodexCredentialSource);
     }
   };
   const handleSubmitComposer = async () => {
@@ -2482,7 +2440,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       provider: providerInput,
       providerProfile: providerProfileInput,
       modelOverride: modelInput,
-      codexCredentialSource: codexCredentialSourceInput,
       branchStrategy: isImplementationTask ? branchStrategyInput : undefined,
       autoApplyCheckpoints: autoApplyCheckpointsInput,
       notify,
@@ -3345,33 +3302,10 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             )}
           </Descriptions.Item>
           <Descriptions.Item label="Created">{task ? dayjs(task.createdAt).format("YYYY-MM-DD HH:mm") : ""}</Descriptions.Item>
-          <Descriptions.Item label="Deadline">
-            {canEditTask && !isArchived ? (
-              <DatePicker
-                value={task?.deadline ? dayjs(task.deadline) : null}
-                showTime={{ format: "HH:mm" }}
-                format="YYYY-MM-DD HH:mm"
-                placeholder="No deadline"
-                allowClear
-                disabled={submitting === "deadline"}
-                onChange={(value) => void handleUpdateDeadline(value ? value.toISOString() : null)}
-                style={{ minWidth: 220 }}
-              />
-            ) : task?.deadline ? (
-              dayjs(task.deadline).format("YYYY-MM-DD HH:mm")
-            ) : (
-              "None"
-            )}
-          </Descriptions.Item>
           <Descriptions.Item label="Provider">{getAgentProviderLabel(currentTaskProvider)}</Descriptions.Item>
           <Descriptions.Item label="Effort">{getProviderProfileLabel(currentTaskProviderProfile)}</Descriptions.Item>
           <Descriptions.Item label="Last Action">{task?.lastAction ?? "draft"}</Descriptions.Item>
           <Descriptions.Item label="Model">{currentTaskModel}</Descriptions.Item>
-          {currentTaskProvider === "codex" ? (
-            <Descriptions.Item label="Codex Credential Source">
-              {codexCredentialSourceOptions.find((option) => option.value === currentTaskCodexCredentialSource)?.label ?? "Auto"}
-            </Descriptions.Item>
-          ) : null}
           <Descriptions.Item label="Linked Workspaces" span={2}>
             {task?.linkedWorkspaces?.length ? (
               <Space size={[8, 8]} wrap>
@@ -3927,10 +3861,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     providerOptions.find((option) => option.value === providerInput)?.label ?? getAgentProviderLabel(providerInput),
     (allowedProviderModels.find((option) => option.value === modelInput)?.label ?? modelInput) ||
       `${getProviderDefaultModel(providerInput, settings)} (default)`,
-    getProviderProfileLabel(providerProfileInput),
-    providerInput === "codex"
-      ? `Credential: ${codexCredentialSourceOptions.find((option) => option.value === codexCredentialSourceInput)?.label ?? "Auto"}`
-      : null
+    getProviderProfileLabel(providerProfileInput)
   ]
     .filter((part): part is string => Boolean(part))
     .join(" · ");
@@ -5502,16 +5433,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
             />
           </div>
           <div>
-            <Typography.Text type="secondary">Codex Credential Source</Typography.Text>
-            <Select
-              value={codexCredentialSourceInput}
-              options={codexCredentialSourceOptions}
-              onChange={(value) => setCodexCredentialSourceInput(value)}
-              style={{ width: "100%", marginTop: 6 }}
-              disabled={!canEditTask || isArchived || interactiveTerminalRunning || providerInput !== "codex"}
-            />
-          </div>
-          <div>
             <Flex align="center" justify="space-between" gap={12}>
               <div>
                 <Typography.Text type="secondary">Checkpoint Apply Mode</Typography.Text>
@@ -6078,8 +5999,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   branchStrategy: "work_on_branch",
                   provider: task.provider,
                   providerProfile: task.providerProfile,
-                  modelOverride: task.modelOverride ?? undefined,
-                  codexCredentialSource: task.codexCredentialSource
+                  modelOverride: task.modelOverride ?? undefined
                 });
                 followUpForm.resetFields();
                 setFollowUpMode(null);

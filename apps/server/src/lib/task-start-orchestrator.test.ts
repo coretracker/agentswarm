@@ -7,7 +7,6 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
   ({
     id: "task-1",
     title: "Test task",
-    deadline: null,
     pinned: false,
     hasPendingCheckpoint: false,
     autoApplyCheckpoints: false,
@@ -23,7 +22,6 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     provider: "codex",
     providerProfile: "high",
     modelOverride: null,
-    codexCredentialSource: "auto",
     baseBranch: "main",
     branchStrategy: "feature_branch",
     complexity: "normal",

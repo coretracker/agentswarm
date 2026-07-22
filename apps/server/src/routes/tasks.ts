@@ -51,18 +51,10 @@ const taskPromptAttachmentInputSchema = z.object({
   dataBase64: z.string().trim().min(1)
 });
 
-const deadlineSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .refine((value) => Number.isFinite(Date.parse(value)), "Deadline must be a valid date.")
-  .nullable();
-
 const createTaskSchema = z
   .object({
     title: z.string().min(1),
     draft: z.boolean().optional(),
-    deadline: deadlineSchema.optional(),
     repoId: z.string().min(1),
     prompt: z.string().default(""),
     attachments: z.array(taskPromptAttachmentInputSchema).max(TASK_PROMPT_ATTACHMENT_MAX_COUNT).optional(),
@@ -70,7 +62,6 @@ const createTaskSchema = z
     provider: z.enum(["codex", "claude"]).optional(),
     providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
     modelOverride: z.string().trim().min(1).optional(),
-    codexCredentialSource: z.enum(["auto", "global"]).optional(),
     baseBranch: z.string().min(1).optional(),
     branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
     model: z.string().min(1).optional(),
@@ -95,7 +86,6 @@ const updateTaskConfigSchema = z.object({
   provider: z.enum(["codex", "claude"]),
   providerProfile: z.enum(["low", "medium", "high", "max"]),
   modelOverride: z.string().trim().nullable().optional(),
-  codexCredentialSource: z.enum(["auto", "global"]).optional(),
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
   autoApplyCheckpoints: z.boolean().optional()
 });
@@ -108,20 +98,14 @@ const updateTaskTitleSchema = z.object({
   title: z.string().trim().min(1).max(500)
 });
 
-const updateTaskDeadlineSchema = z.object({
-  deadline: deadlineSchema
-});
-
 const updateTaskDraftSchema = z
   .object({
     title: z.string().trim().min(1).max(500),
-    deadline: deadlineSchema,
     prompt: z.string().trim().default(""),
     taskType: z.enum(["build", "ask"]),
     provider: z.enum(["codex", "claude"]),
     providerProfile: z.enum(["low", "medium", "high", "max"]),
     modelOverride: z.string().trim().min(1).nullable().optional(),
-    codexCredentialSource: z.enum(["auto", "global"]).optional(),
     baseBranch: z.string().trim().min(1),
     branchStrategy: z.enum(["feature_branch", "work_on_branch"])
   })
@@ -183,8 +167,7 @@ const createOrQueueTaskSchema = z
       createIfMissing: z.boolean().optional(),
       provider: z.enum(["codex", "claude"]).optional(),
       providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-      modelOverride: z.string().trim().min(1).optional(),
-      codexCredentialSource: z.enum(["auto", "global"]).optional()
+      modelOverride: z.string().trim().min(1).optional()
     }),
     dedupeKey: z.string().trim().min(1).max(500).optional()
   })
@@ -492,7 +475,6 @@ export const registerTaskRoutes = (
         provider: input.task.provider,
         providerProfile: input.task.providerProfile,
         modelOverride: input.task.modelOverride,
-        codexCredentialSource: input.task.codexCredentialSource,
         baseBranch: input.task.baseBranch,
         branchStrategy: input.task.workOnBranch === true ? "work_on_branch" as const : "feature_branch" as const
       };
@@ -1282,7 +1264,7 @@ export const registerTaskRoutes = (
 
       const [settings, credentials] = await Promise.all([
         deps.settingsStore.getSettings(),
-        deps.settingsStore.getRuntimeCredentials(null, "auto")
+        deps.settingsStore.getRuntimeCredentials()
       ]);
       try {
         const result = credentials.openaiApiKey
@@ -1645,18 +1627,14 @@ export const registerTaskRoutes = (
     const prompt = parsed.data.prompt.trim().length > 0 ? parsed.data.prompt.trim() : "(No prompt provided.)";
     const title = parsed.data.title.trim();
     const baseBranch = parsed.data.baseBranch.trim();
-    const deadline = parsed.data.deadline === null ? null : new Date(Date.parse(parsed.data.deadline)).toISOString();
     const action: TaskAction = parsed.data.taskType === "ask" ? "ask" : "build";
-    const codexCredentialSource = parsed.data.provider === "codex" ? (parsed.data.codexCredentialSource ?? task.codexCredentialSource ?? "auto") : undefined;
     const updated = await deps.taskStore.patchTask(task.id, {
       title,
-      deadline,
       prompt,
       taskType: parsed.data.taskType,
       provider: normalizeProvider(parsed.data.provider),
       providerProfile: parsed.data.providerProfile,
       modelOverride: parsed.data.modelOverride?.trim() || null,
-      codexCredentialSource,
       baseBranch,
       branchStrategy: parsed.data.branchStrategy,
       branchName: parsed.data.branchStrategy === "work_on_branch" ? baseBranch : null,
@@ -1705,7 +1683,6 @@ export const registerTaskRoutes = (
       provider: parsed.data.provider,
       providerProfile: parsed.data.providerProfile,
       modelOverride: parsed.data.modelOverride?.trim() || null,
-      codexCredentialSource: parsed.data.codexCredentialSource ?? task.codexCredentialSource,
       autoApplyCheckpoints: parsed.data.autoApplyCheckpoints ?? task.autoApplyCheckpoints,
       branchStrategy: parsed.data.branchStrategy ?? task.branchStrategy,
       branchName:
@@ -1764,29 +1741,6 @@ export const registerTaskRoutes = (
       title,
       complexity,
       executionSummary
-    });
-
-    return reply.send(updated);
-  });
-
-  app.patch<{ Params: { id: string } }>("/tasks/:id/deadline", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
-    const parsed = updateTaskDeadlineSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ message: parsed.error.message });
-    }
-
-    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
-    if (!task) {
-      return;
-    }
-
-    if (task.status === "archived") {
-      return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
-    }
-
-    const deadline = parsed.data.deadline === null ? null : new Date(Date.parse(parsed.data.deadline)).toISOString();
-    const updated = await deps.taskStore.patchTask(task.id, {
-      deadline
     });
 
     return reply.send(updated);

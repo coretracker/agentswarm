@@ -768,7 +768,7 @@ export const registerGitHubPrWebhookRoutes = (
         });
         const [settings, credentials] = await Promise.all([
           deps.settingsStore.getSettings(),
-          deps.settingsStore.getRuntimeCredentials(null, "auto").catch(() => ({ githubToken: null }))
+          deps.settingsStore.getRuntimeCredentials().catch(() => ({ githubToken: null }))
         ]);
         const linkedBranch = await resolveGitHubIssueLinkedBranch(feedback, credentials.githubToken).catch(() => null);
         const createdTask = await deps.taskStore.createTask(
@@ -882,7 +882,7 @@ export const registerGitHubPrWebhookRoutes = (
         await deps.scheduler.triggerNextPendingAction(task.id, "auto");
       }
       if (message) {
-        const credentials = await deps.settingsStore.getRuntimeCredentials(null, "auto").catch(() => ({ githubToken: null }));
+        const credentials = await deps.settingsStore.getRuntimeCredentials().catch(() => ({ githubToken: null }));
         await postGitHubFeedbackCommentReaction({
           feedback,
           githubToken: credentials.githubToken
@@ -900,7 +900,7 @@ export const registerGitHubPrWebhookRoutes = (
       }
 
       const [credentials, settings] = await Promise.all([
-        deps.settingsStore.getRuntimeCredentials(null, "auto"),
+        deps.settingsStore.getRuntimeCredentials(),
         deps.settingsStore.getSettings()
       ]);
       const branchDetails = await resolveGitHubPrBranchDetails(feedback, credentials.githubToken);
@@ -1033,7 +1033,7 @@ export const registerGitHubPrWebhookRoutes = (
       await deps.scheduler.triggerNextPendingAction(task.id, "auto");
     }
     if (message) {
-      const credentials = await deps.settingsStore.getRuntimeCredentials(null, "auto").catch(() => ({ githubToken: null }));
+      const credentials = await deps.settingsStore.getRuntimeCredentials().catch(() => ({ githubToken: null }));
       await postGitHubFeedbackCommentReaction({
         feedback,
         githubToken: credentials.githubToken

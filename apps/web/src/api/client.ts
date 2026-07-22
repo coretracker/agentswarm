@@ -43,7 +43,6 @@ import type {
   TaskTerminalSessionMode,
   UpdateRoleInput,
   UpdateTaskPinInput,
-  UpdateTaskDeadlineInput,
   UpdateTaskDraftInput,
   UpdateTaskAssigneeInput,
   UpdateTaskStateInput,
@@ -494,11 +493,6 @@ export const api = {
     }),
   updateTaskTitle: (id: string, input: UpdateTaskTitleInput) =>
     request<Task>(`/tasks/${id}/title`, {
-      method: "PATCH",
-      body: JSON.stringify(input)
-    }),
-  updateTaskDeadline: (id: string, input: UpdateTaskDeadlineInput) =>
-    request<Task>(`/tasks/${id}/deadline`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),

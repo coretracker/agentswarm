@@ -101,8 +101,8 @@ describe("RedisSettingsStore runtime credentials", () => {
       })
     );
 
-    const userOneCredentials = await settingsStore.getRuntimeCredentials("user-1", "auto");
-    const userTwoCredentials = await settingsStore.getRuntimeCredentials("user-2", "profile");
+    const userOneCredentials = await settingsStore.getRuntimeCredentials();
+    const userTwoCredentials = await settingsStore.getRuntimeCredentials();
 
     assert.equal(userOneCredentials.openaiApiKey, "sk-system");
     assert.equal(userTwoCredentials.anthropicApiKey, "anthropic-system");
@@ -126,7 +126,7 @@ describe("RedisSettingsStore runtime credentials", () => {
       gitAuthorEmail: "verft@example.com"
     });
 
-    const credentials = await settingsStore.getRuntimeCredentials("user-1", "auto");
+    const credentials = await settingsStore.getRuntimeCredentials();
 
     assert.equal(credentials.gitAuthorName, "Verft");
     assert.equal(credentials.gitAuthorEmail, "verft@example.com");
@@ -150,7 +150,7 @@ describe("RedisSettingsStore runtime credentials", () => {
       anthropicBaseUrl: " https://anthropic.example.test "
     });
 
-    const credentials = await settingsStore.getRuntimeCredentials("user-1", "auto");
+    const credentials = await settingsStore.getRuntimeCredentials();
 
     assert.equal(credentials.openaiBaseUrl, "https://openai.example.test");
     assert.equal(credentials.anthropicBaseUrl, "https://anthropic.example.test");
