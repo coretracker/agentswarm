@@ -109,22 +109,6 @@ const mcpServersSchema = z
       }
     }
   });
-const responsePreferenceSchema = z
-  .object({
-    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
-    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
-    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
-    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
-    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
-    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
-    extraInstructions: z.string().trim().max(2000).optional()
-  });
-const responsePreferencePresetSchema = z.object({
-  id: z.string().trim().min(1).max(120).optional(),
-  name: z.string().trim().min(1).max(120),
-  description: z.string().trim().max(500).optional(),
-  preference: responsePreferenceSchema
-});
 const hostexecSettingsSchema = z
   .object({
     enabled: z.boolean().optional(),
@@ -165,8 +149,7 @@ const updateSettingsSchema = z.object({
   codexDefaultEffort: providerProfileEnum.optional(),
   claudeDefaultModel: z.string().trim().min(1).max(120).optional(),
   claudeModels: z.array(providerModelSchema).max(500).optional(),
-  claudeDefaultEffort: providerProfileEnum.optional(),
-  responsePreferencePresets: z.array(responsePreferencePresetSchema).max(50).optional()
+  claudeDefaultEffort: providerProfileEnum.optional()
 });
 
 const updateCredentialsSchema = z.object({

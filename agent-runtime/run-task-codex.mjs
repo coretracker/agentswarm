@@ -221,47 +221,6 @@ process.env.HOME = homeDir;
 preserveHostexecPath();
 await ensureGitAskPass(homeDir);
 
-const buildResponsePreferencePreamble = () => {
-  const preference = manifest.agentResponsePreference;
-  if (!preference || typeof preference !== "object") {
-    return "";
-  }
-
-  const lines = ["Response style:"];
-  if (preference.audience === "technical") {
-    lines.push("- Audience: technical.");
-  } else if (preference.audience === "non_technical") {
-    lines.push("- Audience: non-technical.");
-  } else if (preference.audience === "mixed") {
-    lines.push("- Audience: mixed.");
-  }
-
-  if (preference.explanationDepth) {
-    lines.push(`- Explanation depth: ${preference.explanationDepth}.`);
-  }
-  if (preference.jargonLevel) {
-    lines.push(`- Jargon level: ${preference.jargonLevel}.`);
-  }
-  if (preference.codePreference) {
-    lines.push(`- Code preference: ${preference.codePreference}.`);
-  }
-  if (preference.clarifyBehavior) {
-    lines.push(`- Clarification behavior: ${preference.clarifyBehavior}.`);
-  }
-  if (preference.formattingStyle) {
-    lines.push(`- Formatting style: ${preference.formattingStyle}.`);
-  }
-  if (typeof preference.extraInstructions === "string" && preference.extraInstructions.trim()) {
-    lines.push(`- Extra instructions: ${preference.extraInstructions.trim()}`);
-  }
-
-  if (lines.length === 1) {
-    return "";
-  }
-
-  return lines.join("\n");
-};
-
 const buildPrompt = () => {
   const rawContent = typeof manifest.content === "string" && manifest.content.trim().length > 0
     ? manifest.content.trim()
@@ -289,10 +248,6 @@ const buildPrompt = () => {
       ...attachments.map((attachment) => `- ${attachment.absolutePath.trim()} (${attachment.name.trim()})`),
       ""
     );
-  }
-  const responsePreferencePreamble = buildResponsePreferencePreamble();
-  if (responsePreferencePreamble) {
-    promptSections.push(responsePreferencePreamble, "");
   }
   if (typeof manifest.harnessFilePath === "string" && manifest.harnessFilePath.trim().length > 0) {
     promptSections.push(

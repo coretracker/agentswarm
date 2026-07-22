@@ -6,17 +6,6 @@ import type { RoleStore } from "../services/role-store.js";
 import type { SessionStore } from "../services/session-store.js";
 import type { UserStore } from "../services/user-store.js";
 
-const responsePreferenceSchema = z
-  .object({
-    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
-    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
-    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
-    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
-    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
-    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
-    extraInstructions: z.string().trim().max(2000).optional()
-  });
-
 const nullableDefaultProviderSchema = z.enum(["codex", "claude"]).nullable().optional();
 const nullableDefaultProviderProfileSchema = z.enum(["low", "medium", "high", "max"]).nullable().optional();
 
@@ -30,8 +19,7 @@ const createUserSchema = z.object({
   defaultProviderProfile: nullableDefaultProviderProfileSchema,
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),
-  repositoryIds: z.array(z.string().trim().min(1)).optional(),
-  agentResponsePreference: responsePreferenceSchema.optional()
+  repositoryIds: z.array(z.string().trim().min(1)).optional()
 });
 
 const updateUserSchema = z.object({
@@ -44,8 +32,7 @@ const updateUserSchema = z.object({
   defaultProviderProfile: nullableDefaultProviderProfileSchema,
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),
-  repositoryIds: z.array(z.string().trim().min(1)).optional(),
-  agentResponsePreference: responsePreferenceSchema.optional()
+  repositoryIds: z.array(z.string().trim().min(1)).optional()
 });
 
 export const registerUserRoutes = (
@@ -131,8 +118,7 @@ export const registerUserRoutes = (
         if (
           parsed.data.active === false ||
           parsed.data.roleIds !== undefined ||
-          parsed.data.repositoryIds !== undefined ||
-          parsed.data.agentResponsePreference !== undefined
+          parsed.data.repositoryIds !== undefined
         ) {
           await deps.sessionStore.deleteSessionsForUser(user.id);
         }

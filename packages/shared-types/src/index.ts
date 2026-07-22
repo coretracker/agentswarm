@@ -191,23 +191,6 @@ export interface AgentResponsePolicy {
 
 export type AgentResponsePreference = AgentResponsePolicy;
 
-export interface ResponsePreferencePreset {
-  id: string;
-  name: string;
-  description: string;
-  preference: AgentResponsePreference;
-  isSystem: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ResponsePreferencePresetInput {
-  id?: string;
-  name: string;
-  description?: string;
-  preference: AgentResponsePolicy;
-}
-
 export type McpServerTransport = "stdio" | "http";
 export type PermissionScope =
   | "task:list"
@@ -366,7 +349,6 @@ export interface AuthProfile {
   defaultProvider: AgentProvider | null;
   defaultModel: string | null;
   defaultProviderProfile: ProviderProfile | null;
-  agentResponsePreference: AgentResponsePreference;
 }
 
 export interface PersonalAccessToken {
@@ -1054,7 +1036,6 @@ export interface SystemSettings {
   claudeDefaultModel: string;
   claudeModels: ProviderModelOption[];
   claudeDefaultEffort: ProviderProfile;
-  responsePreferencePresets: ResponsePreferencePreset[];
   dataStores?: SystemDataStores;
 }
 
@@ -1515,7 +1496,6 @@ export interface UpdateSettingsInput {
   claudeDefaultModel?: string;
   claudeModels?: ProviderModelOption[];
   claudeDefaultEffort?: ProviderProfile;
-  responsePreferencePresets?: ResponsePreferencePresetInput[];
 }
 
 export interface UpdateCredentialSettingsInput {
@@ -1537,7 +1517,6 @@ export interface UpdateAuthProfileInput {
   defaultProvider?: AgentProvider | null;
   defaultModel?: string | null;
   defaultProviderProfile?: ProviderProfile | null;
-  agentResponsePreference?: Partial<AgentResponsePreference>;
 }
 
 export interface TaskEvent {

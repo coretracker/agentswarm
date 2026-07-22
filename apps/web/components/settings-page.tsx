@@ -3,17 +3,10 @@
 import { useCallback, useEffect, useState } from "react";
 import type {
   AgentProvider,
-  AgentClarifyBehavior,
-  AgentCodePreference,
-  AgentExplanationDepth,
-  AgentFormattingStyle,
   HostexecAvailability,
-  AgentJargonLevel,
-  AudienceType,
   PermissionScope,
   ProviderModelOption,
   ProviderProfile,
-  ResponsePreferencePreset,
   Role,
   SystemSettings,
   UpdateSettingsInput
@@ -98,18 +91,6 @@ interface RoleFormValues {
   allowedEfforts: ProviderProfile[];
 }
 
-interface ResponsePreferencePresetFormValues {
-  name: string;
-  description: string;
-  audience?: AudienceType;
-  explanationDepth?: AgentExplanationDepth;
-  jargonLevel?: AgentJargonLevel;
-  codePreference?: AgentCodePreference;
-  clarifyBehavior?: AgentClarifyBehavior;
-  formattingStyle?: AgentFormattingStyle;
-  extraInstructions?: string;
-}
-
 type ClearCredentialTarget = "github" | "openai" | "anthropic" | "slackSigningSecret" | "slackBotToken";
 type SettingsTabKey = "general" | "harness" | "git" | "hostexec" | "credentials" | "slack" | "codex" | "claude";
 type DirtyGeneralTabKey = SettingsTabKey;
@@ -142,7 +123,6 @@ const credentialFieldsByTab: Record<CredentialSettingsTabKey, Array<keyof Creden
   slack: ["slackSigningSecret", "slackBotToken"]
 };
 
-const toSentenceValue = (value: string): string => value.replace(/_/g, " ");
 const trimFormString = (value: string | null | undefined): string => (value ?? "").trim();
 const normalizeProviderModelOptions = (models: ProviderModelOption[] | undefined, fallback: ProviderModelOption[]): ProviderModelOption[] => {
   const normalized: ProviderModelOption[] = [];
@@ -157,20 +137,6 @@ const normalizeProviderModelOptions = (models: ProviderModelOption[] | undefined
   }
   return normalized.length > 0 ? normalized : fallback;
 };
-const summarizeResponsePreference = (preset: ResponsePreferencePreset): string => {
-  const parts: string[] = [];
-  if (preset.preference.audience) {
-    parts.push(`Audience: ${toSentenceValue(preset.preference.audience)}`);
-  }
-  if (preset.preference.explanationDepth) {
-    parts.push(`Depth: ${toSentenceValue(preset.preference.explanationDepth)}`);
-  }
-  if (preset.preference.jargonLevel) {
-    parts.push(`Jargon: ${toSentenceValue(preset.preference.jargonLevel)}`);
-  }
-  return parts.length > 0 ? parts.join(" | ") : "Neutral";
-};
-
 const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   defaultProvider: settings.defaultProvider,
   maxAgents: settings.maxAgents,
@@ -278,7 +244,6 @@ export function SettingsPage() {
   const [generalForm] = Form.useForm<GeneralSettingsForm>();
   const [credentialForm] = Form.useForm<CredentialForm>();
   const [roleForm] = Form.useForm<RoleFormValues>();
-  const [responsePreferencePresetForm] = Form.useForm<ResponsePreferencePresetFormValues>();
   const [roles, setRoles] = useState<Role[]>([]);
   const [rolesLoading, setRolesLoading] = useState(true);
   const [savingGeneral, setSavingGeneral] = useState(false);
@@ -287,11 +252,8 @@ export function SettingsPage() {
   const [hostexecAvailability, setHostexecAvailability] = useState<HostexecAvailability | null>(null);
   const [autoFillingProvider, setAutoFillingProvider] = useState<AgentProvider | null>(null);
   const [savingRole, setSavingRole] = useState(false);
-  const [savingResponsePreferencePreset, setSavingResponsePreferencePreset] = useState(false);
   const [roleModalOpen, setRoleModalOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<Role | null>(null);
-  const [responsePreferencePresetModalOpen, setResponsePreferencePresetModalOpen] = useState(false);
-  const [editingResponsePreferencePreset, setEditingResponsePreferencePreset] = useState<ResponsePreferencePreset | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTabKey>("general");
   const [generalDirty, setGeneralDirty] = useState(false);
   const [credentialsDirty, setCredentialsDirty] = useState(false);
@@ -314,7 +276,6 @@ export function SettingsPage() {
       [...getEffortOptionsForProvider("codex"), ...getEffortOptionsForProvider("claude")].map((option) => [option.value, option])
     ).values()
   );
-  const responsePreferencePresets = settings?.responsePreferencePresets ?? [];
   const hostexecDetected = hostexecAvailability?.available === true;
   const hostexecStatus = hostexecDetected ? "Detected" : settings?.hostexec?.url ? "Manual" : "Not Detected";
 
@@ -1335,113 +1296,6 @@ export function SettingsPage() {
           </Card>
         ) : null}
 
-        {activeTab === "general" ? (
-          <Card
-            bordered={false}
-            loading={loading}
-            title="Response Preferences"
-            extra={
-              <Button
-                type="primary"
-                disabled={!canEditSettings}
-                onClick={() => {
-                  setEditingResponsePreferencePreset(null);
-                  responsePreferencePresetForm.setFieldsValue({
-                    name: "",
-                    description: "",
-                    audience: undefined,
-                    explanationDepth: undefined,
-                    jargonLevel: undefined,
-                    codePreference: undefined,
-                    clarifyBehavior: undefined,
-                    formattingStyle: undefined,
-                    extraInstructions: ""
-                  });
-                  setResponsePreferencePresetModalOpen(true);
-                }}
-              >
-                Add Response Preference
-              </Button>
-            }
-          >
-            <Table<ResponsePreferencePreset>
-              rowKey="id"
-              pagination={false}
-              dataSource={responsePreferencePresets}
-              columns={[
-                {
-                  title: "Name",
-                  dataIndex: "name",
-                  render: (value: string, preset) => (
-                    <Space>
-                      <Typography.Text strong>{value}</Typography.Text>
-                      {preset.isSystem ? <Tag icon={<LockOutlined />}>System</Tag> : null}
-                    </Space>
-                  )
-                },
-                {
-                  title: "Description",
-                  dataIndex: "description",
-                  render: (value: string) => value || <Typography.Text type="secondary">None</Typography.Text>
-                },
-                {
-                  title: "Policy",
-                  render: (_, preset) => summarizeResponsePreference(preset)
-                },
-                {
-                  title: "Actions",
-                  render: (_, preset) => (
-                    <Space>
-                      <Button
-                        disabled={!canEditSettings || preset.isSystem}
-                        onClick={() => {
-                          setEditingResponsePreferencePreset(preset);
-                          responsePreferencePresetForm.setFieldsValue({
-                            name: preset.name,
-                            description: preset.description,
-                            audience: preset.preference.audience,
-                            explanationDepth: preset.preference.explanationDepth,
-                            jargonLevel: preset.preference.jargonLevel,
-                            codePreference: preset.preference.codePreference,
-                            clarifyBehavior: preset.preference.clarifyBehavior,
-                            formattingStyle: preset.preference.formattingStyle,
-                            extraInstructions: preset.preference.extraInstructions ?? ""
-                          });
-                          setResponsePreferencePresetModalOpen(true);
-                        }}
-                      >
-                        Edit
-                      </Button>
-                      <Popconfirm
-                        title="Delete response preference?"
-                        description={`Delete ${preset.name}?`}
-                        disabled={!canEditSettings || preset.isSystem}
-                        onConfirm={async () => {
-                          if (!settings) {
-                            return;
-                          }
-                          try {
-                            const nextSettings = await api.updateSettings({
-                              responsePreferencePresets: responsePreferencePresets.filter((entry) => entry.id !== preset.id)
-                            });
-                            setSettings(nextSettings);
-                            message.success("Response preference deleted");
-                          } catch (error) {
-                            message.error(error instanceof Error ? error.message : "Failed to delete response preference");
-                          }
-                        }}
-                      >
-                        <Button danger disabled={!canEditSettings || preset.isSystem}>
-                          Delete
-                        </Button>
-                      </Popconfirm>
-                    </Space>
-                  )
-                }
-              ]}
-            />
-          </Card>
-        ) : null}
       </Space>
 
       <Modal
@@ -1560,169 +1414,6 @@ export function SettingsPage() {
         </Form>
       </Modal>
 
-      <Modal
-        open={responsePreferencePresetModalOpen}
-        title={editingResponsePreferencePreset ? `Edit Response Preference: ${editingResponsePreferencePreset.name}` : "Add Response Preference"}
-        footer={null}
-        onCancel={() => setResponsePreferencePresetModalOpen(false)}
-        destroyOnHidden
-      >
-        <Form
-          form={responsePreferencePresetForm}
-          layout="vertical"
-          onFinish={async (values) => {
-            if (!settings) {
-              return;
-            }
-
-            setSavingResponsePreferencePreset(true);
-            try {
-              const nextPresets = editingResponsePreferencePreset
-                ? responsePreferencePresets.map((preset) =>
-                    preset.id === editingResponsePreferencePreset.id
-                      ? {
-                          ...preset,
-                          name: values.name,
-                          description: values.description,
-                          preference: {
-                            audience: values.audience,
-                            explanationDepth: values.explanationDepth,
-                            jargonLevel: values.jargonLevel,
-                            codePreference: values.codePreference,
-                            clarifyBehavior: values.clarifyBehavior,
-                            formattingStyle: values.formattingStyle,
-                            extraInstructions: values.extraInstructions?.trim() || undefined
-                          }
-                        }
-                      : preset
-                  )
-                : [
-                    ...responsePreferencePresets,
-                    {
-                      name: values.name,
-                      description: values.description,
-                      preference: {
-                        audience: values.audience,
-                        explanationDepth: values.explanationDepth,
-                        jargonLevel: values.jargonLevel,
-                        codePreference: values.codePreference,
-                        clarifyBehavior: values.clarifyBehavior,
-                        formattingStyle: values.formattingStyle,
-                        extraInstructions: values.extraInstructions?.trim() || undefined
-                      }
-                    }
-                  ];
-
-              const nextSettings = await api.updateSettings({
-                responsePreferencePresets: nextPresets
-              });
-              setSettings(nextSettings);
-              setResponsePreferencePresetModalOpen(false);
-              message.success(editingResponsePreferencePreset ? "Response preference updated" : "Response preference created");
-            } catch (error) {
-              message.error(error instanceof Error ? error.message : "Failed to save response preference");
-            } finally {
-              setSavingResponsePreferencePreset(false);
-            }
-          }}
-        >
-          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a name" }]}>
-            <Input disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
-          </Form.Item>
-          <Form.Item name="description" label="Description">
-            <Input.TextArea rows={3} disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem} />
-          </Form.Item>
-          <Form.Item name="audience" label="Audience">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use neutral"
-              options={[
-                { label: "Technical", value: "technical" },
-                { label: "Non-technical", value: "non_technical" },
-                { label: "Mixed", value: "mixed" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="explanationDepth" label="Explanation Depth">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default depth"
-              options={[
-                { label: "Brief", value: "brief" },
-                { label: "Standard", value: "standard" },
-                { label: "Detailed", value: "detailed" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="jargonLevel" label="Jargon Level">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default jargon level"
-              options={[
-                { label: "Avoid", value: "avoid" },
-                { label: "Balanced", value: "balanced" },
-                { label: "Expert", value: "expert" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="codePreference" label="Code Preference">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default code preference"
-              options={[
-                { label: "Only When Needed", value: "only_when_needed" },
-                { label: "Prefer Examples", value: "prefer_examples" },
-                { label: "Avoid Code", value: "avoid_code" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="clarifyBehavior" label="Clarify Behavior">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default clarify behavior"
-              options={[
-                { label: "Ask When Ambiguous", value: "ask_when_ambiguous" },
-                { label: "Make Reasonable Assumptions", value: "make_reasonable_assumptions" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="formattingStyle" label="Formatting Style">
-            <Select
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              allowClear
-              placeholder="Use default formatting style"
-              options={[
-                { label: "Direct", value: "direct" },
-                { label: "Teaching", value: "teaching" },
-                { label: "Executive", value: "executive" }
-              ]}
-            />
-          </Form.Item>
-          <Form.Item name="extraInstructions" label="Extra Instructions">
-            <Input.TextArea
-              rows={4}
-              maxLength={2000}
-              disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-              placeholder="Optional additional response instructions."
-            />
-          </Form.Item>
-          <Button
-            type="primary"
-            htmlType="submit"
-            loading={savingResponsePreferencePreset}
-            disabled={!canEditSettings || editingResponsePreferencePreset?.isSystem}
-            block
-            style={{ marginTop: 16 }}
-          >
-            {editingResponsePreferencePreset ? "Save Response Preference" : "Create Response Preference"}
-          </Button>
-        </Form>
-      </Modal>
     </>
   );
 }

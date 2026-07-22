@@ -11,17 +11,6 @@ const loginSchema = z.object({
   password: z.string().min(1)
 });
 
-const responsePreferenceSchema = z
-  .object({
-    audience: z.enum(["technical", "non_technical", "mixed"]).optional(),
-    explanationDepth: z.enum(["one_line", "brief", "standard", "detailed", "deep_dive"]).optional(),
-    jargonLevel: z.enum(["avoid", "balanced", "expert"]).optional(),
-    codePreference: z.enum(["only_when_needed", "prefer_examples", "avoid_code"]).optional(),
-    clarifyBehavior: z.enum(["ask_when_ambiguous", "make_reasonable_assumptions"]).optional(),
-    formattingStyle: z.enum(["direct", "teaching", "executive", "step_by_step", "checklist", "qa", "problem_solution"]).optional(),
-    extraInstructions: z.string().trim().max(2000).optional()
-  });
-
 const nullableDefaultProviderSchema = z.enum(["codex", "claude"]).nullable().optional();
 const nullableDefaultProviderProfileSchema = z.enum(["low", "medium", "high", "max"]).nullable().optional();
 
@@ -30,8 +19,7 @@ const updateProfileSchema = z.object({
   githubUsername: z.string().trim().max(80).nullable().optional(),
   defaultProvider: nullableDefaultProviderSchema,
   defaultModel: z.string().trim().max(200).nullable().optional(),
-  defaultProviderProfile: nullableDefaultProviderProfileSchema,
-  agentResponsePreference: responsePreferenceSchema.optional()
+  defaultProviderProfile: nullableDefaultProviderProfileSchema
 });
 
 const personalAccessTokenSchema = z.object({
@@ -81,8 +69,7 @@ export const registerAuthRoutes = (
       githubUsername: authUser.githubUsername,
       defaultProvider: authUser.defaultProvider,
       defaultModel: authUser.defaultModel,
-      defaultProviderProfile: authUser.defaultProviderProfile,
-      agentResponsePreference: authUser.agentResponsePreference
+      defaultProviderProfile: authUser.defaultProviderProfile
     };
   });
 
@@ -130,16 +117,14 @@ export const registerAuthRoutes = (
       parsed.data.githubUsername !== undefined ||
       parsed.data.defaultProvider !== undefined ||
       parsed.data.defaultModel !== undefined ||
-      parsed.data.defaultProviderProfile !== undefined ||
-      parsed.data.agentResponsePreference !== undefined
+      parsed.data.defaultProviderProfile !== undefined
     ) {
       const updated = await deps.userStore.updateUser(userId, {
         ...(parsed.data.name !== undefined ? { name: parsed.data.name } : {}),
         ...(parsed.data.githubUsername !== undefined ? { githubUsername: parsed.data.githubUsername } : {}),
         ...(parsed.data.defaultProvider !== undefined ? { defaultProvider: parsed.data.defaultProvider } : {}),
         ...(parsed.data.defaultModel !== undefined ? { defaultModel: parsed.data.defaultModel } : {}),
-        ...(parsed.data.defaultProviderProfile !== undefined ? { defaultProviderProfile: parsed.data.defaultProviderProfile } : {}),
-        ...(parsed.data.agentResponsePreference !== undefined ? { agentResponsePreference: parsed.data.agentResponsePreference } : {})
+        ...(parsed.data.defaultProviderProfile !== undefined ? { defaultProviderProfile: parsed.data.defaultProviderProfile } : {})
       });
       if (!updated) {
         return reply.status(404).send({ message: "User not found" });
@@ -157,8 +142,7 @@ export const registerAuthRoutes = (
       githubUsername: refreshedUser.githubUsername,
       defaultProvider: refreshedUser.defaultProvider,
       defaultModel: refreshedUser.defaultModel,
-      defaultProviderProfile: refreshedUser.defaultProviderProfile,
-      agentResponsePreference: refreshedUser.agentResponsePreference
+      defaultProviderProfile: refreshedUser.defaultProviderProfile
     });
   });
 };
