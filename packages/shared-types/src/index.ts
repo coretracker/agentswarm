@@ -711,14 +711,6 @@ export interface OpenAiDiffAssistResult {
   text: string;
 }
 
-export interface TaskPromptMagicInput {
-  prompt: string;
-}
-
-export interface TaskPromptMagicResult {
-  prompt: string;
-}
-
 export interface TaskLiveDiff {
   diff: string | null;
   live: boolean;
@@ -1045,8 +1037,6 @@ export interface SystemSettings {
   hostexec: HostexecSettings;
   openaiBaseUrl: string | null;
   anthropicBaseUrl: string | null;
-  taskPromptMagicModel: string;
-  taskPromptMagicTemplate: string;
   harnessWhatExists?: string | null;
   harnessAllowedActions?: string | null;
   harnessNotAllowedActions?: string | null;
@@ -1513,8 +1503,6 @@ export interface UpdateSettingsInput {
   hostexec?: Partial<HostexecSettings> | null;
   openaiBaseUrl?: string | null;
   anthropicBaseUrl?: string | null;
-  taskPromptMagicModel?: string;
-  taskPromptMagicTemplate?: string;
   harnessWhatExists?: string | null;
   harnessAllowedActions?: string | null;
   harnessNotAllowedActions?: string | null;

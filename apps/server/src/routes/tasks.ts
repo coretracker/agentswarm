@@ -22,7 +22,6 @@ import type { UserStore } from "../services/user-store.js";
 import { getTaskInteractiveTerminalStatus, killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
 import { beginTaskStart, getTriggerActionForNewTask, orchestrateTaskActionStart, orchestrateTaskStart } from "../lib/task-start-orchestrator.js";
 import { buildDiffAssistPromptContext, executeOpenAiDiffAssist } from "../services/openai-diff-assist-service.js";
-import { executeTaskPromptMagic } from "../services/openai-task-prompt-magic-service.js";
 import { executeCodexUtility } from "../services/codex-utility-service.js";
 import { executeClaudeUtility } from "../services/claude-utility-service.js";
 import type { SettingsStore } from "../services/settings-store.js";
@@ -224,10 +223,6 @@ const openAiDiffAssistSchema = z.object({
   userPrompt: z.string().max(16_000).default(""),
   filePath: z.string().trim().min(1).max(4096),
   selectedSnippet: z.string().max(48_000)
-});
-
-const taskPromptMagicSchema = z.object({
-  prompt: z.string().max(16_000)
 });
 
 const workspaceFileQuerySchema = z.object({
@@ -1324,48 +1319,6 @@ export const registerTaskRoutes = (
           typeof (error as { statusCode: unknown }).statusCode === "number"
         ) {
           const status = (error as { statusCode: number }).statusCode;
-          const message = error instanceof Error ? error.message : "Request failed";
-          return reply.status(status).send({ message });
-        }
-        throw error;
-      }
-    }
-  );
-
-  app.post(
-    "/tasks/prompt-magic",
-    { preHandler: deps.auth.requireAllScopes(["task:create"]) },
-    async (request, reply) => {
-      const parsed = taskPromptMagicSchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply.status(400).send({ message: parsed.error.message });
-      }
-
-      const [settings, credentials] = await Promise.all([
-        deps.settingsStore.getSettings(),
-        deps.settingsStore.getRuntimeCredentials(null, "auto")
-      ]);
-      if (!credentials.openaiApiKey) {
-        return reply.status(400).send({ message: "OpenAI API key is not configured." });
-      }
-
-      try {
-        const result = await executeTaskPromptMagic({
-          prompt: parsed.data.prompt,
-          model: settings.taskPromptMagicModel,
-          template: settings.taskPromptMagicTemplate,
-          openaiApiKey: credentials.openaiApiKey,
-          openaiBaseUrl: settings.openaiBaseUrl
-        });
-        return reply.send(result);
-      } catch (error: unknown) {
-        if (
-          error &&
-          typeof error === "object" &&
-          "status" in error &&
-          typeof (error as { status: unknown }).status === "number"
-        ) {
-          const status = (error as { status: number }).status;
           const message = error instanceof Error ? error.message : "Request failed";
           return reply.status(status).send({ message });
         }

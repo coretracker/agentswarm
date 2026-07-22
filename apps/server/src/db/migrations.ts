@@ -86,8 +86,6 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
         mcp_servers jsonb NOT NULL,
         openai_base_url text NULL,
         anthropic_base_url text NULL,
-        task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini',
-        task_prompt_magic_template text NOT NULL DEFAULT '',
         codex_default_model text NOT NULL,
         codex_models jsonb NOT NULL DEFAULT '[]'::jsonb,
         codex_default_effort text NOT NULL,
@@ -306,16 +304,6 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
 
       CREATE INDEX IF NOT EXISTS task_git_operations_task_id_started_at_idx
         ON task_git_operations(task_id, started_at DESC, id DESC);
-    `
-  },
-  {
-    id: "20260527_01_task_prompt_magic_settings",
-    sql: `
-      ALTER TABLE system_settings
-      ADD COLUMN IF NOT EXISTS task_prompt_magic_model text NOT NULL DEFAULT 'gpt-5.4-mini';
-
-      ALTER TABLE system_settings
-      ADD COLUMN IF NOT EXISTS task_prompt_magic_template text NOT NULL DEFAULT '';
     `
   },
   {
@@ -799,6 +787,14 @@ Feedback:
       ADD COLUMN IF NOT EXISTS reason text NULL;
 
       CREATE INDEX IF NOT EXISTS webhook_inbox_status_idx ON webhook_inbox(repository_id, status, received_at DESC);
+    `
+  },
+  {
+    id: "20260722_02_drop_task_prompt_magic_settings",
+    sql: `
+      ALTER TABLE system_settings
+      DROP COLUMN IF EXISTS task_prompt_magic_model,
+      DROP COLUMN IF EXISTS task_prompt_magic_template;
     `
   }
 ];

@@ -76,11 +76,8 @@ flowchart TD
   subgraph A[New Task Flow]
     A1[User opens Create Task]
     A2[Fill config: repo, title, prompt, provider]
-    A3{Optional: Magic Prompt?}
-    A4[POST /tasks/prompt-magic]
-    A5[Prompt returned + textarea/title updated]
-    A6[Submit create form]
-    A7[POST /tasks]
+    A3[Submit create form]
+    A4[POST /tasks]
     A11[Task row created in store]
     A12[Workspace prepared]
     A13[Action enqueued via Scheduler]
@@ -88,9 +85,7 @@ flowchart TD
   end
 
   A1 --> A2 --> A3
-  A3 -- Yes --> A4 --> A5 --> A6
-  A3 -- No --> A6
-  A6 --> A7 --> A11
+  A3 --> A4 --> A11
   A11 --> A12 --> A13 --> A14
 
   subgraph B[Existing Build Flow]

@@ -22,8 +22,6 @@ import {
   getModelsForProvider
 } from "@verft/shared-types";
 import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Row, Select, Typography, message } from "antd";
-import { RobotOutlined } from "@ant-design/icons";
-import { api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useSettings } from "../src/hooks/useSettings";
@@ -172,7 +170,6 @@ export function TaskDefinitionFields({
   const { can, session } = useAuth();
   const { repositories } = useRepositories();
   const { settings } = useSettings();
-  const [magicPromptLoading, setMagicPromptLoading] = useState(false);
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
   const canRunAutomatedTask = canBuildTasks || canAskTasks;
@@ -181,7 +178,6 @@ export function TaskDefinitionFields({
   const selectedModel = Form.useWatch("model", form);
   const selectedTaskType = (Form.useWatch("taskType", form) as TaskType | undefined) ?? "build";
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
-  const selectedPrompt = Form.useWatch("prompt", form);
   const { models: providerModels, loading: providerModelsLoading, source: providerModelsSource } = useProviderModels(selectedProvider);
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
   const effectiveTaskType = selectedTaskType;
@@ -291,40 +287,6 @@ export function TaskDefinitionFields({
 
   const promptPanelTitle = effectiveTaskType === "ask" ? "Question" : "Prompt";
   const canAttachPromptImages = allowPromptAttachments;
-  const canUsePromptMagic = true;
-  const promptIsEmpty = (selectedPrompt?.trim().length ?? 0) === 0;
-
-  const handleGeneratePromptMagic = async (): Promise<void> => {
-    const prompt = (form.getFieldValue("prompt") as string | undefined)?.trim() ?? "";
-    if (!prompt || magicPromptLoading) {
-      return;
-    }
-
-    setMagicPromptLoading(true);
-    try {
-      const response = await api.generateTaskPromptMagic({ prompt });
-      const nextPrompt = response.prompt ?? "";
-      const currentTitle = (form.getFieldValue("title") as string | undefined)?.trim() ?? "";
-      const derivedTitle = deriveTitleFromPrompt(nextPrompt);
-      const nextValues: Partial<TaskDefinitionFormValues> = { prompt: nextPrompt };
-      if (!currentTitle && derivedTitle) {
-        nextValues.title = derivedTitle.slice(0, 500);
-      }
-      form.setFieldsValue(nextValues);
-      form.setFields([{ name: "prompt", value: nextPrompt }]);
-      if (nextPrompt.trim() === prompt) {
-        void message.info("Magic prompt returned a similar result.");
-      } else {
-        void message.success("Prompt improved.");
-      }
-    } catch (error) {
-      const fallback = "Failed to generate prompt.";
-      const errorMessage = error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
-      void message.error(errorMessage);
-    } finally {
-      setMagicPromptLoading(false);
-    }
-  };
 
   const renderPromptPanel = () => (
     <>
@@ -346,39 +308,21 @@ export function TaskDefinitionFields({
         style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
       >
         <Flex vertical gap={12} style={{ flex: 1 }}>
-          <div style={{ position: "relative" }}>
-            <Button
-              size="small"
-              type="default"
-              icon={<RobotOutlined />}
-              title="Magic Wand"
-              aria-label="Magic Wand"
-              loading={magicPromptLoading}
-              disabled={!canUsePromptMagic || promptIsEmpty || magicPromptLoading}
-              onClick={() => void handleGeneratePromptMagic()}
-              style={{
-                position: "absolute",
-                right: 10,
-                bottom: 10,
-                zIndex: 1
-              }}
+          <Form.Item
+            name="prompt"
+            style={{ marginBottom: 0 }}
+            rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}
+          >
+            <Input.TextArea
+              autoSize={{ minRows: 12, maxRows: 28 }}
+              style={{ resize: "none" }}
+              placeholder={
+                effectiveTaskType === "ask"
+                  ? "Ask a repository question."
+                  : "Describe the goal, constraints, and expected outcome in your prompt."
+              }
             />
-            <Form.Item
-              name="prompt"
-              style={{ marginBottom: 0 }}
-              rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}
-            >
-              <Input.TextArea
-                autoSize={{ minRows: 12, maxRows: 28 }}
-                style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
-                placeholder={
-                  effectiveTaskType === "ask"
-                    ? "Ask a repository question."
-                    : "Describe the goal, constraints, and expected outcome in your prompt."
-                }
-              />
-            </Form.Item>
-          </div>
+          </Form.Item>
           {allowPromptAttachments ? (
             <TaskPromptAttachmentsInput
               files={promptImageFiles}

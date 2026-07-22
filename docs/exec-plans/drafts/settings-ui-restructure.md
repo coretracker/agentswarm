@@ -62,7 +62,6 @@
 - Default provider.
 - Concurrent agents.
 - Default effort per provider.
-- Task Prompt Magic model/template.
 - Feature branch prefix.
 
 - Tab: Models

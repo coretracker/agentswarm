@@ -67,9 +67,6 @@ const defaultSettings: SystemSettings = {
   hostexec: defaultHostexecSettings,
   openaiBaseUrl: null,
   anthropicBaseUrl: null,
-  taskPromptMagicModel: "gpt-5.4-mini",
-  taskPromptMagicTemplate:
-    "You are an expert prompt editor for software engineering tasks.\nRewrite the user request into a clear, execution-ready task prompt for an autonomous coding agent.\n\nRequirements:\n- Preserve intent and constraints.\n- Make it specific and actionable.\n- Include acceptance criteria when implied.\n- Avoid changing requested scope.\n- Return plain text only, no markdown fences.\n\nUser request:\n{{user_request}}\n",
   harnessWhatExists: null,
   harnessAllowedActions: null,
   harnessNotAllowedActions: null,
@@ -290,8 +287,6 @@ export class RedisSettingsStore implements SettingsStore {
         hostexec: defaultSettings.hostexec,
         openaiBaseUrl: defaultSettings.openaiBaseUrl,
         anthropicBaseUrl: defaultSettings.anthropicBaseUrl,
-        taskPromptMagicModel: defaultSettings.taskPromptMagicModel,
-        taskPromptMagicTemplate: defaultSettings.taskPromptMagicTemplate,
         harnessWhatExists: defaultSettings.harnessWhatExists,
         harnessAllowedActions: defaultSettings.harnessAllowedActions,
         harnessNotAllowedActions: defaultSettings.harnessNotAllowedActions,
@@ -335,8 +330,6 @@ export class RedisSettingsStore implements SettingsStore {
       hostexec: normalizeHostexecSettings(parsed.hostexec),
       openaiBaseUrl: normalizeOptionalUrl(parsed.openaiBaseUrl),
       anthropicBaseUrl: normalizeOptionalUrl(parsed.anthropicBaseUrl),
-      taskPromptMagicModel: parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel,
-      taskPromptMagicTemplate: parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate,
       harnessWhatExists: normalizeHarnessValue(parsed.harnessWhatExists),
       harnessAllowedActions: normalizeHarnessValue(parsed.harnessAllowedActions),
       harnessNotAllowedActions: normalizeHarnessValue(parsed.harnessNotAllowedActions),
@@ -366,10 +359,10 @@ export class RedisSettingsStore implements SettingsStore {
       (parsed.gitAuthorEmail ?? null) !== normalizedBase.gitAuthorEmail ||
       JSON.stringify(parsed.hostexec ?? defaultHostexecSettings) !== JSON.stringify(normalizedBase.hostexec) ||
       Object.prototype.hasOwnProperty.call(parsed, "mcpServers") ||
+      Object.prototype.hasOwnProperty.call(parsed, "taskPromptMagicModel") ||
+      Object.prototype.hasOwnProperty.call(parsed, "taskPromptMagicTemplate") ||
       normalizeOptionalUrl(parsed.openaiBaseUrl) !== normalizedBase.openaiBaseUrl ||
       normalizeOptionalUrl(parsed.anthropicBaseUrl) !== normalizedBase.anthropicBaseUrl ||
-      (parsed.taskPromptMagicModel?.trim() || defaultSettings.taskPromptMagicModel) !== normalizedBase.taskPromptMagicModel ||
-      (parsed.taskPromptMagicTemplate?.trim() || defaultSettings.taskPromptMagicTemplate) !== normalizedBase.taskPromptMagicTemplate ||
       JSON.stringify(parsed.codexModels ?? []) !== JSON.stringify(normalizedBase.codexModels) ||
       JSON.stringify(parsed.claudeModels ?? []) !== JSON.stringify(normalizedBase.claudeModels) ||
       JSON.stringify(parsed.responsePreferencePresets ?? []) !== JSON.stringify(normalizedBase.responsePreferencePresets)
@@ -424,8 +417,6 @@ export class RedisSettingsStore implements SettingsStore {
         input.anthropicBaseUrl === undefined
           ? current.anthropicBaseUrl
           : normalizeOptionalUrl(input.anthropicBaseUrl),
-      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
-      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
       harnessWhatExists: input.harnessWhatExists === undefined ? current.harnessWhatExists : normalizeHarnessValue(input.harnessWhatExists),
       harnessAllowedActions: input.harnessAllowedActions === undefined ? current.harnessAllowedActions : normalizeHarnessValue(input.harnessAllowedActions),
       harnessNotAllowedActions: input.harnessNotAllowedActions === undefined ? current.harnessNotAllowedActions : normalizeHarnessValue(input.harnessNotAllowedActions),
@@ -505,8 +496,6 @@ export class PostgresSettingsStore implements SettingsStore {
           hostexec_bearer_token_env_var,
           openai_base_url,
           anthropic_base_url,
-          task_prompt_magic_model,
-          task_prompt_magic_template,
           harness_what_exists,
           harness_allowed_actions,
           harness_not_allowed_actions,
@@ -521,7 +510,7 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24::jsonb, $25, $26, $27::jsonb, $28, $29::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::jsonb, $23, $24, $25::jsonb, $26, $27::jsonb)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
@@ -539,8 +528,6 @@ export class PostgresSettingsStore implements SettingsStore {
         defaultSettings.hostexec.bearerTokenEnvVar,
         defaultSettings.openaiBaseUrl,
         defaultSettings.anthropicBaseUrl,
-        defaultSettings.taskPromptMagicModel,
-        defaultSettings.taskPromptMagicTemplate,
         defaultSettings.harnessWhatExists,
         defaultSettings.harnessAllowedActions,
         defaultSettings.harnessNotAllowedActions,
@@ -577,8 +564,6 @@ export class PostgresSettingsStore implements SettingsStore {
           hostexec_bearer_token_env_var,
           openai_base_url,
           anthropic_base_url,
-          task_prompt_magic_model,
-          task_prompt_magic_template,
           harness_what_exists,
           harness_allowed_actions,
           harness_not_allowed_actions,
@@ -629,14 +614,6 @@ export class PostgresSettingsStore implements SettingsStore {
       }),
       openaiBaseUrl: normalizeOptionalUrl(typeof row?.openai_base_url === "string" ? row.openai_base_url : null),
       anthropicBaseUrl: normalizeOptionalUrl(typeof row?.anthropic_base_url === "string" ? row.anthropic_base_url : null),
-      taskPromptMagicModel:
-        typeof row?.task_prompt_magic_model === "string" && row.task_prompt_magic_model.trim().length > 0
-          ? row.task_prompt_magic_model.trim()
-          : defaultSettings.taskPromptMagicModel,
-      taskPromptMagicTemplate:
-        typeof row?.task_prompt_magic_template === "string" && row.task_prompt_magic_template.trim().length > 0
-          ? row.task_prompt_magic_template.trim()
-          : defaultSettings.taskPromptMagicTemplate,
       harnessWhatExists: normalizeHarnessValue(row?.harness_what_exists),
       harnessAllowedActions: normalizeHarnessValue(row?.harness_allowed_actions),
       harnessNotAllowedActions: normalizeHarnessValue(row?.harness_not_allowed_actions),
@@ -707,8 +684,6 @@ export class PostgresSettingsStore implements SettingsStore {
         input.anthropicBaseUrl === undefined
           ? current.anthropicBaseUrl
           : normalizeOptionalUrl(input.anthropicBaseUrl),
-      taskPromptMagicModel: input.taskPromptMagicModel?.trim() || current.taskPromptMagicModel,
-      taskPromptMagicTemplate: input.taskPromptMagicTemplate?.trim() || current.taskPromptMagicTemplate,
       harnessWhatExists: input.harnessWhatExists === undefined ? current.harnessWhatExists : normalizeHarnessValue(input.harnessWhatExists),
       harnessAllowedActions: input.harnessAllowedActions === undefined ? current.harnessAllowedActions : normalizeHarnessValue(input.harnessAllowedActions),
       harnessNotAllowedActions: input.harnessNotAllowedActions === undefined ? current.harnessNotAllowedActions : normalizeHarnessValue(input.harnessNotAllowedActions),
@@ -745,8 +720,6 @@ export class PostgresSettingsStore implements SettingsStore {
           hostexec_bearer_token_env_var,
           openai_base_url,
           anthropic_base_url,
-          task_prompt_magic_model,
-          task_prompt_magic_template,
           harness_what_exists,
           harness_allowed_actions,
           harness_not_allowed_actions,
@@ -761,7 +734,7 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_default_effort,
           response_preference_presets
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24::jsonb, $25, $26, $27::jsonb, $28, $29::jsonb)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::jsonb, $23, $24, $25::jsonb, $26, $27::jsonb)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
@@ -778,8 +751,6 @@ export class PostgresSettingsStore implements SettingsStore {
           hostexec_bearer_token_env_var = EXCLUDED.hostexec_bearer_token_env_var,
           openai_base_url = EXCLUDED.openai_base_url,
           anthropic_base_url = EXCLUDED.anthropic_base_url,
-          task_prompt_magic_model = EXCLUDED.task_prompt_magic_model,
-          task_prompt_magic_template = EXCLUDED.task_prompt_magic_template,
           harness_what_exists = EXCLUDED.harness_what_exists,
           harness_allowed_actions = EXCLUDED.harness_allowed_actions,
           harness_not_allowed_actions = EXCLUDED.harness_not_allowed_actions,
@@ -809,8 +780,6 @@ export class PostgresSettingsStore implements SettingsStore {
         nextBase.hostexec.bearerTokenEnvVar,
         nextBase.openaiBaseUrl,
         nextBase.anthropicBaseUrl,
-        nextBase.taskPromptMagicModel,
-        nextBase.taskPromptMagicTemplate,
         nextBase.harnessWhatExists,
         nextBase.harnessAllowedActions,
         nextBase.harnessNotAllowedActions,

@@ -64,8 +64,6 @@ interface GeneralSettingsForm {
   gitAuthorEmail: string;
   openaiBaseUrl: string;
   anthropicBaseUrl: string;
-  taskPromptMagicModel: string;
-  taskPromptMagicTemplate: string;
   harnessWhatExists: string;
   harnessAllowedActions: string;
   harnessNotAllowedActions: string;
@@ -135,7 +133,7 @@ const generalSettingsFieldsByTab: Record<GeneralSettingsTabKey, Array<keyof Gene
   ],
   git: ["gitUsername", "gitAuthorName", "gitAuthorEmail", "branchPrefix"],
   hostexec: ["hostexecEnabled", "hostexecUrl", "hostexecBearerTokenEnvVar"],
-  codex: ["codexDefaultEffort", "codexDefaultModel", "codexModels", "taskPromptMagicModel", "taskPromptMagicTemplate", "openaiBaseUrl"],
+  codex: ["codexDefaultEffort", "codexDefaultModel", "codexModels", "openaiBaseUrl"],
   claude: ["claudeDefaultEffort", "claudeDefaultModel", "claudeModels", "anthropicBaseUrl"]
 };
 
@@ -184,8 +182,6 @@ const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   gitAuthorEmail: settings.gitAuthorEmail ?? "",
   openaiBaseUrl: settings.openaiBaseUrl ?? "",
   anthropicBaseUrl: settings.anthropicBaseUrl ?? "",
-  taskPromptMagicModel: settings.taskPromptMagicModel,
-  taskPromptMagicTemplate: settings.taskPromptMagicTemplate,
   harnessWhatExists: settings.harnessWhatExists ?? "",
   harnessAllowedActions: settings.harnessAllowedActions ?? "",
   harnessNotAllowedActions: settings.harnessNotAllowedActions ?? "",
@@ -246,8 +242,6 @@ const buildSettingsPayload = (tab: GeneralSettingsTabKey, values: GeneralSetting
   if (tab === "codex") {
     return {
       openaiBaseUrl: trimFormString(values.openaiBaseUrl) || null,
-      taskPromptMagicModel: values.taskPromptMagicModel,
-      taskPromptMagicTemplate: values.taskPromptMagicTemplate,
       codexDefaultModel: values.codexDefaultModel,
       codexModels: values.codexModels,
       codexDefaultEffort: values.codexDefaultEffort
@@ -821,28 +815,6 @@ export function SettingsPage() {
                   <ModelSelect options={codexDefaultModelOptions} loading={codexModelsLoading} />
                 </Form.Item>
                 {renderProviderModelsEditor("codex", "codexModels", Boolean(settings?.openaiApiKeyConfigured))}
-                <Form.Item
-                  name="taskPromptMagicModel"
-                  label="Task Prompt Magic Model"
-                  extra="Model used by the Magic Prompt helper in task creation."
-                  rules={[
-                    { required: true, whitespace: true, message: "Enter a task prompt magic model" },
-                    { max: 120, message: "Keep the model at 120 characters or fewer." }
-                  ]}
-                >
-                  <Input placeholder="gpt-5.4-mini" />
-                </Form.Item>
-                <Form.Item
-                  name="taskPromptMagicTemplate"
-                  label="Task Prompt Magic Template"
-                  extra="Use {{user_request}} as the placeholder for the user's current text."
-                  rules={[
-                    { required: true, whitespace: true, message: "Enter a task prompt magic template" },
-                    { max: 12000, message: "Keep the template at 12000 characters or fewer." }
-                  ]}
-                >
-                  <Input.TextArea autoSize={{ minRows: 6, maxRows: 16 }} placeholder="Template with {{user_request}} placeholder" />
-                </Form.Item>
                 <Form.Item
                   name="openaiBaseUrl"
                   label="Base URL Override"

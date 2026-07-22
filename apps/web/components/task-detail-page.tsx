@@ -78,7 +78,6 @@ import {
   EditOutlined,
   LoadingOutlined,
   MoreOutlined,
-  RobotOutlined,
   RollbackOutlined
 } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
@@ -678,7 +677,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [followUpForm] = Form.useForm();
   const [chatInput, setChatInput] = useState("");
   const [chatInputDraftReady, setChatInputDraftReady] = useState(false);
-  const [taskPromptMagicLoading, setTaskPromptMagicLoading] = useState(false);
   const [providerInput, setProviderInput] = useState<AgentProvider>("codex");
   const [providerProfileInput, setProviderProfileInput] = useState<ProviderProfile>("high");
   const [modelInput, setModelInput] = useState<string>("gpt-5.4");
@@ -2018,12 +2016,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const terminalComposerSelected = selectedChatAction === "terminal";
   const selectedChatActionRequiresPrompt = selectedChatAction !== "terminal";
   const chatClosed = !task || hasReadOnlyTaskAccess || task.status === "archived" || task.status === "draft";
-  const promptMagicVisible = (selectedChatAction === "build" || selectedChatAction === "ask") && canCreateTask;
   const autoRunStartBlocked = false;
   const chatDisabled = chatClosed || interactiveTerminalRunning || autoRunStartBlocked;
   const chatInputDisabled = chatClosed || interactiveTerminalRunning || terminalComposerSelected;
-  const canUsePromptMagic = promptMagicVisible && !chatInputDisabled;
-  const promptMagicDisabled = !canUsePromptMagic || chatInput.trim().length === 0 || taskPromptMagicLoading;
   const canAttachPromptImages = selectedChatAction === "build" || selectedChatAction === "ask";
   const promptImageAttachmentDisabled = chatClosed || interactiveTerminalRunning || !canAttachPromptImages;
   const pendingQueuedMessages = useMemo(
@@ -2349,30 +2344,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       showTaskActionError(error, "Task could not be cancelled");
     } finally {
       setSubmitting(null);
-    }
-  };
-  const handleGeneratePromptMagic = async (): Promise<void> => {
-    const prompt = chatInput.trim();
-    if (!prompt || promptMagicDisabled) {
-      return;
-    }
-
-    setTaskPromptMagicLoading(true);
-    try {
-      const response = await api.generateTaskPromptMagic({ prompt });
-      const nextPrompt = response.prompt ?? "";
-      setChatInput(nextPrompt);
-      if (nextPrompt.trim() === prompt) {
-        void messageApi.info("Magic prompt returned a similar result.");
-      } else {
-        void messageApi.success("Prompt improved.");
-      }
-    } catch (error) {
-      const fallback = "Failed to generate prompt.";
-      const errorMessage = error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
-      void messageApi.error(errorMessage);
-    } finally {
-      setTaskPromptMagicLoading(false);
     }
   };
   const handleDeleteTask = async () => {
@@ -3980,25 +3951,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           disabled={!canEditTask || isArchived || interactiveTerminalRunning}
         />
       </Flex>
-      <div style={{ position: "relative" }}>
-        {promptMagicVisible ? (
-          <Button
-            size="small"
-            type="default"
-            icon={<RobotOutlined />}
-            title="Magic Wand"
-            aria-label="Magic Wand"
-            loading={taskPromptMagicLoading}
-            disabled={promptMagicDisabled}
-            onClick={() => void handleGeneratePromptMagic()}
-            style={{
-              position: "absolute",
-              right: 10,
-              bottom: 10,
-              zIndex: 1
-            }}
-          />
-        ) : null}
+      <div>
         <Mentions
           autoSize={{ minRows: 4, maxRows: 14 }}
           prefix="@"

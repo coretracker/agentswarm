@@ -16,8 +16,6 @@ const settings: SystemSettings = {
   hostexec: { enabled: false, url: null, bearerTokenEnvVar: null },
   openaiBaseUrl: null,
   anthropicBaseUrl: null,
-  taskPromptMagicModel: "gpt-5.5",
-  taskPromptMagicTemplate: "",
   githubTokenConfigured: false,
   openaiApiKeyConfigured: true,
   anthropicApiKeyConfigured: true,

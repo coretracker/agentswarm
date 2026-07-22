@@ -21,8 +21,6 @@ import type {
   Task,
   OpenAiDiffAssistInput,
   OpenAiDiffAssistResult,
-  TaskPromptMagicInput,
-  TaskPromptMagicResult,
   TaskLiveDiff,
   TaskGitStateSnapshot,
   TaskWorkspaceFileSearchResult,
@@ -326,11 +324,6 @@ export const api = {
     }),
   openAiDiffAssist: (taskId: string, input: OpenAiDiffAssistInput) =>
     request<OpenAiDiffAssistResult>(`/tasks/${taskId}/openai/diff-assist`, {
-      method: "POST",
-      body: JSON.stringify(input)
-    }),
-  generateTaskPromptMagic: (input: TaskPromptMagicInput) =>
-    request<TaskPromptMagicResult>("/tasks/prompt-magic", {
       method: "POST",
       body: JSON.stringify(input)
     }),

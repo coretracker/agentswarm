@@ -154,8 +154,6 @@ const updateSettingsSchema = z.object({
   hostexec: hostexecSettingsSchema,
   openaiBaseUrl: z.string().trim().url().nullable().optional(),
   anthropicBaseUrl: z.string().trim().url().nullable().optional(),
-  taskPromptMagicModel: z.string().trim().min(1).max(120).optional(),
-  taskPromptMagicTemplate: z.string().trim().min(1).max(12_000).optional(),
   harnessWhatExists: z.string().trim().max(8000).nullable().optional(),
   harnessAllowedActions: z.string().trim().max(8000).nullable().optional(),
   harnessNotAllowedActions: z.string().trim().max(8000).nullable().optional(),
