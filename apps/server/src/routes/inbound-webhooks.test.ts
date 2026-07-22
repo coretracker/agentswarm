@@ -28,7 +28,11 @@ const repository: Repository = {
   updatedAt: now
 };
 
-const createTestApp = (secret: string | null, inboundWebhookSignatureHeaders?: string[]) => {
+const createTestApp = (
+  secret: string | null,
+  inboundWebhookSignatureHeaders?: string[],
+  signatureSecrets: Record<string, string> = {}
+) => {
   const app = Fastify();
   const insertedEntries: WebhookInboxEntry[] = [];
   const testRepository = { ...repository, inboundWebhookSignatureHeaders };
@@ -42,7 +46,8 @@ const createTestApp = (secret: string | null, inboundWebhookSignatureHeaders?: s
   registerInboundWebhookRoutes(app, {
     repositoryStore: {
       getRepository: async (repositoryId: string) => (repositoryId === repository.id ? testRepository : null),
-      getRepositoryInboundWebhookSecret: async () => secret
+      getRepositoryInboundWebhookSecret: async () => secret,
+      getRepositoryInboundWebhookSignatureSecrets: async () => signatureSecrets
     } as never,
     integrationRuleStore: {
       listRules: async () => []
@@ -293,6 +298,57 @@ test("inbound webhook accepts configured vendor signature header with keyed dige
   assert.equal(response.statusCode, 202);
   assert.deepEqual(JSON.parse(response.body), { received: true, matched: false });
   assert.equal(insertedEntries.length, 1);
+
+  await app.close();
+});
+
+test("inbound webhook uses the secret configured for the matching signature header", async () => {
+  const { app, insertedEntries } = createTestApp(null, ["x-linear-signature", "x-github-signature"], {
+    "x-linear-signature": "linear-secret",
+    "x-github-signature": "github-secret"
+  });
+  const payload = JSON.stringify({ action: "created", data: { issue: { id: "LIN-123" } } });
+  const signature = createHmac("sha256", "linear-secret").update(payload).digest("hex");
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/integrations/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-linear-signature": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { received: true, matched: false });
+  assert.equal(insertedEntries.length, 1);
+
+  await app.close();
+});
+
+test("inbound webhook rejects a signature that uses another header's secret", async () => {
+  const { app, insertedEntries } = createTestApp(null, ["x-linear-signature", "x-github-signature"], {
+    "x-linear-signature": "linear-secret",
+    "x-github-signature": "github-secret"
+  });
+  const payload = JSON.stringify({ action: "created", data: { issue: { id: "LIN-123" } } });
+  const signature = createHmac("sha256", "github-secret").update(payload).digest("hex");
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/integrations/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-linear-signature": signature
+    },
+    payload
+  });
+
+  assert.equal(response.statusCode, 401);
+  assert.deepEqual(JSON.parse(response.body), { message: "Invalid webhook signature." });
+  assert.equal(insertedEntries.length, 1);
+  assert.equal(insertedEntries[0]?.status, "rejected");
 
   await app.close();
 });

@@ -93,6 +93,46 @@ describe("RedisRepositoryStore MCP servers", () => {
     assert.deepEqual(updated?.inboundWebhookSignatureHeaders, ["x-webhook-signature", "x-hub-signature-256"]);
   });
 
+  it("stores inbound webhook signature secrets per header without exposing values", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const created = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git",
+      inboundWebhookSignatureHeaderSecrets: [
+        { header: "X-Linear-Signature", secret: "linear-secret" },
+        { header: "X-GitHub-Signature", secret: "github-secret" }
+      ]
+    });
+
+    assert.equal(created.inboundWebhookSecretConfigured, true);
+    assert.deepEqual(created.inboundWebhookSignatureHeaderSecrets, [
+      { header: "x-github-signature", secretConfigured: true },
+      { header: "x-linear-signature", secretConfigured: true }
+    ]);
+    assert.deepEqual(await store.getRepositoryInboundWebhookSignatureSecrets(created.id), {
+      "x-github-signature": "github-secret",
+      "x-linear-signature": "linear-secret"
+    });
+
+    const updated = await store.updateRepository(created.id, {
+      inboundWebhookSignatureHeaderSecrets: [
+        { header: "x-linear-signature", clearSecret: true },
+        { header: "x-github-signature" }
+      ]
+    });
+
+    assert.deepEqual(updated?.inboundWebhookSignatureHeaderSecrets, [
+      { header: "x-github-signature", secretConfigured: true }
+    ]);
+    assert.deepEqual(await store.getRepositoryInboundWebhookSignatureSecrets(created.id), {
+      "x-github-signature": "github-secret"
+    });
+  });
+
   it("persists nullable repository default agent settings", async () => {
     const store = new RedisRepositoryStore(
       new FakeRedis() as never,

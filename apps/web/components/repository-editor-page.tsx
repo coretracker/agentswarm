@@ -85,6 +85,7 @@ type RepositoryFormValues = {
   slackTaskOwnerUserId: string;
   inboundWebhookSecret: string;
   inboundWebhookSignatureHeaders: string;
+  inboundWebhookSignatureHeaderSecrets: Array<{ header: string; secret: string; clearSecret: boolean }>;
   clearInboundWebhookSecret: boolean;
   harnessWhatExists: string;
   harnessAllowedActions: string;
@@ -127,6 +128,7 @@ const emptyValues = (): RepositoryFormValues => ({
   slackTaskOwnerUserId: "",
   inboundWebhookSecret: "",
   inboundWebhookSignatureHeaders: "x-webhook-signature\nx-hub-signature-256",
+  inboundWebhookSignatureHeaderSecrets: [],
   clearInboundWebhookSecret: false,
   harnessWhatExists: "",
   harnessAllowedActions: "",
@@ -217,6 +219,11 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
     typeof values?.inboundWebhookSignatureHeaders === "string"
       ? values.inboundWebhookSignatureHeaders
       : "x-webhook-signature\nx-hub-signature-256",
+  inboundWebhookSignatureHeaderSecrets: (values?.inboundWebhookSignatureHeaderSecrets ?? []).map((entry) => ({
+    header: typeof entry?.header === "string" ? entry.header : "",
+    secret: typeof entry?.secret === "string" ? entry.secret : "",
+    clearSecret: entry?.clearSecret === true
+  })),
   clearInboundWebhookSecret: values?.clearInboundWebhookSecret === true,
   harnessWhatExists: typeof values?.harnessWhatExists === "string" ? values.harnessWhatExists : "",
   harnessAllowedActions: typeof values?.harnessAllowedActions === "string" ? values.harnessAllowedActions : "",
@@ -992,6 +999,11 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           slackTaskOwnerUserId: repository.slackTaskOwnerUserId ?? "",
           inboundWebhookSecret: "",
           inboundWebhookSignatureHeaders: formatInboundWebhookSignatureHeaders(repository.inboundWebhookSignatureHeaders),
+          inboundWebhookSignatureHeaderSecrets: (repository.inboundWebhookSignatureHeaderSecrets ?? []).map((entry) => ({
+            header: entry.header,
+            secret: "",
+            clearSecret: false
+          })),
           clearInboundWebhookSecret: false,
           harnessWhatExists: repository.harnessWhatExists ?? "",
           harnessAllowedActions: repository.harnessAllowedActions ?? "",
@@ -1454,6 +1466,13 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               ...(editingRepository && normalized.clearGithubPrWebhookSecret ? { clearGithubPrWebhookSecret: true } : {}),
               ...(normalized.inboundWebhookSecret.trim().length > 0 ? { inboundWebhookSecret: normalized.inboundWebhookSecret.trim() } : {}),
               inboundWebhookSignatureHeaders: parseInboundWebhookSignatureHeaders(normalized.inboundWebhookSignatureHeaders),
+              inboundWebhookSignatureHeaderSecrets: normalized.inboundWebhookSignatureHeaderSecrets
+                .map((entry) => ({
+                  header: entry.header.trim().toLowerCase(),
+                  ...(entry.secret.trim().length > 0 ? { secret: entry.secret.trim() } : {}),
+                  ...(editingRepository && entry.clearSecret ? { clearSecret: true } : {})
+                }))
+                .filter((entry) => entry.header && ("secret" in entry || "clearSecret" in entry)),
               ...(editingRepository && normalized.clearInboundWebhookSecret ? { clearInboundWebhookSecret: true } : {}),
               githubIntegrationBotLogin: normalized.githubIntegrationBotLogin.trim().replace(/^@+/, "") || null,
               githubPrAllowedUsers: parseAllowedGitHubUsers(normalized.githubPrAllowedUsers),
@@ -2426,6 +2445,35 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                       <Checkbox>Clear stored inbound webhook secret</Checkbox>
                     </Form.Item>
                   ) : null}
+
+                  <Form.List name="inboundWebhookSignatureHeaderSecrets">
+                    {(fields, { add, remove }) => (
+                      <Flex vertical gap={8}>
+                        <Flex align="center" justify="space-between">
+                          <Typography.Text strong>Header Secrets</Typography.Text>
+                          <Button size="small" icon={<PlusOutlined />} onClick={() => add({ header: "", secret: "", clearSecret: false })}>
+                            Add
+                          </Button>
+                        </Flex>
+                        {fields.map((field) => (
+                          <Flex key={field.key} gap={8} align="flex-start" wrap="wrap">
+                            <Form.Item {...field} name={[field.name, "header"]} style={{ flex: "1 1 220px", marginBottom: 0 }}>
+                              <Input placeholder="x-linear-signature" />
+                            </Form.Item>
+                            <Form.Item {...field} name={[field.name, "secret"]} style={{ flex: "1 1 260px", marginBottom: 0 }}>
+                              <Input.Password placeholder="Secret" />
+                            </Form.Item>
+                            {editingRepository ? (
+                              <Form.Item {...field} name={[field.name, "clearSecret"]} valuePropName="checked" style={{ marginBottom: 0 }}>
+                                <Checkbox>Clear</Checkbox>
+                              </Form.Item>
+                            ) : null}
+                            <Button aria-label="Remove header secret" icon={<DeleteOutlined />} onClick={() => remove(field.name)} />
+                          </Flex>
+                        ))}
+                      </Flex>
+                    )}
+                  </Form.List>
                 </Card>
 
                 <Card
