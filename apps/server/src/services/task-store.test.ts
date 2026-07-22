@@ -306,23 +306,6 @@ describe("TaskStore.createTask", () => {
     assert.deepEqual(await taskStore.listMessages(task.id), []);
   });
 
-  it("normalizes task deadlines", async () => {
-    const redis = new FakeRedis();
-    const taskStore = new RedisTaskStore(redis as never, {
-      publish: async () => {}
-    } as never);
-    const task = await taskStore.createTask(
-      {
-        ...createTaskInput,
-        deadline: "2026-06-15T10:30:00+02:00"
-      },
-      repository,
-      "user-1"
-    );
-
-    assert.equal(task.deadline, "2026-06-15T08:30:00.000Z");
-  });
-
   it("persists auto-apply checkpoint mode", async () => {
     const redis = new FakeRedis();
     const taskStore = new RedisTaskStore(redis as never, {

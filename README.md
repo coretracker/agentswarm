@@ -114,7 +114,7 @@ Tasks are the main unit of work in Verft.
 
 - **Build tasks** ask an agent to modify a repository in an isolated workspace.
 - **Ask tasks** ask an agent to inspect and answer without writing files.
-Task definitions include title, repository, prompt, deadline, provider/model settings, branch settings, and optional prompt attachments. Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
+Task definitions include title, repository, prompt, provider/model settings, branch settings, and optional prompt attachments. Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
 
 ### Checkpoints And Git Actions
 

@@ -62,8 +62,6 @@ export const detailTask = (task: Task) => {
     provider: task.provider,
     providerProfile: task.providerProfile,
     modelOverride: task.modelOverride,
-    codexCredentialSource: task.codexCredentialSource,
-    deadline: task.deadline,
     startedAt: task.startedAt,
     finishedAt: task.finishedAt,
     lastAction: task.lastAction

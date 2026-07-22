@@ -2,10 +2,8 @@
 
 import { useEffect, useState } from "react";
 import type { FormInstance } from "antd";
-import dayjs, { type Dayjs } from "dayjs";
 import type {
   AgentProvider,
-  CodexCredentialSource,
   CreateTaskPromptAttachmentInput,
   ProviderProfile,
   Repository,
@@ -21,7 +19,7 @@ import {
   getEffortOptionsForProvider,
   getModelsForProvider
 } from "@verft/shared-types";
-import { Alert, Button, Card, Col, DatePicker, Flex, Form, Input, Row, Select, Typography, message } from "antd";
+import { Alert, Button, Card, Col, Flex, Form, Input, Row, Select, Typography, message } from "antd";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useSettings } from "../src/hooks/useSettings";
@@ -31,14 +29,12 @@ import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
 
 export type TaskDefinitionFormValues = {
   title?: string;
-  deadline?: string | null | Dayjs;
   repoId?: string;
   prompt?: string;
   taskType?: TaskType;
   provider?: AgentProvider;
   model?: string;
   providerProfile?: ProviderProfile;
-  codexCredentialSource?: CodexCredentialSource;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
 };
@@ -55,11 +51,6 @@ export interface TaskDefinitionFieldsProps {
 const providerOptions = (): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
   { label: "Codex (OpenAI)", value: "codex" },
   { label: getAgentProviderLabel("claude"), value: "claude" }
-];
-
-const codexCredentialSourceOptions: Array<{ label: string; value: CodexCredentialSource }> = [
-  { label: "Auto (System credentials)", value: "auto" },
-  { label: "Global OpenAI key", value: "global" }
 ];
 
 const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSettings | null): string =>
@@ -111,15 +102,6 @@ const deriveTitleFromPrompt = (prompt: string): string => {
   return lines[0];
 };
 
-export const getTaskDefinitionDeadlineIso = (value: TaskDefinitionFormValues["deadline"]): string | undefined => {
-  if (!value) {
-    return undefined;
-  }
-
-  const parsed = dayjs.isDayjs(value) ? value : dayjs(value);
-  return parsed.isValid() ? parsed.toISOString() : undefined;
-};
-
 export const getTaskDefinitionInitialValues = (
   settings?: SystemSettings | null,
   repository?: Repository | null,
@@ -131,7 +113,6 @@ export const getTaskDefinitionInitialValues = (
     provider: resolvedDefaults.provider,
     model: resolvedDefaults.model,
     providerProfile: resolvedDefaults.providerProfile,
-    codexCredentialSource: "auto",
     branchStrategy: "feature_branch"
   };
 };
@@ -141,11 +122,9 @@ export const buildTaskDefinitionInput = (
   promptAttachments: CreateTaskPromptAttachmentInput[] = []
 ): TaskDefinitionInput => {
   const provider = values.provider ?? "codex";
-  const codexCredentialSource = provider === "codex" ? (values.codexCredentialSource ?? "auto") : undefined;
 
   return {
     title: values.title?.trim() ?? "",
-    deadline: getTaskDefinitionDeadlineIso(values.deadline) ?? null,
     repoId: values.repoId ?? "",
     prompt: values.prompt?.trim() ?? "",
     ...(promptAttachments.length > 0 ? { attachments: promptAttachments } : {}),
@@ -153,7 +132,6 @@ export const buildTaskDefinitionInput = (
     provider,
     model: values.model?.trim() ?? "",
     providerProfile: values.providerProfile ?? "high",
-    ...(codexCredentialSource ? { codexCredentialSource } : {}),
     baseBranch: values.baseBranch?.trim() ?? "",
     branchStrategy: values.branchStrategy ?? "feature_branch"
   };
@@ -264,17 +242,6 @@ export function TaskDefinitionFields({
   }, [allowedEffortOptions, form]);
 
   useEffect(() => {
-    if (selectedProvider !== "codex") {
-      return;
-    }
-    const current = form.getFieldValue("codexCredentialSource") as CodexCredentialSource | undefined;
-    if (current === "auto" || current === "global") {
-      return;
-    }
-    form.setFieldValue("codexCredentialSource", "auto");
-  }, [form, selectedProvider]);
-
-  useEffect(() => {
     if (selectedTaskType === "build" && !canBuildTasks && canAskTasks) {
       form.setFieldValue("taskType", "ask");
       return;
@@ -353,16 +320,6 @@ export function TaskDefinitionFields({
               />
             </Form.Item>
 
-            <Form.Item name="deadline" label="Deadline">
-              <DatePicker
-                showTime={{ format: "HH:mm" }}
-                format="YYYY-MM-DD HH:mm"
-                placeholder="No deadline"
-                style={{ width: "100%" }}
-                allowClear
-              />
-            </Form.Item>
-
             <Form.Item name="taskType" label="Task Type" rules={[{ required: true }]}>
               <Select options={taskTypeOptions} />
             </Form.Item>
@@ -417,12 +374,6 @@ export function TaskDefinitionFields({
             <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
               <Select options={allowedEffortOptions} />
             </Form.Item>
-
-            {selectedProvider === "codex" ? (
-              <Form.Item name="codexCredentialSource" label="Codex Credential Source" rules={[{ required: true }]}>
-                <Select options={codexCredentialSourceOptions} />
-              </Form.Item>
-            ) : null}
 
             <Form.Item name="baseBranch" label="Base Branch" rules={[{ required: true }]}>
               <Input placeholder={selectedRepository?.defaultBranch ?? "develop"} />
