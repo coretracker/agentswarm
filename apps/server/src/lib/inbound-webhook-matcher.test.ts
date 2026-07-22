@@ -69,3 +69,12 @@ test("interpolates and correlates header/body values", () => {
   assert.equal(resolveCorrelationValue("body.issue.key", headers, body), "WEB-42");
   assert.equal(resolveCorrelationValue("header.X-Linear-Delivery", headers, body), "delivery-1");
 });
+
+test("interpolates integration rule helper expressions", () => {
+  const body = { title: "Fix webhook title that is too long" };
+
+  assert.equal(
+    interpolateTemplate("{{slugify(body.title)}} {{truncate(body.title, 17)}} {{unknown(body.title)}}", {}, body),
+    "fix-webhook-title-that-is-too-long Fix webhook title {{unknown(body.title)}}"
+  );
+});
