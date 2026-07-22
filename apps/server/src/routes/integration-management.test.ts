@@ -74,7 +74,6 @@ const registerCopyIntegrationSetupTestApp = (options: { repositoryIds: string[] 
               defaultModel: null,
               defaultProviderProfile: null,
               active: true,
-              agentResponsePreference: {},
               roles: [],
               repositoryIds: options.repositoryIds,
               scopes: ["repo:edit"],

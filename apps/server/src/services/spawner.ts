@@ -6,7 +6,6 @@ import { nanoid } from "nanoid";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import {
-  type AgentResponsePreference,
   getCheckpointMutationBlockedReason,
   getTaskStatusLabel,
   getTaskTerminalSessionEndMessage,
@@ -231,7 +230,6 @@ interface RuntimeManifest {
   resolvedModel: string | null;
   resolvedReasoningEffort?: string;
   resolvedThinkingBudgetTokens?: number;
-  agentResponsePreference: AgentResponsePreference;
   workspacePath: string;
   resultMarkdownPath: string;
   resultJsonPath: string;
@@ -5357,12 +5355,11 @@ export class SpawnerService {
 
   async runTask(task: Task, action: TaskAction, input?: TaskExecutionInput | string, promptMessageId: string | null = null): Promise<void> {
     this.cancelRequestedTaskIds.delete(task.id);
-    const [settings, runtimeCredentialsRaw, repositoryRuntimeEnvEntries, repository, responsePreferenceUser] = await Promise.all([
+    const [settings, runtimeCredentialsRaw, repositoryRuntimeEnvEntries, repository] = await Promise.all([
       this.settingsStore.getSettings(),
       this.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto"),
       this.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
-      this.repositoryStore.getRepository(task.repoId),
-      task.ownerUserId ? this.userStore.getAuthSessionUser(task.ownerUserId) : Promise.resolve(null)
+      this.repositoryStore.getRepository(task.repoId)
     ]);
     const gitIdentity = resolveTaskGitCommitIdentity(settings, {
       ...DEFAULT_GIT_COMMIT_IDENTITY
@@ -5486,7 +5483,6 @@ export class SpawnerService {
         resolvedModel,
         resolvedReasoningEffort: resolvedProfileSettings.reasoningEffort,
         resolvedThinkingBudgetTokens: resolvedProfileSettings.thinkingBudgetTokens,
-        agentResponsePreference: responsePreferenceUser?.agentResponsePreference ?? {},
         workspacePath: workspace.workspacePath,
         resultMarkdownPath,
         resultJsonPath,

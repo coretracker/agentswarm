@@ -5,16 +5,9 @@ import { Alert, App, Button, Card, Divider, Flex, Form, Input, Select, Space, Sp
 import { CopyOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
 import { useAuth } from "./auth-provider";
-import { ResponsePolicyFields } from "./response-policy-fields";
 import { ModelSelect } from "./model-select";
 import type {
-  AgentClarifyBehavior,
-  AgentCodePreference,
-  AgentExplanationDepth,
-  AgentFormattingStyle,
-  AgentJargonLevel,
   AgentProvider,
-  AudienceType,
   PersonalAccessToken,
   ProviderProfile
 } from "@verft/shared-types";
@@ -51,13 +44,6 @@ export function ProfilePage() {
     defaultProvider?: AgentProvider;
     defaultModel?: string;
     defaultProviderProfile?: ProviderProfile;
-    audience?: AudienceType;
-    explanationDepth?: AgentExplanationDepth;
-    jargonLevel?: AgentJargonLevel;
-    codePreference?: AgentCodePreference;
-    clarifyBehavior?: AgentClarifyBehavior;
-    formattingStyle?: AgentFormattingStyle;
-    extraInstructions?: string;
   }>();
 
   const selectedDefaultProvider = (Form.useWatch("defaultProvider", form) as AgentProvider | undefined) ?? "codex";
@@ -75,14 +61,7 @@ export function ProfilePage() {
           githubUsername: profile.githubUsername ?? "",
           defaultProvider: profile.defaultProvider ?? undefined,
           defaultModel: profile.defaultModel ?? undefined,
-          defaultProviderProfile: profile.defaultProviderProfile ?? undefined,
-          audience: profile.agentResponsePreference.audience,
-          explanationDepth: profile.agentResponsePreference.explanationDepth,
-          jargonLevel: profile.agentResponsePreference.jargonLevel,
-          codePreference: profile.agentResponsePreference.codePreference,
-          clarifyBehavior: profile.agentResponsePreference.clarifyBehavior,
-          formattingStyle: profile.agentResponsePreference.formattingStyle,
-          extraInstructions: profile.agentResponsePreference.extraInstructions ?? ""
+          defaultProviderProfile: profile.defaultProviderProfile ?? undefined
         });
         setPersonalAccessTokens(tokens);
       })
@@ -104,24 +83,14 @@ export function ProfilePage() {
         githubUsername: values.githubUsername?.trim() || null,
         defaultProvider: values.defaultProvider ?? null,
         defaultModel: values.defaultModel?.trim() || null,
-        defaultProviderProfile: values.defaultProviderProfile ?? null,
-        agentResponsePreference: {
-          audience: values.audience,
-          explanationDepth: values.explanationDepth,
-          jargonLevel: values.jargonLevel,
-          codePreference: values.codePreference,
-          clarifyBehavior: values.clarifyBehavior,
-          formattingStyle: values.formattingStyle,
-          extraInstructions: values.extraInstructions?.trim() || undefined
-        }
+        defaultProviderProfile: values.defaultProviderProfile ?? null
       });
       setSessionUser({
         name: next.name,
         githubUsername: next.githubUsername,
         defaultProvider: next.defaultProvider,
         defaultModel: next.defaultModel,
-        defaultProviderProfile: next.defaultProviderProfile,
-        agentResponsePreference: next.agentResponsePreference
+        defaultProviderProfile: next.defaultProviderProfile
       });
       message.success("Profile updated");
     } catch (error) {
@@ -181,14 +150,7 @@ export function ProfilePage() {
             githubUsername: session?.user.githubUsername ?? "",
             defaultProvider: session?.user.defaultProvider ?? undefined,
             defaultModel: session?.user.defaultModel ?? undefined,
-            defaultProviderProfile: session?.user.defaultProviderProfile ?? undefined,
-            audience: session?.user.agentResponsePreference?.audience,
-            explanationDepth: session?.user.agentResponsePreference?.explanationDepth,
-            jargonLevel: session?.user.agentResponsePreference?.jargonLevel,
-            codePreference: session?.user.agentResponsePreference?.codePreference,
-            clarifyBehavior: session?.user.agentResponsePreference?.clarifyBehavior,
-            formattingStyle: session?.user.agentResponsePreference?.formattingStyle,
-            extraInstructions: session?.user.agentResponsePreference?.extraInstructions ?? ""
+            defaultProviderProfile: session?.user.defaultProviderProfile ?? undefined
           }}
         >
           <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
@@ -225,12 +187,6 @@ export function ProfilePage() {
             <Form.Item name="defaultProviderProfile" label="Effort">
               <Select allowClear options={defaultEffortOptions} placeholder="Repository or system default" />
             </Form.Item>
-          </Card>
-          <Divider orientation="left" plain>
-            Response Format Preferences
-          </Divider>
-          <Card size="small">
-            <ResponsePolicyFields />
           </Card>
           <Divider orientation="left" plain>
             Personal Access Token

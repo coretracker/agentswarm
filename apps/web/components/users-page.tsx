@@ -2,16 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type {
-  AgentClarifyBehavior,
-  AgentCodePreference,
-  AgentExplanationDepth,
-  AgentFormattingStyle,
-  AgentJargonLevel,
   AgentProvider,
-  AudienceType,
   ProviderProfile,
   Repository,
-  ResponsePreferencePreset,
   Role,
   User
 } from "@verft/shared-types";
@@ -38,7 +31,6 @@ import dayjs from "dayjs";
 import { api } from "../src/api/client";
 import { useAuth } from "./auth-provider";
 import { ModelSelect } from "./model-select";
-import { ResponsePolicyFields } from "./response-policy-fields";
 
 interface UserFormValues {
   name: string;
@@ -49,14 +41,6 @@ interface UserFormValues {
   defaultModel?: string;
   defaultProviderProfile?: ProviderProfile;
   active: boolean;
-  audience?: AudienceType;
-  explanationDepth?: AgentExplanationDepth;
-  jargonLevel?: AgentJargonLevel;
-  codePreference?: AgentCodePreference;
-  clarifyBehavior?: AgentClarifyBehavior;
-  formattingStyle?: AgentFormattingStyle;
-  extraInstructions?: string;
-  responsePreferencePresetId?: string;
   roleIds: string[];
   repositoryIds: string[];
 }
@@ -74,7 +58,6 @@ export function UsersPage() {
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
   const [repositories, setRepositories] = useState<Repository[]>([]);
-  const [responsePreferencePresets, setResponsePreferencePresets] = useState<ResponsePreferencePreset[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -90,24 +73,20 @@ export function UsersPage() {
   const canEditUsers = can("user:edit");
   const canDeleteUsers = can("user:delete");
   const canReadRoles = can("settings:read");
-  const canReadSettings = can("settings:read");
   const canEditRoles = can("settings:edit");
   const canReadRepositories = can("repo:list");
-  const formatLabel = (value: string): string => value.replace(/_/g, " ");
 
   const loadUsers = async () => {
     setLoading(true);
     try {
-      const [nextUsers, nextRoles, nextRepositories, nextSettings] = await Promise.all([
+      const [nextUsers, nextRoles, nextRepositories] = await Promise.all([
         api.listUsers(),
         canReadRoles ? api.listRoles().catch(() => []) : Promise.resolve([]),
-        canEditRoles && canReadRepositories ? api.listRepositories().catch(() => []) : Promise.resolve([]),
-        canReadSettings ? api.getSettings().catch(() => null) : Promise.resolve(null)
+        canEditRoles && canReadRepositories ? api.listRepositories().catch(() => []) : Promise.resolve([])
       ]);
       setUsers(nextUsers);
       setRoles(nextRoles);
       setRepositories(nextRepositories);
-      setResponsePreferencePresets(nextSettings?.responsePreferencePresets ?? []);
     } finally {
       setLoading(false);
     }
@@ -115,7 +94,7 @@ export function UsersPage() {
 
   useEffect(() => {
     void loadUsers();
-  }, [canEditRoles, canReadRepositories, canReadRoles, canReadSettings]);
+  }, [canEditRoles, canReadRepositories, canReadRoles]);
 
   const openCreateModal = () => {
     setEditingUser(null);
@@ -124,14 +103,6 @@ export function UsersPage() {
       email: "",
       password: "",
       active: true,
-      audience: undefined,
-      explanationDepth: undefined,
-      jargonLevel: undefined,
-      codePreference: undefined,
-      clarifyBehavior: undefined,
-      formattingStyle: undefined,
-      extraInstructions: "",
-      responsePreferencePresetId: undefined,
       roleIds: [],
       repositoryIds: []
     });
@@ -149,24 +120,6 @@ export function UsersPage() {
       defaultModel: user.defaultModel ?? undefined,
       defaultProviderProfile: user.defaultProviderProfile ?? undefined,
       active: user.active,
-      audience: user.agentResponsePreference.audience,
-      explanationDepth: user.agentResponsePreference.explanationDepth,
-      jargonLevel: user.agentResponsePreference.jargonLevel,
-      codePreference: user.agentResponsePreference.codePreference,
-      clarifyBehavior: user.agentResponsePreference.clarifyBehavior,
-      formattingStyle: user.agentResponsePreference.formattingStyle,
-      extraInstructions: user.agentResponsePreference.extraInstructions ?? "",
-      responsePreferencePresetId:
-        responsePreferencePresets.find(
-          (preset) =>
-            preset.preference.audience === user.agentResponsePreference.audience &&
-            preset.preference.explanationDepth === user.agentResponsePreference.explanationDepth &&
-            preset.preference.jargonLevel === user.agentResponsePreference.jargonLevel &&
-            preset.preference.codePreference === user.agentResponsePreference.codePreference &&
-            preset.preference.clarifyBehavior === user.agentResponsePreference.clarifyBehavior &&
-            preset.preference.formattingStyle === user.agentResponsePreference.formattingStyle &&
-            (preset.preference.extraInstructions ?? "") === (user.agentResponsePreference.extraInstructions ?? "")
-        )?.id,
       roleIds: user.roles.map((role) => role.id),
       repositoryIds: user.repositoryIds ?? []
     });
@@ -225,16 +178,6 @@ export function UsersPage() {
                       ))}
                     </Space>
                   );
-                }
-              },
-              {
-                title: "Response Style",
-                render: (_, user) => {
-                  if (!user.agentResponsePreference.audience) {
-                    return <Typography.Text type="secondary">Neutral</Typography.Text>;
-                  }
-
-                  return <Tag>{formatLabel(user.agentResponsePreference.audience)}</Tag>;
                 }
               },
               {
@@ -306,15 +249,6 @@ export function UsersPage() {
                   defaultModel: values.defaultModel?.trim() || null,
                   defaultProviderProfile: values.defaultProviderProfile ?? null,
                   active: values.active,
-                  agentResponsePreference: {
-                    audience: values.audience,
-                    explanationDepth: values.explanationDepth,
-                    jargonLevel: values.jargonLevel,
-                    codePreference: values.codePreference,
-                    clarifyBehavior: values.clarifyBehavior,
-                    formattingStyle: values.formattingStyle,
-                    extraInstructions: values.extraInstructions?.trim() || undefined
-                  },
                   roleIds: canEditRoles ? values.roleIds : undefined,
                   repositoryIds: canEditRoles ? values.repositoryIds : undefined
                 });
@@ -325,15 +259,6 @@ export function UsersPage() {
                   email: values.email,
                   password: values.password?.trim() || "",
                   active: values.active,
-                  agentResponsePreference: {
-                    audience: values.audience,
-                    explanationDepth: values.explanationDepth,
-                    jargonLevel: values.jargonLevel,
-                    codePreference: values.codePreference,
-                    clarifyBehavior: values.clarifyBehavior,
-                    formattingStyle: values.formattingStyle,
-                    extraInstructions: values.extraInstructions?.trim() || undefined
-                  },
                   roleIds: canEditRoles ? values.roleIds : undefined,
                   repositoryIds: canEditRoles ? values.repositoryIds : undefined
                 });
@@ -408,41 +333,6 @@ export function UsersPage() {
           >
             <Switch disabled={editingUser?.id === currentUserId} />
           </Form.Item>
-          <Form.Item
-            name="responsePreferencePresetId"
-            label="Response Preference Preset"
-            extra="Optional shortcut for applying a saved response preference."
-          >
-            <Select
-              allowClear
-              placeholder="Select a preset"
-              options={responsePreferencePresets.map((preset) => ({
-                label: preset.name,
-                value: preset.id
-              }))}
-              onChange={(value) => {
-                const preset = responsePreferencePresets.find((entry) => entry.id === value);
-                if (!preset) {
-                  return;
-                }
-                form.setFieldsValue({
-                  audience: preset.preference.audience,
-                  explanationDepth: preset.preference.explanationDepth,
-                  jargonLevel: preset.preference.jargonLevel,
-                  codePreference: preset.preference.codePreference,
-                  clarifyBehavior: preset.preference.clarifyBehavior,
-                  formattingStyle: preset.preference.formattingStyle,
-                  extraInstructions: preset.preference.extraInstructions ?? ""
-                });
-              }}
-            />
-          </Form.Item>
-          <Divider orientation="left" plain>
-            Response Format Preferences
-          </Divider>
-          <Card size="small">
-            <ResponsePolicyFields onChange={() => form.setFieldValue("responsePreferencePresetId", undefined)} />
-          </Card>
           {canEditRoles ? (
             <Form.Item name="roleIds" label="Roles">
               <Select

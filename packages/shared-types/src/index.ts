@@ -171,43 +171,6 @@ export const TASK_PROMPT_ATTACHMENT_TOTAL_MAX_BYTES = 20 * 1024 * 1024;
 export type TaskReasoningEffort = "minimal" | "low" | "medium" | "high" | "xhigh";
 export type TaskComplexity = "trivial" | "normal" | "complex";
 export type TaskBranchStrategy = "feature_branch" | "work_on_branch";
-export type AudienceType = "technical" | "non_technical" | "mixed";
-export type AgentResponseStyle = Extract<AudienceType, "technical" | "non_technical">;
-export type AgentExplanationDepth = "one_line" | "brief" | "standard" | "detailed" | "deep_dive";
-export type AgentJargonLevel = "avoid" | "balanced" | "expert";
-export type AgentCodePreference = "only_when_needed" | "prefer_examples" | "avoid_code";
-export type AgentClarifyBehavior = "ask_when_ambiguous" | "make_reasonable_assumptions";
-export type AgentFormattingStyle = "direct" | "teaching" | "executive" | "step_by_step" | "checklist" | "qa" | "problem_solution";
-
-export interface AgentResponsePolicy {
-  audience?: AudienceType;
-  explanationDepth?: AgentExplanationDepth;
-  jargonLevel?: AgentJargonLevel;
-  codePreference?: AgentCodePreference;
-  clarifyBehavior?: AgentClarifyBehavior;
-  formattingStyle?: AgentFormattingStyle;
-  extraInstructions?: string;
-}
-
-export type AgentResponsePreference = AgentResponsePolicy;
-
-export interface ResponsePreferencePreset {
-  id: string;
-  name: string;
-  description: string;
-  preference: AgentResponsePreference;
-  isSystem: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface ResponsePreferencePresetInput {
-  id?: string;
-  name: string;
-  description?: string;
-  preference: AgentResponsePolicy;
-}
-
 export type McpServerTransport = "stdio" | "http";
 export type PermissionScope =
   | "task:list"
@@ -339,7 +302,6 @@ export interface User {
   defaultModel: string | null;
   defaultProviderProfile: ProviderProfile | null;
   active: boolean;
-  agentResponsePreference: AgentResponsePreference;
   roles: UserRoleRef[];
   repositoryIds: string[];
   lastLoginAt: string | null;
@@ -366,7 +328,6 @@ export interface AuthProfile {
   defaultProvider: AgentProvider | null;
   defaultModel: string | null;
   defaultProviderProfile: ProviderProfile | null;
-  agentResponsePreference: AgentResponsePreference;
 }
 
 export interface PersonalAccessToken {
@@ -418,7 +379,6 @@ export interface CreateUserInput {
   active?: boolean;
   roleIds?: string[];
   repositoryIds?: string[];
-  agentResponsePreference?: Partial<AgentResponsePreference>;
 }
 
 export interface UpdateUserInput {
@@ -432,7 +392,6 @@ export interface UpdateUserInput {
   active?: boolean;
   roleIds?: string[];
   repositoryIds?: string[];
-  agentResponsePreference?: Partial<AgentResponsePreference>;
 }
 
 export interface RepositoryEnvVar {
@@ -1054,7 +1013,6 @@ export interface SystemSettings {
   claudeDefaultModel: string;
   claudeModels: ProviderModelOption[];
   claudeDefaultEffort: ProviderProfile;
-  responsePreferencePresets: ResponsePreferencePreset[];
   dataStores?: SystemDataStores;
 }
 
@@ -1515,7 +1473,6 @@ export interface UpdateSettingsInput {
   claudeDefaultModel?: string;
   claudeModels?: ProviderModelOption[];
   claudeDefaultEffort?: ProviderProfile;
-  responsePreferencePresets?: ResponsePreferencePresetInput[];
 }
 
 export interface UpdateCredentialSettingsInput {
@@ -1537,7 +1494,6 @@ export interface UpdateAuthProfileInput {
   defaultProvider?: AgentProvider | null;
   defaultModel?: string | null;
   defaultProviderProfile?: ProviderProfile | null;
-  agentResponsePreference?: Partial<AgentResponsePreference>;
 }
 
 export interface TaskEvent {

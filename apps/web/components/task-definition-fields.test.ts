@@ -26,8 +26,7 @@ const settings: SystemSettings = {
   codexDefaultEffort: "medium",
   claudeDefaultModel: "claude-opus-4-8",
   claudeModels: [],
-  claudeDefaultEffort: "high",
-  responsePreferencePresets: []
+  claudeDefaultEffort: "high"
 };
 
 const repository: Repository = {

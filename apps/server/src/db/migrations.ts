@@ -796,5 +796,15 @@ Feedback:
       DROP COLUMN IF EXISTS task_prompt_magic_model,
       DROP COLUMN IF EXISTS task_prompt_magic_template;
     `
+  },
+  {
+    id: "20260722_03_drop_response_preference_columns",
+    sql: `
+      ALTER TABLE users
+      DROP COLUMN IF EXISTS agent_response_preference;
+
+      ALTER TABLE system_settings
+      DROP COLUMN IF EXISTS response_preference_presets;
+    `
   }
 ];

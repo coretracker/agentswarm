@@ -266,8 +266,8 @@ describe("PostgresSettingsStore", () => {
 
     const settings = await store.getSettings();
 
-    assert.equal(queries[0]?.values.length, 27);
-    assert.match(queries[0]?.sql ?? "", /VALUES \(1, \$1,.*\$27::jsonb\)/s);
+    assert.equal(queries[0]?.values.length, 26);
+    assert.match(queries[0]?.sql ?? "", /VALUES \(1, \$1,.*\$26\)/s);
     for (const column of [
       "archived_task_auto_delete_enabled",
       "archived_task_auto_delete_days",

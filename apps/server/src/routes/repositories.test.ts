@@ -15,7 +15,6 @@ const createUser = (overrides: Partial<User> = {}): User => ({
   defaultModel: null,
   defaultProviderProfile: null,
   active: true,
-  agentResponsePreference: {},
   roles: [],
   repositoryIds: [],
   lastLoginAt: null,
