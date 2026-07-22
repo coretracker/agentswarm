@@ -221,14 +221,14 @@ test("create-or-queue appends a queued message to an existing external target ta
   assert.deepEqual(calls.triggerNextPendingAction, [["task-1", "manual"]]);
 });
 
-test("OpenAI diff assist accepts legacy selectedSnippet payloads", async () => {
+test("OpenAI diff assist accepts selectedDiff payloads", async () => {
   const response = await injectOpenAiDiffAssist(
     {
       model: "gpt-5.4",
       providerProfile: "high",
       userPrompt: "Explain this",
       filePath: "apps/web/page.tsx",
-      selectedSnippet: "+changed line"
+      selectedDiff: "+changed line"
     },
     {
       existingTask: { ...openTask, status: "archived" }
