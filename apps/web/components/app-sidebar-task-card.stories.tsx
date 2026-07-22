@@ -9,7 +9,6 @@ const updatedAt = new Date("2026-07-17T14:24:00.000Z").toISOString();
 const baseTask: Task = {
   id: "task-sidebar-card",
   title: "Refine repository onboarding flow",
-  deadline: null,
   pinned: true,
   hasPendingCheckpoint: false,
   autoApplyCheckpoints: false,
@@ -32,7 +31,6 @@ const baseTask: Task = {
   provider: "codex",
   providerProfile: "high",
   modelOverride: "gpt-5.1",
-  codexCredentialSource: "auto",
   baseBranch: "main",
   branchStrategy: "feature_branch",
   complexity: "normal",

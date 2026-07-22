@@ -634,7 +634,6 @@ export interface Repository {
 }
 
 export type TaskTerminalSessionMode = "terminal";
-export type CodexCredentialSource = "auto" | "global";
 
 export interface TaskLinkedWorkspace {
   taskId: string;
@@ -648,7 +647,6 @@ export interface TaskLinkedWorkspace {
 export interface Task {
   id: string;
   title: string;
-  deadline: string | null;
   pinned: boolean;
   hasPendingCheckpoint: boolean;
   autoApplyCheckpoints: boolean;
@@ -671,7 +669,6 @@ export interface Task {
   provider: AgentProvider;
   providerProfile: ProviderProfile;
   modelOverride: string | null;
-  codexCredentialSource?: CodexCredentialSource;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
   complexity: TaskComplexity;

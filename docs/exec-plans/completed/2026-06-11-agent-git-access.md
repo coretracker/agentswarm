@@ -30,7 +30,7 @@
 - Runtime containers can run `git pull` and `git push` against HTTPS GitHub remotes without interactive prompts when the configured token has sufficient scopes.
 - Runtime containers can create commits with the resolved user identity without relying on global image-level Git config.
 - Missing GitHub token and missing/invalid identity states have clear validation or task-log messaging before users expect agents to push/pull.
-- Existing server-side Git operations continue to use the same credential source and existing behavior.
+- Existing server-side Git operations continue to use existing behavior.
 - Git terminal behavior remains compatible.
 - Tests cover the shared Git runtime env builder, Codex/Claude task container argument injection, identity fallback, and no-token behavior.
 - User-facing docs identify where to configure the GitHub token, required token permissions, and Git author identity.

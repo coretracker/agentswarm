@@ -287,7 +287,6 @@ describe("TaskStore.createTask", () => {
     assert.equal(task.executionStatus, "queued");
     assert.equal(task.executionAction, "build");
     assert.equal(task.startedAt, null);
-    assert.equal(task.deadline, null);
   });
 
   it("creates draft tasks without queueing execution", async () => {

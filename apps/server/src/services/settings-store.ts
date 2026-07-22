@@ -251,13 +251,11 @@ export interface SettingsRuntimeCredentials extends RuntimeCredentials {
   defaultProvider: AgentProvider;
 }
 
-type RuntimeCodexCredentialSource = "auto" | "global" | "profile";
-
 export interface SettingsStore {
   getSettings(): Promise<SystemSettings>;
   updateSettings(input: UpdateSettingsInput): Promise<SystemSettings>;
   updateCredentials(input: UpdateCredentialSettingsInput): Promise<SystemSettings>;
-  getRuntimeCredentials(userId?: string | null, codexCredentialSource?: RuntimeCodexCredentialSource): Promise<SettingsRuntimeCredentials>;
+  getRuntimeCredentials(): Promise<SettingsRuntimeCredentials>;
 }
 
 export class RedisSettingsStore implements SettingsStore {
@@ -447,7 +445,7 @@ export class RedisSettingsStore implements SettingsStore {
     return settings;
   }
 
-  async getRuntimeCredentials(_userId?: string | null, _codexCredentialSource: RuntimeCodexCredentialSource = "auto"): Promise<SettingsRuntimeCredentials> {
+  async getRuntimeCredentials(): Promise<SettingsRuntimeCredentials> {
     const [credentials, settings] = await Promise.all([
       this.credentialStore.getCredentials(),
       this.getSettings()
@@ -807,7 +805,7 @@ export class PostgresSettingsStore implements SettingsStore {
     return settings;
   }
 
-  async getRuntimeCredentials(_userId?: string | null, _codexCredentialSource: RuntimeCodexCredentialSource = "auto"): Promise<SettingsRuntimeCredentials> {
+  async getRuntimeCredentials(): Promise<SettingsRuntimeCredentials> {
     const [credentials, settings] = await Promise.all([
       this.credentialStore.getCredentials(),
       this.getSettings()

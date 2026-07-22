@@ -3170,7 +3170,7 @@ export class SpawnerService {
 
     const [settings, credentials] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto")
+      this.settingsStore.getRuntimeCredentials()
     ]);
 
     try {
@@ -5056,7 +5056,7 @@ export class SpawnerService {
   async prepareTaskWorkspaceOnly(task: Task): Promise<Task> {
     const [settings, runtimeCredentialsRaw] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto")
+      this.settingsStore.getRuntimeCredentials()
     ]);
     const runtimeCredentials = runtimeCredentialsRaw;
     const providerDefinition = getProviderRuntimeDefinition(task.provider);
@@ -5152,7 +5152,7 @@ export class SpawnerService {
 
     const [settings, runtimeCredentialsRaw] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto")
+      this.settingsStore.getRuntimeCredentials()
     ]);
     const runtimeCredentials = runtimeCredentialsRaw;
 
@@ -5359,7 +5359,7 @@ export class SpawnerService {
     this.cancelRequestedTaskIds.delete(task.id);
     const [settings, runtimeCredentialsRaw, repositoryRuntimeEnvEntries, repository, responsePreferenceUser] = await Promise.all([
       this.settingsStore.getSettings(),
-      this.settingsStore.getRuntimeCredentials(null, task.codexCredentialSource ?? "auto"),
+      this.settingsStore.getRuntimeCredentials(),
       this.repositoryStore.getRepositoryRuntimeEnvEntries(task.repoId),
       this.repositoryStore.getRepository(task.repoId),
       task.ownerUserId ? this.userStore.getAuthSessionUser(task.ownerUserId) : Promise.resolve(null)

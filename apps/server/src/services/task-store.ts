@@ -2,7 +2,6 @@ import { nanoid } from "nanoid";
 import type Redis from "ioredis";
 import type { Pool } from "pg";
 import {
-  type CodexCredentialSource,
   getTaskExecutionAction,
   getTaskExecutionStatus,
   getTaskReviewReason,
@@ -69,28 +68,12 @@ const MAX_LOG_LINES = 400;
 const MAX_MESSAGES = 200;
 const DEFAULT_HISTORY_PAGE_LIMIT = 25;
 const MAX_HISTORY_PAGE_LIMIT = 100;
-const LEGACY_START_MODE_FIELD = "start" + "Mode";
-
 const isUnresolvedChangeProposalStatus = (status: TaskChangeProposalStatus): boolean =>
   status === "pending" || status === "applying";
 
 const nowIso = (): string => new Date().toISOString();
 const POSTGRES_DEADLOCK_ERROR_CODE = "40P01";
 const POSTGRES_SERIALIZATION_ERROR_CODE = "40001";
-
-const normalizeDeadline = (value: unknown): string | null => {
-  if (typeof value !== "string") {
-    return null;
-  }
-
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  const timestamp = Date.parse(trimmed);
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
-};
 
 const isRetryablePostgresError = (error: unknown): boolean => {
   if (!error || typeof error !== "object" || !("code" in error)) {
@@ -299,13 +282,6 @@ const getUserVisiblePendingCheckpoint = (
   hasPendingProposal: boolean
 ): boolean => (task.autoApplyCheckpoints ? false : hasPendingProposal);
 
-const normalizeCodexCredentialSource = (value: string | null | undefined): CodexCredentialSource => {
-  if (value === "global" || value === "profile") {
-    return "global";
-  }
-  return "auto";
-};
-
 export interface ListTasksOptions {
   ownerUserId?: string | null;
   view?: "all" | "active" | "archived";
@@ -408,7 +384,6 @@ export type TaskMetadata = Pick<
   | "provider"
   | "providerProfile"
   | "modelOverride"
-  | "codexCredentialSource"
 >;
 
 export type CreateTaskChangeProposalInput = Omit<TaskChangeProposal, "resolvedAt" | "revertedAt"> & {
@@ -495,14 +470,12 @@ export class RedisTaskStore implements TaskStore {
   private normalizeTask(task: Task): Task {
     const legacyTask = task as Task & {
       taskType?: string;
-      deadline?: string | null;
       ownerUserId?: string | null;
       repoDefaultBranch?: string;
       resultMarkdown?: string | null;
       provider?: Task["provider"];
       providerProfile?: Task["providerProfile"];
       modelOverride?: string | null;
-      codexCredentialSource?: Task["codexCredentialSource"];
       model?: string | null;
       reasoningEffort?: TaskReasoningEffort | null;
       lastAction?: string | null;
@@ -514,20 +487,22 @@ export class RedisTaskStore implements TaskStore {
       taskSource?: string;
       snippetId?: string;
     };
-    const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
-    delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
-    delete taskWithoutStartMode.taskSource;
-    delete taskWithoutStartMode.snippetId;
     const normalizedTask: Task = {
-      ...taskWithoutStartMode,
-      deadline: normalizeDeadline(legacyTask.deadline),
+      id: legacyTask.id,
+      title: legacyTask.title,
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       autoApplyCheckpoints: legacyTask.autoApplyCheckpoints === true,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
       activeTerminalSessionMode: legacyTask.activeInteractiveSession === true ? "terminal" : null,
       linkedWorkspaces: normalizeTaskLinkedWorkspaces(legacyTask.linkedWorkspaces),
+      parentTaskId: legacyTask.parentTaskId ?? null,
+      rootTaskId: legacyTask.rootTaskId ?? null,
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
+      creatorName: legacyTask.creatorName ?? null,
+      repoId: legacyTask.repoId,
+      repoName: legacyTask.repoName,
+      repoUrl: legacyTask.repoUrl,
       githubPrNumber: normalizeGitHubNumber(legacyTask.githubPrNumber),
       githubIssueNumber: normalizeGitHubNumber(legacyTask.githubIssueNumber),
       slackChannelId: normalizeSlackIdentifier(legacyTask.slackChannelId),
@@ -536,12 +511,30 @@ export class RedisTaskStore implements TaskStore {
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
-      codexCredentialSource: normalizeCodexCredentialSource(legacyTask.codexCredentialSource),
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
+      baseBranch: legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
+      complexity: legacyTask.complexity ?? "normal",
+      branchName: legacyTask.branchName ?? null,
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
       resultMarkdown: legacyTask.resultMarkdown ?? null,
+      executionSummary: legacyTask.executionSummary ?? "",
+      branchDiff: legacyTask.branchDiff ?? null,
+      pullCount: legacyTask.pullCount,
+      pushCount: legacyTask.pushCount,
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
+      status: currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as TaskStatus) : "open",
+      workflowStatus: legacyTask.workflowStatus,
+      executionStatus: legacyTask.executionStatus,
+      executionAction: legacyTask.executionAction,
+      reviewReason: legacyTask.reviewReason,
+      logs: Array.isArray(legacyTask.logs) ? legacyTask.logs : [],
+      enqueued: legacyTask.enqueued === true,
+      createdAt: legacyTask.createdAt,
+      updatedAt: legacyTask.updatedAt,
+      startedAt: legacyTask.startedAt ?? null,
+      finishedAt: legacyTask.finishedAt ?? null,
+      errorMessage: legacyTask.errorMessage ?? null,
       // Prefer the new prompt field; fall back to legacy requirements for older tasks.
       prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim()
     };
@@ -728,14 +721,12 @@ export class RedisTaskStore implements TaskStore {
     const taskType = input.taskType ?? "build";
     const promptRaw = (input.prompt ?? "").trim();
     const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
-    const deadline = null;
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
     const provider = normalizeProvider(input.provider);
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
-    const codexCredentialSource = "auto";
     const autoApplyCheckpoints = input.autoApplyCheckpoints === true;
     const parentTaskId = input.parentTaskId?.trim() || null;
     const rootTaskId = input.rootTaskId?.trim() || parentTaskId;
@@ -745,7 +736,6 @@ export class RedisTaskStore implements TaskStore {
     const task: Task = {
       id: nanoid(),
       title,
-      deadline,
       pinned: false,
       hasPendingCheckpoint: false,
       autoApplyCheckpoints,
@@ -767,7 +757,6 @@ export class RedisTaskStore implements TaskStore {
       provider,
       providerProfile,
       modelOverride,
-      codexCredentialSource,
       baseBranch,
       branchStrategy,
       complexity,
@@ -860,8 +849,7 @@ export class RedisTaskStore implements TaskStore {
       activeTerminalSessionMode: task.activeTerminalSessionMode,
       provider: task.provider,
       providerProfile: task.providerProfile,
-      modelOverride: task.modelOverride,
-      codexCredentialSource: task.codexCredentialSource
+      modelOverride: task.modelOverride
     };
   }
 
@@ -1880,14 +1868,12 @@ export class PostgresTaskStore implements TaskStore {
   private normalizeTask(task: Task): Task {
     const legacyTask = task as Task & {
       taskType?: string;
-      deadline?: string | null;
       ownerUserId?: string | null;
       repoDefaultBranch?: string;
       resultMarkdown?: string | null;
       provider?: Task["provider"];
       providerProfile?: Task["providerProfile"];
       modelOverride?: string | null;
-      codexCredentialSource?: Task["codexCredentialSource"];
       model?: string | null;
       reasoningEffort?: TaskReasoningEffort | null;
       lastAction?: string | null;
@@ -1898,30 +1884,54 @@ export class PostgresTaskStore implements TaskStore {
       taskSource?: string;
       snippetId?: string;
     };
-    const taskWithoutStartMode = { ...legacyTask } as typeof legacyTask & Record<string, unknown>;
-    delete taskWithoutStartMode[LEGACY_START_MODE_FIELD];
-    delete taskWithoutStartMode.taskSource;
-    delete taskWithoutStartMode.snippetId;
     const normalizedTask: Task = {
-      ...taskWithoutStartMode,
-      deadline: normalizeDeadline(legacyTask.deadline),
+      id: legacyTask.id,
+      title: legacyTask.title,
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       autoApplyCheckpoints: legacyTask.autoApplyCheckpoints === true,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
       activeTerminalSessionMode: legacyTask.activeInteractiveSession === true ? "terminal" : null,
       linkedWorkspaces: normalizeTaskLinkedWorkspaces(legacyTask.linkedWorkspaces),
+      parentTaskId: legacyTask.parentTaskId ?? null,
+      rootTaskId: legacyTask.rootTaskId ?? null,
       ownerUserId: typeof legacyTask.ownerUserId === "string" && legacyTask.ownerUserId.trim().length > 0 ? legacyTask.ownerUserId : null,
+      creatorName: legacyTask.creatorName ?? null,
+      repoId: legacyTask.repoId,
+      repoName: legacyTask.repoName,
+      repoUrl: legacyTask.repoUrl,
+      githubPrNumber: normalizeGitHubNumber(legacyTask.githubPrNumber),
+      githubIssueNumber: normalizeGitHubNumber(legacyTask.githubIssueNumber),
+      slackChannelId: normalizeSlackIdentifier(legacyTask.slackChannelId),
+      slackThreadTs: normalizeSlackIdentifier(legacyTask.slackThreadTs),
       taskType: normalizeLegacyTaskType(legacyTask.taskType),
       provider: normalizeProvider(legacyTask.provider),
       providerProfile: normalizeProviderProfile(legacyTask.providerProfile, legacyTask.reasoningEffort),
       modelOverride: normalizeModelOverride(legacyTask.modelOverride, legacyTask.model),
-      codexCredentialSource: normalizeCodexCredentialSource(legacyTask.codexCredentialSource),
       repoDefaultBranch: legacyTask.repoDefaultBranch ?? legacyTask.baseBranch,
+      baseBranch: legacyTask.baseBranch,
       branchStrategy: legacyTask.branchStrategy ?? "feature_branch",
+      complexity: legacyTask.complexity ?? "normal",
+      branchName: legacyTask.branchName ?? null,
       workspaceBaseRef: legacyTask.workspaceBaseRef ?? null,
       resultMarkdown: legacyTask.resultMarkdown ?? null,
+      executionSummary: legacyTask.executionSummary ?? "",
+      branchDiff: legacyTask.branchDiff ?? null,
+      pullCount: legacyTask.pullCount,
+      pushCount: legacyTask.pushCount,
       lastAction: normalizeLegacyTaskAction(legacyTask.lastAction),
+      status: currentTaskStatuses.has(legacyTask.status as TaskStatus) ? (legacyTask.status as TaskStatus) : "open",
+      workflowStatus: legacyTask.workflowStatus,
+      executionStatus: legacyTask.executionStatus,
+      executionAction: legacyTask.executionAction,
+      reviewReason: legacyTask.reviewReason,
+      logs: Array.isArray(legacyTask.logs) ? legacyTask.logs : [],
+      enqueued: legacyTask.enqueued === true,
+      createdAt: legacyTask.createdAt,
+      updatedAt: legacyTask.updatedAt,
+      startedAt: legacyTask.startedAt ?? null,
+      finishedAt: legacyTask.finishedAt ?? null,
+      errorMessage: legacyTask.errorMessage ?? null,
       prompt: (legacyTask.prompt ?? legacyTask.requirements ?? "").trim()
     };
     const fallbackAction = normalizedTask.lastAction ?? getInitialAction(normalizedTask);
@@ -2185,14 +2195,12 @@ export class PostgresTaskStore implements TaskStore {
     const taskType = input.taskType ?? "build";
     const promptRaw = (input.prompt ?? "").trim();
     const prompt = promptRaw.length > 0 ? promptRaw : "(No prompt provided.)";
-    const deadline = null;
     const complexity = classifyTaskComplexity(title, prompt);
     const baseBranch = input.baseBranch?.trim() || repository.defaultBranch;
     const branchStrategy = input.branchStrategy ?? "feature_branch";
     const provider = normalizeProvider(input.provider);
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
-    const codexCredentialSource = "auto";
     const autoApplyCheckpoints = input.autoApplyCheckpoints === true;
     const parentTaskId = input.parentTaskId?.trim() || null;
     const rootTaskId = input.rootTaskId?.trim() || parentTaskId;
@@ -2202,7 +2210,6 @@ export class PostgresTaskStore implements TaskStore {
     const task: Task = {
       id: nanoid(),
       title,
-      deadline,
       pinned: false,
       hasPendingCheckpoint: false,
       autoApplyCheckpoints,
@@ -2222,7 +2229,6 @@ export class PostgresTaskStore implements TaskStore {
       provider,
       providerProfile,
       modelOverride,
-      codexCredentialSource,
       baseBranch,
       branchStrategy,
       complexity,
@@ -2370,8 +2376,7 @@ export class PostgresTaskStore implements TaskStore {
       activeTerminalSessionMode: task.activeTerminalSessionMode,
       provider: task.provider,
       providerProfile: task.providerProfile,
-      modelOverride: task.modelOverride,
-      codexCredentialSource: task.codexCredentialSource
+      modelOverride: task.modelOverride
     };
   }
 

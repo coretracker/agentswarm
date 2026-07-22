@@ -1252,7 +1252,7 @@ export const registerTaskRoutes = (
 
       const [settings, credentials] = await Promise.all([
         deps.settingsStore.getSettings(),
-        deps.settingsStore.getRuntimeCredentials(null, "auto")
+        deps.settingsStore.getRuntimeCredentials()
       ]);
       try {
         const result = credentials.openaiApiKey
