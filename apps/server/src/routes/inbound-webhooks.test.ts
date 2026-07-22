@@ -327,6 +327,50 @@ test("inbound webhook uses the secret configured for the matching signature head
   await app.close();
 });
 
+test("inbound webhook accepts configured header with empty secret", async () => {
+  const { app, insertedEntries } = createTestApp(null, ["x-webhook-signature"], {
+    "x-linear-signature": ""
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/integrations/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json",
+      "x-linear-signature": "present"
+    },
+    payload: { action: "created" }
+  });
+
+  assert.equal(response.statusCode, 202);
+  assert.deepEqual(JSON.parse(response.body), { received: true, matched: false });
+  assert.equal(insertedEntries.length, 1);
+
+  await app.close();
+});
+
+test("inbound webhook rejects missing configured header with empty secret", async () => {
+  const { app, insertedEntries } = createTestApp(null, ["x-webhook-signature"], {
+    "x-linear-signature": ""
+  });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/integrations/webhooks/repo-1",
+    headers: {
+      "content-type": "application/json"
+    },
+    payload: { action: "created" }
+  });
+
+  assert.equal(response.statusCode, 401);
+  assert.deepEqual(JSON.parse(response.body), { message: "Invalid webhook signature." });
+  assert.equal(insertedEntries.length, 1);
+  assert.equal(insertedEntries[0]?.status, "rejected");
+
+  await app.close();
+});
+
 test("inbound webhook rejects a signature that uses another header's secret", async () => {
   const { app, insertedEntries } = createTestApp(null, ["x-linear-signature", "x-github-signature"], {
     "x-linear-signature": "linear-secret",

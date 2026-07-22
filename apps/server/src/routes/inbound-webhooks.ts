@@ -150,11 +150,18 @@ export const registerInboundWebhookRoutes = (
       deps.repositoryStore.getRepositoryInboundWebhookSecret(repository.id),
       deps.repositoryStore.getRepositoryInboundWebhookSignatureSecrets(repository.id)
     ]);
-    if (secret || Object.keys(signatureSecrets).length > 0) {
+    const signatureSecretHeaders = Object.keys(signatureSecrets);
+    if (secret || signatureSecretHeaders.length > 0) {
       const rawBody = (request as RawBodyRequest).rawBody ?? "";
-      const signatures = readSignatureHeaders(request, repository.inboundWebhookSignatureHeaders);
+      const signatures = readSignatureHeaders(
+        request,
+        signatureSecretHeaders.length > 0 ? signatureSecretHeaders : repository.inboundWebhookSignatureHeaders
+      );
       const slackTimestamp = readHeader(request.headers["x-slack-request-timestamp"]);
       const valid = signatures.some((signature) => {
+        if (Object.prototype.hasOwnProperty.call(signatureSecrets, signature.header) && signatureSecrets[signature.header] === "") {
+          return true;
+        }
         const signatureSecret = signatureSecrets[signature.header] ?? secret;
         return signatureSecret ? verifySignature(rawBody, signature.value, signatureSecret, slackTimestamp) : false;
       });

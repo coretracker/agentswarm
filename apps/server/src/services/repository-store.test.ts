@@ -133,6 +133,27 @@ describe("RedisRepositoryStore MCP servers", () => {
     });
   });
 
+  it("stores inbound webhook header allow entries without secrets", async () => {
+    const store = new RedisRepositoryStore(
+      new FakeRedis() as never,
+      { publish: async () => undefined } as never
+    );
+
+    const created = await store.createRepository({
+      name: "Repo",
+      url: "https://github.com/acme/repo.git",
+      inboundWebhookSignatureHeaderSecrets: [{ header: "X-Linear-Signature", secret: "" }]
+    });
+
+    assert.equal(created.inboundWebhookSecretConfigured, true);
+    assert.deepEqual(created.inboundWebhookSignatureHeaderSecrets, [
+      { header: "x-linear-signature", secretConfigured: false }
+    ]);
+    assert.deepEqual(await store.getRepositoryInboundWebhookSignatureSecrets(created.id), {
+      "x-linear-signature": ""
+    });
+  });
+
   it("persists nullable repository default agent settings", async () => {
     const store = new RedisRepositoryStore(
       new FakeRedis() as never,

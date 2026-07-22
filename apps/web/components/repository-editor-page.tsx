@@ -83,10 +83,7 @@ type RepositoryFormValues = {
   slackFeedbackInstructions: string;
   slackTaskCreatedReplyTemplate: string;
   slackTaskOwnerUserId: string;
-  inboundWebhookSecret: string;
-  inboundWebhookSignatureHeaders: string;
-  inboundWebhookSignatureHeaderSecrets: Array<{ header: string; secret: string; clearSecret: boolean }>;
-  clearInboundWebhookSecret: boolean;
+  inboundWebhookSignatureHeaderSecrets: Array<{ header: string; secret: string; clearSecret: boolean; secretConfigured: boolean }>;
   harnessWhatExists: string;
   harnessAllowedActions: string;
   harnessNotAllowedActions: string;
@@ -126,10 +123,7 @@ const emptyValues = (): RepositoryFormValues => ({
   slackFeedbackInstructions: DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS,
   slackTaskCreatedReplyTemplate: DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
   slackTaskOwnerUserId: "",
-  inboundWebhookSecret: "",
-  inboundWebhookSignatureHeaders: "x-webhook-signature\nx-hub-signature-256",
   inboundWebhookSignatureHeaderSecrets: [],
-  clearInboundWebhookSecret: false,
   harnessWhatExists: "",
   harnessAllowedActions: "",
   harnessNotAllowedActions: "",
@@ -214,17 +208,12 @@ const normalizeValues = (values?: Partial<RepositoryFormValues> | null): Reposit
       ? values.slackTaskCreatedReplyTemplate
       : DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
   slackTaskOwnerUserId: typeof values?.slackTaskOwnerUserId === "string" ? values.slackTaskOwnerUserId : "",
-  inboundWebhookSecret: typeof values?.inboundWebhookSecret === "string" ? values.inboundWebhookSecret : "",
-  inboundWebhookSignatureHeaders:
-    typeof values?.inboundWebhookSignatureHeaders === "string"
-      ? values.inboundWebhookSignatureHeaders
-      : "x-webhook-signature\nx-hub-signature-256",
   inboundWebhookSignatureHeaderSecrets: (values?.inboundWebhookSignatureHeaderSecrets ?? []).map((entry) => ({
     header: typeof entry?.header === "string" ? entry.header : "",
     secret: typeof entry?.secret === "string" ? entry.secret : "",
-    clearSecret: entry?.clearSecret === true
+    clearSecret: entry?.clearSecret === true,
+    secretConfigured: entry?.secretConfigured === true
   })),
-  clearInboundWebhookSecret: values?.clearInboundWebhookSecret === true,
   harnessWhatExists: typeof values?.harnessWhatExists === "string" ? values.harnessWhatExists : "",
   harnessAllowedActions: typeof values?.harnessAllowedActions === "string" ? values.harnessAllowedActions : "",
   harnessNotAllowedActions: typeof values?.harnessNotAllowedActions === "string" ? values.harnessNotAllowedActions : "",
@@ -299,22 +288,19 @@ const parseAllowedGitHubUsers = (value: string): string[] => {
   return users;
 };
 
-const parseInboundWebhookSignatureHeaders = (value: string): string[] => {
+const getInboundWebhookHeaderSecretHeaders = (entries: RepositoryFormValues["inboundWebhookSignatureHeaderSecrets"]): string[] => {
   const seen = new Set<string>();
   const headers: string[] = [];
-  for (const entry of value.split(/[\n,]+/)) {
-    const normalized = entry.trim().toLowerCase();
-    if (!normalized || seen.has(normalized)) {
+  for (const entry of entries) {
+    const header = entry.header.trim().toLowerCase();
+    if (!header || seen.has(header)) {
       continue;
     }
-    headers.push(normalized);
-    seen.add(normalized);
+    headers.push(header);
+    seen.add(header);
   }
-  return headers.length > 0 ? headers : ["x-webhook-signature", "x-hub-signature-256"];
+  return headers;
 };
-
-const formatInboundWebhookSignatureHeaders = (headers?: string[] | null): string =>
-  (headers && headers.length > 0 ? headers : ["x-webhook-signature", "x-hub-signature-256"]).join("\n");
 
 const repositoryDefaultProviderOptions: Array<{ label: string; value: AgentProvider }> = [
   { label: "Codex (OpenAI)", value: "codex" },
@@ -501,7 +487,6 @@ interface CopyIntegrationSetupFormValues {
   sourceRepositoryId?: string;
   copyRules: boolean;
   replaceRules: boolean;
-  copyInboundWebhookSecret: boolean;
 }
 
 interface RuleEditorFormValues {
@@ -893,8 +878,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
     copyIntegrationForm.setFieldsValue({
       sourceRepositoryId: undefined,
       copyRules: true,
-      replaceRules: true,
-      copyInboundWebhookSecret: false
+      replaceRules: true
     });
     void api
       .listRepositories()
@@ -997,14 +981,12 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
           slackFeedbackInstructions: repository.slackFeedbackInstructions ?? DEFAULT_SLACK_FEEDBACK_INSTRUCTIONS,
           slackTaskCreatedReplyTemplate: repository.slackTaskCreatedReplyTemplate ?? DEFAULT_SLACK_TASK_CREATED_REPLY_TEMPLATE,
           slackTaskOwnerUserId: repository.slackTaskOwnerUserId ?? "",
-          inboundWebhookSecret: "",
-          inboundWebhookSignatureHeaders: formatInboundWebhookSignatureHeaders(repository.inboundWebhookSignatureHeaders),
           inboundWebhookSignatureHeaderSecrets: (repository.inboundWebhookSignatureHeaderSecrets ?? []).map((entry) => ({
             header: entry.header,
             secret: "",
-            clearSecret: false
+            clearSecret: false,
+            secretConfigured: entry.secretConfigured === true
           })),
-          clearInboundWebhookSecret: false,
           harnessWhatExists: repository.harnessWhatExists ?? "",
           harnessAllowedActions: repository.harnessAllowedActions ?? "",
           harnessNotAllowedActions: repository.harnessNotAllowedActions ?? "",
@@ -1464,16 +1446,15 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
               ...(editingRepository && normalized.clearWebhookSecret ? { clearWebhookSecret: true } : {}),
               ...(normalized.githubPrWebhookSecret.trim().length > 0 ? { githubPrWebhookSecret: normalized.githubPrWebhookSecret.trim() } : {}),
               ...(editingRepository && normalized.clearGithubPrWebhookSecret ? { clearGithubPrWebhookSecret: true } : {}),
-              ...(normalized.inboundWebhookSecret.trim().length > 0 ? { inboundWebhookSecret: normalized.inboundWebhookSecret.trim() } : {}),
-              inboundWebhookSignatureHeaders: parseInboundWebhookSignatureHeaders(normalized.inboundWebhookSignatureHeaders),
+              inboundWebhookSignatureHeaders: getInboundWebhookHeaderSecretHeaders(normalized.inboundWebhookSignatureHeaderSecrets),
               inboundWebhookSignatureHeaderSecrets: normalized.inboundWebhookSignatureHeaderSecrets
                 .map((entry) => ({
                   header: entry.header.trim().toLowerCase(),
-                  ...(entry.secret.trim().length > 0 ? { secret: entry.secret.trim() } : {}),
+                  ...(entry.secret.trim().length > 0 || !entry.secretConfigured ? { secret: entry.secret.trim() } : {}),
                   ...(editingRepository && entry.clearSecret ? { clearSecret: true } : {})
                 }))
                 .filter((entry) => entry.header && ("secret" in entry || "clearSecret" in entry)),
-              ...(editingRepository && normalized.clearInboundWebhookSecret ? { clearInboundWebhookSecret: true } : {}),
+              ...(editingRepository ? { clearInboundWebhookSecret: true } : {}),
               githubIntegrationBotLogin: normalized.githubIntegrationBotLogin.trim().replace(/^@+/, "") || null,
               githubPrAllowedUsers: parseAllowedGitHubUsers(normalized.githubPrAllowedUsers),
               githubPrRequireBotMention: normalized.githubPrRequireBotMention === true,
@@ -2381,7 +2362,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                       <Space size={8}>
                         <Typography.Text strong>Inbound Endpoint</Typography.Text>
                         <Tag color={editingRepository.inboundWebhookSecretConfigured ? "green" : undefined}>
-                          {editingRepository.inboundWebhookSecretConfigured ? "Signed" : "Unsigned"}
+                          {editingRepository.inboundWebhookSecretConfigured ? "Configured" : "Unsigned"}
                         </Tag>
                       </Space>
                       <Tag>{integrationRules.filter((rule) => rule.enabled).length} active rules</Tag>
@@ -2414,44 +2395,19 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     <Flex gap={8} wrap="wrap">
                       <Tag color="blue">POST</Tag>
                       <Tag>application/json</Tag>
-                      {parseInboundWebhookSignatureHeaders(String(form.getFieldValue("inboundWebhookSignatureHeaders") ?? "")).map((header) => (
+                      {getInboundWebhookHeaderSecretHeaders(form.getFieldValue("inboundWebhookSignatureHeaderSecrets") ?? []).map((header) => (
                         <Tag key={header}>{header}</Tag>
                       ))}
                       <Tag>{inboxEntries.length} recent deliveries</Tag>
                     </Flex>
                   </Flex>
 
-                  <Form.Item
-                    name="inboundWebhookSignatureHeaders"
-                    label="Signature Headers"
-                    extra="Header names to check when a signature secret is set. Values may be sha256=<digest>, a bare SHA256 digest, or a keyed digest such as v1=<digest>."
-                  >
-                    <Input.TextArea autoSize={{ minRows: 2, maxRows: 6 }} />
-                  </Form.Item>
-
-                  <Form.Item
-                    name="inboundWebhookSecret"
-                    label={
-                      editingRepository.inboundWebhookSecretConfigured
-                        ? "Webhook Signature Secret (leave blank to keep existing)"
-                        : "Webhook Signature Secret (optional)"
-                    }
-                    extra="Optional. Use this only for webhook sources that support HMAC-SHA256 signatures. When set, matching requests must include one configured signature header."
-                  >
-                    <Input.Password />
-                  </Form.Item>
-                  {editingRepository.inboundWebhookSecretConfigured ? (
-                    <Form.Item name="clearInboundWebhookSecret" valuePropName="checked">
-                      <Checkbox>Clear stored inbound webhook secret</Checkbox>
-                    </Form.Item>
-                  ) : null}
-
                   <Form.List name="inboundWebhookSignatureHeaderSecrets">
                     {(fields, { add, remove }) => (
                       <Flex vertical gap={8}>
                         <Flex align="center" justify="space-between">
                           <Typography.Text strong>Header Secrets</Typography.Text>
-                          <Button size="small" icon={<PlusOutlined />} onClick={() => add({ header: "", secret: "", clearSecret: false })}>
+                          <Button size="small" icon={<PlusOutlined />} onClick={() => add({ header: "", secret: "", clearSecret: false, secretConfigured: false })}>
                             Add
                           </Button>
                         </Flex>
@@ -2461,7 +2417,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                               <Input placeholder="x-linear-signature" />
                             </Form.Item>
                             <Form.Item {...field} name={[field.name, "secret"]} style={{ flex: "1 1 260px", marginBottom: 0 }}>
-                              <Input.Password placeholder="Secret" />
+                              <Input.Password placeholder="Secret (optional)" />
                             </Form.Item>
                             {editingRepository ? (
                               <Form.Item {...field} name={[field.name, "clearSecret"]} valuePropName="checked" style={{ marginBottom: 0 }}>
@@ -2812,7 +2768,7 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                       onClick={async () => {
                         try {
                           const values = await copyIntegrationForm.validateFields();
-                          if (values.copyRules === false && values.copyInboundWebhookSecret !== true) {
+                          if (values.copyRules === false) {
                             messageApi.error("Select at least one integration setting to copy.");
                             return;
                           }
@@ -2820,22 +2776,13 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                           const result = await api.copyIntegrationSetup(editingRepository.id, {
                             sourceRepositoryId: values.sourceRepositoryId!,
                             copyRules: values.copyRules,
-                            replaceRules: values.replaceRules,
-                            copyInboundWebhookSecret: values.copyInboundWebhookSecret
+                            replaceRules: values.replaceRules
                           });
-                          const [rules, repository] = await Promise.all([
-                            api.listIntegrationRules(editingRepository.id),
-                            values.copyInboundWebhookSecret ? api.getRepository(editingRepository.id) : Promise.resolve(editingRepository)
-                          ]);
+                          const rules = await api.listIntegrationRules(editingRepository.id);
                           setIntegrationRules(rules);
-                          setEditingRepository(repository);
-                          form.setFieldsValue({
-                            inboundWebhookSecret: "",
-                            clearInboundWebhookSecret: false
-                          });
                           setCopyIntegrationOpen(false);
                           messageApi.success(
-                            `Copied ${result.rulesCopied} rule${result.rulesCopied === 1 ? "" : "s"}${result.inboundWebhookSecretCopied ? " and webhook secret" : ""}.`
+                            `Copied ${result.rulesCopied} rule${result.rulesCopied === 1 ? "" : "s"}.`
                           );
                         } catch (error) {
                           if (error instanceof Error) {
@@ -2876,14 +2823,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                     <Form.Item name="replaceRules" valuePropName="checked">
                       <Checkbox disabled={!copyRulesEnabled}>Replace existing rules in this repository</Checkbox>
                     </Form.Item>
-                    <Form.Item name="copyInboundWebhookSecret" valuePropName="checked">
-                      <Checkbox>Copy inbound webhook signature secret</Checkbox>
-                    </Form.Item>
-                    <Alert
-                      type="warning"
-                      showIcon
-                      message="Copying the secret makes both repositories accept the same signed webhook secret."
-                    />
                   </Form>
                 </Modal>
 
