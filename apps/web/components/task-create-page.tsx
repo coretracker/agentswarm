@@ -66,6 +66,8 @@ export function TaskCreatePage() {
       <Form
         form={form}
         layout="vertical"
+        requiredMark={false}
+        scrollToFirstError={{ focus: true }}
         initialValues={getTaskDefinitionInitialValues()}
         onFinish={handleSubmit}
       >
@@ -76,7 +78,7 @@ export function TaskCreatePage() {
                 {pageTitle}
               </Typography.Title>
               <Typography.Text type="secondary">
-                Configure the task on the left and write the prompt on the right.
+                Pick a repository, describe the work, and start.
               </Typography.Text>
             </Flex>
             <Space>

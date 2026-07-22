@@ -181,6 +181,8 @@ export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask
       <Form
         form={form}
         layout="vertical"
+        requiredMark={false}
+        scrollToFirstError={{ focus: true }}
         initialValues={getTaskDefinitionInitialValues(undefined)}
         onFinish={handleSubmit}
       >
