@@ -128,7 +128,7 @@ type ComposerAction = TaskMessageAction | "terminal";
 
 const OPENAI_COMMIT_MESSAGE_MODEL = "gpt-5.4-mini";
 const OPENAI_COMMIT_MESSAGE_PROFILE: ProviderProfile = "low";
-const OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS = 48_000;
+const OPENAI_DIFF_ASSIST_SELECTION_MAX_CHARS = 48_000;
 const SYSTEM_ADMIN_ROLE_ID = "admin";
 const HISTORY_PAGE_SIZE = 5;
 const getComposerDraftStorageKey = (taskId: string): string => `verft:task:${taskId}:composerDraft`;
@@ -3014,13 +3014,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
-    const diffSnippetSource = (task.branchDiff?.trim() ? task.branchDiff : renderedDiff).trim();
-    if (!diffSnippetSource || diffSnippetSource === "(no changes)") {
+    const selectedDiffSource = (task.branchDiff?.trim() ? task.branchDiff : renderedDiff).trim();
+    if (!selectedDiffSource || selectedDiffSource === "(no changes)") {
       messageApi.warning("No diff content is available for this merge.");
       return;
     }
 
-    const filePath = getFirstDiffFilePath(diffSnippetSource);
+    const filePath = getFirstDiffFilePath(selectedDiffSource);
     if (!filePath) {
       messageApi.warning("No changed file is available for this merge.");
       return;
@@ -3032,7 +3032,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         model: OPENAI_COMMIT_MESSAGE_MODEL,
         providerProfile: OPENAI_COMMIT_MESSAGE_PROFILE,
         filePath,
-        selectedSnippet: diffSnippetSource.slice(0, OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS),
+        selectedDiff: selectedDiffSource.slice(0, OPENAI_DIFF_ASSIST_SELECTION_MAX_CHARS),
         userPrompt:
           `Generate one git squash merge commit subject line for merging ${mergePreview.sourceBranch} into ${mergePreview.targetBranch} based on these changes. Do not use conventional commit prefixes (for example: feat:, feat(scope):, fix:, chore:). Return only a plain subject line with no quotes, bullets, markdown, or explanation.`
       });
@@ -4236,8 +4236,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       messageApi.warning("No changed file is available for this checkpoint.");
       return;
     }
-    const diffSnippet = proposal.diff.slice(0, OPENAI_DIFF_ASSIST_SNIPPET_MAX_CHARS);
-    if (!diffSnippet.trim() || diffSnippet.trim() === "(no changes)") {
+    const selectedDiff = proposal.diff.slice(0, OPENAI_DIFF_ASSIST_SELECTION_MAX_CHARS);
+    if (!selectedDiff.trim() || selectedDiff.trim() === "(no changes)") {
       messageApi.warning("No diff content is available for this checkpoint.");
       return;
     }
@@ -4248,7 +4248,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         model: OPENAI_COMMIT_MESSAGE_MODEL,
         providerProfile: OPENAI_COMMIT_MESSAGE_PROFILE,
         filePath,
-        selectedSnippet: diffSnippet,
+        selectedDiff,
         userPrompt:
           "Generate one git commit subject line based on these changes. Do not use conventional commit prefixes (for example: feat:, feat(scope):, fix:, chore:). Return only a plain subject line with no quotes, bullets, markdown, or explanation."
       });

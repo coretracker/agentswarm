@@ -222,8 +222,20 @@ const openAiDiffAssistSchema = z.object({
   providerProfile: z.enum(["low", "medium", "high", "max"]),
   userPrompt: z.string().max(16_000).default(""),
   filePath: z.string().trim().min(1).max(4096),
-  selectedSnippet: z.string().max(48_000)
-});
+  selectedDiff: z.string().max(48_000).optional(),
+  selectedSnippet: z.string().max(48_000).optional()
+}).superRefine((input, ctx) => {
+  if (input.selectedDiff === undefined && input.selectedSnippet === undefined) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["selectedDiff"],
+      message: "Required"
+    });
+  }
+}).transform((input) => ({
+  ...input,
+  selectedDiff: input.selectedDiff ?? input.selectedSnippet ?? ""
+}));
 
 const workspaceFileQuerySchema = z.object({
   path: z.string().trim().min(1).max(4096),
@@ -1280,7 +1292,7 @@ export const registerTaskRoutes = (
               providerProfile: parsed.data.providerProfile,
               userPrompt: parsed.data.userPrompt,
               filePath: parsed.data.filePath,
-              selectedSnippet: parsed.data.selectedSnippet,
+              selectedDiff: parsed.data.selectedDiff,
               openaiApiKey: credentials.openaiApiKey,
               openaiBaseUrl: settings.openaiBaseUrl
             })

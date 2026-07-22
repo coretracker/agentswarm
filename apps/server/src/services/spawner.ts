@@ -3163,8 +3163,8 @@ export class SpawnerService {
   private async generateAutoApplyCommitSubject(task: Task, proposal: TaskChangeProposal): Promise<string> {
     const fallback = this.buildAutoApplyFallbackCommitSubject(task, proposal);
     const filePath = proposal.changedFiles[0];
-    const diffSnippet = proposal.diff.slice(0, 48_000);
-    if (!filePath || !diffSnippet.trim() || diffSnippet.trim() === "(no changes)") {
+    const selectedDiff = proposal.diff.slice(0, 48_000);
+    if (!filePath || !selectedDiff.trim() || selectedDiff.trim() === "(no changes)") {
       return fallback;
     }
 
@@ -3181,7 +3181,7 @@ export class SpawnerService {
         "",
         "Diff:",
         "```diff",
-        diffSnippet,
+        selectedDiff,
         "```"
       ].join("\n");
       const text = credentials.openaiApiKey
@@ -3192,7 +3192,7 @@ export class SpawnerService {
               providerProfile: AUTO_APPLY_COMMIT_MESSAGE_PROFILE,
               userPrompt: AUTO_APPLY_COMMIT_MESSAGE_PROMPT,
               filePath,
-              selectedSnippet: diffSnippet,
+              selectedDiff,
               openaiApiKey: credentials.openaiApiKey,
               openaiBaseUrl: settings.openaiBaseUrl
             })

@@ -6,7 +6,7 @@ import { codexReasoningEffortForProfile } from "../lib/provider-config.js";
 import { readSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
 import { formatOpenAiErrorMessage } from "./openai-error-message.js";
 
-const MAX_SNIPPET = 48_000;
+const MAX_SELECTED_DIFF = 48_000;
 const MAX_USER_PROMPT = 16_000;
 const MAX_FILE_IN_PROMPT = 120_000;
 
@@ -98,7 +98,7 @@ export async function executeOpenAiDiffAssist(input: {
   providerProfile: ProviderProfile;
   userPrompt: string;
   filePath: string;
-  selectedSnippet: string;
+  selectedDiff: string;
   openaiApiKey: string;
   openaiBaseUrl: string | null;
 }): Promise<OpenAiDiffAssistResult> {
@@ -122,7 +122,7 @@ export async function executeOpenAiDiffAssist(input: {
 export async function buildDiffAssistPromptContext(input: {
   taskId: string;
   filePath: string;
-  selectedSnippet: string;
+  selectedDiff: string;
   userPrompt: string;
 }): Promise<string> {
   const relativePath = normalizeDiffFilePath(input.filePath);
@@ -138,7 +138,7 @@ export async function buildDiffAssistPromptContext(input: {
   }
 
   const currentFile = await readSafeWorkspaceFile(workspaceRoot, relativePath);
-  const snippet = input.selectedSnippet.slice(0, MAX_SNIPPET);
+  const selectedDiff = input.selectedDiff.slice(0, MAX_SELECTED_DIFF);
   const userPrompt = input.userPrompt.trim().slice(0, MAX_USER_PROMPT);
 
   const contextParts = [
@@ -146,7 +146,7 @@ export async function buildDiffAssistPromptContext(input: {
     "",
     "Selected diff lines (unified diff excerpt):",
     "```",
-    snippet,
+    selectedDiff,
     "```",
     "",
     currentFile !== null

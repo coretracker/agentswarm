@@ -704,7 +704,9 @@ export interface OpenAiDiffAssistInput {
   userPrompt: string;
   /** Repository-relative path (optional `a/` or `b/` prefixes are stripped server-side). */
   filePath: string;
-  selectedSnippet: string;
+  selectedDiff: string;
+  /** @deprecated Use selectedDiff. Kept for API compatibility. */
+  selectedSnippet?: string;
 }
 
 export interface OpenAiDiffAssistResult {

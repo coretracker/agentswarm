@@ -17,7 +17,7 @@ import { normalizeDiffForRendering, parseRenderableDiff } from "../src/utils/dif
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
 import { ModelSelect } from "./model-select";
 
-function buildSnippetFromSelection(file: FileData, selectedKeys: string[]): string {
+function buildDiffFromSelection(file: FileData, selectedKeys: string[]): string {
   const selected = new Set(selectedKeys);
   const lines: string[] = [];
   for (const hunk of file.hunks) {
@@ -32,7 +32,7 @@ function buildSnippetFromSelection(file: FileData, selectedKeys: string[]): stri
   return lines.join("\n");
 }
 
-function buildSnippetFromFile(file: FileData): string {
+function buildDiffFromFile(file: FileData): string {
   const lines: string[] = [];
   for (const hunk of file.hunks) {
     for (const change of hunk.changes) {
@@ -102,7 +102,7 @@ function DiffFileOpenAiCard({
   collapseFiles: boolean;
   workspaceReady: boolean;
   selectionResetToken: string;
-  onOpenConfig: (filePath: string, snippet: string) => void;
+  onOpenConfig: (filePath: string, selectedDiff: string) => void;
 }) {
   const [selectedChanges, toggleSelection] = usePersistentChangeSelect(file, selectionResetToken);
   const filePath = getDiffFilePath(file);
@@ -110,9 +110,9 @@ function DiffFileOpenAiCard({
 
   const openConfig = (e: React.MouseEvent) => {
     e.stopPropagation();
-    const snippet =
-      selectedChanges.length > 0 ? buildSnippetFromSelection(file, selectedChanges) : buildSnippetFromFile(file);
-    onOpenConfig(filePath, snippet);
+    const selectedDiff =
+      selectedChanges.length > 0 ? buildDiffFromSelection(file, selectedChanges) : buildDiffFromFile(file);
+    onOpenConfig(filePath, selectedDiff);
   };
 
   const diffEl = (
@@ -205,7 +205,7 @@ export function TaskDiffOpenAiPanel({
 
   const [configOpen, setConfigOpen] = useState(false);
   const [pendingFilePath, setPendingFilePath] = useState("");
-  const [pendingSnippet, setPendingSnippet] = useState("");
+  const [pendingDiff, setPendingDiff] = useState("");
 
   const [resultOpen, setResultOpen] = useState(false);
   const [resultLoading, setResultLoading] = useState(false);
@@ -229,9 +229,9 @@ export function TaskDiffOpenAiPanel({
 
   const workspaceReady = liveDiff?.live === true;
 
-  const openConfigModal = useCallback((filePath: string, snippet: string) => {
+  const openConfigModal = useCallback((filePath: string, selectedDiff: string) => {
     setPendingFilePath(filePath);
-    setPendingSnippet(snippet);
+    setPendingDiff(selectedDiff);
     setConfigOpen(true);
   }, []);
 
@@ -246,7 +246,7 @@ export function TaskDiffOpenAiPanel({
         providerProfile: openAiEffort,
         userPrompt: instruction,
         filePath: pendingFilePath,
-        selectedSnippet: pendingSnippet
+        selectedDiff: pendingDiff
       });
       setResultMarkdown(res.text.trim() || "_Empty response._");
     } catch (err: unknown) {
@@ -262,7 +262,7 @@ export function TaskDiffOpenAiPanel({
     openAiEffort,
     instruction,
     pendingFilePath,
-    pendingSnippet
+    pendingDiff
   ]);
 
   if (!diffText.trim()) {
@@ -338,7 +338,7 @@ export function TaskDiffOpenAiPanel({
         destroyOnClose={false}
       >
         <Typography.Paragraph type="secondary" style={{ marginBottom: 12 }}>
-          {pendingSnippet.trim().length > 0
+          {pendingDiff.trim().length > 0
             ? "Sends the selected diff lines or file diff context together with the current workspace file to the model. Nothing is written to disk."
             : "Asks about the current workspace file. Nothing is written to disk."}
         </Typography.Paragraph>

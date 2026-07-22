@@ -89,7 +89,10 @@ const buildDeps = (overrides: Record<string, unknown> = {}) => {
       executionStatus,
       ...(extra as Record<string, unknown>)
     }),
-    getTask: async (taskId: string) => ({ ...openTask, id: taskId }),
+    getTask: async (taskId: string) => {
+      const task = ("existingTask" in overrides ? overrides.existingTask : openTask) as object;
+      return { ...task, id: taskId };
+    },
     appendLog: async () => undefined
   };
   return {
@@ -106,7 +109,15 @@ const buildDeps = (overrides: Record<string, unknown> = {}) => {
                 session: { user: authUser, expiresAt: "2027-07-13T00:00:00.000Z" }
               }
             : null,
-        requireAllScopes: () => async () => undefined,
+        requireAllScopes: () => async (request: { auth?: unknown }) => {
+          request.auth = {
+            user: authUser,
+            scopes: new Set(authUser.scopes as string[]),
+            sessionToken: "",
+            expiresAt: "2027-07-13T00:00:00.000Z",
+            session: { user: authUser, expiresAt: "2027-07-13T00:00:00.000Z" }
+          };
+        },
         requireAuth: () => async () => undefined
       },
       repositoryStore: {
@@ -169,6 +180,22 @@ const injectCreateOrQueue = async (overrides: Record<string, unknown> = {}) => {
   return { response, ...built };
 };
 
+const injectOpenAiDiffAssist = async (payload: Record<string, unknown>, overrides: Record<string, unknown> = {}) => {
+  const app = Fastify();
+  const built = buildDeps(overrides);
+  registerTaskRoutes(app, built.deps as never);
+  const response = await app.inject({
+    method: "POST",
+    url: "/tasks/task-1/openai/diff-assist",
+    headers: {
+      authorization: "Bearer pat"
+    },
+    payload
+  });
+  await app.close();
+  return response;
+};
+
 test("create-or-queue appends a queued message to an existing external target task", async () => {
   const { response, calls } = await injectCreateOrQueue();
 
@@ -192,6 +219,36 @@ test("create-or-queue appends a queued message to an existing external target ta
     }
   ]);
   assert.deepEqual(calls.triggerNextPendingAction, [["task-1", "manual"]]);
+});
+
+test("OpenAI diff assist accepts legacy selectedSnippet payloads", async () => {
+  const response = await injectOpenAiDiffAssist(
+    {
+      model: "gpt-5.4",
+      providerProfile: "high",
+      userPrompt: "Explain this",
+      filePath: "apps/web/page.tsx",
+      selectedSnippet: "+changed line"
+    },
+    {
+      existingTask: { ...openTask, status: "archived" }
+    }
+  );
+
+  assert.equal(response.statusCode, 409, response.body);
+  assert.deepEqual(JSON.parse(response.body), { message: "Archived tasks are read-only" });
+});
+
+test("OpenAI diff assist requires a selected diff field", async () => {
+  const response = await injectOpenAiDiffAssist({
+    model: "gpt-5.4",
+    providerProfile: "high",
+    userPrompt: "Explain this",
+    filePath: "apps/web/page.tsx"
+  });
+
+  assert.equal(response.statusCode, 400);
+  assert.match(JSON.parse(response.body).message, /selectedDiff/);
 });
 
 test("create-or-queue creates and starts a task when no external target task exists", async () => {
