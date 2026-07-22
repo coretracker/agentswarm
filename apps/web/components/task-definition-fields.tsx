@@ -53,6 +53,8 @@ const providerOptions = (): Array<{ label: string; value: AgentProvider; disable
   { label: getAgentProviderLabel("claude"), value: "claude" }
 ];
 
+const taskCreateCardBodyStyle = { padding: 16 };
+
 const getProviderDefaultModel = (provider: AgentProvider, settings?: SystemSettings | null): string =>
   provider === "claude"
     ? settings?.claudeDefaultModel ?? getDefaultModelForProvider(provider)
@@ -344,8 +346,8 @@ export function TaskDefinitionFields({
   return (
     <Row gutter={[20, 20]} align="stretch">
       <Col span={24}>
-        <Flex vertical gap={16}>
-          <Card bordered={false} styles={{ body: { paddingBottom: 8 } }}>
+        <Flex vertical gap={12}>
+          <Card bordered={false} styles={{ body: taskCreateCardBodyStyle }}>
             <Flex vertical gap={10}>
               {!canRunAutomatedTask ? (
                 <Alert
@@ -386,11 +388,9 @@ export function TaskDefinitionFields({
                 ) : null}
               </Row>
 
-              {defaultSummary ? (
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  {selectedRepository?.name}: {defaultSummary}
-                </Typography.Text>
-              ) : null}
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {defaultSummary ? `${selectedRepository?.name}: ${defaultSummary}` : "Select a repository to load its defaults."}
+              </Typography.Text>
             </Flex>
           </Card>
 
@@ -398,7 +398,11 @@ export function TaskDefinitionFields({
             bordered={false}
             title={promptPanelHeader}
             styles={{
+              header: {
+                paddingInline: 16
+              },
               body: {
+                ...taskCreateCardBodyStyle,
                 display: "flex",
                 flexDirection: "column",
                 minHeight: 420
@@ -408,11 +412,12 @@ export function TaskDefinitionFields({
             {renderPromptPanel()}
           </Card>
 
-          <Card bordered={false} styles={{ body: { padding: 0 } }}>
+          <Card bordered={false} styles={{ body: taskCreateCardBodyStyle }}>
             <Collapse
               ghost
               defaultActiveKey={[]}
               expandIconPosition="end"
+              style={{ margin: -12 }}
               items={[
                 {
                   key: "execution",
