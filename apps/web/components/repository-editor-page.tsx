@@ -31,7 +31,7 @@ import {
   getEffortOptionsForProvider
 } from "@verft/shared-types";
 import { Alert, Button, Card, Checkbox, Empty, Flex, Form, Input, Modal, Result, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, Upload, message } from "antd";
-import { DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined, UploadOutlined } from "@ant-design/icons";
+import { CopyOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined, UploadOutlined } from "@ant-design/icons";
 import { ApiError, api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useSettings } from "../src/hooks/useSettings";
@@ -1511,11 +1511,33 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
         }}
       >
         <Flex vertical gap={16}>
-          <Flex vertical gap={0}>
-            <Typography.Title level={2} style={{ margin: 0 }}>
-              {title}
-            </Typography.Title>
-            <Typography.Text type="secondary">Manage reusable repository definitions for task creation.</Typography.Text>
+          <Flex align="flex-start" justify="space-between" gap={12} wrap="wrap">
+            <Flex vertical gap={0}>
+              <Typography.Title level={2} style={{ margin: 0 }}>
+                {title}
+              </Typography.Title>
+              <Typography.Text type="secondary">Manage reusable repository definitions for task creation.</Typography.Text>
+            </Flex>
+            {mode === "edit" && editingRepository ? (
+              <Space size={8} wrap>
+                <Typography.Text type="secondary">Repository ID</Typography.Text>
+                <Typography.Text code style={{ wordBreak: "break-all" }}>
+                  {editingRepository.id}
+                </Typography.Text>
+                <Button
+                  size="small"
+                  icon={<CopyOutlined />}
+                  onClick={() => {
+                    void navigator.clipboard
+                      .writeText(editingRepository.id)
+                      .then(() => messageApi.success("Repository ID copied"))
+                      .catch(() => messageApi.error("Failed to copy repository ID"));
+                  }}
+                >
+                  Copy
+                </Button>
+              </Space>
+            ) : null}
           </Flex>
 
           <Tabs
@@ -2880,14 +2902,6 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             ) : (
               <Alert message="Integration rules can be configured after the repository is created." type="info" showIcon />
             )
-          ) : null}
-
-          {mode === "edit" && editingRepository ? (
-            <Card bordered={false} title="Repository ID">
-              <Typography.Paragraph copyable style={{ marginBottom: 0, wordBreak: "break-all" }}>
-                {editingRepository.id}
-              </Typography.Paragraph>
-            </Card>
           ) : null}
 
           <Card
