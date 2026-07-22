@@ -128,7 +128,7 @@ const inboundWebhookSignatureHeaderSecretsSchema = z
         .min(1)
         .max(128)
         .regex(HTTP_HEADER_NAME_PATTERN, "Header names must be valid HTTP field names."),
-      secret: z.string().trim().min(1).optional(),
+      secret: z.string().trim().optional(),
       clearSecret: z.boolean().optional()
     })
   )

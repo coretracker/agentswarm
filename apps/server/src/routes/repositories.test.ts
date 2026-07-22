@@ -265,6 +265,28 @@ test("repository create accepts repository MCP servers", async () => {
   await app.close();
 });
 
+test("repository create accepts blank inbound webhook header secrets", async () => {
+  const authUser = createAuthUser({ id: "user-1" });
+  const { app } = createTestApp({ authUser, users: [createUser({ id: "user-1" })] });
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/repositories",
+    payload: {
+      name: "repo",
+      url: "https://github.com/acme/repo.git",
+      inboundWebhookSignatureHeaderSecrets: [
+        { header: "x-linear-signature", secret: "" },
+        { header: "x-hub-signature-256", secret: "" }
+      ]
+    }
+  });
+
+  assert.equal(response.statusCode, 201);
+
+  await app.close();
+});
+
 test("repository create rejects a GitHub-created task owner who cannot already access the new repository", async () => {
   const authUser = createAuthUser({ id: "user-1" });
   const { app, updateUserCalls } = createTestApp({
