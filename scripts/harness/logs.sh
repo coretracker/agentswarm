@@ -10,7 +10,7 @@ ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/logs.sh" "$@"
 cd "$REPO_ROOT"
 TASK_WORKSPACE_DOCKER_SOURCE="${TASK_WORKSPACE_DOCKER_SOURCE:-$REPO_ROOT/task-workspaces}"
 export TASK_WORKSPACE_DOCKER_SOURCE
-TASK_HOME_DOCKER_SOURCE="${TASK_HOME_DOCKER_SOURCE:-$REPO_ROOT/task-homes}"
+TASK_HOME_DOCKER_SOURCE="${TASK_HOME_DOCKER_SOURCE:-verft_task_homes}"
 export TASK_HOME_DOCKER_SOURCE
 
 usage() {

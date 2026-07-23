@@ -10,6 +10,7 @@ import { buildTerminalDockerEnvEntries, buildTerminalEnvEntries, buildTaskRuntim
 import { buildTerminalStartScript } from "./task-interactive-terminal-start-script.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
+const composePath = path.join(repoRoot, "docker-compose.yml");
 const runtimeDockerfilePath = path.join(repoRoot, "agent-runtime/Dockerfile");
 const codexRunnerPath = path.join(repoRoot, "agent-runtime/run-task-codex.mjs");
 const claudeRunnerPath = path.join(repoRoot, "agent-runtime/run-task-claude.mjs");
@@ -55,6 +56,18 @@ describe("buildTerminalStartScript", () => {
     assert.match(dockerfile, /COPY normalize-provider-paths\.mjs/);
     assert.doesNotMatch(dockerfile, /COPY verft-base-state\.mjs/);
     assert.match(dockerfile, /COPY hostexec-proxy\.mjs/);
+  });
+
+  it("stores task homes in a Docker-managed volume with safe legacy migration", () => {
+    const compose = readFileSync(composePath, "utf8");
+
+    assert.match(compose, /task_homes:\/task-homes/);
+    assert.match(compose, /name: verft_task_homes/);
+    assert.match(compose, /service_completed_successfully/);
+    assert.match(compose, /find \/task-homes -mindepth 1 -print -quit/);
+    assert.match(compose, /\.\/task-homes:\/legacy-task-homes:ro/);
+    assert.match(compose, /chown -R 1000:1000 \/task-homes/);
+    assert.doesNotMatch(compose, /\.\/task-homes:\/task-homes/);
   });
 
   it("uses the mounted persistent home without recopying host provider state", () => {

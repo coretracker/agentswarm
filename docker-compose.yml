@@ -1,4 +1,20 @@
 services:
+  task_home_init:
+    image: alpine:3.20
+    command:
+      - sh
+      - -ec
+      - |
+        if [ -z "$$(find /task-homes -mindepth 1 -print -quit)" ]; then
+          if [ -n "$$(find /legacy-task-homes -mindepth 1 -print -quit)" ]; then
+            cp -a /legacy-task-homes/. /task-homes/
+          fi
+          chown -R 1000:1000 /task-homes
+        fi
+    volumes:
+      - ./task-homes:/legacy-task-homes:ro
+      - task_homes:/task-homes
+
   redis:
     image: redis:7-alpine
     volumes:
@@ -55,9 +71,11 @@ services:
       - repo_cache:/repo-cache
       - runtime_payloads:/runtime-payloads
       - ./task-workspaces:/task-workspaces
-      - ./task-homes:/task-homes
+      - task_homes:/task-homes
       - server_secrets:/secrets
     depends_on:
+      task_home_init:
+        condition: service_completed_successfully
       redis:
         condition: service_started
       postgres:
@@ -87,5 +105,7 @@ volumes:
     name: verft_repo_cache
   runtime_payloads:
     name: verft_runtime_payloads
+  task_homes:
+    name: verft_task_homes
   server_secrets:
     name: verft_server_secrets
