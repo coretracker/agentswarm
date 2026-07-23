@@ -312,7 +312,7 @@ export function TasksPage() {
               const unseen = !isTaskSeen(task, seenTaskVersions);
 
               return (
-                <List.Item style={{ padding: 0, borderBlockEnd: 0, marginBottom: 16 }}>
+                <List.Item style={{ padding: 0, borderBlockEnd: 0, marginBottom: 10 }}>
                   <div
                     role="button"
                     tabIndex={0}
@@ -326,7 +326,7 @@ export function TasksPage() {
                     style={{
                       position: "relative",
                       width: "100%",
-                      padding: "22px 24px 22px 30px",
+                      padding: "14px 18px 14px 26px",
                       border: `1px solid ${token.colorBorderSecondary}`,
                       borderRadius: token.borderRadiusLG,
                       background: token.colorBgContainer,
@@ -338,15 +338,15 @@ export function TasksPage() {
                       aria-hidden="true"
                       style={{
                         position: "absolute",
-                        insetBlock: 14,
-                        insetInlineStart: 12,
+                        insetBlock: 10,
+                        insetInlineStart: 10,
                         width: 3,
                         borderRadius: 999,
                         background: attentionMarker?.color ?? (showWorkingIndicator ? token.colorPrimary : token.colorBorderSecondary)
                       }}
                     />
                     <Flex align="center" justify="space-between" gap={16} wrap="wrap">
-                      <Flex vertical gap={8} style={{ minWidth: 260, flex: "1 1 420px" }}>
+                      <Flex vertical gap={0} style={{ minWidth: 260, flex: "1 1 420px" }}>
                         <Space size={8} wrap>
                           {task.pinned ? <PushpinFilled style={{ color: "#1C8057" }} /> : null}
                           {showWorkingIndicator ? (
@@ -368,14 +368,13 @@ export function TasksPage() {
                             />
                           ) : null}
                           <Typography.Text strong>{task.title}</Typography.Text>
-                          {unseen ? <Tag color="green">New</Tag> : null}
-                          {task.hasPendingCheckpoint ? <Tag color="warning">Checkpoint</Tag> : null}
-                        </Space>
-                        <Space size={8} wrap>
                           <Typography.Text type="secondary">{task.repoName}</Typography.Text>
+                          <Typography.Text type="secondary">/</Typography.Text>
                           <Typography.Text code style={{ fontSize: 12 }}>
                             {branchLabel}
                           </Typography.Text>
+                          {unseen ? <Tag color="green">New</Tag> : null}
+                          {task.hasPendingCheckpoint ? <Tag color="warning">Checkpoint</Tag> : null}
                         </Space>
                       </Flex>
                       <Flex align="center" justify="flex-end" gap={12} wrap="wrap" style={{ flex: "0 1 auto" }}>
