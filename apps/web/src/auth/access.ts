@@ -43,6 +43,10 @@ export const getRequiredScopesForPathname = (pathname: string): PermissionScope[
     return ["settings:read"];
   }
 
+  if (/^\/users\/[^/]+\/edit$/.test(pathname)) {
+    return ["user:read", "user:edit"];
+  }
+
   if (pathname === "/users") {
     return ["user:list"];
   }

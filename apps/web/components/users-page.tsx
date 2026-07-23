@@ -1,19 +1,11 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import type {
-  AgentProvider,
-  ProviderProfile,
-  Repository,
-  Role,
-  User
-} from "@verft/shared-types";
-import { getAgentProviderLabel, getEffortOptionsForProvider, getModelsForProvider } from "@verft/shared-types";
+import { useEffect, useState } from "react";
+import type { Repository, Role, User } from "@verft/shared-types";
 import {
   App,
   Button,
   Card,
-  Divider,
   Flex,
   Form,
   Input,
@@ -28,31 +20,24 @@ import {
   Typography
 } from "antd";
 import dayjs from "dayjs";
+import { useRouter } from "next/navigation";
 import { api } from "../src/api/client";
 import { useAuth } from "./auth-provider";
-import { ModelSelect } from "./model-select";
 
 interface UserFormValues {
   name: string;
   email: string;
   password?: string;
-  githubUsername?: string;
-  defaultProvider?: AgentProvider;
-  defaultModel?: string;
-  defaultProviderProfile?: ProviderProfile;
   active: boolean;
   roleIds: string[];
   repositoryIds: string[];
 }
 
 const SYSTEM_ADMIN_ROLE_ID = "admin";
-const providerOptions: Array<{ label: string; value: AgentProvider }> = [
-  { label: getAgentProviderLabel("codex"), value: "codex" },
-  { label: getAgentProviderLabel("claude"), value: "claude" }
-];
 
 export function UsersPage() {
   const { message } = App.useApp();
+  const router = useRouter();
   const { can, session } = useAuth();
   const [form] = Form.useForm<UserFormValues>();
   const [users, setUsers] = useState<User[]>([]);
@@ -61,13 +46,6 @@ export function UsersPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
-  const [editingUser, setEditingUser] = useState<User | null>(null);
-  const selectedDefaultProvider = (Form.useWatch("defaultProvider", form) as AgentProvider | undefined) ?? "codex";
-  const defaultModelOptions = useMemo(() => getModelsForProvider(selectedDefaultProvider), [selectedDefaultProvider]);
-  const defaultEffortOptions = useMemo(
-    () => getEffortOptionsForProvider(selectedDefaultProvider),
-    [selectedDefaultProvider]
-  );
 
   const canCreateUsers = can("user:create");
   const canEditUsers = can("user:edit");
@@ -97,7 +75,6 @@ export function UsersPage() {
   }, [canEditRoles, canReadRepositories, canReadRoles]);
 
   const openCreateModal = () => {
-    setEditingUser(null);
     form.setFieldsValue({
       name: "",
       email: "",
@@ -105,23 +82,6 @@ export function UsersPage() {
       active: true,
       roleIds: [],
       repositoryIds: []
-    });
-    setModalOpen(true);
-  };
-
-  const openEditModal = (user: User) => {
-    setEditingUser(user);
-    form.setFieldsValue({
-      name: user.name,
-      email: user.email,
-      password: "",
-      githubUsername: user.githubUsername ?? "",
-      defaultProvider: user.defaultProvider ?? undefined,
-      defaultModel: user.defaultModel ?? undefined,
-      defaultProviderProfile: user.defaultProviderProfile ?? undefined,
-      active: user.active,
-      roleIds: user.roles.map((role) => role.id),
-      repositoryIds: user.repositoryIds ?? []
     });
     setModalOpen(true);
   };
@@ -193,7 +153,7 @@ export function UsersPage() {
                   return (
                     <Space>
                       {canEditUsers ? (
-                        <Button onClick={() => openEditModal(user)}>Edit</Button>
+                        <Button onClick={() => router.push(`/users/${encodeURIComponent(user.id)}/edit`)}>Edit</Button>
                       ) : null}
                       {canDeleteUsers ? (
                         <Tooltip title={isSelf ? "You cannot delete your own account" : undefined}>
@@ -228,7 +188,7 @@ export function UsersPage() {
 
       <Modal
         open={modalOpen}
-        title={editingUser ? "Edit User" : "Add User"}
+        title="Add User"
         footer={null}
         onCancel={() => setModalOpen(false)}
         destroyOnHidden
@@ -239,31 +199,15 @@ export function UsersPage() {
           onFinish={async (values) => {
             setSubmitting(true);
             try {
-              if (editingUser) {
-                await api.updateUser(editingUser.id, {
-                  name: values.name,
-                  email: values.email,
-                  password: values.password?.trim() || undefined,
-                  githubUsername: values.githubUsername?.trim() || null,
-                  defaultProvider: values.defaultProvider ?? null,
-                  defaultModel: values.defaultModel?.trim() || null,
-                  defaultProviderProfile: values.defaultProviderProfile ?? null,
-                  active: values.active,
-                  roleIds: canEditRoles ? values.roleIds : undefined,
-                  repositoryIds: canEditRoles ? values.repositoryIds : undefined
-                });
-                message.success("User updated");
-              } else {
-                await api.createUser({
-                  name: values.name,
-                  email: values.email,
-                  password: values.password?.trim() || "",
-                  active: values.active,
-                  roleIds: canEditRoles ? values.roleIds : undefined,
-                  repositoryIds: canEditRoles ? values.repositoryIds : undefined
-                });
-                message.success("User created");
-              }
+              await api.createUser({
+                name: values.name,
+                email: values.email,
+                password: values.password?.trim() || "",
+                active: values.active,
+                roleIds: canEditRoles ? values.roleIds : undefined,
+                repositoryIds: canEditRoles ? values.repositoryIds : undefined
+              });
+              message.success("User created");
 
               setModalOpen(false);
               await loadUsers();
@@ -282,56 +226,13 @@ export function UsersPage() {
           </Form.Item>
           <Form.Item
             name="password"
-            label={editingUser ? "Password" : "Password"}
-            rules={editingUser ? [] : [{ required: true, message: "Enter a password" }]}
-            extra={editingUser ? "Leave blank to keep the current password." : undefined}
+            label="Password"
+            rules={[{ required: true, message: "Enter a password" }]}
           >
             <Input.Password />
           </Form.Item>
-          {editingUser ? (
-            <Form.Item
-              name="githubUsername"
-              label="GitHub Username"
-              extra="Used to associate this user with GitHub activity."
-            >
-              <Input maxLength={80} />
-            </Form.Item>
-          ) : null}
-          {editingUser ? (
-            <>
-              <Divider orientation="left" plain>
-                Default Agent
-              </Divider>
-              <Card size="small">
-                <Form.Item name="defaultProvider" label="Provider">
-                  <Select
-                    allowClear
-                    placeholder="Repository or system default"
-                    options={providerOptions}
-                    onChange={(value: AgentProvider | undefined) => {
-                      const nextEfforts = getEffortOptionsForProvider(value ?? "codex");
-                      if (!nextEfforts.some((option) => option.value === form.getFieldValue("defaultProviderProfile"))) {
-                        form.setFieldValue("defaultProviderProfile", undefined);
-                      }
-                    }}
-                  />
-                </Form.Item>
-                <Form.Item name="defaultModel" label="Model">
-                  <ModelSelect options={defaultModelOptions} placeholder="Repository or system default" />
-                </Form.Item>
-                <Form.Item name="defaultProviderProfile" label="Effort">
-                  <Select allowClear options={defaultEffortOptions} placeholder="Repository or system default" />
-                </Form.Item>
-              </Card>
-            </>
-          ) : null}
-          <Form.Item
-            name="active"
-            label="Active"
-            valuePropName="checked"
-            extra={editingUser?.id === currentUserId ? "Your own account cannot be disabled." : undefined}
-          >
-            <Switch disabled={editingUser?.id === currentUserId} />
+          <Form.Item name="active" label="Active" valuePropName="checked">
+            <Switch />
           </Form.Item>
           {canEditRoles ? (
             <Form.Item name="roleIds" label="Roles">
@@ -362,7 +263,7 @@ export function UsersPage() {
             </Form.Item>
           ) : null}
           <Button type="primary" htmlType="submit" loading={submitting} block>
-            {editingUser ? "Save Changes" : "Create User"}
+            Create User
           </Button>
         </Form>
       </Modal>
