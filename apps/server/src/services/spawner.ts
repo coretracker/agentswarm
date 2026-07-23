@@ -1643,7 +1643,7 @@ export class SpawnerService {
         "[ ! -d /verft-base/claude ] || cp -a /verft-base/claude /home/agent/.claude",
         "[ ! -f /verft-base/claude.json ] || cp -a /verft-base/claude.json /home/agent/.claude.json",
         "mkdir -p /home/agent/.codex /home/agent/.claude",
-        "chown -R agent:agent /home/agent",
+        "chown -R agent:agent /home/agent 2>/dev/null || true",
         "chmod 700 /home/agent"
       ].join("\n")
     ]);

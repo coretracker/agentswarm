@@ -26,7 +26,8 @@ describe("buildTerminalStartScript", () => {
     assert.match(script, /Full toolbox shell available/);
     assert.doesNotMatch(script, /cp -a \/verft-base/);
     assert.match(script, /normalize-provider-paths\.mjs "\$HOME"/);
-    assert.match(script, /chown -R agent:agent "\$HOME" "\$TASK_INTERACTIVE_WORKSPACE"/);
+    assert.match(script, /chown -R agent:agent "\$TASK_INTERACTIVE_WORKSPACE"/);
+    assert.doesNotMatch(script, /chown -R agent:agent "\$HOME"/);
     assert.match(script, /\$HOME\/\.claude\/mcp-config\.json/);
     assert.match(script, /\/tmp\/verft-bin\/claude/);
     assert.match(script, /chown -R agent:agent \/tmp\/verft-bin/);
@@ -61,9 +62,9 @@ describe("buildTerminalStartScript", () => {
     const claudeRunner = readFileSync(claudeRunnerPath, "utf8");
 
     assert.doesNotMatch(codexRunner, /HOST_CODEX_STATE/);
-    assert.match(codexRunner, /AGENT_IDENTITY, homeDir/);
+    assert.doesNotMatch(codexRunner, /AGENT_IDENTITY, homeDir/);
     assert.doesNotMatch(claudeRunner, /HOST_CLAUDE_STATE|HOST_CLAUDE_CONFIG/);
-    assert.match(claudeRunner, /runtimeIdentity, runtimeHome/);
+    assert.doesNotMatch(claudeRunner, /runtimeIdentity, runtimeHome/);
   });
 
   it("normalizes copied absolute Claude and Codex paths in text files", () => {

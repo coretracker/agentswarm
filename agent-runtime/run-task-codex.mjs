@@ -258,7 +258,7 @@ const buildPrompt = () => {
 };
 
 const isAsk = manifest.action === "ask";
-await runCommand("chown", ["-R", AGENT_IDENTITY, homeDir, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
+await runCommand("chown", ["-R", AGENT_IDENTITY, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
 if (!isAsk) {
   await runCommand("chown", ["-R", AGENT_IDENTITY, manifest.workspacePath]).catch(() => undefined);
 }

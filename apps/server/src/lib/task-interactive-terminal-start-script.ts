@@ -4,7 +4,7 @@ export function buildTerminalStartScript(): string {
     'printf "\\033[90mTerminal ready in %s. Full toolbox shell available.\\033[0m\\n" "$PWD"',
     [
       'node /usr/local/bin/normalize-provider-paths.mjs "$HOME"',
-      'chown -R agent:agent "$HOME" "$TASK_INTERACTIVE_WORKSPACE" 2>/dev/null || true'
+      'chown -R agent:agent "$TASK_INTERACTIVE_WORKSPACE" 2>/dev/null || true'
     ].join("\n"),
     [
       'if [ -n "${GIT_TOKEN:-}" ]; then',

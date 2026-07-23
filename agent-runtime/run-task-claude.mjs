@@ -243,7 +243,7 @@ console.log(
   `[runtime] running claude action=${manifest.action} model=${manifest.resolvedModel ?? "default"} profile=${manifest.providerProfile}${isAsk ? " (read-only tools)" : ""} session=${persistedSessionId ?? "new"}`
 );
 console.log(`[runtime] claude thinking_budget_tokens=${manifest.resolvedThinkingBudgetTokens ?? "default"}`);
-await runCommand("chown", ["-R", runtimeIdentity, runtimeHome, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
+await runCommand("chown", ["-R", runtimeIdentity, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
 if (!isAsk) {
   await runCommand("chown", ["-R", runtimeIdentity, manifest.workspacePath]).catch(() => undefined);
 }
