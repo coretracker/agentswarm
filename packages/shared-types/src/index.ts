@@ -1207,7 +1207,7 @@ export const getTaskBranchStrategyLabel = (strategy: TaskBranchStrategy): string
 export const getAgentProviderLabel = (provider: AgentProvider): string =>
   ({
     codex: "Codex",
-    claude: "Claude Code (experimental)"
+    claude: "Claude Code"
   })[provider];
 
 export const getProviderProfileLabel = (profile: ProviderProfile): string =>

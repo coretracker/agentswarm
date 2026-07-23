@@ -806,12 +806,6 @@ export function SettingsPage() {
           >
             <Card bordered={false} loading={loading} title="Claude Code">
               <Flex vertical gap={16} style={{ width: "100%" }}>
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="Experimental"
-                  description="Claude Code in Verft is experimental; behavior and defaults may change."
-                />
                 <Form.Item name="claudeDefaultEffort" label="Default Effort">
                   <Select options={getEffortOptionsForProvider("claude")} />
                 </Form.Item>
