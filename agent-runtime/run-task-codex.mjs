@@ -173,6 +173,20 @@ esac
   process.env.GIT_ASKPASS = askPassPath;
 };
 
+const ensureWorkspaceOwnership = async () => {
+  if (isAsk) {
+    return;
+  }
+
+  await runCommand("sh", [
+    "-lc",
+    'if find "$1" ! -user 1000 -print -quit | grep -q .; then chown -R "$2" "$1"; fi',
+    "sh",
+    manifest.workspacePath,
+    AGENT_IDENTITY
+  ]).catch(() => undefined);
+};
+
 const runCommand = (command, args, options = {}) =>
   new Promise((resolve, reject) => {
     const proc = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"], ...options });
@@ -259,9 +273,7 @@ const buildPrompt = () => {
 
 const isAsk = manifest.action === "ask";
 await runCommand("chown", ["-R", AGENT_IDENTITY, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
-if (!isAsk) {
-  await runCommand("chown", ["-R", AGENT_IDENTITY, manifest.workspacePath]).catch(() => undefined);
-}
+await ensureWorkspaceOwnership();
 console.log(`[runtime] prepared codex runtime user=${AGENT_IDENTITY}`);
 
 const prompt = buildPrompt();

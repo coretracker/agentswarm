@@ -1266,6 +1266,14 @@ export class SpawnerService {
     }
 
     try {
+      await this.runCommand("docker", ["image", "inspect", definition.image]);
+      this.runtimeReady.add(definition.image);
+      return;
+    } catch {
+      // Image is not available locally yet; build it below.
+    }
+
+    try {
       await this.runCommand("docker", ["build", "-t", definition.image, definition.context]);
     } catch (error) {
       const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();

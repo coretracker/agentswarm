@@ -150,6 +150,20 @@ esac
   process.env.GIT_ASKPASS = askPassPath;
 };
 
+const ensureWorkspaceOwnership = async () => {
+  if (isAsk) {
+    return;
+  }
+
+  await runCommand("sh", [
+    "-lc",
+    'if find "$1" ! -user 1000 -print -quit | grep -q .; then chown -R "$2" "$1"; fi',
+    "sh",
+    manifest.workspacePath,
+    runtimeIdentity
+  ]).catch(() => undefined);
+};
+
 const buildPrompt = () => {
   const rawContent = typeof manifest.content === "string" && manifest.content.trim().length > 0
     ? manifest.content.trim()
@@ -244,9 +258,7 @@ console.log(
 );
 console.log(`[runtime] claude thinking_budget_tokens=${manifest.resolvedThinkingBudgetTokens ?? "default"}`);
 await runCommand("chown", ["-R", runtimeIdentity, path.dirname(manifest.resultJsonPath), path.dirname(rawEventsJsonlPath)]);
-if (!isAsk) {
-  await runCommand("chown", ["-R", runtimeIdentity, manifest.workspacePath]).catch(() => undefined);
-}
+await ensureWorkspaceOwnership();
 console.log(`[runtime] prepared claude runtime user=${runtimeIdentity}`);
 
 let finalMarkdown = "";

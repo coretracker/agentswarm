@@ -85,6 +85,18 @@ describe("buildTerminalStartScript", () => {
     assert.doesNotMatch(claudeRunner, /runtimeIdentity, runtimeHome/);
   });
 
+  it("skips repeated provider runtime startup work when artifacts already exist", () => {
+    const spawnerSource = readFileSync(path.join(repoRoot, "apps/server/src/services/spawner.ts"), "utf8");
+    const codexRunner = readFileSync(codexRunnerPath, "utf8");
+    const claudeRunner = readFileSync(claudeRunnerPath, "utf8");
+
+    assert.match(spawnerSource, /"docker", \["image", "inspect", definition\.image\]/);
+    assert.match(codexRunner, /find "\$1" ! -user 1000 -print -quit/);
+    assert.match(claudeRunner, /find "\$1" ! -user 1000 -print -quit/);
+    assert.doesNotMatch(codexRunner, /if \(!isAsk\) \{\s*await runCommand\("chown", \["-R", AGENT_IDENTITY, manifest\.workspacePath\]\)/);
+    assert.doesNotMatch(claudeRunner, /if \(!isAsk\) \{\s*await runCommand\("chown", \["-R", runtimeIdentity, manifest\.workspacePath\]\)/);
+  });
+
   it("normalizes copied absolute Claude and Codex paths in text files", () => {
     const runtimeHome = mkdtempSync(path.join(tmpdir(), "verft-claude-home-"));
     const pluginsDir = path.join(runtimeHome, ".claude", "plugins");
