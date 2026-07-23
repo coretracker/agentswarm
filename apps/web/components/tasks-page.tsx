@@ -2,15 +2,14 @@
 
 import { useEffect, useMemo, useState } from "react";
 import {
-  getAgentProviderLabel,
   getTaskExecutionStatusLabel,
   getTaskTerminalSessionLabel,
   getTaskTypeLabel,
   isTaskWorking,
   type Task
 } from "@verft/shared-types";
-import { Button, Card, Checkbox, DatePicker, Divider, Flex, Input, Modal, Select, Space, Spin, Table, Typography, message } from "antd";
-import { PushpinFilled } from "@ant-design/icons";
+import { Button, Checkbox, DatePicker, Dropdown, Empty, Flex, Input, List, Modal, Select, Space, Spin, Tag, Typography, message, theme as antTheme } from "antd";
+import { DeleteOutlined, MoreOutlined, PushpinFilled } from "@ant-design/icons";
 import dayjs from "dayjs";
 import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "../src/api/client";
@@ -41,10 +40,65 @@ function canOfferRemoteBranchDeletion(task: Task): boolean {
   );
 }
 
+function formatRelativeTime(value: string): string {
+  const timestamp = dayjs(value);
+  const now = dayjs();
+  const minutes = now.diff(timestamp, "minute");
+
+  if (minutes < 1) {
+    return "Just now";
+  }
+  if (minutes < 60) {
+    return `${minutes} min ago`;
+  }
+
+  const hours = now.diff(timestamp, "hour");
+  if (hours < 24) {
+    return `${hours} hr ago`;
+  }
+
+  const days = now.diff(timestamp, "day");
+  if (days < 7) {
+    return `${days} d ago`;
+  }
+
+  return timestamp.format("MMM D");
+}
+
+function getTaskStatusTag(task: Task): { label: string; color: string } {
+  if (task.activeInteractiveSession) {
+    return { label: getTaskTerminalSessionLabel("terminal"), color: "processing" };
+  }
+  if (task.executionStatus === "failed") {
+    return { label: "Failed", color: "error" };
+  }
+  if (task.executionStatus === "cancelled") {
+    return { label: "Cancelled", color: "default" };
+  }
+  if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
+    return { label: getTaskExecutionStatusLabel(task.executionStatus), color: "processing" };
+  }
+
+  return { label: "Idle", color: "default" };
+}
+
+function getTaskAttentionMarker(task: Task, seenTaskVersions: SeenTaskVersions): { color: string; label: string } | null {
+  if (task.hasPendingCheckpoint) {
+    return { color: "#FA8C16", label: "Pending checkpoint" };
+  }
+
+  if (!isTaskSeen(task, seenTaskVersions)) {
+    return { color: "#1C8057", label: "Unseen task" };
+  }
+
+  return null;
+}
+
 export function TasksPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { can } = useAuth();
+  const { token } = antTheme.useToken();
   const archivedView = searchParams.get("view") === "archived";
   const { tasks, setTasks, loading } = useTasks({ view: archivedView ? "archived" : "active" });
   const { repositories } = useRepositories();
@@ -169,6 +223,21 @@ export function TasksPage() {
     });
   };
 
+  const openTask = (task: Task) => {
+    markTaskSeen(task);
+    setSeenTaskVersions((current) => {
+      if (current[task.id] === task.updatedAt) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [task.id]: task.updatedAt
+      };
+    });
+    router.push(`/tasks/${task.id}`);
+  };
+
   return (
     <>
       {contextHolder}
@@ -198,128 +267,170 @@ export function TasksPage() {
           </Space>
         </Flex>
 
-        <Card bordered={false}>
-          <Space size={12} wrap>
-            <Input placeholder="Filter by title" value={titleFilter} onChange={(event) => setTitleFilter(event.target.value)} />
-            <Select
-              allowClear
-              placeholder="Filter by repository"
-              style={{ minWidth: 220 }}
-              value={repoFilter}
-              options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
-              onChange={(value) => setRepoFilter(value)}
-            />
-            <DatePicker
-              style={{ minWidth: 220 }}
-              placeholder="Filter by created date"
-              onChange={(value) => setCreatedAtFilter(value ? value.format("YYYY-MM-DD") : null)}
-            />
-          </Space>
-          <Divider />
-          <Table<Task>
-            rowKey="id"
+        <Space direction="vertical" size={12} style={{ width: "100%" }}>
+          <Flex align="center" justify="space-between" gap={12} wrap="wrap">
+            <Flex align="center" gap={12} wrap="wrap" style={{ flex: "1 1 620px", minWidth: 0 }}>
+              <Input
+                allowClear
+                placeholder="Filter by title"
+                value={titleFilter}
+                onChange={(event) => setTitleFilter(event.target.value)}
+                style={{ flex: "1 1 360px", minWidth: 260 }}
+              />
+              <Select
+                allowClear
+                placeholder="Filter by repository"
+                style={{ flex: "0 1 240px", minWidth: 180 }}
+                value={repoFilter}
+                options={repositories.map((repository) => ({ label: repository.name, value: repository.id }))}
+                onChange={(value) => setRepoFilter(value)}
+              />
+              <DatePicker
+                allowClear
+                style={{ flex: "0 1 220px", minWidth: 180 }}
+                placeholder="Filter by created date"
+                onChange={(value) => setCreatedAtFilter(value ? value.format("YYYY-MM-DD") : null)}
+              />
+            </Flex>
+            <Typography.Text type="secondary">
+              {`${filteredTasks.length} ${filteredTasks.length === 1 ? "task" : "tasks"}`}
+            </Typography.Text>
+          </Flex>
+          <List<Task>
             loading={loading}
             dataSource={filteredTasks}
-            pagination={{ pageSize: 10 }}
-            style={{ cursor: "pointer" }}
-            onRow={(record) => ({
-              onClick: () => {
-                markTaskSeen(record);
-                setSeenTaskVersions((current) => {
-                  if (current[record.id] === record.updatedAt) {
-                    return current;
-                  }
+            split={false}
+            pagination={{ pageSize: 10, hideOnSinglePage: true }}
+            locale={{
+              emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={archivedView ? "No archived tasks" : "No tasks to show"} />
+            }}
+            renderItem={(task) => {
+              const attentionMarker = getTaskAttentionMarker(task, seenTaskVersions);
+              const branchLabel = task.branchName ?? task.baseBranch;
+              const status = getTaskStatusTag(task);
+              const showWorkingIndicator = isTaskWorking(task);
+              const unseen = !isTaskSeen(task, seenTaskVersions);
 
-                  return {
-                    ...current,
-                    [record.id]: record.updatedAt
-                  };
-                });
-                router.push(`/tasks/${record.id}`);
-              }
-            })}
-            columns={[
-              {
-                title: "Title",
-                dataIndex: "title",
-                render: (value: string, task) => {
-                  const markerColor = task.hasPendingCheckpoint ? "#FA8C16" : !isTaskSeen(task, seenTaskVersions) ? "#1C8057" : null;
-                  const markerLabel = task.hasPendingCheckpoint ? "Pending checkpoint" : "Unseen task";
-                  const showWorkingIndicator = isTaskWorking(task);
-
-                  return (
-                    <Space size={8}>
-                      {task.pinned ? <PushpinFilled style={{ color: "#1C8057" }} /> : null}
-                      {showWorkingIndicator ? (
-                        <span aria-label={getWorkingIndicatorLabel(task)} title={getWorkingIndicatorLabel(task)} style={{ display: "inline-flex" }}>
-                          <Spin size="small" />
-                        </span>
-                      ) : null}
-                      {markerColor ? (
-                        <span
-                          aria-label={markerLabel}
-                          style={{
-                            width: 8,
-                            height: 8,
-                            borderRadius: "50%",
-                            backgroundColor: markerColor,
-                            display: "inline-block",
-                            flex: "0 0 auto"
+              return (
+                <List.Item style={{ padding: 0, borderBlockEnd: 0, marginBottom: 16 }}>
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => openTask(task)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        openTask(task);
+                      }
+                    }}
+                    style={{
+                      position: "relative",
+                      width: "100%",
+                      padding: "22px 24px 22px 30px",
+                      border: `1px solid ${token.colorBorderSecondary}`,
+                      borderRadius: token.borderRadiusLG,
+                      background: token.colorBgContainer,
+                      boxShadow: token.boxShadowTertiary,
+                      cursor: "pointer"
+                    }}
+                  >
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        position: "absolute",
+                        insetBlock: 14,
+                        insetInlineStart: 12,
+                        width: 3,
+                        borderRadius: 999,
+                        background: attentionMarker?.color ?? (showWorkingIndicator ? token.colorPrimary : token.colorBorderSecondary)
+                      }}
+                    />
+                    <Flex align="center" justify="space-between" gap={16} wrap="wrap">
+                      <Flex vertical gap={8} style={{ minWidth: 260, flex: "1 1 420px" }}>
+                        <Space size={8} wrap>
+                          {task.pinned ? <PushpinFilled style={{ color: "#1C8057" }} /> : null}
+                          {showWorkingIndicator ? (
+                            <span aria-label={getWorkingIndicatorLabel(task)} title={getWorkingIndicatorLabel(task)} style={{ display: "inline-flex" }}>
+                              <Spin size="small" />
+                            </span>
+                          ) : null}
+                          {attentionMarker ? (
+                            <span
+                              aria-label={attentionMarker.label}
+                              style={{
+                                width: 8,
+                                height: 8,
+                                borderRadius: "50%",
+                                backgroundColor: attentionMarker.color,
+                                display: "inline-block",
+                                flex: "0 0 auto"
+                              }}
+                            />
+                          ) : null}
+                          <Typography.Text strong>{task.title}</Typography.Text>
+                          {unseen ? <Tag color="green">New</Tag> : null}
+                          {task.hasPendingCheckpoint ? <Tag color="warning">Checkpoint</Tag> : null}
+                        </Space>
+                        <Space size={8} wrap>
+                          <Typography.Text type="secondary">{task.repoName}</Typography.Text>
+                          <Typography.Text code style={{ fontSize: 12 }}>
+                            {branchLabel}
+                          </Typography.Text>
+                        </Space>
+                      </Flex>
+                      <Flex align="center" justify="flex-end" gap={12} wrap="wrap" style={{ flex: "0 1 auto" }}>
+                        <Tag color={status.color}>{status.label}</Tag>
+                        <Typography.Text type="secondary" style={{ whiteSpace: "nowrap" }}>
+                          {formatRelativeTime(task.updatedAt)}
+                        </Typography.Text>
+                        <Dropdown
+                          trigger={["click"]}
+                          menu={{
+                            items: [
+                              canEditTask && !archivedView
+                                ? {
+                                    key: "archive",
+                                    label: "Archive",
+                                    disabled: isTaskExecutionBusy(task) || archivingTaskId === task.id
+                                  }
+                                : null,
+                              canDeleteTask
+                                ? {
+                                    key: "delete",
+                                    label: "Delete",
+                                    icon: <DeleteOutlined />,
+                                    danger: true,
+                                    disabled: isTaskExecutionBusy(task) || deletingTaskId === task.id
+                                  }
+                                : null
+                            ].filter((item): item is NonNullable<typeof item> => Boolean(item)),
+                            onClick: ({ domEvent, key }) => {
+                              domEvent.stopPropagation();
+                              if (key === "archive") {
+                                confirmArchiveTask(task);
+                              }
+                              if (key === "delete") {
+                                confirmDeleteTask(task);
+                              }
+                            }
                           }}
-                        />
-                      ) : null}
-                      <span>{value}</span>
-                    </Space>
-                  );
-                }
-              },
-              {
-                title: "Repository",
-                dataIndex: "repoName"
-              },
-              {
-                title: "Type",
-                dataIndex: "taskType",
-                render: (value: Task["taskType"]) => getTaskTypeLabel(value)
-              },
-              {
-                title: "Provider",
-                dataIndex: "provider",
-                render: (value: Task["provider"]) => getAgentProviderLabel(value)
-              },
-              {
-                title: "Action",
-                dataIndex: "lastAction",
-                render: (value: Task["lastAction"]) => value ?? "draft"
-              },
-              {
-                title: "Created At",
-                dataIndex: "createdAt",
-                sorter: (a, b) => a.createdAt.localeCompare(b.createdAt),
-                render: (value: string) => dayjs(value).format("YYYY-MM-DD HH:mm")
-              },
-              {
-                title: "Actions",
-                key: "actions",
-                width: 170,
-                render: (_value, task) => (
-                  <Space onClick={(event) => event.stopPropagation()}>
-                    {canEditTask && !archivedView ? (
-                      <Button size="small" loading={archivingTaskId === task.id} disabled={isTaskExecutionBusy(task)} onClick={() => confirmArchiveTask(task)}>
-                        Archive
-                      </Button>
-                    ) : null}
-                    {canDeleteTask ? (
-                      <Button danger size="small" loading={deletingTaskId === task.id} disabled={isTaskExecutionBusy(task)} onClick={() => confirmDeleteTask(task)}>
-                        Delete
-                      </Button>
-                    ) : null}
-                  </Space>
-                )
-              }
-            ]}
+                        >
+                          <Button
+                            type="text"
+                            icon={<MoreOutlined />}
+                            aria-label={`Task actions for ${task.title}`}
+                            loading={archivingTaskId === task.id || deletingTaskId === task.id}
+                            onClick={(event) => event.stopPropagation()}
+                          />
+                        </Dropdown>
+                      </Flex>
+                    </Flex>
+                  </div>
+                </List.Item>
+              );
+            }}
           />
-        </Card>
+        </Space>
       </Space>
     </>
   );
