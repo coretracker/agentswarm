@@ -10,6 +10,8 @@ ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/setup.sh" "$@"
 cd "$REPO_ROOT"
 TASK_WORKSPACE_DOCKER_SOURCE="${TASK_WORKSPACE_DOCKER_SOURCE:-$REPO_ROOT/task-workspaces}"
 export TASK_WORKSPACE_DOCKER_SOURCE
+TASK_HOME_DOCKER_SOURCE="${TASK_HOME_DOCKER_SOURCE:-$REPO_ROOT/task-homes}"
+export TASK_HOME_DOCKER_SOURCE
 
 log() {
   echo "[harness:setup] $1"
@@ -44,8 +46,8 @@ else
   log ".env already exists"
 fi
 
-mkdir -p task-workspaces
-log "ensured local runtime directory exists (task-workspaces)"
+mkdir -p task-workspaces task-homes
+log "ensured local runtime directories exist (task-workspaces, task-homes)"
 
 if [[ "${HARNESS_INSTALL_NPM_DEPS:-0}" == "1" ]]; then
   require_cmd npm

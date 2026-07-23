@@ -1,6 +1,6 @@
 import path from "node:path";
 import { constants, createReadStream } from "node:fs";
-import { access, rm, stat } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { z } from "zod";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import {
@@ -42,7 +42,7 @@ import { writeSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
 import { env } from "../config/env.js";
 import { normalizeProvider } from "../lib/provider-config.js";
 import { resolveCreateTaskProviderConfig } from "../lib/task-create-defaults.js";
-import { resolveTaskProviderStatePaths } from "../lib/task-provider-state.js";
+import { clearTaskProviderSession } from "../lib/task-home.js";
 import { isSafeLinkedWorkspaceAlias } from "../lib/linked-workspaces.js";
 
 const taskPromptAttachmentInputSchema = z.object({
@@ -263,20 +263,12 @@ const historyPageQuerySchema = z.object({
 });
 
 const archivedTaskReadOnlyMessage = "Archived tasks are read-only";
-const PROVIDER_SESSION_ID_FILE = "verft-session-id.txt";
 
 const readBearerToken = (request: FastifyRequest): string | null => {
   const authorization = request.headers.authorization;
   const value = Array.isArray(authorization) ? authorization[0] : authorization;
   const match = typeof value === "string" ? /^Bearer\s+(.+)$/i.exec(value.trim()) : null;
   return match?.[1]?.trim() || null;
-};
-
-const clearTaskProviderSessionId = async (taskId: string): Promise<void> => {
-  for (const provider of ["codex", "claude"] as const) {
-    const providerStatePath = resolveTaskProviderStatePaths(taskId, provider).serverPath;
-    await rm(path.join(providerStatePath, PROVIDER_SESSION_ID_FILE), { force: true }).catch(() => undefined);
-  }
 };
 
 export const withBranchSyncCounts = async (spawner: SpawnerService, task: Task): Promise<Task> => {
@@ -1525,12 +1517,37 @@ export const registerTaskRoutes = (
       return reply.status(409).send({ message: "Task is already running" });
     }
 
-    await clearTaskProviderSessionId(task.id);
+    await clearTaskProviderSession(task.id, task.provider);
     await deps.taskStore.appendLog(task.id, "Session reset requested. Next run starts with a fresh provider session.");
 
     const refreshed = await deps.taskStore.getTask(task.id);
     return reply.send(refreshed ?? task);
   });
+
+  app.post<{ Params: { id: string } }>(
+    "/tasks/:id/rebuild-home",
+    { preHandler: deps.auth.requireAllScopes(["task:edit"]) },
+    async (request, reply) => {
+      const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+      if (!task) {
+        return;
+      }
+      if (task.status === "archived") {
+        return reply.status(409).send({ message: archivedTaskReadOnlyMessage });
+      }
+      const blocked = await getMutationBlocked(deps.taskStore, task.id);
+      if (blocked) {
+        return replyWithMutationBlocked(reply, blocked);
+      }
+      if (task.executionStatus === "queued" || task.executionStatus === "preparing" || task.executionStatus === "running") {
+        return reply.status(409).send({ message: "Task is already running" });
+      }
+
+      await deps.spawner.rebuildTaskHome(task.id);
+      await deps.taskStore.appendLog(task.id, "Task home rebuilt. Provider sessions, history, and task-local agent settings were reset.");
+      return reply.send((await deps.taskStore.getTask(task.id)) ?? task);
+    }
+  );
 
   app.post<{ Params: { id: string } }>("/tasks/:id/postflight", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
     const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
@@ -2414,6 +2431,7 @@ export const registerTaskRoutes = (
     }
 
     await deps.spawner.cleanupTaskArtifacts(task);
+    await deps.spawner.deleteTaskHome(task.id);
     await deps.taskQueueStore.removeTask(task.id);
     await deps.taskStore.deleteTask(task.id);
     return reply.status(204).send();

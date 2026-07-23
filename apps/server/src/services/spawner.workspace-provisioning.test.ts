@@ -111,6 +111,15 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
   });
 
+  it("mounts a task's persistent home read/write at /home/agent", () => {
+    const mountArgs = createSpawner().buildTaskHomeMountArgs("task-123");
+    const mount = mountArgs.join(" ");
+
+    assert.match(mount, /task-123/);
+    assert.match(mount, /\/home\/agent/);
+    assert.doesNotMatch(mount, /readonly|:ro/);
+  });
+
   it("injects Verft MCP into task runtime config", async () => {
     const createdTokens: unknown[] = [];
     const spawner = new SpawnerService(

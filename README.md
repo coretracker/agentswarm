@@ -114,7 +114,9 @@ Tasks are the main unit of work in Verft.
 
 - **Build tasks** ask an agent to modify a repository in an isolated workspace.
 - **Ask tasks** ask an agent to inspect and answer without writing files.
-Task definitions include title, repository, prompt, provider/model settings, branch settings, and optional prompt attachments. Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
+Task definitions include title, repository, prompt, provider/model settings, branch settings, and optional prompt attachments. Task workspaces are isolated under `task-workspaces/`; persistent agent homes are under `task-homes/`. Both are runtime data and must not be committed.
+
+Each task home is mounted at `/home/agent` for autonomous runs and interactive terminals. It keeps Codex and Claude sessions, history, plugins, and task-local settings across runs and workspace rebuilds. **New Session** clears only the current provider’s resumable session marker. **Rebuild task home** replaces the entire home from configured host state and permanently loses all task-local agent state.
 
 ### Checkpoints And Git Actions
 
@@ -185,7 +187,9 @@ Durable application data is stored in Postgres. Redis is required for sessions, 
 | Variable | Description | Default |
 | --- | --- | --- |
 | `AGENT_RUNTIME_IMAGE` | Unified toolbox image for automated Codex/Claude runs, interactive terminals, utility runs, and Git worker containers. | `verft-agent-toolbox:latest` |
-| `VERFT_AI_STATE_HOST_ROOT` | Host home root used to derive `.codex`, `.claude`, and `.claude.json` provider mounts. These Docker daemon host paths remain read-only; task runs and interactive terminals copy them into the container's writable agent home at startup. | `$HOME` |
+| `TASK_HOME_ROOT` | Server path containing persistent per-task agent homes. | `/task-homes` |
+| `TASK_HOME_DOCKER_SOURCE` | Optional Docker-host path or named volume corresponding to `TASK_HOME_ROOT`; auto-detected from the server mount when unset. | auto-detected |
+| `VERFT_AI_STATE_HOST_ROOT` | Host home root used to initially seed `.codex`, `.claude`, and `.claude.json` into newly created or explicitly rebuilt task homes. | `$HOME` |
 | `VERFT_CODEX_STATE_HOST_PATH` | Optional host path override for Codex state. | unset |
 | `VERFT_CLAUDE_STATE_HOST_PATH` | Optional host path override for Claude state. | unset |
 | `VERFT_CLAUDE_CONFIG_HOST_PATH` | Optional host path override for `.claude.json`. | unset |
@@ -264,6 +268,7 @@ curl -fsS http://localhost:3217/api/health
 +-- docs/                # Architecture, development, product, and quality docs
 +-- scripts/harness/     # Canonical setup, check, test, and PR scripts
 +-- task-workspaces/     # Runtime task workspaces; do not commit
++-- task-homes/          # Persistent per-task agent homes; do not commit
 +-- docker-compose.yml   # Local Docker stack
 +-- verft                # Main stack helper script
 ```

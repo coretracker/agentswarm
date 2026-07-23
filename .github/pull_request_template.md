@@ -1,49 +1,15 @@
-## Summary
-- What changed?
-- Why was this needed?
+## Why
+<!-- What problem does this solve? -->
 
-## Acceptance Criteria
-- [ ] The change meets the requested behavior.
-- [ ] Edge cases were considered.
-- [ ] No unrelated behavior changed.
+## What
+<!-- Smallest useful summary. -->
 
-## Testing Performed
+## Checks
 - [ ] `npm run ci`
-- [ ] Additional manual checks (describe below)
+<!-- List anything else. Explain skipped or blocked checks. -->
 
-Manual checks:
-- 
+## Risk
+<!-- Low/medium/high. What breaks if this is wrong? -->
 
-## Agent Self-Review
-- [ ] Completed `docs/development/agent-review.md`
-- [ ] Any failed checklist item is explained below
-
-Self-review notes:
-- 
-
-## Screenshots / Video (if UI changed)
-- Attach screenshots or short video.
-- If no UI change, write: `No UI changes`.
-
-## Risk Assessment
-- Risk level: Low / Medium / High
-- Main risk:
-- User impact if something goes wrong:
-
-## Rollback Plan
-- How to revert safely:
-- Data impact:
-
-## Docs Updated
-- [ ] Docs updated
-- [ ] Not needed (explain)
-
-Notes:
-- 
-
-## Follow-up Work
-- [ ] None
-- [ ] Follow-up tasks needed (list below)
-
-Follow-up items:
-- 
+## Rollback
+<!-- Shortest safe rollback. Note data impact. -->

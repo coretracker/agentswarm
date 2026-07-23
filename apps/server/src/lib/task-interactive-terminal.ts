@@ -39,7 +39,6 @@ import { buildDockerWorkspaceMountArgs } from "./docker-workspace-mounts.js";
 import { buildHostexecRuntimeConfig } from "./hostexec-runtime.js";
 import type { UserStore } from "../services/user-store.js";
 import { RepositoryEnvFileStore } from "../services/repository-env-file-store.js";
-import { buildStagedHostProviderStateMountArgs } from "./verft-base-mounts.js";
 import { resolveDockerSocketAccessPolicy, resolveDockerSocketRunArgs } from "./docker-socket-access.js";
 
 const WS_PATH_RE = /^\/tasks\/([^/]+)\/terminal$/;
@@ -403,6 +402,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
   try {
     const started = await deps.spawner.beginInteractiveTerminalSession(taskId, mode);
     terminalSessionId = started.sessionId;
+    await deps.spawner.ensureTaskHome(taskId);
     const workspaceOnServer = path.join(env.TASK_WORKSPACE_ROOT, taskId);
     const dockerBindSource = path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, taskId);
     const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspaceOnServer);
@@ -475,7 +475,7 @@ async function initializeTaskInteractiveTerminalWebSocket(
       ...linkedWorkspaceMountPlan.mountArgs,
       ...gitRuntimeMounts,
       ...hostexecRuntime.mountArgs,
-      ...buildStagedHostProviderStateMountArgs(),
+      ...deps.spawner.buildTaskHomeMountArgs(taskId),
       ...dockerSocketRunArgs,
       ...dockerEnv,
       runtime.image,
