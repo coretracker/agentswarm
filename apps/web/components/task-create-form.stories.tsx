@@ -171,6 +171,9 @@ const createMockTask = (values: TaskDefinitionFormValues): Task => ({
 
 api.getSession = async () => mockSession;
 api.listRepositories = async () => mockRepositories;
+api.listRepositoryBranches = async (id) => ({
+  branches: id === "repo-harness" ? ["develop", "feature/runner-cache"] : ["main", "develop", "feature/storybook-coverage"]
+});
 api.getSettings = async () => mockSettings;
 api.listModels = async (provider) => ({
   models: provider === "claude" ? mockSettings.claudeModels : mockSettings.codexModels,

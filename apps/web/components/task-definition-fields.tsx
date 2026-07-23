@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { FormInstance } from "antd";
 import type {
   AgentProvider,
@@ -23,6 +23,7 @@ import { Alert, Card, Col, Collapse, Flex, Form, Input, Row, Segmented, Select, 
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useSettings } from "../src/hooks/useSettings";
+import { api } from "../src/api/client";
 import { type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 import { useAuth } from "./auth-provider";
 import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
@@ -150,6 +151,9 @@ export function TaskDefinitionFields({
   const { can, session } = useAuth();
   const { repositories } = useRepositories();
   const { settings } = useSettings();
+  const [branchOptions, setBranchOptions] = useState<string[]>([]);
+  const [branchesLoading, setBranchesLoading] = useState(false);
+  const [branchesError, setBranchesError] = useState<string | null>(null);
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
   const canRunAutomatedTask = canBuildTasks || canAskTasks;
@@ -165,6 +169,21 @@ export function TaskDefinitionFields({
   const selectedProvider = (Form.useWatch("provider", form) as AgentProvider | undefined) ?? settings?.defaultProvider ?? "codex";
   const { models: providerModels, loading: providerModelsLoading, source: providerModelsSource } = useProviderModels(selectedProvider);
   const selectedRepository = repositories.find((repository) => repository.id === selectedRepoId) ?? null;
+  const baseBranchOptions = useMemo(() => {
+    const values = new Set<string>();
+    if (selectedRepository?.defaultBranch) {
+      values.add(selectedRepository.defaultBranch);
+    }
+    for (const branch of branchOptions) {
+      if (branch.trim()) {
+        values.add(branch.trim());
+      }
+    }
+    if (selectedBaseBranch?.trim()) {
+      values.add(selectedBaseBranch.trim());
+    }
+    return Array.from(values).map((branch) => ({ label: branch, value: branch }));
+  }, [branchOptions, selectedBaseBranch, selectedRepository?.defaultBranch]);
   const effectiveTaskType = selectedTaskType;
   const isImplementationTask = effectiveTaskType === "build";
   const roleAllowedProviders = session?.user.allowedProviders ?? [];
@@ -258,6 +277,50 @@ export function TaskDefinitionFields({
       form.setFieldValue("taskType", "build");
     }
   }, [canAskTasks, canBuildTasks, form, selectedTaskType]);
+
+  useEffect(() => {
+    if (!selectedRepository || selectedBaseBranch?.trim()) {
+      return;
+    }
+    form.setFieldValue("baseBranch", selectedRepository.defaultBranch);
+  }, [form, selectedBaseBranch, selectedRepository]);
+
+  useEffect(() => {
+    if (!selectedRepoId) {
+      setBranchOptions([]);
+      setBranchesError(null);
+      setBranchesLoading(false);
+      return;
+    }
+
+    let active = true;
+    setBranchesLoading(true);
+    setBranchesError(null);
+    void api
+      .listRepositoryBranches(selectedRepoId)
+      .then((response) => {
+        if (!active) {
+          return;
+        }
+        setBranchOptions(response.branches);
+      })
+      .catch((error) => {
+        if (!active) {
+          return;
+        }
+        setBranchOptions([]);
+        setBranchesError(error instanceof Error ? error.message : "Failed to load branches");
+      })
+      .finally(() => {
+        if (active) {
+          setBranchesLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedRepoId]);
 
   useEffect(() => {
     if (form.isFieldTouched("title")) {
@@ -359,7 +422,7 @@ export function TaskDefinitionFields({
               ) : null}
 
               <Row gutter={[12, 8]}>
-                <Col xs={24} lg={isImplementationTask ? 16 : 24}>
+                <Col xs={24} lg={isImplementationTask ? 9 : 12}>
                   <Form.Item name="repoId" label="Repository" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
                     <Select
                       showSearch
@@ -374,8 +437,32 @@ export function TaskDefinitionFields({
                     />
                   </Form.Item>
                 </Col>
+                <Col xs={24} lg={isImplementationTask ? 8 : 12}>
+                  <Form.Item
+                    name="baseBranch"
+                    label="Base Branch"
+                    rules={[{ required: true }]}
+                    style={{ marginBottom: 0 }}
+                    extra={branchesError ? `Branch lookup failed: ${branchesError}` : undefined}
+                  >
+                    <Select
+                      showSearch
+                      options={baseBranchOptions}
+                      loading={branchesLoading}
+                      placeholder={selectedRepository?.defaultBranch ?? "Select branch"}
+                      disabled={!selectedRepository}
+                      optionFilterProp="label"
+                      filterOption={(input, option) =>
+                        String(option?.label ?? "")
+                          .toLowerCase()
+                          .includes(input.toLowerCase())
+                      }
+                      notFoundContent={branchesLoading ? "Loading branches..." : "No branches found"}
+                    />
+                  </Form.Item>
+                </Col>
                 {isImplementationTask ? (
-                  <Col xs={24} lg={8}>
+                  <Col xs={24} lg={7}>
                     <Form.Item name="branchStrategy" label="Branch Strategy" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
                       <Select
                         options={[
@@ -471,10 +558,6 @@ export function TaskDefinitionFields({
 
                       <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
                         <Select options={allowedEffortOptions} />
-                      </Form.Item>
-
-                      <Form.Item name="baseBranch" label="Base Branch" rules={[{ required: true }]}>
-                        <Input placeholder={selectedRepository?.defaultBranch ?? "develop"} />
                       </Form.Item>
                     </Flex>
                   )

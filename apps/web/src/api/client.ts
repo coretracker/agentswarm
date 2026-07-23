@@ -71,6 +71,10 @@ export interface ProviderModelsResponse {
   source: "api" | "cache" | "fallback";
 }
 
+export interface RepositoryBranchesResponse {
+  branches: string[];
+}
+
 export interface TaskInteractiveTerminalStatus {
   available: boolean;
   reason?: string;
@@ -527,6 +531,8 @@ export const api = {
     }),
   listRepositories: () => request<Repository[]>("/repositories"),
   getRepository: (id: string) => request<Repository>(`/repositories/${id}`),
+  listRepositoryBranches: (id: string) =>
+    request<RepositoryBranchesResponse>(`/repositories/${encodeURIComponent(id)}/branches`),
   createRepository: (input: CreateRepositoryInput) =>
     request<Repository>("/repositories", {
       method: "POST",

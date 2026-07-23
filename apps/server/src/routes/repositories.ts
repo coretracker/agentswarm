@@ -1,11 +1,17 @@
 import { z } from "zod";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import type { FastifyInstance } from "fastify";
 import type { AuthSessionUser, CreateRepositoryInput, UpdateRepositoryInput } from "@verft/shared-types";
 import type { AuthService } from "../lib/auth.js";
+import { buildGitProcessEnv } from "../lib/git-env.js";
 import { sendHttpError } from "../lib/http-error.js";
 import { canUserAccessRepository } from "../lib/task-ownership.js";
 import type { RepositoryStore } from "../services/repository-store.js";
+import type { SettingsStore } from "../services/settings-store.js";
 import type { UserStore } from "../services/user-store.js";
+
+const execFileAsync = promisify(execFile);
 
 const REPOSITORY_ENV_VAR_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const REPOSITORY_ENV_VAR_MAX_COUNT = 250;
@@ -23,6 +29,41 @@ const SLACK_CHANNEL_ID_PATTERN = /^[CG][A-Z0-9]{2,}$/;
 const HOST_COMMAND_MAX_COUNT = 80;
 const HOST_COMMAND_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+
+const parseLsRemoteBranchOutput = (output: string): string[] =>
+  Array.from(
+    new Set(
+      output
+        .split(/\r?\n/)
+        .map((line) => {
+          const ref = line.trim().split(/\s+/)[1] ?? "";
+          return ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : "";
+        })
+        .filter(Boolean)
+    )
+  ).sort((left, right) => left.localeCompare(right));
+
+const listRepositoryRemoteBranches = async (
+  repositoryUrl: string,
+  settingsStore?: SettingsStore
+): Promise<string[]> => {
+  const credentials = await settingsStore?.getRuntimeCredentials().catch(() => null);
+  const gitEnv = await buildGitProcessEnv({
+    githubToken: credentials?.githubToken ?? null,
+    gitUsername: credentials?.gitUsername ?? "x-access-token"
+  });
+  const { stdout } = await execFileAsync("git", ["ls-remote", "--heads", repositoryUrl], {
+    env: {
+      ...process.env,
+      ...gitEnv,
+      GIT_TERMINAL_PROMPT: "0"
+    },
+    maxBuffer: 1024 * 1024,
+    timeout: 15_000
+  });
+
+  return parseLsRemoteBranchOutput(stdout);
+};
 
 const hostCommandsSchema = z
   .array(
@@ -251,6 +292,8 @@ export const registerRepositoryRoutes = (
     repositoryStore: RepositoryStore;
     auth: AuthService;
     userStore: UserStore;
+    settingsStore?: SettingsStore;
+    listRepositoryBranches?: (repositoryUrl: string) => Promise<string[]>;
   }
 ): void => {
   const addRepositoryAccessForUser = async (userId: string, repositoryId: string): Promise<void> => {
@@ -327,6 +370,27 @@ export const registerRepositoryRoutes = (
     }
 
     return reply.send(repository);
+  });
+
+  app.get<{ Params: { id: string } }>("/repositories/:id/branches", { preHandler: deps.auth.requireAllScopes(["repo:read"]) }, async (request, reply) => {
+    const repository = await deps.repositoryStore.getRepository(request.params.id);
+    if (!repository || !canUserAccessRepository(request.auth?.user, request.params.id)) {
+      return reply.status(404).send({ message: "Repository not found" });
+    }
+
+    try {
+      const branches = deps.listRepositoryBranches
+        ? await deps.listRepositoryBranches(repository.url)
+        : await listRepositoryRemoteBranches(repository.url, deps.settingsStore);
+      return reply.send({ branches });
+    } catch (error) {
+      const sent = sendHttpError(reply, error);
+      if (sent) {
+        return sent;
+      }
+      request.log.warn({ err: error, repositoryId: repository.id }, "repository.branches.failed");
+      return reply.status(502).send({ message: "Failed to load repository branches." });
+    }
   });
 
   app.post("/repositories", { preHandler: deps.auth.requireAllScopes(["repo:create"]) }, async (request, reply) => {

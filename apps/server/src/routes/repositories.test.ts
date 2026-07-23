@@ -63,14 +63,18 @@ const createRepository = (input: CreateRepositoryInput, overrides: Partial<Repos
 
 const createTestApp = ({
   authUser,
-  users
+  users,
+  initialRepositories,
+  listRepositoryBranches
 }: {
   authUser?: AuthSessionUser | null;
   users?: User[];
+  initialRepositories?: Repository[];
+  listRepositoryBranches?: (repositoryUrl: string) => Promise<string[]>;
 } = {}) => {
   const app = Fastify();
   const storedUsers = new Map((users ?? [createUser({ id: "user-1" })]).map((user) => [user.id, user]));
-  const repositories = new Map<string, Repository>();
+  const repositories = new Map((initialRepositories ?? []).map((repository) => [repository.id, repository]));
   const updateUserCalls: Array<{ userId: string; patch: Partial<User> }> = [];
 
   registerRepositoryRoutes(app, {
@@ -132,11 +136,69 @@ const createTestApp = ({
         storedUsers.set(userId, next);
         return next;
       }
-    } as never
+    } as never,
+    ...(listRepositoryBranches ? { listRepositoryBranches } : {})
   });
 
   return { app, updateUserCalls };
 };
+
+test("repository branches lists remote branches for accessible repositories", async () => {
+  const repository = createRepository(
+    { name: "repo", url: "https://github.com/acme/repo.git" },
+    { id: "repo-branches", defaultBranch: "main" }
+  );
+  const authUser = createAuthUser({
+    scopes: ["repo:read"],
+    repositoryIds: [repository.id]
+  });
+  const { app } = createTestApp({
+    authUser,
+    users: [createUser({ id: "user-1", repositoryIds: [repository.id] })],
+    initialRepositories: [repository],
+    listRepositoryBranches: async (repositoryUrl) => {
+      assert.equal(repositoryUrl, repository.url);
+      return ["main", "feature/searchable-base-branch"];
+    }
+  });
+
+  const response = await app.inject({
+    method: "GET",
+    url: `/repositories/${repository.id}/branches`
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(JSON.parse(response.body), { branches: ["main", "feature/searchable-base-branch"] });
+
+  await app.close();
+});
+
+test("repository branches hides inaccessible repositories", async () => {
+  const repository = createRepository(
+    { name: "repo", url: "https://github.com/acme/repo.git" },
+    { id: "repo-private", defaultBranch: "main" }
+  );
+  const authUser = createAuthUser({
+    scopes: ["repo:read"],
+    repositoryIds: []
+  });
+  const { app } = createTestApp({
+    authUser,
+    initialRepositories: [repository],
+    listRepositoryBranches: async () => {
+      throw new Error("branch lookup should not run for inaccessible repositories");
+    }
+  });
+
+  const response = await app.inject({
+    method: "GET",
+    url: `/repositories/${repository.id}/branches`
+  });
+
+  assert.equal(response.statusCode, 404);
+
+  await app.close();
+});
 
 test("repository create allows the authenticated user as GitHub-created task owner", async () => {
   const authUser = createAuthUser({ id: "user-1" });

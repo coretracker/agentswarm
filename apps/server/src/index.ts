@@ -204,7 +204,7 @@ const bootstrap = async (): Promise<void> => {
     settingsStore,
     auth
   });
-  registerRepositoryRoutes(app, { repositoryStore, userStore, auth });
+  registerRepositoryRoutes(app, { repositoryStore, userStore, auth, settingsStore });
   registerGitHubPrWebhookRoutes(app, { repositoryStore, taskStore, taskQueueStore, scheduler, settingsStore, spawner, userStore });
   registerSlackWebhookRoutes(app, { repositoryStore, taskStore, scheduler, settingsStore, spawner });
   registerInboundWebhookRoutes(app, { repositoryStore, taskStore, integrationRuleStore, webhookInboxStore, scheduler, settingsStore, spawner, userStore });

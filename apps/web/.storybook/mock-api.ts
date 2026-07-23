@@ -176,6 +176,12 @@ export function createMockApi(overrides: MockApiOverrides = {}): MockApiOverride
     updateTaskIssue: async (id, input) => updateTask(id, { githubIssueNumber: input.githubIssueNumber }),
     listRepositories: async () => repositories,
     getRepository: async (id) => getRepositoryById(id),
+    listRepositoryBranches: async (id) => ({
+      branches:
+        id === "repo-harness"
+          ? ["develop", "feature/runner-cache", "release/harness-v2"]
+          : ["main", "develop", "feature/storybook-coverage", "fix/repository-editor"]
+    }),
     createRepository: async (input) => ({ ...repositories[0], id: "repo-created", name: input.name, url: input.url, defaultBranch: input.defaultBranch ?? "main" }),
     updateRepository: async (id, input) => ({ ...getRepositoryById(id), ...input }),
     deleteRepository: async () => undefined,
