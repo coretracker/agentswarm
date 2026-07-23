@@ -6,7 +6,9 @@ import {
   DatabaseOutlined,
   BulbOutlined,
   LogoutOutlined,
+  MenuFoldOutlined,
   MenuOutlined,
+  MenuUnfoldOutlined,
   MoonOutlined,
   SettingOutlined,
   TeamOutlined,
@@ -34,6 +36,7 @@ const menuIconByPath: Record<string, ReactNode> = {
   "/settings": <SettingOutlined />,
   "/users": <TeamOutlined />
 };
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "verft.sidebarCollapsed";
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
@@ -47,6 +50,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const screens = Grid.useBreakpoint();
   const [loggingOut, setLoggingOut] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const publicPath = isPublicPathname(pathname);
   const desktopSidebar = screens.lg ?? false;
   const selectedNavigationKey = getSelectedNavigationKey(pathname);
@@ -75,6 +79,26 @@ export function AppShell({ children }: { children: ReactNode }) {
       setMobileSidebarOpen(false);
     }
   }, [desktopSidebar]);
+
+  useEffect(() => {
+    try {
+      setSidebarCollapsed(window.localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "1");
+    } catch {
+      setSidebarCollapsed(false);
+    }
+  }, []);
+
+  const toggleSidebarCollapsed = () => {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      try {
+        window.localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, next ? "1" : "0");
+      } catch {
+        // Ignore storage failures; the in-memory preference still applies for this session.
+      }
+      return next;
+    });
+  };
 
   if (publicPath) {
     return <App>{children}</App>;
@@ -177,25 +201,83 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Flex>
           </Flex>
         </Layout.Header>
-        <Layout style={{ flex: 1, minHeight: 0, background: token.colorBgLayout }}>
+        <Layout style={{ flex: 1, minHeight: 0, background: token.colorBgLayout, position: "relative" }}>
           {desktopSidebar ? (
             <Layout.Sider
               width={sidebarWidth}
+              trigger={null}
               theme="light"
               style={{
-                position: "sticky",
+                position: "fixed",
+                left: 0,
                 top: headerHeight,
-                alignSelf: "flex-start",
+                zIndex: 15,
                 height: `calc(100vh - ${headerHeight}px)`,
                 background: token.colorBgContainer,
                 borderRight: `1px solid ${token.colorBorderSecondary}`,
-                overflow: "hidden"
+                boxShadow: sidebarCollapsed ? "none" : token.boxShadowSecondary,
+                overflow: "hidden",
+                transform: sidebarCollapsed ? "translateX(-100%)" : "translateX(0)",
+                transition: "transform 220ms ease, box-shadow 220ms ease",
+                pointerEvents: sidebarCollapsed ? "none" : "auto"
               }}
             >
-              <AppSidebar pathname={pathname} onNavigate={(path) => router.push(path)} />
+              <div
+                style={{
+                  width: sidebarWidth,
+                  height: "100%",
+                  boxSizing: "border-box",
+                  opacity: sidebarCollapsed ? 0 : 1,
+                  transition: "opacity 140ms ease"
+                }}
+              >
+                <AppSidebar
+                  pathname={pathname}
+                  onNavigate={(path) => router.push(path)}
+                  headerExtra={
+                    <Button
+                      type="text"
+                      icon={<MenuFoldOutlined />}
+                      aria-label="Hide sidebar"
+                      title="Hide sidebar"
+                      onClick={toggleSidebarCollapsed}
+                    />
+                  }
+                />
+              </div>
             </Layout.Sider>
           ) : null}
-          <Layout style={{ minWidth: 0, background: token.colorBgLayout }}>
+          {desktopSidebar ? (
+            <Button
+              type="primary"
+              icon={<MenuUnfoldOutlined />}
+              aria-label="Show sidebar"
+              title="Show sidebar"
+              onClick={toggleSidebarCollapsed}
+              style={{
+                position: "fixed",
+                top: headerHeight + 16,
+                left: 0,
+                zIndex: 16,
+                width: 40,
+                height: 40,
+                borderRadius: "0 6px 6px 0",
+                boxShadow: token.boxShadowSecondary,
+                opacity: sidebarCollapsed ? 1 : 0,
+                transform: sidebarCollapsed ? "translateX(0)" : "translateX(-100%)",
+                pointerEvents: sidebarCollapsed ? "auto" : "none",
+                transition: "opacity 160ms ease, transform 220ms ease"
+              }}
+            />
+          ) : null}
+          <Layout
+            style={{
+              minWidth: 0,
+              marginLeft: desktopSidebar && !sidebarCollapsed ? sidebarWidth : 0,
+              background: token.colorBgLayout,
+              transition: "margin-left 220ms ease"
+            }}
+          >
             <Layout.Content style={{ padding: 24, minHeight: 0, overflow: "auto", background: token.colorBgLayout }}>
               <div style={{ width: "100%", maxWidth: contentMaxWidth, marginInline: "auto", minHeight: "100%" }}>
                 {hasRouteAccess ? (

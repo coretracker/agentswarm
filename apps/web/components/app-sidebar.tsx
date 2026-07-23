@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   App,
   Button,
@@ -29,6 +29,7 @@ import { TaskCreateModal } from "./task-create-modal";
 interface AppSidebarProps {
   pathname: string;
   onNavigate: (path: string) => void;
+  headerExtra?: ReactNode;
 }
 
 function isLiveTask(task: Task): boolean {
@@ -104,7 +105,7 @@ function TaskSection({
   );
 }
 
-export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
+export function AppSidebar({ pathname, onNavigate, headerExtra }: AppSidebarProps) {
   const { token } = antTheme.useToken();
   const { message } = App.useApp();
   const { can } = useAuth();
@@ -226,13 +227,17 @@ export function AppSidebar({ pathname, onNavigate }: AppSidebarProps) {
             }}
           >
             <Flex vertical gap={12}>
-              <Input
-                allowClear
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-                placeholder="Filter by task name"
-                prefix={<SearchOutlined />}
-              />
+              <Flex align="center" gap={8}>
+                <Input
+                  allowClear
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Filter by task name"
+                  prefix={<SearchOutlined />}
+                  style={{ flex: 1, minWidth: 0 }}
+                />
+                {headerExtra}
+              </Flex>
               {canCreateTask ? (
                 <Button type="primary" block onClick={() => setTaskCreateModalOpen(true)}>
                   New Task
