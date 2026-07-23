@@ -106,9 +106,7 @@ export function TaskHistoryGroupedAutoRunCard({
   };
 
   useEffect(() => {
-    if (initialSection) {
-      setActiveSection(initialSection);
-    }
+    setActiveSection(initialSection);
   }, [initialSection]);
 
   const renderDiffAction = (action: TaskHistoryCheckpointDiffAction) => (

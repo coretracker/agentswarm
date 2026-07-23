@@ -5126,14 +5126,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     ) : null;
 
   const lastSummaryEntryKey = (() => {
-    for (let i = visibleChatHistoryTimeline.length - 1; i >= 0; i--) {
-      const entry = visibleChatHistoryTimeline[i];
-      if (
-        (entry.kind === "grouped_auto_run" || entry.kind === "run") &&
-        getNormalizedRunSummary(entry.run)
-      ) {
-        return entry.key;
-      }
+    const entry = visibleChatHistoryTimeline.at(-1);
+    if (
+      entry &&
+      (entry.kind === "grouped_auto_run" || entry.kind === "run") &&
+      getNormalizedRunSummary(entry.run)
+    ) {
+      return entry.key;
     }
     return null;
   })();
