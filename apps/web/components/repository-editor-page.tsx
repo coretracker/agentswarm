@@ -30,7 +30,7 @@ import {
   getAgentProviderLabel,
   getEffortOptionsForProvider
 } from "@verft/shared-types";
-import { Alert, Button, Card, Checkbox, Empty, Flex, Form, Input, Modal, Result, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, Upload, message } from "antd";
+import { Alert, Button, Card, Checkbox, Empty, Flex, Form, Input, Modal, Result, Select, Space, Spin, Switch, Table, Tabs, Tag, Typography, Upload, message, theme as antTheme } from "antd";
 import { CopyOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, PlusOutlined, UploadOutlined } from "@ant-design/icons";
 import { ApiError, api } from "../src/api/client";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -801,6 +801,7 @@ function IntegrationRuleEditorModal({
 export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPageProps) {
   const router = useRouter();
   const { settings } = useSettings();
+  const { token } = antTheme.useToken();
   const [form] = Form.useForm<RepositoryFormValues>();
   const [copyIntegrationForm] = Form.useForm<CopyIntegrationSetupFormValues>();
   const [messageApi, contextHolder] = message.useMessage();
@@ -1209,8 +1210,8 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
             <div
               key={field.key}
               style={{
-                border: "1px solid #d9d9d9",
-                borderRadius: 8,
+                border: `1px solid ${token.colorBorderSecondary}`,
+                borderRadius: token.borderRadius,
                 padding: 12,
                 width: "100%"
               }}
@@ -2482,10 +2483,10 @@ export function RepositoryEditorPage({ mode, repositoryId }: RepositoryEditorPag
                         <div
                           key={rule.id}
                           style={{
-                            border: "1px solid rgba(5,5,5,0.08)",
-                            borderRadius: 8,
+                            border: `1px solid ${token.colorBorderSecondary}`,
+                            borderRadius: token.borderRadius,
                             padding: "12px 14px",
-                            background: rule.enabled ? "#fff" : "rgba(0,0,0,0.02)"
+                            background: rule.enabled ? token.colorBgContainer : token.colorFillQuaternary
                           }}
                         >
                           <Flex justify="space-between" align="start" gap={12}>
