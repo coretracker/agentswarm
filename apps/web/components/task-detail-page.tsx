@@ -43,14 +43,12 @@ import {
   Checkbox,
   Collapse,
   Descriptions,
-  Divider,
   Dropdown,
   Empty,
   Flex,
   Form,
   Grid,
   Input,
-  Mentions,
   List,
   Modal,
   Pagination,
@@ -67,15 +65,23 @@ import {
   Timeline,
   Typography,
   message,
-  theme as antTheme
+  theme as antTheme,
+  type MenuProps
 } from "antd";
 import {
   ArrowRightOutlined,
+  BranchesOutlined,
   CopyOutlined,
+  DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
+  ExportOutlined,
+  LinkOutlined,
   LoadingOutlined,
   MoreOutlined,
+  PushpinOutlined,
+  ReloadOutlined,
+  StopOutlined,
   RollbackOutlined
 } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
@@ -111,7 +117,7 @@ import { buildTimelineDisplayItems, type TimelineDisplayItem } from "../src/util
 import { useAuth } from "./auth-provider";
 import { TaskBinaryDiffCard, type TaskDiffPreviewRefs } from "./task-binary-diff-card";
 import { TaskDiffOpenAiPanel } from "./task-diff-openai-panel";
-import { TaskPromptAttachmentsInput } from "./task-prompt-attachments-input";
+import { TaskPromptComposer } from "./task-prompt-composer";
 import { TaskTerminalTranscriptView } from "./task-terminal-transcript-view";
 import { CheckpointFileEditorModal } from "./checkpoint-file-editor-modal";
 import { TaskFilesTab } from "./task-files-tab";
@@ -3248,21 +3254,14 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     void loadTaskGitState();
   }, [canPush, loadTaskGitState, task?.id, task?.updatedAt]);
 
-  const moreActionItems = task
-    ? [
-        hasBranchForSync ? { key: "refreshGitStatus", label: "Refresh Git Status" } : null,
-        canEditTask && !isArchived ? { key: "newSession", label: "New Session" } : null,
-        canEditTask && !isArchived ? { key: "rebuildHome", label: "Rebuild task home", danger: true } : null,
-        canLinkTaskWorkspace ? { key: "linkTask", label: "Link Task" } : null,
-        canLinkPullRequest ? { key: "linkPr", label: task.githubPrNumber ? "Edit Linked PR" : "Link Pull Request" } : null,
-        canLinkIssue ? { key: "linkIssue", label: task.githubIssueNumber ? "Edit Linked Issue" : "Link Issue" } : null,
-        canKillInteractiveTerminal ? { key: "killInteractiveTerminal", label: "Stop Session", danger: true } : null,
-        canChangeTaskState ? { key: "changeState", label: "Change State" } : null,
-        canEditTask && !isArchived ? { key: "pin", label: task.pinned ? "Unpin Task" : "Pin Task" } : null,
-        canArchive ? { key: "archive", label: "Archive Task", danger: true } : null,
-        canDelete ? { key: "delete", label: "Delete Task", danger: true } : null
-      ].filter(Boolean)
-    : [];
+  const createMoreActionGroup = (
+    key: string,
+    label: string,
+    children: Array<NonNullable<MenuProps["items"]>[number] | null>
+  ): NonNullable<MenuProps["items"]>[number] | null => {
+    const visibleChildren = (children ?? []).filter(Boolean) as NonNullable<MenuProps["items"]>;
+    return visibleChildren.length > 0 ? { key, label, type: "group", children: visibleChildren } : null;
+  };
   const showHeaderCancel = canCancel && activeAutoRunHistoryEntry === null;
   const hasExecutionButtons = showHeaderCancel || canStartDraft || canUnstickQueue;
   const assigneeLabel = task?.ownerUserId ? (assigneeNameById.get(task.ownerUserId) ?? task.ownerUserId) : "Unassigned";
@@ -3474,83 +3473,74 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         </span>
       </Tooltip>
     ) : null;
-  const renderResetGitButton = () =>
-    canPush ? (
-      <Tooltip
-        title={
-          gitOperationBusy
-            ? "Another Git operation is already running."
-              : !pushPreviewHasPushableChanges
-                ? "No local-only changes or commits to reset."
-                : undefined
-        }
-      >
-        <span style={{ display: "inline-block" }}>
-          <Button
-            danger
-            onClick={() => void handleResetGit()}
-            loading={submitting === "resetGit"}
-            disabled={resetGitDisabled}
-          >
-            Reset Git
-          </Button>
-        </span>
-      </Tooltip>
-    ) : null;
-  const renderViewPullRequestButton = () =>
-    task?.githubPrNumber ? (
-      <Tooltip
-        title={
-          linkedPullRequestUrl
-            ? `Open linked pull request #${task.githubPrNumber}.`
-            : "The linked pull request URL is unavailable for this repository."
-        }
-      >
-        <span style={{ display: "inline-block" }}>
-          <Button
-            href={linkedPullRequestUrl ?? undefined}
-            target="_blank"
-            rel="noreferrer"
-            disabled={!linkedPullRequestUrl}
-          >
-            View PR
-          </Button>
-        </span>
-      </Tooltip>
-    ) : null;
-  const renderViewIssueButton = () =>
-    task?.githubIssueNumber ? (
-      <Tooltip
-        title={
-          linkedIssueUrl
-            ? `Open linked issue #${task.githubIssueNumber}.`
-            : "The linked issue URL is unavailable for this repository."
-        }
-      >
-        <span style={{ display: "inline-block" }}>
-          <Button
-            href={linkedIssueUrl ?? undefined}
-            target="_blank"
-            rel="noreferrer"
-            disabled={!linkedIssueUrl}
-          >
-            View Issue
-          </Button>
-        </span>
-      </Tooltip>
-    ) : null;
-  const dropdownMoreActionItems = [
-    ...(canMerge
-      ? [
-          {
+  const dropdownMoreActionItems: NonNullable<MenuProps["items"]> = [
+    createMoreActionGroup("more-links", "Links", [
+      task?.githubPrNumber
+        ? {
+            key: "viewPullRequest",
+            icon: <ExportOutlined />,
+            label: linkedPullRequestUrl ? (
+              <a href={linkedPullRequestUrl} target="_blank" rel="noreferrer">
+                View PR
+              </a>
+            ) : (
+              "View PR"
+            ),
+            disabled: !linkedPullRequestUrl
+          }
+        : null,
+      task?.githubIssueNumber
+        ? {
+            key: "viewIssue",
+            icon: <ExportOutlined />,
+            label: linkedIssueUrl ? (
+              <a href={linkedIssueUrl} target="_blank" rel="noreferrer">
+                View Issue
+              </a>
+            ) : (
+              "View Issue"
+            ),
+            disabled: !linkedIssueUrl
+          }
+        : null
+    ]),
+    createMoreActionGroup("more-git", "Git", [
+      hasBranchForSync ? { key: "refreshGitStatus", icon: <ReloadOutlined />, label: "Refresh Git Status" } : null,
+      canMerge
+        ? {
             key: "merge",
+            icon: <BranchesOutlined />,
             label: "Merge",
             disabled: !!mergeBlockedReason
           }
-        ]
-      : []),
-    ...moreActionItems
-  ];
+        : null,
+      canPush
+        ? {
+            key: "resetGit",
+            icon: <RollbackOutlined />,
+            label: "Reset Git",
+            danger: true,
+            disabled: resetGitDisabled
+          }
+        : null
+    ]),
+    createMoreActionGroup("more-linking", "Linking", [
+      canLinkTaskWorkspace ? { key: "linkTask", icon: <LinkOutlined />, label: "Link Task" } : null,
+      canLinkPullRequest ? { key: "linkPr", icon: <LinkOutlined />, label: task?.githubPrNumber ? "Edit Linked PR" : "Link Pull Request" } : null,
+      canLinkIssue ? { key: "linkIssue", icon: <LinkOutlined />, label: task?.githubIssueNumber ? "Edit Linked Issue" : "Link Issue" } : null
+    ]),
+    createMoreActionGroup("more-session", "Session", [
+      canEditTask && !isArchived ? { key: "newSession", icon: <EditOutlined />, label: "New Session" } : null,
+      canEditTask && !isArchived ? { key: "rebuildHome", icon: <ReloadOutlined />, label: "Rebuild task home", danger: true } : null,
+      canKillInteractiveTerminal ? { key: "killInteractiveTerminal", icon: <StopOutlined />, label: "Stop Session", danger: true } : null
+    ]),
+    createMoreActionGroup("more-task", "Task", [
+      canChangeTaskState ? { key: "changeState", icon: <EditOutlined />, label: "Change State" } : null,
+      canEditTask && !isArchived ? { key: "pin", icon: <PushpinOutlined />, label: task?.pinned ? "Unpin Task" : "Pin Task" } : null,
+      canArchive ? { key: "archive", icon: <StopOutlined />, label: "Archive Task", danger: true } : null,
+      canDelete ? { key: "delete", icon: <DeleteOutlined />, label: "Delete Task", danger: true } : null
+    ])
+  ].filter(Boolean) as NonNullable<MenuProps["items"]>;
   const hasDropdownMoreActions = dropdownMoreActionItems.length > 0;
   const renderMoreActionsButton = () =>
     hasDropdownMoreActions ? (
@@ -3560,6 +3550,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           onClick: ({ key }) => {
             if (key === "merge") {
               setMergeModalOpen(true);
+              return;
+            }
+
+            if (key === "resetGit") {
+              void handleResetGit();
               return;
             }
 
@@ -3637,7 +3632,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
         trigger={["click"]}
       >
-        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "rebuildHome" || submitting === "killTerminal" || submitting === "merge" || submitting === "state" || submitting === "linkTask" || submitting === "linkPr" || submitting === "linkIssue"}>
+        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "rebuildHome" || submitting === "killTerminal" || submitting === "merge" || submitting === "state" || submitting === "linkTask" || submitting === "linkPr" || submitting === "linkIssue" || submitting === "resetGit"}>
           More
         </Button>
       </Dropdown>
@@ -3895,168 +3890,105 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   ]
     .filter((part): part is string => Boolean(part))
     .join(" · ");
+  const handleFileMentionSearch = (searchText: string, mentionPrefix: string) => {
+    if (mentionPrefix !== "@") {
+      return;
+    }
+
+    const query = searchText.trim();
+    if (fileMentionSearchTimerRef.current !== null) {
+      window.clearTimeout(fileMentionSearchTimerRef.current);
+      fileMentionSearchTimerRef.current = null;
+    }
+
+    if (query.length === 0) {
+      fileMentionSearchRequestIdRef.current += 1;
+      setFileMentionOptions([]);
+      setFileMentionLoading(false);
+      return;
+    }
+
+    const requestId = fileMentionSearchRequestIdRef.current + 1;
+    fileMentionSearchRequestIdRef.current = requestId;
+    setFileMentionLoading(true);
+
+    fileMentionSearchTimerRef.current = window.setTimeout(() => {
+      void api
+        .searchTaskWorkspaceFiles(taskId, { query, limit: 40 })
+        .then((result) => {
+          if (fileMentionSearchRequestIdRef.current !== requestId) {
+            return;
+          }
+
+          setFileMentionOptions(result.results.map((path) => ({ value: path, label: path })));
+        })
+        .catch(() => {
+          if (fileMentionSearchRequestIdRef.current !== requestId) {
+            return;
+          }
+          setFileMentionOptions([]);
+        })
+        .finally(() => {
+          if (fileMentionSearchRequestIdRef.current !== requestId) {
+            return;
+          }
+          setFileMentionLoading(false);
+        });
+    }, 180);
+  };
+
+  const composerFooterActions =
+    canPull || canPush || hasDropdownMoreActions ? (
+      <Space.Compact size="middle">
+        {renderPullTaskButton()}
+        {renderPushTaskButton()}
+        {renderMoreActionsButton()}
+      </Space.Compact>
+    ) : null;
   const chatComposer = (
-    <Card size="small">
-    <Flex vertical gap={12}>
-      <Flex gap={8} align="center" wrap="wrap">
-        <Button onClick={() => setAiSettingsModalOpen(true)}>Settings</Button>
-        <Select
-          showSearch
-          value={modelInput}
-          options={allowedProviderModels}
-          loading={providerModelsLoading}
-          onChange={(value) => setModelInput(value)}
-          optionFilterProp="label"
-          placeholder="Select model"
-          style={{ minWidth: 220, flex: 1 }}
-          disabled={!canEditTask || isArchived || interactiveTerminalRunning}
-        />
-      </Flex>
-      <div>
-        <Mentions
-          autoSize={{ minRows: 4, maxRows: 14 }}
-          prefix="@"
-          value={chatInput}
-          onChange={(value) => setChatInput(value)}
-          options={fileMentionOptions}
-          filterOption={false}
-          notFoundContent={fileMentionLoading ? <Spin size="small" /> : "No files found"}
-          onSearch={(searchText, mentionPrefix) => {
-            if (mentionPrefix !== "@") {
-              return;
-            }
-
-            const query = searchText.trim();
-            if (fileMentionSearchTimerRef.current !== null) {
-              window.clearTimeout(fileMentionSearchTimerRef.current);
-              fileMentionSearchTimerRef.current = null;
-            }
-
-            if (query.length === 0) {
-              fileMentionSearchRequestIdRef.current += 1;
-              setFileMentionOptions([]);
-              setFileMentionLoading(false);
-              return;
-            }
-
-            const requestId = fileMentionSearchRequestIdRef.current + 1;
-            fileMentionSearchRequestIdRef.current = requestId;
-            setFileMentionLoading(true);
-
-            fileMentionSearchTimerRef.current = window.setTimeout(() => {
-              void api
-                .searchTaskWorkspaceFiles(taskId, { query, limit: 40 })
-                .then((result) => {
-                  if (fileMentionSearchRequestIdRef.current !== requestId) {
-                    return;
-                  }
-
-                  setFileMentionOptions(result.results.map((path) => ({ value: path, label: path })));
-                })
-                .catch(() => {
-                  if (fileMentionSearchRequestIdRef.current !== requestId) {
-                    return;
-                  }
-                  setFileMentionOptions([]);
-                })
-                .finally(() => {
-                  if (fileMentionSearchRequestIdRef.current !== requestId) {
-                    return;
-                  }
-                  setFileMentionLoading(false);
-                });
-            }, 180);
-          }}
-          onKeyDown={(event) => {
-            if (event.nativeEvent.isComposing || event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
-              return;
-            }
-
-            event.preventDefault();
-            void handleSubmitComposer();
-          }}
-          placeholder={chatPlaceholder}
-          disabled={chatInputDisabled}
-          style={{ resize: "none", paddingRight: 44, paddingBottom: 38 }}
-        />
-      </div>
-      {canAttachPromptImages || selectedPromptImageFiles.length > 0 ? (
-        <>
-          <Divider style={{ margin: 0 }} />
-          <TaskPromptAttachmentsInput
-            files={selectedPromptImageFiles}
-            onChange={setSelectedPromptImageFiles}
-            onError={(errorMessage) => void messageApi.error(errorMessage)}
-            disabled={promptImageAttachmentDisabled}
-            layout="toolbar"
-          />
-          <Divider style={{ margin: 0 }} />
-        </>
-      ) : null}
-      <Flex justify="flex-end" align="flex-end" gap={12} wrap="wrap">
-        <Flex align="center" justify="flex-end" gap={12} wrap="wrap">
-          <Space.Compact size="middle">
-            <Select
-              value={selectedChatAction}
-              options={allowedChatActions.map((action) => ({
-                label: taskActionLabel[action],
-                value: action
-              }))}
-              disabled={chatClosed || interactiveTerminalRunning}
-              onChange={(value) => {
-                selectedChatActionRef.current = true;
-                setSelectedChatAction(value);
-              }}
-              style={{ minWidth: 140 }}
-            />
-            <Button
-              type="primary"
-              loading={submitting === "message"}
-              disabled={chatSubmitDisabled}
-              onClick={() => void handleSubmitComposer()}
-            >
-              {chatSubmitLabel}
-            </Button>
-            <Popconfirm
-              title="Clear composer?"
-              description="This will clear the message input, selected reference images, and reset the settings to this task's defaults."
-              okText="Clear"
-              cancelText="Cancel"
-              okButtonProps={{ danger: true }}
-              placement="top"
-              disabled={composerClearDisabled}
-              onConfirm={handleConfirmClearComposer}
-            >
-              <Button disabled={composerClearDisabled}>Clear</Button>
-            </Popconfirm>
-          </Space.Compact>
-          {canPull || canPush || hasLinkedPullRequest || hasLinkedIssue || hasDropdownMoreActions ? (
-            <Space
-              size={8}
-              wrap
-              style={{
-                paddingInlineStart: 12,
-                marginInlineStart: 4,
-                borderInlineStart: "1px solid var(--ant-colorSplit, rgba(5, 5, 5, 0.12))"
-              }}
-            >
-              {renderPullTaskButton()}
-              {renderPushTaskButton()}
-              {renderResetGitButton()}
-              {renderViewPullRequestButton()}
-              {renderViewIssueButton()}
-              {renderMoreActionsButton()}
-            </Space>
-          ) : null}
-        </Flex>
-      </Flex>
-      <Divider style={{ margin: "8px 0 0" }} />
-      <Typography.Text type="secondary" style={{ display: "block", textAlign: "left" }}>
-        {`Current: ${aiSettingsSummary}`}
-        {isActive ? " Settings will be applied on next run." : ""}
-      </Typography.Text>
-    </Flex>
-    </Card>
+    <TaskPromptComposer
+      value={chatInput}
+      onChange={setChatInput}
+      placeholder={chatPlaceholder}
+      disabled={chatInputDisabled}
+      settingsDisabled={!canEditTask || isArchived || interactiveTerminalRunning}
+      onOpenSettings={() => setAiSettingsModalOpen(true)}
+      modelValue={modelInput}
+      modelOptions={allowedProviderModels}
+      modelLoading={providerModelsLoading}
+      onModelChange={setModelInput}
+      mentionOptions={fileMentionOptions}
+      mentionLoading={fileMentionLoading}
+      onMentionSearch={handleFileMentionSearch}
+      attachments={selectedPromptImageFiles}
+      onAttachmentsChange={setSelectedPromptImageFiles}
+      onAttachmentError={(errorMessage) => void messageApi.error(errorMessage)}
+      showAttachments={canAttachPromptImages || selectedPromptImageFiles.length > 0}
+      attachmentsDisabled={promptImageAttachmentDisabled}
+      actionValue={selectedChatAction}
+      actionOptions={allowedChatActions.map((action) => ({
+        label: taskActionLabel[action],
+        value: action
+      }))}
+      actionDisabled={chatClosed || interactiveTerminalRunning}
+      onActionChange={(value) => {
+        selectedChatActionRef.current = true;
+        setSelectedChatAction(value);
+      }}
+      submitLabel={chatSubmitLabel}
+      submitLoading={submitting === "message"}
+      submitDisabled={chatSubmitDisabled}
+      onSubmit={() => void handleSubmitComposer()}
+      clearDisabled={composerClearDisabled}
+      onClear={handleConfirmClearComposer}
+      footerActions={composerFooterActions}
+      footerNote={
+        <Typography.Text type="secondary" style={{ display: "block", textAlign: "left" }}>
+          {`Current: ${aiSettingsSummary}`}
+          {isActive ? " Settings will be applied on next run." : ""}
+        </Typography.Text>
+      }
+    />
   );
 
   const chatPreparingNotice = isPreparingWorkspace ? (

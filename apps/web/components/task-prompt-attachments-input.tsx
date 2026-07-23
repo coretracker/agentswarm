@@ -1,8 +1,9 @@
 "use client";
 
+import { ClearOutlined, PictureOutlined } from "@ant-design/icons";
 import { useEffect, useMemo, useRef, type ChangeEvent, type ReactNode } from "react";
 import { TASK_PROMPT_ATTACHMENT_MAX_COUNT } from "@verft/shared-types";
-import { Button, Card, Flex, Typography } from "antd";
+import { Button, Card, Flex, Tooltip, Typography } from "antd";
 import { formatAttachmentSize, type SelectedTaskPromptImageFile } from "../src/utils/task-prompt-attachments";
 
 interface TaskPromptAttachmentsInputProps {
@@ -100,17 +101,21 @@ export function TaskPromptAttachmentsInput({
       {layout === "toolbar" ? (
         <Flex justify="flex-start" align="center" gap={12} wrap="wrap">
           <Flex gap={8} wrap align="center">
-            <Button onClick={openPicker} disabled={disabled}>
-              Attach Images
-            </Button>
+            <Tooltip title="Attach images">
+              <Button icon={<PictureOutlined />} onClick={openPicker} disabled={disabled}>
+                {files.length > 0 ? "Attach Images" : "Attach"}
+              </Button>
+            </Tooltip>
             {files.length > 0 ? (
-              <Button onClick={() => onChange([])}>
+              <Button icon={<ClearOutlined />} onClick={() => onChange([])}>
                 Clear
               </Button>
             ) : null}
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              {files.length}/{TASK_PROMPT_ATTACHMENT_MAX_COUNT} selected
-            </Typography.Text>
+            {files.length > 0 ? (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {files.length}/{TASK_PROMPT_ATTACHMENT_MAX_COUNT} selected
+              </Typography.Text>
+            ) : null}
           </Flex>
         </Flex>
       ) : (
