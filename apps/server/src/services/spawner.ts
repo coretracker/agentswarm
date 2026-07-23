@@ -5509,17 +5509,26 @@ export class SpawnerService {
       this.ensureTaskNotCancelled(task.id);
       await appendRunLog("Spawner: using existing task workspace.");
       workspace = await this.requireExistingTaskWorkspace(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
-      const repoProfile = await this.ensureRepoProfile(
+      await appendRunLog(`Spawner: preparing ${task.provider} runtime prerequisites (${action}).`);
+      const repoProfilePromise = this.ensureRepoProfile(
         task,
         workspace.workspacePath,
         runtimeCredentials.githubToken,
         runtimeCredentials.gitUsername
       );
+      const runtimeMcpPromise = this.buildRuntimeMcpConfigForTask(task, executionId);
+      const runtimeImagePromise = this.ensureRuntimeImage(task.provider);
+      const taskHomePromise = runtimeImagePromise.then(() => this.ensureTaskHome(task.id));
+
+      const [repoProfile, runtimeMcp] = await Promise.all([
+        repoProfilePromise,
+        runtimeMcpPromise,
+        taskHomePromise
+      ]).then(([resolvedRepoProfile, resolvedRuntimeMcp]) => [resolvedRepoProfile, resolvedRuntimeMcp] as const);
       this.ensureTaskNotCancelled(task.id);
       if (action === "build" && !task.workspaceBaseRef) {
         await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
       }
-      const runtimeMcp = await this.buildRuntimeMcpConfigForTask(task, executionId);
       const runtimeMcpEnv = runtimeMcp.env;
       const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(runtimeMcp.servers, {
         ...process.env,
@@ -5583,9 +5592,6 @@ export class SpawnerService {
         providerConfigPath,
         harnessFilePath
       };
-      await appendRunLog(`Spawner: preparing ${task.provider} runtime image (${action}).`);
-      await this.ensureRuntimeImage(task.provider);
-      await this.ensureTaskHome(task.id);
       await appendRunLog("Spawner: repository profile ready.");
       await appendRunLog(`Spawner: ${workspace.kind} workspace ready at ${workspace.workspacePath}.`);
 
