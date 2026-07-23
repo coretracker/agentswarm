@@ -17,7 +17,7 @@ import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
 import type { PersonalAccessTokenRuntimeContext } from "../services/personal-access-token-store.js";
-import { resolveCreateTaskProviderConfig } from "../lib/task-create-defaults.js";
+import { resolveCreateTaskAutoApplyCheckpoints, resolveCreateTaskProviderConfig } from "../lib/task-create-defaults.js";
 import { clampLimit, compactCheckpoint, compactMessage, compactRepository, compactRun, compactTask, detailTask } from "./format.js";
 
 export interface McpToolDefinition {
@@ -84,7 +84,8 @@ const createTaskSchema = z
     providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
     modelOverride: z.string().trim().min(1).optional(),
     baseBranch: z.string().trim().min(1).optional(),
-    branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional()
+    branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+    autoApplyCheckpoints: z.boolean().optional()
   })
   .strict();
 
@@ -253,6 +254,7 @@ const createMcpTask = async (
     {
       ...input,
       ...providerConfig,
+      autoApplyCheckpoints: resolveCreateTaskAutoApplyCheckpoints(input, settings),
       draft: true,
       prompt: input.prompt,
       ...(parentTask

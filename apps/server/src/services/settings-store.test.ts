@@ -77,13 +77,16 @@ describe("RedisSettingsStore runtime credentials", () => {
     );
 
     const initial = await settingsStore.getSettings();
+    assert.equal(initial.defaultAutoApplyCheckpoints, false);
     assert.equal(initial.archivedTaskAutoDeleteEnabled, true);
     assert.equal(initial.archivedTaskAutoDeleteDays, 7);
 
     const updated = await settingsStore.updateSettings({
+      defaultAutoApplyCheckpoints: true,
       archivedTaskAutoDeleteEnabled: false,
       archivedTaskAutoDeleteDays: 30
     });
+    assert.equal(updated.defaultAutoApplyCheckpoints, true);
     assert.equal(updated.archivedTaskAutoDeleteEnabled, false);
     assert.equal(updated.archivedTaskAutoDeleteDays, 30);
   });
@@ -239,6 +242,7 @@ describe("PostgresSettingsStore", () => {
               {
                 archived_task_auto_delete_enabled: false,
                 archived_task_auto_delete_days: 14,
+                default_auto_apply_checkpoints: true,
                 harness_what_exists: "Shared CI platform.",
                 harness_allowed_actions: "Run repository tests.",
                 harness_not_allowed_actions: "Do not publish.",
@@ -266,9 +270,10 @@ describe("PostgresSettingsStore", () => {
 
     const settings = await store.getSettings();
 
-    assert.equal(queries[0]?.values.length, 26);
-    assert.match(queries[0]?.sql ?? "", /VALUES \(1, \$1,.*\$26\)/s);
+    assert.equal(queries[0]?.values.length, 27);
+    assert.match(queries[0]?.sql ?? "", /VALUES \(1, \$1,.*\$27\)/s);
     for (const column of [
+      "default_auto_apply_checkpoints",
       "archived_task_auto_delete_enabled",
       "archived_task_auto_delete_days",
       "harness_what_exists",
@@ -280,6 +285,7 @@ describe("PostgresSettingsStore", () => {
     ]) {
       assert.match(queries[1]?.sql ?? "", new RegExp(`\\b${column}\\b`));
     }
+    assert.equal(settings.defaultAutoApplyCheckpoints, true);
     assert.equal(settings.archivedTaskAutoDeleteEnabled, false);
     assert.equal(settings.archivedTaskAutoDeleteDays, 14);
     assert.equal(settings.harnessWhatExists, "Shared CI platform.");

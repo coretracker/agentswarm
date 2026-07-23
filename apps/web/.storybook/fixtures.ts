@@ -204,6 +204,7 @@ export const repositories: Repository[] = [
 
 export const settings: SystemSettings = {
   defaultProvider: "codex",
+  defaultAutoApplyCheckpoints: false,
   maxAgents: 4,
   archivedTaskAutoDeleteEnabled: true,
   archivedTaskAutoDeleteDays: 30,

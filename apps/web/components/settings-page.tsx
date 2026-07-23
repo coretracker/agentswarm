@@ -48,6 +48,7 @@ import { buildApiUrl } from "../src/lib/public-url";
 
 interface GeneralSettingsForm {
   defaultProvider: AgentProvider;
+  defaultAutoApplyCheckpoints: boolean;
   maxAgents: number;
   archivedTaskAutoDeleteEnabled: boolean;
   archivedTaskAutoDeleteDays: number;
@@ -103,7 +104,7 @@ const providerOptions: Array<{ label: string; value: AgentProvider }> = [
 ];
 
 const generalSettingsFieldsByTab: Record<GeneralSettingsTabKey, Array<keyof GeneralSettingsForm>> = {
-  general: ["defaultProvider", "maxAgents", "archivedTaskAutoDeleteEnabled", "archivedTaskAutoDeleteDays"],
+  general: ["defaultProvider", "defaultAutoApplyCheckpoints", "maxAgents", "archivedTaskAutoDeleteEnabled", "archivedTaskAutoDeleteDays"],
   harness: [
     "harnessWhatExists",
     "harnessAllowedActions",
@@ -139,6 +140,7 @@ const normalizeProviderModelOptions = (models: ProviderModelOption[] | undefined
 };
 const toFormValues = (settings: SystemSettings): GeneralSettingsForm => ({
   defaultProvider: settings.defaultProvider,
+  defaultAutoApplyCheckpoints: settings.defaultAutoApplyCheckpoints,
   maxAgents: settings.maxAgents,
   archivedTaskAutoDeleteEnabled: settings.archivedTaskAutoDeleteEnabled,
   archivedTaskAutoDeleteDays: settings.archivedTaskAutoDeleteDays,
@@ -169,6 +171,7 @@ const buildSettingsPayload = (tab: GeneralSettingsTabKey, values: GeneralSetting
   if (tab === "general") {
     return {
       defaultProvider: values.defaultProvider,
+      defaultAutoApplyCheckpoints: values.defaultAutoApplyCheckpoints === true,
       maxAgents: values.maxAgents,
       archivedTaskAutoDeleteEnabled: values.archivedTaskAutoDeleteEnabled === true,
       archivedTaskAutoDeleteDays: values.archivedTaskAutoDeleteDays
@@ -691,6 +694,9 @@ export function SettingsPage() {
                   >
                     <InputNumber min={1} max={20} style={{ width: "100%" }} />
                   </Form.Item>
+                  <Form.Item name="defaultAutoApplyCheckpoints" valuePropName="checked">
+                    <Checkbox>Auto-apply checkpoints by default</Checkbox>
+                  </Form.Item>
                   <Form.Item name="archivedTaskAutoDeleteEnabled" valuePropName="checked">
                     <Checkbox>Automatically delete archived tasks</Checkbox>
                   </Form.Item>
@@ -806,12 +812,6 @@ export function SettingsPage() {
           >
             <Card bordered={false} loading={loading} title="Claude Code">
               <Flex vertical gap={16} style={{ width: "100%" }}>
-                <Alert
-                  type="warning"
-                  showIcon
-                  message="Experimental"
-                  description="Claude Code in Verft is experimental; behavior and defaults may change."
-                />
                 <Form.Item name="claudeDefaultEffort" label="Default Effort">
                   <Select options={getEffortOptionsForProvider("claude")} />
                 </Form.Item>

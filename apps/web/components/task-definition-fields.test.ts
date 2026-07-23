@@ -5,6 +5,7 @@ import { getTaskDefinitionInitialValues } from "./task-definition-fields";
 
 const settings: SystemSettings = {
   defaultProvider: "codex",
+  defaultAutoApplyCheckpoints: false,
   maxAgents: 3,
   archivedTaskAutoDeleteEnabled: true,
   archivedTaskAutoDeleteDays: 7,

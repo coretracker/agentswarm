@@ -84,6 +84,7 @@ const mockRepositories: Repository[] = [
 
 const mockSettings: SystemSettings = {
   defaultProvider: "codex",
+  defaultAutoApplyCheckpoints: false,
   maxAgents: 4,
   archivedTaskAutoDeleteEnabled: false,
   archivedTaskAutoDeleteDays: 30,

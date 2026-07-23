@@ -984,6 +984,7 @@ export interface SystemDataStores {
 
 export interface SystemSettings {
   defaultProvider: AgentProvider;
+  defaultAutoApplyCheckpoints: boolean;
   maxAgents: number;
   archivedTaskAutoDeleteEnabled: boolean;
   archivedTaskAutoDeleteDays: number;
@@ -1207,7 +1208,7 @@ export const getTaskBranchStrategyLabel = (strategy: TaskBranchStrategy): string
 export const getAgentProviderLabel = (provider: AgentProvider): string =>
   ({
     codex: "Codex",
-    claude: "Claude Code (experimental)"
+    claude: "Claude Code"
   })[provider];
 
 export const getProviderProfileLabel = (profile: ProviderProfile): string =>
@@ -1438,6 +1439,7 @@ export const getTaskExecutionStatusLabel = (status: TaskExecutionStatus): string
 
 export interface UpdateSettingsInput {
   defaultProvider?: AgentProvider;
+  defaultAutoApplyCheckpoints?: boolean;
   maxAgents?: number;
   archivedTaskAutoDeleteEnabled?: boolean;
   archivedTaskAutoDeleteDays?: number;

@@ -41,7 +41,8 @@ import { canUserAccessRepository, canUserAccessTask, isAdminUser } from "../lib/
 import { writeSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
 import { env } from "../config/env.js";
 import { normalizeProvider } from "../lib/provider-config.js";
-import { resolveCreateTaskProviderConfig } from "../lib/task-create-defaults.js";
+import { resolveCreateTaskAutoApplyCheckpoints, resolveCreateTaskProviderConfig } from "../lib/task-create-defaults.js";
+import { resolveTaskProviderStatePaths } from "../lib/task-provider-state.js";
 import { clearTaskProviderSession } from "../lib/task-home.js";
 import { isSafeLinkedWorkspaceAlias } from "../lib/linked-workspaces.js";
 
@@ -64,6 +65,7 @@ const createTaskSchema = z
     modelOverride: z.string().trim().min(1).optional(),
     baseBranch: z.string().min(1).optional(),
     branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+    autoApplyCheckpoints: z.boolean().optional(),
     model: z.string().min(1).optional(),
     reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
   })
@@ -167,7 +169,8 @@ const createOrQueueTaskSchema = z
       createIfMissing: z.boolean().optional(),
       provider: z.enum(["codex", "claude"]).optional(),
       providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
-      modelOverride: z.string().trim().min(1).optional()
+      modelOverride: z.string().trim().min(1).optional(),
+      autoApplyCheckpoints: z.boolean().optional()
     }),
     dedupeKey: z.string().trim().min(1).max(500).optional()
   })
@@ -468,12 +471,14 @@ export const registerTaskRoutes = (
         providerProfile: input.task.providerProfile,
         modelOverride: input.task.modelOverride,
         baseBranch: input.task.baseBranch,
+        autoApplyCheckpoints: input.task.autoApplyCheckpoints,
         branchStrategy: input.task.workOnBranch === true ? "work_on_branch" as const : "feature_branch" as const
       };
       const settings = await deps.settingsStore.getSettings();
       const resolvedCreatePayload = {
         ...createPayload,
-        ...resolveCreateTaskProviderConfig(createPayload, settings, repository, auth.user)
+        ...resolveCreateTaskProviderConfig(createPayload, settings, repository, auth.user),
+        autoApplyCheckpoints: resolveCreateTaskAutoApplyCheckpoints(createPayload, settings)
       };
       if (!requireTaskExecutionConfigAccess(request, reply, resolvedCreatePayload)) {
         return;
@@ -1331,7 +1336,8 @@ export const registerTaskRoutes = (
     const settings = await deps.settingsStore.getSettings();
     const createPayload = {
       ...rawCreatePayload,
-      ...resolveCreateTaskProviderConfig(rawCreatePayload, settings, repository, request.auth!.user)
+      ...resolveCreateTaskProviderConfig(rawCreatePayload, settings, repository, request.auth!.user),
+      autoApplyCheckpoints: resolveCreateTaskAutoApplyCheckpoints(rawCreatePayload, settings)
     };
     if (
       !requireTaskCapabilityAccess(request, reply, {

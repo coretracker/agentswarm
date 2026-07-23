@@ -1,24 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Alert, App, Button, Card, Divider, Flex, Form, Input, Select, Space, Spin, Tag, Typography } from "antd";
+import { useEffect, useState } from "react";
+import { Alert, App, Button, Card, Divider, Flex, Form, Input, Space, Spin, Tag, Typography } from "antd";
 import { CopyOutlined } from "@ant-design/icons";
 import { api } from "../src/api/client";
 import { useAuth } from "./auth-provider";
-import { ModelSelect } from "./model-select";
-import type {
-  AgentProvider,
-  PersonalAccessToken,
-  ProviderProfile
-} from "@verft/shared-types";
-import { getAgentProviderLabel, getEffortOptionsForProvider, getModelsForProvider } from "@verft/shared-types";
+import type { PersonalAccessToken } from "@verft/shared-types";
+import { UserProfileFields, type UserProfileFormValues } from "./user-profile-fields";
 
 const MCP_PROFILE_TOKEN_NAME = "Verft MCP";
-
-const providerOptions: Array<{ label: string; value: AgentProvider }> = [
-  { label: getAgentProviderLabel("codex"), value: "codex" },
-  { label: getAgentProviderLabel("claude"), value: "claude" }
-];
 
 const formatDateTime = (value: string | null): string => {
   if (!value) {
@@ -38,17 +28,8 @@ export function ProfilePage() {
   const [personalAccessTokens, setPersonalAccessTokens] = useState<PersonalAccessToken[]>([]);
   const [personalAccessTokenLoading, setPersonalAccessTokenLoading] = useState(true);
   const [generatedPersonalAccessToken, setGeneratedPersonalAccessToken] = useState<string | null>(null);
-  const [form] = Form.useForm<{
-    name: string;
-    githubUsername?: string;
-    defaultProvider?: AgentProvider;
-    defaultModel?: string;
-    defaultProviderProfile?: ProviderProfile;
-  }>();
-
-  const selectedDefaultProvider = (Form.useWatch("defaultProvider", form) as AgentProvider | undefined) ?? "codex";
-  const defaultModelOptions = useMemo(() => getModelsForProvider(selectedDefaultProvider), [selectedDefaultProvider]);
-  const defaultEffortOptions = useMemo(() => getEffortOptionsForProvider(selectedDefaultProvider), [selectedDefaultProvider]);
+  const [email, setEmail] = useState(session?.user.email ?? "");
+  const [form] = Form.useForm<UserProfileFormValues>();
 
   const activeMcpTokens = personalAccessTokens.filter((token) => token.name === MCP_PROFILE_TOKEN_NAME && !token.revokedAt);
   const currentMcpToken = activeMcpTokens[0] ?? null;
@@ -63,6 +44,7 @@ export function ProfilePage() {
           defaultModel: profile.defaultModel ?? undefined,
           defaultProviderProfile: profile.defaultProviderProfile ?? undefined
         });
+        setEmail(profile.email);
         setPersonalAccessTokens(tokens);
       })
       .catch((error) => {
@@ -153,41 +135,10 @@ export function ProfilePage() {
             defaultProviderProfile: session?.user.defaultProviderProfile ?? undefined
           }}
         >
-          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter your name" }]}>
-            <Input />
+          <Form.Item label="Email">
+            <Input value={email} readOnly />
           </Form.Item>
-          <Form.Item
-            name="githubUsername"
-            label="GitHub Username"
-            rules={[{ max: 80, message: "GitHub username must be 80 characters or fewer." }]}
-          >
-            <Input autoComplete="off" placeholder="octocat" />
-          </Form.Item>
-          <Divider orientation="left" plain>
-            Default Agent
-          </Divider>
-          <Card size="small">
-            <Form.Item name="defaultProvider" label="Provider">
-              <Select
-                allowClear
-                placeholder="Repository or system default"
-                options={providerOptions}
-                onChange={(value: AgentProvider | undefined) => {
-                  const nextProvider = value ?? "codex";
-                  const nextEfforts = getEffortOptionsForProvider(nextProvider);
-                  if (!nextEfforts.some((option) => option.value === form.getFieldValue("defaultProviderProfile"))) {
-                    form.setFieldValue("defaultProviderProfile", undefined);
-                  }
-                }}
-              />
-            </Form.Item>
-            <Form.Item name="defaultModel" label="Model">
-              <ModelSelect options={defaultModelOptions} placeholder="Repository or system default" />
-            </Form.Item>
-            <Form.Item name="defaultProviderProfile" label="Effort">
-              <Select allowClear options={defaultEffortOptions} placeholder="Repository or system default" />
-            </Form.Item>
-          </Card>
+          <UserProfileFields form={form} />
           <Divider orientation="left" plain>
             Personal Access Token
           </Divider>
