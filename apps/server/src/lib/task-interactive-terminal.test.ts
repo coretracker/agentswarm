@@ -93,6 +93,8 @@ describe("buildTerminalStartScript", () => {
     assert.match(spawnerSource, /"docker", \["image", "inspect", definition\.image\]/);
     assert.match(spawnerSource, /getRepoProfileForRun/);
     assert.match(spawnerSource, /Directory map: warming in background/);
+    assert.match(spawnerSource, /ready in \$\{Date\.now\(\) - startedAt\}ms/);
+    assert.match(spawnerSource, /workspace validation/);
     assert.match(spawnerSource, /runtime prerequisites/);
     assert.match(spawnerSource, /changeProposalUntrackedPathsPromise/);
     assert.match(spawnerSource, /Promise\.all\(\[\s*repoProfilePromise,\s*runtimeMcpPromise,\s*changeProposalUntrackedPathsPromise,\s*taskHomePromise/s);

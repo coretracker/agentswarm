@@ -5532,19 +5532,37 @@ export class SpawnerService {
       this.executionContextStorage.enterWith({ taskId: task.id, executionId });
       const payloadDir = this.resolveRuntimePayloadDir(task.id, executionId);
       const appendRunLog = (line: string) => this.taskStore.appendLogForRun(task.id, line, runId);
-      rawEventsJsonlPath = runId
-        ? await this.prepareTaskRunRawEventsJsonl(task.id, runId)
-        : path.join(payloadDir, "raw-events.jsonl");
+      const timeRunStep = async <T>(label: string, fn: () => Promise<T>): Promise<T> => {
+        const startedAt = Date.now();
+        try {
+          const result = await fn();
+          await appendRunLog(`Spawner: ${label} ready in ${Date.now() - startedAt}ms.`);
+          return result;
+        } catch (error) {
+          await appendRunLog(`Spawner: ${label} failed after ${Date.now() - startedAt}ms.`);
+          throw error;
+        }
+      };
+
+      rawEventsJsonlPath = await timeRunStep("raw event stream", async () =>
+        runId
+          ? this.prepareTaskRunRawEventsJsonl(task.id, runId)
+          : Promise.resolve(path.join(payloadDir, "raw-events.jsonl"))
+      );
       if (runId) {
-        await this.taskStore.updateRun(runId, { hasRawJson: true });
+        await timeRunStep("run metadata update", () => this.taskStore.updateRun(runId!, { hasRawJson: true }));
       }
-      await this.syncTaskStatusForRunningRuns(task.id, {
-        branchName,
-        ...(action === "ask" && task.executionStatus === "running" ? {} : { lastAction: action })
-      });
+      await timeRunStep("task status sync", () =>
+        this.syncTaskStatusForRunningRuns(task.id, {
+          branchName,
+          ...(action === "ask" && task.executionStatus === "running" ? {} : { lastAction: action })
+        })
+      );
       this.ensureTaskNotCancelled(task.id);
       await appendRunLog("Spawner: using existing task workspace.");
-      workspace = await this.requireExistingTaskWorkspace(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+      workspace = await timeRunStep("workspace validation", () =>
+        this.requireExistingTaskWorkspace(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername)
+      );
       await appendRunLog(`Spawner: preparing ${task.provider} runtime prerequisites (${action}).`);
       const repoProfilePromise = this.getRepoProfileForRun(
         task,
@@ -5564,19 +5582,23 @@ export class SpawnerService {
             )
           : Promise.resolve(null);
 
-      const [repoProfile, runtimeMcp, changeProposalUntrackedPaths] = await Promise.all([
-        repoProfilePromise,
-        runtimeMcpPromise,
-        changeProposalUntrackedPathsPromise,
-        taskHomePromise
-      ]).then(([resolvedRepoProfile, resolvedRuntimeMcp, resolvedUntrackedPaths]) => [
-        resolvedRepoProfile,
-        resolvedRuntimeMcp,
-        resolvedUntrackedPaths
-      ] as const);
+      const [repoProfile, runtimeMcp, changeProposalUntrackedPaths] = await timeRunStep("runtime prerequisites", () =>
+        Promise.all([
+          repoProfilePromise,
+          runtimeMcpPromise,
+          changeProposalUntrackedPathsPromise,
+          taskHomePromise
+        ]).then(([resolvedRepoProfile, resolvedRuntimeMcp, resolvedUntrackedPaths]) => [
+          resolvedRepoProfile,
+          resolvedRuntimeMcp,
+          resolvedUntrackedPaths
+        ] as const)
+      );
       this.ensureTaskNotCancelled(task.id);
       if (action === "build" && !task.workspaceBaseRef) {
-        await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
+        await timeRunStep("workspace base ref persistence", () =>
+          this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace!.workspaceBaseRef })
+        );
       }
       const runtimeMcpEnv = runtimeMcp.env;
       const missingMcpBearerEnvVars = collectMissingMcpServerBearerTokenEnvVars(runtimeMcp.servers, {
@@ -5644,29 +5666,37 @@ export class SpawnerService {
       await appendRunLog("Spawner: repository profile ready.");
       await appendRunLog(`Spawner: ${workspace.kind} workspace ready at ${workspace.workspacePath}.`);
 
-      const payloadPaths = await this.writeRuntimePayloadFiles(manifest, providerDefinition.getProviderConfig(runtimeMcp.servers));
-      const repositoryRuntimeEnv = await materializeRepositoryRuntimeEnvEntries({
-        destinationDir: path.join(payloadPaths.payloadDir, "repository-env-files"),
-        entries: repositoryRuntimeEnvEntries,
-        fileStore: this.repositoryEnvFileStore
-      });
+      const payloadPaths = await timeRunStep("runtime payload write", () =>
+        this.writeRuntimePayloadFiles(manifest, providerDefinition.getProviderConfig(runtimeMcp.servers))
+      );
+      const repositoryRuntimeEnv = await timeRunStep("repository runtime env materialization", () =>
+        materializeRepositoryRuntimeEnvEntries({
+          destinationDir: path.join(payloadPaths.payloadDir, "repository-env-files"),
+          entries: repositoryRuntimeEnvEntries,
+          fileStore: this.repositoryEnvFileStore
+        })
+      );
       const runtimeMcpDockerArgs = this.buildRuntimeMcpDockerArgs(runtimeMcp.injectedVerftMcp);
-      const hostexecRuntime = await buildHostexecRuntimeConfig({
-        settings: settings.hostexec,
-        repositoryCommands: repository?.hostCommands ?? [],
-        payloadDir: payloadPaths.payloadDir,
-        taskId: task.id,
-        repoId: task.repoId,
-        containerWorkspacePath: workspace.workspacePath,
-        hostWorkspacePath: workspace.hostWorkspacePath,
-        sharedNetworkWithCurrentContainer: runtimeMcpDockerArgs.includes("--network")
-      });
+      const hostexecRuntime = await timeRunStep("hostexec runtime config", () =>
+        buildHostexecRuntimeConfig({
+          settings: settings.hostexec,
+          repositoryCommands: repository?.hostCommands ?? [],
+          payloadDir: payloadPaths.payloadDir,
+          taskId: task.id,
+          repoId: task.repoId,
+          containerWorkspacePath: workspace!.workspacePath,
+          hostWorkspacePath: workspace!.hostWorkspacePath,
+          sharedNetworkWithCurrentContainer: runtimeMcpDockerArgs.includes("--network")
+        })
+      );
       await appendRunLog(`Spawner: runtime payload files ready at ${payloadDir}.`);
       this.ensureTaskNotCancelled(task.id);
-      await this.syncWorkspaceRuntimeHarnessFile(workspace.workspacePath, null);
+      await timeRunStep("runtime harness cleanup", () => this.syncWorkspaceRuntimeHarnessFile(workspace!.workspacePath, null));
 
       if (action === "build") {
-        await this.ensureWorkspaceGitHooks(workspace.workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
+        await timeRunStep("workspace Git integration", () =>
+          this.ensureWorkspaceGitHooks(workspace!.workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername)
+        );
         await appendRunLog("Spawner: workspace Git integration is ready.");
       }
       if (!runtimeCredentials.githubToken) {
@@ -5695,12 +5725,16 @@ export class SpawnerService {
         if (!checkpointRef) {
           throw new Error("Task workspace has no commits yet. Create an initial commit before running build mode.");
         }
-        await this.taskStore.updateRun(runId, {
-          changeProposalCheckpointRef: checkpointRef,
-          changeProposalUntrackedPaths: changeProposalUntrackedPaths ?? []
-        });
+        await timeRunStep("checkpoint baseline persistence", () =>
+          this.taskStore.updateRun(runId!, {
+            changeProposalCheckpointRef: checkpointRef,
+            changeProposalUntrackedPaths: changeProposalUntrackedPaths ?? []
+          })
+        );
       }
-      const runtimeHarnessFilePath = await this.syncWorkspaceRuntimeHarnessFile(workspace.workspacePath, mergedHarnessMarkdown);
+      const runtimeHarnessFilePath = await timeRunStep("runtime harness sync", () =>
+        this.syncWorkspaceRuntimeHarnessFile(workspace!.workspacePath, mergedHarnessMarkdown)
+      );
       if (runtimeHarnessFilePath) {
         await appendRunLog(`Spawner: runtime harness guidance available at ${runtimeHarnessFilePath}.`);
       }
@@ -5708,7 +5742,9 @@ export class SpawnerService {
       const containerName = `verft-task-${sanitizePathSegment(task.id).replace(/\//g, "-")}-${executionId.slice(0, 8).toLowerCase()}`;
       const workspaceMountMode = action === "ask" ? "ro" : "rw";
       const rawEventsMount = runId ? this.resolveTaskRunRawEventsMount(task.id, runId) : null;
-      const gitRuntimeMounts = await resolveWorkspaceGitRuntimeMounts(workspace.workspacePath);
+      const gitRuntimeMounts = await timeRunStep("git runtime mount resolution", () =>
+        resolveWorkspaceGitRuntimeMounts(workspace!.workspacePath)
+      );
       const attachmentRoot = manifestAttachments.length > 0 ? resolveTaskPromptAttachmentRoot(task.id) : null;
       const attachmentRelativeRoot = attachmentRoot ? path.relative(env.TASK_WORKSPACE_ROOT, attachmentRoot) : null;
       const linkedWorkspaceMountPlan = await buildLinkedWorkspaceMountPlan({
