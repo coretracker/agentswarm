@@ -84,6 +84,8 @@ export function AppSidebarTaskCard({
   const railColor = attentionMarker?.color ?? statusAccentColor;
   const statusText = attentionMarker?.label ?? getTaskStatusText(task);
   const showPinControl = canEditTask && (task.pinned || pinControlVisible || pinningTaskId === task.id);
+  const cardBackground = selected ? token.colorPrimaryBg : token.colorBgContainer;
+  const cardBorder = selected ? token.colorPrimaryBorder : token.colorBorderSecondary;
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.target !== event.currentTarget) {
@@ -119,12 +121,14 @@ export function AppSidebarTaskCard({
         overflow: "hidden",
         padding: "11px 12px 11px 20px",
         borderRadius: token.borderRadiusLG + 2,
-        border: `1px solid ${selected ? token.colorPrimaryBorder : "transparent"}`,
-        background: selected ? `linear-gradient(135deg, ${token.colorPrimaryBg}, ${token.colorBgContainer})` : token.colorBgElevated,
-        boxShadow: selected ? `inset 0 0 0 1px ${token.colorPrimaryBorder}` : "none",
+        border: `1px solid ${cardBorder}`,
+        background: cardBackground,
+        boxShadow: selected
+          ? `0 0 0 1px ${token.colorPrimaryBorder}, ${token.boxShadowTertiary}`
+          : token.boxShadowTertiary,
         cursor: "pointer",
         fontFamily: token.fontFamily,
-        transition: "border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease"
+        transition: "border-color 0.2s ease, background-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease"
       }}
     >
       <span
@@ -136,7 +140,7 @@ export function AppSidebarTaskCard({
           width: selected ? 4 : 3,
           borderRadius: 999,
           background: railColor,
-          opacity: selected ? 1 : 0.82
+          opacity: selected ? 1 : 0.9
         }}
       />
       <Flex vertical gap={8} style={{ minWidth: 0 }}>
