@@ -91,8 +91,11 @@ describe("buildTerminalStartScript", () => {
     const claudeRunner = readFileSync(claudeRunnerPath, "utf8");
 
     assert.match(spawnerSource, /"docker", \["image", "inspect", definition\.image\]/);
+    assert.match(spawnerSource, /getRepoProfileForRun/);
+    assert.match(spawnerSource, /Directory map: warming in background/);
     assert.match(spawnerSource, /runtime prerequisites/);
-    assert.match(spawnerSource, /Promise\.all\(\[\s*repoProfilePromise,\s*runtimeMcpPromise,\s*taskHomePromise/s);
+    assert.match(spawnerSource, /changeProposalUntrackedPathsPromise/);
+    assert.match(spawnerSource, /Promise\.all\(\[\s*repoProfilePromise,\s*runtimeMcpPromise,\s*changeProposalUntrackedPathsPromise,\s*taskHomePromise/s);
     assert.match(codexRunner, /find "\$1" ! -user 1000 -print -quit/);
     assert.match(claudeRunner, /find "\$1" ! -user 1000 -print -quit/);
     assert.doesNotMatch(codexRunner, /if \(!isAsk\) \{\s*await runCommand\("chown", \["-R", AGENT_IDENTITY, manifest\.workspacePath\]\)/);

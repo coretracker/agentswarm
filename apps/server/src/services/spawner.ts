@@ -2347,6 +2347,42 @@ export class SpawnerService {
     return summary;
   }
 
+  private buildMinimalRepoProfileSummary(task: Task, headSha: string): string {
+    return [
+      "# Repo Profile",
+      `- Branch: ${task.baseBranch}  Head: ${headSha.slice(0, 12)}`,
+      "- Directory map: warming in background."
+    ].join("\n");
+  }
+
+  private async getRepoProfileForRun(task: Task, repoPath: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string> {
+    const ref = `origin/${task.baseBranch}`;
+    const profilePath = this.resolveRepoProfilePath(task);
+    const headSha = await this.gitCommandCapture(["-C", repoPath, "rev-parse", ref], githubToken, gitUsername);
+
+    try {
+      const raw = await readFile(profilePath, "utf8");
+      const cached = JSON.parse(raw) as CachedRepoProfile;
+      if (cached.baseBranch === task.baseBranch && cached.headSha === headSha && cached.summary.trim().length > 0) {
+        return cached.summary;
+      }
+    } catch {
+      // Cache miss.
+    }
+
+    return this.buildMinimalRepoProfileSummary(task, headSha);
+  }
+
+  private warmRepoProfileCache(task: Task, repoPath: string, githubToken?: string | null, gitUsername = "x-access-token"): void {
+    void this.ensureRepoProfile(task, repoPath, githubToken, gitUsername).catch((error) => {
+      this.logger?.warn("task", "repo.profile.warm_failed", "Failed to warm repository profile cache", {
+        taskId: task.id,
+        repoId: task.repoId,
+        errorMessage: error instanceof Error ? error.message : String(error)
+      });
+    });
+  }
+
   private async ensureManagedRepoFresh(
     task: Task,
     operation: RepoSyncOperation,
@@ -5510,7 +5546,7 @@ export class SpawnerService {
       await appendRunLog("Spawner: using existing task workspace.");
       workspace = await this.requireExistingTaskWorkspace(task, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       await appendRunLog(`Spawner: preparing ${task.provider} runtime prerequisites (${action}).`);
-      const repoProfilePromise = this.ensureRepoProfile(
+      const repoProfilePromise = this.getRepoProfileForRun(
         task,
         workspace.workspacePath,
         runtimeCredentials.githubToken,
@@ -5519,12 +5555,25 @@ export class SpawnerService {
       const runtimeMcpPromise = this.buildRuntimeMcpConfigForTask(task, executionId);
       const runtimeImagePromise = this.ensureRuntimeImage(task.provider);
       const taskHomePromise = runtimeImagePromise.then(() => this.ensureTaskHome(task.id));
+      const changeProposalUntrackedPathsPromise =
+        runId && action === "build"
+          ? this.listUntrackedRelativePaths(
+              workspace.workspacePath,
+              runtimeCredentials.githubToken,
+              runtimeCredentials.gitUsername
+            )
+          : Promise.resolve(null);
 
-      const [repoProfile, runtimeMcp] = await Promise.all([
+      const [repoProfile, runtimeMcp, changeProposalUntrackedPaths] = await Promise.all([
         repoProfilePromise,
         runtimeMcpPromise,
+        changeProposalUntrackedPathsPromise,
         taskHomePromise
-      ]).then(([resolvedRepoProfile, resolvedRuntimeMcp]) => [resolvedRepoProfile, resolvedRuntimeMcp] as const);
+      ]).then(([resolvedRepoProfile, resolvedRuntimeMcp, resolvedUntrackedPaths]) => [
+        resolvedRepoProfile,
+        resolvedRuntimeMcp,
+        resolvedUntrackedPaths
+      ] as const);
       this.ensureTaskNotCancelled(task.id);
       if (action === "build" && !task.workspaceBaseRef) {
         await this.taskStore.patchTask(task.id, { workspaceBaseRef: workspace.workspaceBaseRef });
@@ -5642,22 +5691,13 @@ export class SpawnerService {
       this.ensureTaskNotCancelled(task.id);
 
       if (runId && action === "build") {
-        const checkpointRef = await this.resolveWorkspaceHeadRef(
-          workspace.workspacePath,
-          runtimeCredentials.githubToken,
-          runtimeCredentials.gitUsername
-        );
+        const checkpointRef = workspace.startRef;
         if (!checkpointRef) {
           throw new Error("Task workspace has no commits yet. Create an initial commit before running build mode.");
         }
-        const changeProposalUntrackedPaths = await this.listUntrackedRelativePaths(
-          workspace.workspacePath,
-          runtimeCredentials.githubToken,
-          runtimeCredentials.gitUsername
-        );
         await this.taskStore.updateRun(runId, {
           changeProposalCheckpointRef: checkpointRef,
-          changeProposalUntrackedPaths
+          changeProposalUntrackedPaths: changeProposalUntrackedPaths ?? []
         });
       }
       const runtimeHarnessFilePath = await this.syncWorkspaceRuntimeHarnessFile(workspace.workspacePath, mergedHarnessMarkdown);
@@ -5969,6 +6009,7 @@ export class SpawnerService {
       }
 
       await appendRunLog("Spawner: task finished successfully.");
+      this.warmRepoProfileCache(task, workspace.workspacePath, runtimeCredentials.githubToken, runtimeCredentials.gitUsername);
       this.logger?.info("task", "task.run.completed", "Task run completed", {
         taskId: task.id,
         runId,
