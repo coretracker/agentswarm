@@ -36,8 +36,10 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* \
   && ln -sf /usr/sbin/gosu /usr/local/bin/su-exec \
   && npm install -g @openai/codex \
-  && addgroup --system agent \
-  && adduser --system --ingroup agent --home /home/agent agent \
+  && groupmod --new-name agent node \
+  && usermod --login agent --home /home/agent --move-home node \
+  && test "$(id -u agent)" = 1000 \
+  && test "$(id -g agent)" = 1000 \
   && mkdir -p "$CLAUDE_INSTALL_ROOT" /home/agent /runtime \
   && curl -fsSL https://claude.ai/install.sh | bash \
   && test -x "$CLAUDE_INSTALL_ROOT/.local/bin/claude" \

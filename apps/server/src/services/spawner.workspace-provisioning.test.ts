@@ -111,6 +111,15 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(mount.containerDir, "/task-workspaces/.task-state/task-123/raw-runs");
   });
 
+  it("mounts a task's persistent home read/write at /home/agent", () => {
+    const mountArgs = createSpawner().buildTaskHomeMountArgs("task-123");
+    const mount = mountArgs.join(" ");
+
+    assert.match(mount, /task-123/);
+    assert.match(mount, /\/home\/agent/);
+    assert.doesNotMatch(mount, /readonly|:ro/);
+  });
+
   it("injects Verft MCP into task runtime config", async () => {
     const createdTokens: unknown[] = [];
     const spawner = new SpawnerService(
@@ -183,7 +192,7 @@ describe("SpawnerService workspace provisioning", () => {
     assert.equal(runtimeMcp.servers[1].bearerTokenEnvVar, "VERFT_MCP_OAUTH_TOKEN");
   });
 
-  it("resolves task runtime MCP servers from the task repository", async () => {
+  it("does not resolve runtime MCP servers from the task repository", async () => {
     const spawner = new SpawnerService(
       {} as never,
       {} as never,
@@ -193,25 +202,16 @@ describe("SpawnerService workspace provisioning", () => {
       } as never,
       {
         getRepositoryRuntimeEnvEntries: async () => [],
-        getRepositoryMcpServers: async (repositoryId: string) => [
-          {
-            name: `${repositoryId}-github`,
-            transport: "http",
-            url: "https://api.githubcopilot.com/mcp",
-            bearerTokenEnvVar: "REPO_MCP_TOKEN",
-            enabled: true
-          }
-        ]
+        getRepositoryMcpServers: async () => {
+          throw new Error("repository MCP servers should not be resolved for runtime config");
+        }
       } as never
     );
 
     const runtimeMcp = await spawner.buildRuntimeMcpConfigForTask(createTask({ repoId: "repo-7" }), "run-1");
 
     assert.equal(runtimeMcp.injectedVerftMcp, false);
-    assert.deepEqual(
-      runtimeMcp.servers.map((server) => server.name),
-      ["repo-7-github"]
-    );
+    assert.deepEqual(runtimeMcp.servers, []);
   });
 
   it("merges populated global and repository harness sections in precedence order", () => {

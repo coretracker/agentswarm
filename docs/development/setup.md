@@ -31,7 +31,8 @@ HARNESS_INSTALL_NPM_DEPS=1 ./scripts/harness/setup.sh
 
 What it does:
 - Creates `.env` from `.env.example` if missing.
-- Ensures the runtime workspace folder exists (`task-workspaces`).
+- Ensures `task-workspaces` and the legacy `task-homes` migration source exist.
+- Stores persistent agent homes in the Docker-managed `verft_task_homes` volume. On first upgrade startup, existing `task-homes` content is copied only if that volume is empty; the source is retained.
 - Runs `./verft init` (builds the unified agent toolbox runtime image and starts required containers).
 - Installs npm dependencies (because `HARNESS_INSTALL_NPM_DEPS=1` is set above).
 

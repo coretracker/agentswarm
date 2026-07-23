@@ -26,3 +26,4 @@ pnpm-debug.log*
 
 local-plans/
 task-workspaces/
+task-homes/

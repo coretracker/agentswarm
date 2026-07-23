@@ -71,6 +71,11 @@ import { buildDockerWorkspaceMountArgs } from "../lib/docker-workspace-mounts.js
 import { resolveTaskGitCommitIdentity } from "../lib/task-git-identity.js";
 import { buildHostexecRuntimeConfig } from "../lib/hostexec-runtime.js";
 import { resolveTaskProviderStatePaths, resolveTaskStateRootPaths } from "../lib/task-provider-state.js";
+import {
+  deleteTaskHome,
+  ensureTaskHome as ensurePersistentTaskHome,
+  rebuildTaskHome as rebuildPersistentTaskHome
+} from "../lib/task-home.js";
 import { buildStagedHostProviderStateMountArgs } from "../lib/verft-base-mounts.js";
 import { AGENT_RUNTIME_IMAGE, DEFAULT_GIT_COMMIT_IDENTITY, env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
@@ -327,6 +332,7 @@ export class SpawnerService {
 
   private readonly runtimeReady = new Set<string>();
   private activeExecutions = new Map<string, Map<string, { label: string; process: ReturnType<typeof spawn>; containerName?: string }>>();
+  private taskHomeLocks = new Map<string, Promise<void>>();
   private cancelRequestedTaskIds = new Set<string>();
   private repoLocks = new Map<string, Promise<void>>();
   private gitTargetLocks = new Map<string, Promise<void>>();
@@ -341,7 +347,7 @@ export class SpawnerService {
     private readonly userStore: UserStore,
     private readonly repositoryStore: Pick<
       RepositoryStore,
-      "getRepositoryRuntimeEnvEntries" | "getRepositoryMcpServers" | "getRepository"
+      "getRepositoryRuntimeEnvEntries" | "getRepository"
     >,
     private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore(),
     private readonly personalAccessTokenStore?: PersonalAccessTokenStore,
@@ -1606,6 +1612,57 @@ export class SpawnerService {
       targetPath,
       mode
     });
+  }
+
+  buildTaskHomeMountArgs(taskId: string): string[] {
+    return buildDockerWorkspaceMountArgs({
+      sourceRoot: env.TASK_HOME_DOCKER_SOURCE,
+      sourceRelativePath: taskId,
+      targetPath: "/home/agent",
+      mode: "rw"
+    });
+  }
+
+  private async seedTaskHome(paths: { hostPath: string }): Promise<void> {
+    await this.runCommand("docker", [
+      "run",
+      "--rm",
+      ...buildDockerWorkspaceMountArgs({
+        sourceRoot: env.TASK_HOME_DOCKER_SOURCE,
+        sourceRelativePath: path.basename(paths.hostPath),
+        targetPath: "/home/agent",
+        mode: "rw"
+      }),
+      ...buildStagedHostProviderStateMountArgs(),
+      AGENT_RUNTIME_IMAGE,
+      "sh",
+      "-lc",
+      [
+        "set -eu",
+        "[ ! -d /verft-base/codex ] || cp -a /verft-base/codex /home/agent/.codex",
+        "[ ! -d /verft-base/claude ] || cp -a /verft-base/claude /home/agent/.claude",
+        "[ ! -f /verft-base/claude.json ] || cp -a /verft-base/claude.json /home/agent/.claude.json",
+        "mkdir -p /home/agent/.codex /home/agent/.claude",
+        "chown -R agent:agent /home/agent",
+        "chmod 700 /home/agent"
+      ].join("\n")
+    ]);
+  }
+
+  async ensureTaskHome(taskId: string): Promise<void> {
+    await this.withNamedLock(this.taskHomeLocks, taskId, () =>
+      ensurePersistentTaskHome(taskId, (paths) => this.seedTaskHome(paths))
+    );
+  }
+
+  async rebuildTaskHome(taskId: string): Promise<void> {
+    await this.withNamedLock(this.taskHomeLocks, taskId, () =>
+      rebuildPersistentTaskHome(taskId, (paths) => this.seedTaskHome(paths))
+    );
+  }
+
+  async deleteTaskHome(taskId: string): Promise<void> {
+    await this.withNamedLock(this.taskHomeLocks, taskId, () => deleteTaskHome(taskId));
   }
 
   resolveTaskRunRawEventsJsonlPath(taskId: string, runId: string): string {
@@ -3136,8 +3193,7 @@ export class SpawnerService {
     task: Task,
     executionId: string
   ): Promise<{ servers: McpServerConfig[]; env: Record<string, string>; injectedVerftMcp: boolean }> {
-    const configuredServers = await this.repositoryStore.getRepositoryMcpServers(task.repoId);
-    return this.buildRuntimeMcpConfig(task, configuredServers, executionId);
+    return this.buildRuntimeMcpConfig(task, [], executionId);
   }
 
   private async collectChangedFiles(workspacePath: string, startRef: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string[]> {
@@ -5492,6 +5548,7 @@ export class SpawnerService {
       };
       await appendRunLog(`Spawner: preparing ${task.provider} runtime image (${action}).`);
       await this.ensureRuntimeImage(task.provider);
+      await this.ensureTaskHome(task.id);
       await appendRunLog("Spawner: repository profile ready.");
       await appendRunLog(`Spawner: ${workspace.kind} workspace ready at ${workspace.workspacePath}.`);
 
@@ -5626,7 +5683,7 @@ export class SpawnerService {
         ...linkedWorkspaceMountPlan.mountArgs,
         ...gitRuntimeMounts,
         ...hostexecRuntime.mountArgs,
-        ...buildStagedHostProviderStateMountArgs(),
+        ...this.buildTaskHomeMountArgs(task.id),
         ...dockerSocketMountArgs,
         "-e",
         `TASK_MANIFEST_FILE=${payloadPaths.manifestPath}`,

@@ -10,6 +10,7 @@ import { buildTerminalDockerEnvEntries, buildTerminalEnvEntries, buildTaskRuntim
 import { buildTerminalStartScript } from "./task-interactive-terminal-start-script.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../../");
+const composePath = path.join(repoRoot, "docker-compose.yml");
 const runtimeDockerfilePath = path.join(repoRoot, "agent-runtime/Dockerfile");
 const codexRunnerPath = path.join(repoRoot, "agent-runtime/run-task-codex.mjs");
 const claudeRunnerPath = path.join(repoRoot, "agent-runtime/run-task-claude.mjs");
@@ -24,11 +25,10 @@ describe("buildTerminalStartScript", () => {
     assert.match(script, /\n\s+printf '%s\\n'/);
     assert.doesNotMatch(script, /then;\s/);
     assert.match(script, /Full toolbox shell available/);
-    assert.match(script, /cp -a \/verft-base\/codex "\$HOME\/\.codex"/);
-    assert.match(script, /cp -a \/verft-base\/claude "\$HOME\/\.claude"/);
-    assert.match(script, /cp -a \/verft-base\/claude\.json "\$HOME\/\.claude\.json"/);
+    assert.doesNotMatch(script, /cp -a \/verft-base/);
     assert.match(script, /normalize-provider-paths\.mjs "\$HOME"/);
-    assert.match(script, /chown -R agent:agent "\$HOME" "\$TASK_INTERACTIVE_WORKSPACE"/);
+    assert.match(script, /chown -R agent:agent "\$TASK_INTERACTIVE_WORKSPACE"/);
+    assert.doesNotMatch(script, /chown -R agent:agent "\$HOME"/);
     assert.match(script, /\$HOME\/\.claude\/mcp-config\.json/);
     assert.match(script, /\/tmp\/verft-bin\/claude/);
     assert.match(script, /chown -R agent:agent \/tmp\/verft-bin/);
@@ -56,17 +56,33 @@ describe("buildTerminalStartScript", () => {
     assert.match(dockerfile, /COPY normalize-provider-paths\.mjs/);
     assert.doesNotMatch(dockerfile, /COPY verft-base-state\.mjs/);
     assert.match(dockerfile, /COPY hostexec-proxy\.mjs/);
+    assert.match(dockerfile, /groupmod --new-name agent node/);
+    assert.match(dockerfile, /usermod --login agent --home \/home\/agent --move-home node/);
+    assert.match(dockerfile, /test "\$\(id -u agent\)" = 1000/);
+    assert.match(dockerfile, /test "\$\(id -g agent\)" = 1000/);
+    assert.doesNotMatch(dockerfile, /adduser --system/);
   });
 
-  it("stages read-only host provider state into the writable automated-run home", () => {
+  it("stores task homes in a Docker-managed volume with safe legacy migration", () => {
+    const compose = readFileSync(composePath, "utf8");
+
+    assert.match(compose, /task_homes:\/task-homes/);
+    assert.match(compose, /name: verft_task_homes/);
+    assert.match(compose, /service_completed_successfully/);
+    assert.match(compose, /find \/task-homes -mindepth 1 -print -quit/);
+    assert.match(compose, /\.\/task-homes:\/legacy-task-homes:ro/);
+    assert.match(compose, /chown -R 1000:1000 \/task-homes/);
+    assert.doesNotMatch(compose, /\.\/task-homes:\/task-homes/);
+  });
+
+  it("uses the mounted persistent home without recopying host provider state", () => {
     const codexRunner = readFileSync(codexRunnerPath, "utf8");
     const claudeRunner = readFileSync(claudeRunnerPath, "utf8");
 
-    assert.match(codexRunner, /cp\(HOST_CODEX_STATE, codexDir, \{ recursive: true \}\)/);
-    assert.match(codexRunner, /AGENT_IDENTITY, homeDir/);
-    assert.match(claudeRunner, /cp\(HOST_CLAUDE_STATE, providerStatePath, \{ recursive: true \}\)/);
-    assert.match(claudeRunner, /cp\(HOST_CLAUDE_CONFIG, path\.join\(runtimeHome, "\.claude\.json"\)\)/);
-    assert.match(claudeRunner, /runtimeIdentity, runtimeHome/);
+    assert.doesNotMatch(codexRunner, /HOST_CODEX_STATE/);
+    assert.doesNotMatch(codexRunner, /AGENT_IDENTITY, homeDir/);
+    assert.doesNotMatch(claudeRunner, /HOST_CLAUDE_STATE|HOST_CLAUDE_CONFIG/);
+    assert.doesNotMatch(claudeRunner, /runtimeIdentity, runtimeHome/);
   });
 
   it("normalizes copied absolute Claude and Codex paths in text files", () => {

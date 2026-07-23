@@ -260,6 +260,10 @@ export const api = {
     request<Task>(`/tasks/${id}/new-session`, {
       method: "POST"
     }),
+  rebuildTaskHome: (id: string) =>
+    request<Task>(`/tasks/${id}/rebuild-home`, {
+      method: "POST"
+    }),
   getTaskLiveDiff: (
     id: string,
     options?: { baseRef?: string | null; diffKind?: "compare" | "working" | "commits"; commitSha?: string | null }

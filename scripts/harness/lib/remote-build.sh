@@ -32,6 +32,7 @@ build_remote_command() {
     PUBLIC_PORT
     TASK_WORKSPACE_PATH
     TASK_WORKSPACE_DOCKER_SOURCE
+    TASK_HOME_DOCKER_SOURCE
   )
 
   local -a cmd_parts=("env" "HARNESS_REMOTE_EXECUTING=1")

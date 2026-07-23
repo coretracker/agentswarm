@@ -42,7 +42,7 @@ Ask tasks let Codex or Claude inspect a codebase and answer without writing file
 
 ### Standardize Repeated Work
 
-Use repository defaults for provider/model choices, repository-local postflight checks for validation, and MCP servers for repository-specific tool access.
+Use repository defaults for provider/model choices and repository-local postflight checks for validation.
 
 ### Integrate With GitHub Feedback
 
@@ -114,7 +114,11 @@ Tasks are the main unit of work in Verft.
 
 - **Build tasks** ask an agent to modify a repository in an isolated workspace.
 - **Ask tasks** ask an agent to inspect and answer without writing files.
-Task definitions include title, repository, prompt, provider/model settings, branch settings, and optional prompt attachments. Task workspaces are isolated under `task-workspaces/` and are runtime data. Do not commit them.
+Task definitions include title, repository, prompt, provider/model settings, branch settings, and optional prompt attachments. Task workspaces are isolated under `task-workspaces/`; persistent agent homes use the Docker-managed `verft_task_homes` volume.
+
+Each task home is mounted at `/home/agent` for autonomous runs and interactive terminals. It keeps Codex and Claude sessions, history, plugins, and task-local settings across runs and workspace rebuilds. **New Session** clears only the current provider’s resumable session marker. **Rebuild task home** replaces the entire home from configured host state and permanently loses all task-local agent state.
+
+On first startup after upgrading from the former bind-mounted layout, Compose copies `./task-homes` into the named volume only when the volume is empty. The source directory is left unchanged as a rollback copy.
 
 ### Checkpoints And Git Actions
 
@@ -122,9 +126,7 @@ Verft tracks task status, messages, runs, logs, diffs, checkpoints, and Git oper
 
 ### Repository Configuration
 
-Repositories can define environment variables, write-only environment secrets, default agent provider/model/effort settings, GitHub integration settings, repository-local MCP servers, host commands, and postflight checks.
-
-Repository-specific MCP servers are configured on each repository. Task runs and interactive terminals receive only the MCP servers configured for the task repository, plus the internal Verft MCP bridge.
+Repositories can define environment variables, write-only environment secrets, default agent provider/model/effort settings, GitHub integration settings, host commands, and postflight checks.
 
 ### Postflight Checks
 
@@ -185,7 +187,9 @@ Durable application data is stored in Postgres. Redis is required for sessions, 
 | Variable | Description | Default |
 | --- | --- | --- |
 | `AGENT_RUNTIME_IMAGE` | Unified toolbox image for automated Codex/Claude runs, interactive terminals, utility runs, and Git worker containers. | `verft-agent-toolbox:latest` |
-| `VERFT_AI_STATE_HOST_ROOT` | Host home root used to derive `.codex`, `.claude`, and `.claude.json` provider mounts. These Docker daemon host paths remain read-only; task runs and interactive terminals copy them into the container's writable agent home at startup. | `$HOME` |
+| `TASK_HOME_ROOT` | Server path containing persistent per-task agent homes. | `/task-homes` |
+| `TASK_HOME_DOCKER_SOURCE` | Optional Docker-host path or named volume corresponding to `TASK_HOME_ROOT`; auto-detected from the server mount when unset. | `verft_task_homes` in the local harness |
+| `VERFT_AI_STATE_HOST_ROOT` | Host home root used to initially seed `.codex`, `.claude`, and `.claude.json` into newly created or explicitly rebuilt task homes. | `$HOME` |
 | `VERFT_CODEX_STATE_HOST_PATH` | Optional host path override for Codex state. | unset |
 | `VERFT_CLAUDE_STATE_HOST_PATH` | Optional host path override for Claude state. | unset |
 | `VERFT_CLAUDE_CONFIG_HOST_PATH` | Optional host path override for `.claude.json`. | unset |
@@ -264,6 +268,7 @@ curl -fsS http://localhost:3217/api/health
 +-- docs/                # Architecture, development, product, and quality docs
 +-- scripts/harness/     # Canonical setup, check, test, and PR scripts
 +-- task-workspaces/     # Runtime task workspaces; do not commit
++-- task-homes/          # Legacy task-home migration source; do not commit
 +-- docker-compose.yml   # Local Docker stack
 +-- verft                # Main stack helper script
 ```
