@@ -1639,10 +1639,10 @@ export class SpawnerService {
       "-lc",
       [
         "set -eu",
-        "[ ! -d /verft-base/codex ] || cp -a /verft-base/codex /home/agent/.codex",
-        "[ ! -d /verft-base/claude ] || cp -a /verft-base/claude /home/agent/.claude",
-        "[ ! -f /verft-base/claude.json ] || cp -a /verft-base/claude.json /home/agent/.claude.json",
         "mkdir -p /home/agent/.codex /home/agent/.claude",
+        "[ ! -d /verft-base/codex ] || cp -a /verft-base/codex/. /home/agent/.codex/",
+        "[ ! -d /verft-base/claude ] || cp -a /verft-base/claude/. /home/agent/.claude/",
+        "[ ! -f /verft-base/claude.json ] || cp -a /verft-base/claude.json /home/agent/.claude.json",
         "chown -R agent:agent /home/agent",
         "chmod 700 /home/agent"
       ].join("\n")

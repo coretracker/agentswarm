@@ -120,6 +120,21 @@ describe("SpawnerService workspace provisioning", () => {
     assert.doesNotMatch(mount, /readonly|:ro/);
   });
 
+  it("seeds host provider state into existing task-home provider directories", async () => {
+    const spawner = createSpawner();
+    let script = "";
+    (spawner as any).runCommand = async (_command: string, args: string[]) => {
+      script = args.at(-1) ?? "";
+    };
+
+    await (spawner as any).seedTaskHome({ hostPath: path.join(env.TASK_HOME_DOCKER_SOURCE, ".task-123-temp") });
+
+    assert.match(script, /mkdir -p \/home\/agent\/\.codex \/home\/agent\/\.claude/);
+    assert.match(script, /cp -a \/verft-base\/codex\/\. \/home\/agent\/\.codex\//);
+    assert.match(script, /cp -a \/verft-base\/claude\/\. \/home\/agent\/\.claude\//);
+    assert.doesNotMatch(script, /cp -a \/verft-base\/codex \/home\/agent\/\.codex/);
+  });
+
   it("injects Verft MCP into task runtime config", async () => {
     const createdTokens: unknown[] = [];
     const spawner = new SpawnerService(
