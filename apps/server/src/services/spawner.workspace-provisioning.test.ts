@@ -127,7 +127,10 @@ describe("SpawnerService workspace provisioning", () => {
       script = args.at(-1) ?? "";
     };
 
-    await (spawner as any).seedTaskHome({ hostPath: path.join(env.TASK_HOME_DOCKER_SOURCE, ".task-123-temp") });
+    await (spawner as any).seedTaskHome({
+      serverPath: path.join(env.TASK_HOME_ROOT, ".task-123-temp"),
+      hostPath: path.join(env.TASK_HOME_DOCKER_SOURCE, ".task-123-temp")
+    });
 
     assert.match(script, /mkdir -p \/home\/agent\/\.codex \/home\/agent\/\.claude/);
     assert.match(script, /cp -a \/verft-base\/codex\/\. \/home\/agent\/\.codex\//);

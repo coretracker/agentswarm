@@ -76,7 +76,10 @@ import {
   ensureTaskHome as ensurePersistentTaskHome,
   rebuildTaskHome as rebuildPersistentTaskHome
 } from "../lib/task-home.js";
-import { buildStagedHostProviderStateMountArgs } from "../lib/verft-base-mounts.js";
+import {
+  buildStagedHostProviderStateMountArgs,
+  resolveHostProviderStatePaths
+} from "../lib/verft-base-mounts.js";
 import { AGENT_RUNTIME_IMAGE, DEFAULT_GIT_COMMIT_IDENTITY, env } from "../config/env.js";
 import { getProviderRuntimeDefinition } from "../providers/runtime-definitions.js";
 import { executeOpenAiDiffAssist } from "./openai-diff-assist-service.js";
@@ -1623,7 +1626,21 @@ export class SpawnerService {
     });
   }
 
-  private async seedTaskHome(paths: { hostPath: string }): Promise<void> {
+  private async seedTaskHome(paths: { serverPath: string; hostPath: string }): Promise<void> {
+    const providerPaths = resolveHostProviderStatePaths({
+      hostRoot: env.VERFT_AI_STATE_HOST_ROOT,
+      codexHostPath: env.VERFT_CODEX_STATE_HOST_PATH,
+      claudeHostPath: env.VERFT_CLAUDE_STATE_HOST_PATH,
+      claudeConfigHostPath: env.VERFT_CLAUDE_CONFIG_HOST_PATH
+    });
+    this.logger?.info("task", "task.home.seed.started", "Seeding task home", {
+      taskHomeServerPath: paths.serverPath,
+      taskHomeHostPath: paths.hostPath,
+      taskHomeDockerSource: env.TASK_HOME_DOCKER_SOURCE,
+      codexHostPath: providerPaths.codexPath,
+      claudeHostPath: providerPaths.claudePath,
+      claudeConfigHostPath: providerPaths.claudeConfigPath
+    });
     await this.runCommand("docker", [
       "run",
       "--rm",
@@ -1647,6 +1664,18 @@ export class SpawnerService {
         "chmod 700 /home/agent"
       ].join("\n")
     ]);
+    const codexEntries = await readdir(path.join(paths.serverPath, ".codex")).catch((): string[] => []);
+    const claudeEntries = await readdir(path.join(paths.serverPath, ".claude")).catch((): string[] => []);
+    this.logger?.info("task", "task.home.seed.completed", "Seeded task home", {
+      taskHomeServerPath: paths.serverPath,
+      codexTopLevelEntries: codexEntries.length,
+      codexHasAuthJson: codexEntries.includes("auth.json"),
+      codexHasConfigToml: codexEntries.includes("config.toml"),
+      codexHasPluginsDir: codexEntries.includes("plugins"),
+      codexHasCacheDir: codexEntries.includes("cache"),
+      claudeTopLevelEntries: claudeEntries.length,
+      claudeHasConfig: await access(path.join(paths.serverPath, ".claude.json")).then(() => true).catch(() => false)
+    });
   }
 
   async ensureTaskHome(taskId: string): Promise<void> {
