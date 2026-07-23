@@ -24,60 +24,6 @@ const HOST_COMMAND_MAX_COUNT = 80;
 const HOST_COMMAND_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,119}$/;
 const HTTP_HEADER_NAME_PATTERN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
-const normalizeMcpServerNameForComparison = (value: string): string =>
-  value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "");
-
-const mcpServerSchema = z.discriminatedUnion("transport", [
-  z.object({
-    name: z.string().trim().min(1).max(120),
-    enabled: z.boolean(),
-    transport: z.literal("stdio"),
-    command: z.string().trim().min(1).max(300),
-    args: z.array(z.string().trim().min(1).max(300)).max(40).optional()
-  }),
-  z.object({
-    name: z.string().trim().min(1).max(120),
-    enabled: z.boolean(),
-    transport: z.literal("http"),
-    url: z.string().trim().url(),
-    bearerTokenEnvVar: z
-      .string()
-      .trim()
-      .min(1)
-      .max(120)
-      .regex(/^[A-Za-z_][A-Za-z0-9_]*$/, "Bearer token env var must be a valid environment variable name")
-      .nullable()
-      .optional()
-  })
-]);
-
-const mcpServersSchema = z
-  .array(mcpServerSchema)
-  .max(25)
-  .superRefine((entries, ctx) => {
-    const seen = new Set<string>();
-    for (let index = 0; index < entries.length; index += 1) {
-      const normalized = normalizeMcpServerNameForComparison(entries[index]?.name ?? "");
-      if (!normalized) {
-        continue;
-      }
-      if (seen.has(normalized)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: [index, "name"],
-          message: `Duplicate MCP server name: ${entries[index]?.name}`
-        });
-      } else {
-        seen.add(normalized);
-      }
-    }
-  });
-
 const hostCommandsSchema = z
   .array(
     z
@@ -256,7 +202,6 @@ const createRepositorySchema = z.object({
   defaultProviderProfile: z.enum(["low", "medium", "high", "max"]).nullable().optional(),
   envVars: repositoryEnvVarsSchema.optional(),
   envSecrets: repositoryEnvSecretsSchema.optional(),
-  mcpServers: mcpServersSchema.optional(),
   hostCommands: hostCommandsSchema.optional(),
   webhookUrl: z.string().trim().url().nullable().optional(),
   webhookEnabled: z.boolean().optional(),

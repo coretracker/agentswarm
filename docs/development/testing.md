@@ -10,6 +10,8 @@ The root test command runs the server and web workspace test scripts:
 - Server tests: `npm run test -w @verft/server`
 - Web tests: `npm run test -w @verft/web`
 
+Storybook is the visual development harness for the web UI. Run `npm run storybook -w @verft/web` for local review, and run `npm run build-storybook -w @verft/web` when changing stories, Storybook mocks, layout, pages, or reusable UI components.
+
 ## Scope Selection
 - All current tests: `npm test`
 - Server only: `npm run test -w @verft/server`

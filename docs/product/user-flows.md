@@ -19,18 +19,14 @@ Notes:
 2. Create or edit a repository.
 3. Add environment variables (plaintext key/value).
 4. Add environment secrets (write-only values).
-5. Add MCP servers that should be available to task runs and interactive terminals for this repository.
-6. Add host command names that should be mounted through hostexec when enabled.
-7. Save.
+5. Add host command names that should be mounted through hostexec when enabled.
+6. Save.
 
 Notes:
 - Existing secrets are shown as configured placeholders only; values are never shown again after save.
 - Editing can keep an existing secret by leaving its value blank, replace it by entering a new value, or delete it by removing the row.
-- Repository MCP servers are scoped to the repository being edited. They are not inherited from Settings and are not shared with other repositories.
-- MCP bearer token environment variable names resolve from the Verft server process environment. Missing values are reported in task runtime logs.
 - Repository host commands are simple command names only. Verft mounts generated shims read-only under `/hostexec/bin` and prepends that directory to `PATH`; existing container bin directories are not overwritten.
 - Repository default agent provider/model/effort values are fallback values. Task payload values win first, then matching user profile defaults, then repository defaults, then system settings.
-- Installations that previously used global MCP server settings must recreate the intended MCP servers on each repository that should expose them.
 - GitHub Integration can optionally restrict pull request feedback processing to an allowed GitHub users list; an empty list allows any non-bot GitHub user.
 - New repositories default GitHub comment processing to require a configured bot mention; repository settings can disable that filter.
 - GitHub Integration archives linked tasks by default when a GitHub pull request webhook reports the PR as merged; repositories can disable this in GitHub settings.

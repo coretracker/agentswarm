@@ -20,6 +20,14 @@ const config: StorybookConfig = {
     },
     optimizeDeps: {
       ...config.optimizeDeps,
+      exclude: [
+        ...(config.optimizeDeps?.exclude ?? []),
+        "next/link",
+        "next/link.js",
+        "next/navigation",
+        "next/navigation.js",
+        "socket.io-client"
+      ],
       esbuildOptions: {
         ...config.optimizeDeps?.esbuildOptions,
         jsx: "automatic",
@@ -28,10 +36,15 @@ const config: StorybookConfig = {
     },
     resolve: {
       ...config.resolve,
-      alias: {
-        ...config.resolve?.alias,
-        "@verft/shared-types": resolve(__dirname, "../../../packages/shared-types/src/index.ts")
-      }
+      alias: [
+        ...(Array.isArray(config.resolve?.alias)
+          ? config.resolve.alias
+          : Object.entries(config.resolve?.alias ?? {}).map(([find, replacement]) => ({ find, replacement }))),
+        { find: /^next\/link(?:\.js)?$/, replacement: resolve(__dirname, "./mock-link.tsx") },
+        { find: /^next\/navigation(?:\.js)?$/, replacement: resolve(__dirname, "./mock-navigation.ts") },
+        { find: /^socket\.io-client$/, replacement: resolve(__dirname, "./mock-socket.ts") },
+        { find: /^@verft\/shared-types$/, replacement: resolve(__dirname, "../../../packages/shared-types/src/index.ts") }
+      ]
     }
   })
 };

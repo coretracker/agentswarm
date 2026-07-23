@@ -17,9 +17,17 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [session, setSession] = useState<AuthSession | null>(null);
-  const [loading, setLoading] = useState(true);
+export function AuthProvider({
+  children,
+  initialSession = null,
+  autoLoadSession = true
+}: {
+  children: React.ReactNode;
+  initialSession?: AuthSession | null;
+  autoLoadSession?: boolean;
+}) {
+  const [session, setSession] = useState<AuthSession | null>(initialSession);
+  const [loading, setLoading] = useState(autoLoadSession);
 
   const refreshSession = async (): Promise<AuthSession | null> => {
     setLoading(true);
@@ -40,11 +48,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   useEffect(() => {
+    if (!autoLoadSession) {
+      setSession(initialSession);
+      setLoading(false);
+      return;
+    }
+
     void refreshSession().catch(() => {
       setSession(null);
       setLoading(false);
     });
-  }, []);
+  }, [autoLoadSession, initialSession]);
 
   const scopeSet = new Set(session?.user.scopes ?? []);
 

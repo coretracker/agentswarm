@@ -42,7 +42,7 @@ Ask tasks let Codex or Claude inspect a codebase and answer without writing file
 
 ### Standardize Repeated Work
 
-Use repository defaults for provider/model choices, repository-local postflight checks for validation, and MCP servers for repository-specific tool access.
+Use repository defaults for provider/model choices and repository-local postflight checks for validation.
 
 ### Integrate With GitHub Feedback
 
@@ -126,9 +126,7 @@ Verft tracks task status, messages, runs, logs, diffs, checkpoints, and Git oper
 
 ### Repository Configuration
 
-Repositories can define environment variables, write-only environment secrets, default agent provider/model/effort settings, GitHub integration settings, repository-local MCP servers, host commands, and postflight checks.
-
-Repository-specific MCP servers are configured on each repository. Task runs and interactive terminals receive only the MCP servers configured for the task repository, plus the internal Verft MCP bridge.
+Repositories can define environment variables, write-only environment secrets, default agent provider/model/effort settings, GitHub integration settings, host commands, and postflight checks.
 
 ### Postflight Checks
 

@@ -48,7 +48,7 @@ class FakeRedis {
   }
 }
 
-describe("RedisRepositoryStore MCP servers", () => {
+describe("RedisRepositoryStore", () => {
   it("defaults GitHub PR settings on for new repositories", async () => {
     const store = new RedisRepositoryStore(
       new FakeRedis() as never,
@@ -181,68 +181,6 @@ describe("RedisRepositoryStore MCP servers", () => {
     assert.equal(updated?.defaultProvider, null);
     assert.equal(updated?.defaultModel, null);
     assert.equal(updated?.defaultProviderProfile, null);
-  });
-
-  it("persists and normalizes repository MCP servers", async () => {
-    const store = new RedisRepositoryStore(
-      new FakeRedis() as never,
-      { publish: async () => undefined } as never
-    );
-
-    const created = await store.createRepository({
-      name: "Repo",
-      url: "https://github.com/acme/repo.git",
-      mcpServers: [
-        {
-          name: "GitHub Tools",
-          enabled: true,
-          transport: "http",
-          url: "https://api.githubcopilot.com/mcp",
-          bearerTokenEnvVar: "GITHUB_MCP_TOKEN"
-        },
-        {
-          name: "GitHub Tools",
-          enabled: true,
-          transport: "stdio",
-          command: "ignored"
-        },
-        {
-          name: "memory",
-          enabled: false,
-          transport: "stdio",
-          command: "npx",
-          args: ["", "-y", "mcp-memory"]
-        }
-      ]
-    });
-
-    assert.deepEqual(
-      created.mcpServers.map((server) => server.name),
-      ["github-tools", "memory"]
-    );
-    assert.deepEqual(await store.getRepositoryMcpServers(created.id), created.mcpServers);
-
-    const updated = await store.updateRepository(created.id, {
-      mcpServers: [
-        {
-          name: "remote",
-          enabled: true,
-          transport: "http",
-          url: "https://example.com/mcp",
-          bearerTokenEnvVar: "BAD-NAME"
-        }
-      ]
-    });
-
-    assert.deepEqual(updated?.mcpServers, [
-      {
-        name: "remote",
-        enabled: true,
-        transport: "http",
-        url: "https://example.com/mcp",
-        bearerTokenEnvVar: null
-      }
-    ]);
   });
 
   it("persists and normalizes repository host commands", async () => {

@@ -39,7 +39,7 @@ const createRepository = (input: CreateRepositoryInput, overrides: Partial<Repos
   defaultBranch: input.defaultBranch ?? "develop",
   envVars: [],
   envSecrets: [],
-  mcpServers: input.mcpServers ?? [],
+  mcpServers: [],
   hostCommands: input.hostCommands ?? [],
   webhookUrl: null,
   webhookEnabled: false,
@@ -228,7 +228,7 @@ test("repository create defaults GitHub bot mention filtering on", async () => {
   await app.close();
 });
 
-test("repository create accepts repository MCP servers", async () => {
+test("repository create ignores repository MCP server payloads", async () => {
   const authUser = createAuthUser({ id: "user-1" });
   const { app } = createTestApp({ authUser, users: [createUser({ id: "user-1" })] });
 
@@ -251,15 +251,7 @@ test("repository create accepts repository MCP servers", async () => {
   });
 
   assert.equal(response.statusCode, 201);
-  assert.deepEqual(JSON.parse(response.body).mcpServers, [
-    {
-      name: "github",
-      enabled: true,
-      transport: "http",
-      url: "https://api.githubcopilot.com/mcp",
-      bearerTokenEnvVar: "GITHUB_MCP_TOKEN"
-    }
-  ]);
+  assert.deepEqual(JSON.parse(response.body).mcpServers, []);
 
   await app.close();
 });
@@ -328,39 +320,6 @@ test("repository create rejects duplicate GitHub allowed users", async () => {
 
   assert.equal(response.statusCode, 400);
   assert.match(JSON.parse(response.body).message, /Duplicate GitHub user/);
-
-  await app.close();
-});
-
-test("repository create rejects duplicate MCP server names", async () => {
-  const authUser = createAuthUser({ id: "user-1" });
-  const { app } = createTestApp({ authUser, users: [createUser({ id: "user-1" })] });
-
-  const response = await app.inject({
-    method: "POST",
-    url: "/repositories",
-    payload: {
-      name: "repo",
-      url: "https://github.com/acme/repo.git",
-      mcpServers: [
-        {
-          name: "github",
-          enabled: true,
-          transport: "http",
-          url: "https://api.githubcopilot.com/mcp"
-        },
-        {
-          name: "Github",
-          enabled: true,
-          transport: "stdio",
-          command: "docker"
-        }
-      ]
-    }
-  });
-
-  assert.equal(response.statusCode, 400);
-  assert.match(JSON.parse(response.body).message, /Duplicate MCP server name/);
 
   await app.close();
 });

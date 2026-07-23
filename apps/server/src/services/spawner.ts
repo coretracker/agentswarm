@@ -347,7 +347,7 @@ export class SpawnerService {
     private readonly userStore: UserStore,
     private readonly repositoryStore: Pick<
       RepositoryStore,
-      "getRepositoryRuntimeEnvEntries" | "getRepositoryMcpServers" | "getRepository"
+      "getRepositoryRuntimeEnvEntries" | "getRepository"
     >,
     private readonly repositoryEnvFileStore: RepositoryEnvFileStore = new RepositoryEnvFileStore(),
     private readonly personalAccessTokenStore?: PersonalAccessTokenStore,
@@ -3193,8 +3193,7 @@ export class SpawnerService {
     task: Task,
     executionId: string
   ): Promise<{ servers: McpServerConfig[]; env: Record<string, string>; injectedVerftMcp: boolean }> {
-    const configuredServers = await this.repositoryStore.getRepositoryMcpServers(task.repoId);
-    return this.buildRuntimeMcpConfig(task, configuredServers, executionId);
+    return this.buildRuntimeMcpConfig(task, [], executionId);
   }
 
   private async collectChangedFiles(workspacePath: string, startRef: string, githubToken?: string | null, gitUsername = "x-access-token"): Promise<string[]> {
