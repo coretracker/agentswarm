@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type Key } from "react";
 import {
   getAgentProviderLabel,
   getTaskExecutionStatusLabel,
@@ -53,6 +53,8 @@ export function TasksPage() {
   const [repoFilter, setRepoFilter] = useState<string | undefined>();
   const [createdAtFilter, setCreatedAtFilter] = useState<string | null>(null);
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
+  const [selectedTaskIds, setSelectedTaskIds] = useState<Key[]>([]);
+  const [batchAction, setBatchAction] = useState<"archive" | "delete" | null>(null);
   const [messageApi, contextHolder] = message.useMessage();
   const canCreateTask = can("task:create") && (can("task:build") || can("task:ask") || can("task:terminal"));
   const canEditTask = can("task:edit");
@@ -87,6 +89,17 @@ export function TasksPage() {
       return true;
     });
   }, [archivedView, createdAtFilter, repoFilter, tasks, titleFilter]);
+
+  const selectedTasks = useMemo(
+    () => tasks.filter((task) => selectedTaskIds.includes(task.id)),
+    [selectedTaskIds, tasks]
+  );
+  const hasBusySelectedTask = selectedTasks.some(isTaskExecutionBusy);
+  const selectedCount = selectedTasks.length;
+
+  useEffect(() => {
+    setSelectedTaskIds((current) => current.filter((id) => filteredTasks.some((task) => task.id === id)));
+  }, [filteredTasks]);
 
   const handleDeleteTask = async (task: Task, options?: { deleteRemoteBranch?: boolean }) => {
     setDeletingTaskId(task.id);
@@ -169,6 +182,64 @@ export function TasksPage() {
     });
   };
 
+  const handleBatchAction = async (action: "archive" | "delete") => {
+    const tasksToUpdate = selectedTasks;
+    if (tasksToUpdate.length === 0) {
+      return;
+    }
+
+    setBatchAction(action);
+    const failures: string[] = [];
+    const failedTaskIds: string[] = [];
+    const updatedTasks: Task[] = [];
+    const deletedTaskIds: string[] = [];
+
+    for (const task of tasksToUpdate) {
+      try {
+        if (action === "archive") {
+          updatedTasks.push(await api.archiveTask(task.id));
+        } else {
+          await api.deleteTask(task.id);
+          deletedTaskIds.push(task.id);
+        }
+      } catch (error) {
+        failedTaskIds.push(task.id);
+        failures.push(`${task.title}: ${error instanceof Error ? error.message : "failed"}`);
+      }
+    }
+
+    setTasks((current) => {
+      const updatedById = new Map(updatedTasks.map((task) => [task.id, task]));
+      return current
+        .filter((task) => !deletedTaskIds.includes(task.id))
+        .map((task) => {
+          const updatedTask = updatedById.get(task.id);
+          return updatedTask ? { ...task, ...updatedTask, logs: updatedTask.logs.length > 0 ? updatedTask.logs : task.logs } : task;
+        })
+        .filter((task) => archivedView || task.status !== "archived");
+    });
+    setSelectedTaskIds(failedTaskIds);
+    setBatchAction(null);
+
+    const successCount = tasksToUpdate.length - failures.length;
+    if (successCount > 0) {
+      messageApi.success(`${action === "archive" ? "Archived" : "Deleted"} ${successCount} task${successCount === 1 ? "" : "s"}`);
+    }
+    if (failures.length > 0) {
+      messageApi.error(`${failures.length} task${failures.length === 1 ? "" : "s"} failed: ${failures[0]}`);
+    }
+  };
+
+  const confirmBatchAction = (action: "archive" | "delete") => {
+    Modal.confirm({
+      title: action === "archive" ? "Archive selected tasks" : "Delete selected tasks",
+      content: `${action === "archive" ? "Archive" : "Delete"} ${selectedCount} selected task${selectedCount === 1 ? "" : "s"}?`,
+      okText: action === "archive" ? "Archive" : "Delete",
+      okButtonProps: action === "delete" ? { danger: true } : undefined,
+      onOk: () => handleBatchAction(action)
+    });
+  };
+
   return (
     <>
       {contextHolder}
@@ -214,10 +285,30 @@ export function TasksPage() {
               placeholder="Filter by created date"
               onChange={(value) => setCreatedAtFilter(value ? value.format("YYYY-MM-DD") : null)}
             />
+            {selectedCount > 0 ? (
+              <>
+                <Typography.Text type="secondary">{selectedCount} selected</Typography.Text>
+                {canEditTask && !archivedView ? (
+                  <Button loading={batchAction === "archive"} disabled={hasBusySelectedTask} onClick={() => confirmBatchAction("archive")}>
+                    Archive
+                  </Button>
+                ) : null}
+                {canDeleteTask ? (
+                  <Button danger loading={batchAction === "delete"} disabled={hasBusySelectedTask} onClick={() => confirmBatchAction("delete")}>
+                    Delete
+                  </Button>
+                ) : null}
+              </>
+            ) : null}
           </Space>
           <Divider />
           <Table<Task>
             rowKey="id"
+            rowSelection={{
+              selectedRowKeys: selectedTaskIds,
+              onChange: setSelectedTaskIds,
+              getCheckboxProps: (task) => ({ disabled: isTaskExecutionBusy(task) })
+            }}
             loading={loading}
             dataSource={filteredTasks}
             pagination={{ pageSize: 10 }}
