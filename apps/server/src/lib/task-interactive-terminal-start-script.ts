@@ -3,9 +3,6 @@ export function buildTerminalStartScript(): string {
     'cd "$TASK_INTERACTIVE_WORKSPACE"',
     'printf "\\033[90mTerminal ready in %s. Full toolbox shell available.\\033[0m\\n" "$PWD"',
     [
-      'if [ -d /verft-base/codex ]; then cp -a /verft-base/codex "$HOME/.codex"; fi',
-      'if [ -d /verft-base/claude ]; then cp -a /verft-base/claude "$HOME/.claude"; fi',
-      'if [ -f /verft-base/claude.json ]; then cp -a /verft-base/claude.json "$HOME/.claude.json"; fi',
       'node /usr/local/bin/normalize-provider-paths.mjs "$HOME"',
       'chown -R agent:agent "$HOME" "$TASK_INTERACTIVE_WORKSPACE" 2>/dev/null || true'
     ].join("\n"),

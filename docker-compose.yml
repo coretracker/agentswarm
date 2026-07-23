@@ -35,6 +35,8 @@ services:
       - RUNTIME_PAYLOAD_ROOT=/runtime-payloads
       - RUNTIME_PAYLOAD_VOLUME=verft_runtime_payloads
       - TASK_WORKSPACE_ROOT=/task-workspaces
+      - TASK_HOME_ROOT=/task-homes
+      - TASK_HOME_DOCKER_SOURCE=${TASK_HOME_DOCKER_SOURCE:-}
       - SECRET_KEY_PATH=/secrets/verft.key
       - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost:3217}
       - DEFAULT_ADMIN_NAME=${DEFAULT_ADMIN_NAME:-Administrator}
@@ -53,6 +55,7 @@ services:
       - repo_cache:/repo-cache
       - runtime_payloads:/runtime-payloads
       - ./task-workspaces:/task-workspaces
+      - ./task-homes:/task-homes
       - server_secrets:/secrets
     depends_on:
       redis:

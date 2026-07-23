@@ -88,6 +88,7 @@ export class SchedulerService {
           continue;
         }
         await this.spawner.cleanupTaskArtifacts(task);
+        await this.spawner.deleteTaskHome(task.id);
         await this.taskQueueStore.removeTask(task.id);
         if (await this.taskStore.deleteTask(task.id)) {
           deletedTaskIds.push(task.id);

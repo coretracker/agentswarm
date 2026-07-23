@@ -10,6 +10,8 @@ ensure_remote_build_execution "$REPO_ROOT" "./scripts/harness/doctor.sh" "$@"
 cd "$REPO_ROOT"
 TASK_WORKSPACE_DOCKER_SOURCE="${TASK_WORKSPACE_DOCKER_SOURCE:-$REPO_ROOT/task-workspaces}"
 export TASK_WORKSPACE_DOCKER_SOURCE
+TASK_HOME_DOCKER_SOURCE="${TASK_HOME_DOCKER_SOURCE:-$REPO_ROOT/task-homes}"
+export TASK_HOME_DOCKER_SOURCE
 
 log() {
   echo "[harness:doctor] $1"

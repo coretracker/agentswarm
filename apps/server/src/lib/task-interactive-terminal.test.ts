@@ -24,9 +24,7 @@ describe("buildTerminalStartScript", () => {
     assert.match(script, /\n\s+printf '%s\\n'/);
     assert.doesNotMatch(script, /then;\s/);
     assert.match(script, /Full toolbox shell available/);
-    assert.match(script, /cp -a \/verft-base\/codex "\$HOME\/\.codex"/);
-    assert.match(script, /cp -a \/verft-base\/claude "\$HOME\/\.claude"/);
-    assert.match(script, /cp -a \/verft-base\/claude\.json "\$HOME\/\.claude\.json"/);
+    assert.doesNotMatch(script, /cp -a \/verft-base/);
     assert.match(script, /normalize-provider-paths\.mjs "\$HOME"/);
     assert.match(script, /chown -R agent:agent "\$HOME" "\$TASK_INTERACTIVE_WORKSPACE"/);
     assert.match(script, /\$HOME\/\.claude\/mcp-config\.json/);
@@ -58,14 +56,13 @@ describe("buildTerminalStartScript", () => {
     assert.match(dockerfile, /COPY hostexec-proxy\.mjs/);
   });
 
-  it("stages read-only host provider state into the writable automated-run home", () => {
+  it("uses the mounted persistent home without recopying host provider state", () => {
     const codexRunner = readFileSync(codexRunnerPath, "utf8");
     const claudeRunner = readFileSync(claudeRunnerPath, "utf8");
 
-    assert.match(codexRunner, /cp\(HOST_CODEX_STATE, codexDir, \{ recursive: true \}\)/);
+    assert.doesNotMatch(codexRunner, /HOST_CODEX_STATE/);
     assert.match(codexRunner, /AGENT_IDENTITY, homeDir/);
-    assert.match(claudeRunner, /cp\(HOST_CLAUDE_STATE, providerStatePath, \{ recursive: true \}\)/);
-    assert.match(claudeRunner, /cp\(HOST_CLAUDE_CONFIG, path\.join\(runtimeHome, "\.claude\.json"\)\)/);
+    assert.doesNotMatch(claudeRunner, /HOST_CLAUDE_STATE|HOST_CLAUDE_CONFIG/);
     assert.match(claudeRunner, /runtimeIdentity, runtimeHome/);
   });
 

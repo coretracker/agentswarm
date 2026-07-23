@@ -447,6 +447,7 @@ describe("SchedulerService.cleanupExpiredArchivedTasks", () => {
   it("deletes archived tasks older than the configured retention window", async () => {
     const deletedTaskIds: string[] = [];
     const cleanedTaskIds: string[] = [];
+    const deletedHomeTaskIds: string[] = [];
     const removedQueueTaskIds: string[] = [];
     const taskStore = {
       listTasks: async (options: unknown) => {
@@ -483,6 +484,9 @@ describe("SchedulerService.cleanupExpiredArchivedTasks", () => {
     const spawner = {
       cleanupTaskArtifacts: async (task: { id: string }) => {
         cleanedTaskIds.push(task.id);
+      },
+      deleteTaskHome: async (taskId: string) => {
+        deletedHomeTaskIds.push(taskId);
       }
     };
     const scheduler = new SchedulerService(taskStore as never, taskQueueStore as never, settingsStore as never, spawner as never);
@@ -491,6 +495,7 @@ describe("SchedulerService.cleanupExpiredArchivedTasks", () => {
 
     assert.deepEqual(deleted, ["old-archived"]);
     assert.deepEqual(cleanedTaskIds, ["old-archived"]);
+    assert.deepEqual(deletedHomeTaskIds, ["old-archived"]);
     assert.deepEqual(removedQueueTaskIds, ["old-archived"]);
     assert.deepEqual(deletedTaskIds, ["old-archived"]);
   });

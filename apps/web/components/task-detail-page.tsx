@@ -695,6 +695,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "merge"
     | "archive"
     | "newSession"
+    | "rebuildHome"
     | "killTerminal"
     | "delete"
     | "continue"
@@ -3129,6 +3130,22 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setSubmitting(null);
     }
   };
+  const handleRebuildTaskHome = async () => {
+    if (!task) {
+      return;
+    }
+
+    setSubmitting("rebuildHome");
+    try {
+      const updatedTask = await api.rebuildTaskHome(task.id);
+      setTask((current) => (current ? { ...current, ...updatedTask } : updatedTask));
+      messageApi.success("Task home rebuilt");
+    } catch (error) {
+      showTaskActionError(error, "Failed to rebuild task home");
+    } finally {
+      setSubmitting(null);
+    }
+  };
   const openInteractiveTerminalWindow = (mode: TaskTerminalSessionMode = "terminal"): void => {
     if (!task) {
       return;
@@ -3235,6 +3252,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     ? [
         hasBranchForSync ? { key: "refreshGitStatus", label: "Refresh Git Status" } : null,
         canEditTask && !isArchived ? { key: "newSession", label: "New Session" } : null,
+        canEditTask && !isArchived ? { key: "rebuildHome", label: "Rebuild task home", danger: true } : null,
         canLinkTaskWorkspace ? { key: "linkTask", label: "Link Task" } : null,
         canLinkPullRequest ? { key: "linkPr", label: task.githubPrNumber ? "Edit Linked PR" : "Link Pull Request" } : null,
         canLinkIssue ? { key: "linkIssue", label: task.githubIssueNumber ? "Edit Linked Issue" : "Link Issue" } : null,
@@ -3565,6 +3583,18 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               return;
             }
 
+            if (key === "rebuildHome") {
+              Modal.confirm({
+                title: "Rebuild task home?",
+                content:
+                  "This permanently deletes this task’s Codex and Claude sessions, history, plugins, and task-specific agent settings, then reseeds the home.",
+                okText: "Rebuild task home",
+                okButtonProps: { danger: true },
+                onOk: handleRebuildTaskHome
+              });
+              return;
+            }
+
             if (key === "linkTask") {
               void openLinkTaskModal();
               return;
@@ -3607,7 +3637,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         }}
         trigger={["click"]}
       >
-        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "killTerminal" || submitting === "merge" || submitting === "state" || submitting === "linkTask" || submitting === "linkPr" || submitting === "linkIssue"}>
+        <Button icon={<MoreOutlined />} loading={submitting === "archive" || submitting === "newSession" || submitting === "rebuildHome" || submitting === "killTerminal" || submitting === "merge" || submitting === "state" || submitting === "linkTask" || submitting === "linkPr" || submitting === "linkIssue"}>
           More
         </Button>
       </Dropdown>

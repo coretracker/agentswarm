@@ -6,9 +6,18 @@ const TASK_PROVIDER_STATE_ROOT = ".task-state";
 const LEGACY_INTERACTIVE_STATE_ROOT = ".interactive-homes";
 const AGENT_HOME_DIRNAME = "agent-home";
 
-function sanitizeTaskStateSegment(value: string): string {
-  const normalized = value.trim().replace(/[^a-zA-Z0-9._-]+/g, "-");
-  return normalized.length > 0 ? normalized : "unknown-task";
+export function validateTaskId(value: string): string {
+  const taskId = value.trim();
+  if (
+    taskId.length === 0 ||
+    taskId.length > 255 ||
+    taskId === "." ||
+    taskId === ".." ||
+    !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(taskId)
+  ) {
+    throw new Error(`Invalid task ID: ${value}`);
+  }
+  return taskId;
 }
 
 function providerStateDirName(provider: AgentProvider): string {
@@ -25,7 +34,7 @@ export function resolveTaskProviderStatePaths(taskId: string, provider: AgentPro
   configServerPath: string | null;
   configHostPath: string | null;
 } {
-  const taskSegment = sanitizeTaskStateSegment(taskId);
+  const taskSegment = validateTaskId(taskId);
   const stateRootRelativePath = path.join(TASK_PROVIDER_STATE_ROOT, taskSegment);
   const agentHomeRelativePath = path.join(stateRootRelativePath, AGENT_HOME_DIRNAME);
   const relativePath = path.join(agentHomeRelativePath, providerStateDirName(provider));
@@ -45,10 +54,18 @@ export function resolveTaskProviderStatePaths(taskId: string, provider: AgentPro
 }
 
 export function resolveTaskStateRootPaths(taskId: string): { serverPath: string; hostPath: string } {
-  const taskSegment = sanitizeTaskStateSegment(taskId);
+  const taskSegment = validateTaskId(taskId);
   const relativePath = path.join(TASK_PROVIDER_STATE_ROOT, taskSegment);
   return {
     serverPath: path.join(env.TASK_WORKSPACE_ROOT, relativePath),
     hostPath: path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, relativePath)
+  };
+}
+
+export function resolveTaskHomePaths(taskId: string): { serverPath: string; hostPath: string } {
+  const taskSegment = validateTaskId(taskId);
+  return {
+    serverPath: path.join(env.TASK_HOME_ROOT, taskSegment),
+    hostPath: path.join(env.TASK_HOME_DOCKER_SOURCE, taskSegment)
   };
 }
