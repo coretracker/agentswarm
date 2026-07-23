@@ -56,6 +56,11 @@ describe("buildTerminalStartScript", () => {
     assert.match(dockerfile, /COPY normalize-provider-paths\.mjs/);
     assert.doesNotMatch(dockerfile, /COPY verft-base-state\.mjs/);
     assert.match(dockerfile, /COPY hostexec-proxy\.mjs/);
+    assert.match(dockerfile, /groupmod --new-name agent node/);
+    assert.match(dockerfile, /usermod --login agent --home \/home\/agent --move-home node/);
+    assert.match(dockerfile, /test "\$\(id -u agent\)" = 1000/);
+    assert.match(dockerfile, /test "\$\(id -g agent\)" = 1000/);
+    assert.doesNotMatch(dockerfile, /adduser --system/);
   });
 
   it("stores task homes in a Docker-managed volume with safe legacy migration", () => {
