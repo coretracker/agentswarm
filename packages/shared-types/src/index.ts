@@ -984,6 +984,7 @@ export interface SystemDataStores {
 
 export interface SystemSettings {
   defaultProvider: AgentProvider;
+  defaultAutoApplyCheckpoints: boolean;
   maxAgents: number;
   archivedTaskAutoDeleteEnabled: boolean;
   archivedTaskAutoDeleteDays: number;
@@ -1438,6 +1439,7 @@ export const getTaskExecutionStatusLabel = (status: TaskExecutionStatus): string
 
 export interface UpdateSettingsInput {
   defaultProvider?: AgentProvider;
+  defaultAutoApplyCheckpoints?: boolean;
   maxAgents?: number;
   archivedTaskAutoDeleteEnabled?: boolean;
   archivedTaskAutoDeleteDays?: number;

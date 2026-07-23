@@ -127,6 +127,7 @@ const hostexecSettingsSchema = z
 
 const updateSettingsSchema = z.object({
   defaultProvider: z.enum(["codex", "claude"]).optional(),
+  defaultAutoApplyCheckpoints: z.boolean().optional(),
   maxAgents: z.coerce.number().int().min(1).max(20).optional(),
   archivedTaskAutoDeleteEnabled: z.boolean().optional(),
   archivedTaskAutoDeleteDays: z.coerce.number().int().min(1).max(3650).optional(),

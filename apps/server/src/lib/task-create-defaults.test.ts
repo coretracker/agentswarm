@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { Repository, SystemSettings } from "@verft/shared-types";
-import { resolveCreateTaskProviderConfig } from "./task-create-defaults.js";
+import { resolveCreateTaskAutoApplyCheckpoints, resolveCreateTaskProviderConfig } from "./task-create-defaults.js";
 
 const settings: SystemSettings = {
   defaultProvider: "codex",
+  defaultAutoApplyCheckpoints: false,
   maxAgents: 3,
   archivedTaskAutoDeleteEnabled: true,
   archivedTaskAutoDeleteDays: 7,
@@ -124,5 +125,17 @@ describe("resolveCreateTaskProviderConfig", () => {
         modelOverride: "claude-sonnet-4-6"
       }
     );
+  });
+});
+
+describe("resolveCreateTaskAutoApplyCheckpoints", () => {
+  it("uses the global default when task input omits auto-apply", () => {
+    assert.equal(resolveCreateTaskAutoApplyCheckpoints({}, { ...settings, defaultAutoApplyCheckpoints: true }), true);
+    assert.equal(resolveCreateTaskAutoApplyCheckpoints({}, { ...settings, defaultAutoApplyCheckpoints: false }), false);
+  });
+
+  it("preserves explicit task-level auto-apply", () => {
+    assert.equal(resolveCreateTaskAutoApplyCheckpoints({ autoApplyCheckpoints: false }, { ...settings, defaultAutoApplyCheckpoints: true }), false);
+    assert.equal(resolveCreateTaskAutoApplyCheckpoints({ autoApplyCheckpoints: true }, { ...settings, defaultAutoApplyCheckpoints: false }), true);
   });
 });

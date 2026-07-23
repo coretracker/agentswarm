@@ -8,6 +8,10 @@ type CreateTaskProviderDefaultsInput = {
   model?: string | null;
 };
 
+type CreateTaskAutoApplyDefaultsInput = {
+  autoApplyCheckpoints?: boolean;
+};
+
 export interface ResolvedCreateTaskProviderConfig {
   provider: AgentProvider;
   providerProfile: ProviderProfile;
@@ -46,3 +50,8 @@ export const resolveCreateTaskProviderConfig = <T extends CreateTaskProviderDefa
     modelOverride
   };
 };
+
+export const resolveCreateTaskAutoApplyCheckpoints = <T extends CreateTaskAutoApplyDefaultsInput>(
+  payload: T,
+  settings: SystemSettings
+): boolean => payload.autoApplyCheckpoints ?? settings.defaultAutoApplyCheckpoints;

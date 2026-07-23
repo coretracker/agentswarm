@@ -77,6 +77,7 @@ export const POSTGRES_MIGRATIONS: PostgresMigration[] = [
       CREATE TABLE IF NOT EXISTS system_settings (
         singleton_id smallint PRIMARY KEY CHECK (singleton_id = 1),
         default_provider text NOT NULL,
+        default_auto_apply_checkpoints boolean NOT NULL DEFAULT false,
         max_agents integer NOT NULL,
         branch_prefix text NOT NULL,
         workspace_provisioning_mode text NOT NULL DEFAULT 'clone_only',
@@ -805,6 +806,13 @@ Feedback:
 
       ALTER TABLE system_settings
       DROP COLUMN IF EXISTS response_preference_presets;
+    `
+  },
+  {
+    id: "20260723_01_default_auto_apply_checkpoints",
+    sql: `
+      ALTER TABLE system_settings
+      ADD COLUMN IF NOT EXISTS default_auto_apply_checkpoints boolean NOT NULL DEFAULT false;
     `
   }
 ];

@@ -37,6 +37,7 @@ const buildSystemDataStores = (): SystemDataStores => ({
 
 const defaultSettings: SystemSettings = {
   defaultProvider: DEFAULT_PROVIDER,
+  defaultAutoApplyCheckpoints: false,
   maxAgents: 2,
   archivedTaskAutoDeleteEnabled: true,
   archivedTaskAutoDeleteDays: 7,
@@ -166,6 +167,7 @@ export class RedisSettingsStore implements SettingsStore {
     if (!raw) {
       const baseSettings = {
         defaultProvider: defaultSettings.defaultProvider,
+        defaultAutoApplyCheckpoints: defaultSettings.defaultAutoApplyCheckpoints,
         maxAgents: defaultSettings.maxAgents,
         archivedTaskAutoDeleteEnabled: defaultSettings.archivedTaskAutoDeleteEnabled,
         archivedTaskAutoDeleteDays: defaultSettings.archivedTaskAutoDeleteDays,
@@ -205,6 +207,10 @@ export class RedisSettingsStore implements SettingsStore {
     const normalizedClaudeDefaultModel = parsed.claudeDefaultModel?.trim() || defaultSettings.claudeDefaultModel;
     const normalizedBase = {
       defaultProvider: normalizedDefaultProvider,
+      defaultAutoApplyCheckpoints:
+        typeof parsed.defaultAutoApplyCheckpoints === "boolean"
+          ? parsed.defaultAutoApplyCheckpoints
+          : defaultSettings.defaultAutoApplyCheckpoints,
       maxAgents: parsed.maxAgents ?? defaultSettings.maxAgents,
       archivedTaskAutoDeleteEnabled:
         typeof parsed.archivedTaskAutoDeleteEnabled === "boolean"
@@ -237,6 +243,7 @@ export class RedisSettingsStore implements SettingsStore {
       Object.prototype.hasOwnProperty.call(parsed, "autoModeEnabled") ||
       Object.prototype.hasOwnProperty.call(parsed, "agentRules") ||
       parsed.defaultProvider !== normalizedBase.defaultProvider ||
+      parsed.defaultAutoApplyCheckpoints !== normalizedBase.defaultAutoApplyCheckpoints ||
       parsed.maxAgents !== normalizedBase.maxAgents ||
       parsed.archivedTaskAutoDeleteEnabled !== normalizedBase.archivedTaskAutoDeleteEnabled ||
       parsed.archivedTaskAutoDeleteDays !== normalizedBase.archivedTaskAutoDeleteDays ||
@@ -273,6 +280,10 @@ export class RedisSettingsStore implements SettingsStore {
     const nextClaudeDefaultModel = input.claudeDefaultModel?.trim() || current.claudeDefaultModel;
     const nextBase = {
       defaultProvider: nextDefaultProvider,
+      defaultAutoApplyCheckpoints:
+        input.defaultAutoApplyCheckpoints === undefined
+          ? current.defaultAutoApplyCheckpoints
+          : input.defaultAutoApplyCheckpoints,
       maxAgents: input.maxAgents ?? current.maxAgents,
       archivedTaskAutoDeleteEnabled:
         input.archivedTaskAutoDeleteEnabled === undefined
@@ -367,6 +378,7 @@ export class PostgresSettingsStore implements SettingsStore {
         INSERT INTO system_settings (
           singleton_id,
           default_provider,
+          default_auto_apply_checkpoints,
           max_agents,
           archived_task_auto_delete_enabled,
           archived_task_auto_delete_days,
@@ -393,11 +405,12 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_models,
           claude_default_effort
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::jsonb, $23, $24, $25::jsonb, $26)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24, $25, $26::jsonb, $27)
         ON CONFLICT (singleton_id) DO NOTHING
       `,
       [
         defaultSettings.defaultProvider,
+        defaultSettings.defaultAutoApplyCheckpoints,
         defaultSettings.maxAgents,
         defaultSettings.archivedTaskAutoDeleteEnabled,
         defaultSettings.archivedTaskAutoDeleteDays,
@@ -433,6 +446,7 @@ export class PostgresSettingsStore implements SettingsStore {
       `
         SELECT
           default_provider,
+          default_auto_apply_checkpoints,
           max_agents,
           archived_task_auto_delete_enabled,
           archived_task_auto_delete_days,
@@ -474,6 +488,10 @@ export class PostgresSettingsStore implements SettingsStore {
         : defaultSettings.claudeDefaultModel;
     const normalizedBase = {
       defaultProvider: normalizedDefaultProvider,
+      defaultAutoApplyCheckpoints:
+        typeof row?.default_auto_apply_checkpoints === "boolean"
+          ? row.default_auto_apply_checkpoints
+          : defaultSettings.defaultAutoApplyCheckpoints,
       maxAgents: typeof row?.max_agents === "number" ? row.max_agents : defaultSettings.maxAgents,
       archivedTaskAutoDeleteEnabled:
         typeof row?.archived_task_auto_delete_enabled === "boolean"
@@ -530,6 +548,10 @@ export class PostgresSettingsStore implements SettingsStore {
     const nextClaudeDefaultModel = input.claudeDefaultModel?.trim() || current.claudeDefaultModel;
     const nextBase = {
       defaultProvider: nextDefaultProvider,
+      defaultAutoApplyCheckpoints:
+        input.defaultAutoApplyCheckpoints === undefined
+          ? current.defaultAutoApplyCheckpoints
+          : input.defaultAutoApplyCheckpoints,
       maxAgents: input.maxAgents ?? current.maxAgents,
       archivedTaskAutoDeleteEnabled:
         input.archivedTaskAutoDeleteEnabled === undefined
@@ -581,6 +603,7 @@ export class PostgresSettingsStore implements SettingsStore {
         INSERT INTO system_settings (
           singleton_id,
           default_provider,
+          default_auto_apply_checkpoints,
           max_agents,
           archived_task_auto_delete_enabled,
           archived_task_auto_delete_days,
@@ -607,10 +630,11 @@ export class PostgresSettingsStore implements SettingsStore {
           claude_models,
           claude_default_effort
         )
-        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22::jsonb, $23, $24, $25::jsonb, $26)
+        VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23::jsonb, $24, $25, $26::jsonb, $27)
         ON CONFLICT (singleton_id) DO UPDATE
         SET
           default_provider = EXCLUDED.default_provider,
+          default_auto_apply_checkpoints = EXCLUDED.default_auto_apply_checkpoints,
           max_agents = EXCLUDED.max_agents,
           archived_task_auto_delete_enabled = EXCLUDED.archived_task_auto_delete_enabled,
           archived_task_auto_delete_days = EXCLUDED.archived_task_auto_delete_days,
@@ -639,6 +663,7 @@ export class PostgresSettingsStore implements SettingsStore {
       `,
       [
         nextBase.defaultProvider,
+        nextBase.defaultAutoApplyCheckpoints,
         nextBase.maxAgents,
         nextBase.archivedTaskAutoDeleteEnabled,
         nextBase.archivedTaskAutoDeleteDays,

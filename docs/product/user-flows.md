@@ -47,7 +47,7 @@ Notes:
 
 ## Settings And Credentials Flow (Current)
 1. Open `/settings`.
-2. Use `General` to set the default provider, concurrent agents, access roles, and response presets.
+2. Use `General` to set the default provider, default auto-apply checkpoint mode, concurrent agents, access roles, and response presets.
 3. Use `Harness` to define standing guidance applied to every task.
 4. Use `Credentials` to set the GitHub token, OpenAI API key, and Anthropic API key. Stored credential values are write-only.
 5. Use `Git` to set the Git username, optional commit author identity, and feature branch prefix. Default GitHub PAT HTTPS auth uses `x-access-token`.

@@ -44,6 +44,37 @@ test("PATCH /settings preserves global harness fields", async () => {
   await app.close();
 });
 
+test("PATCH /settings preserves default auto-apply setting", async () => {
+  const app = Fastify();
+  let updateInput: UpdateSettingsInput | undefined;
+
+  registerSettingsRoutes(app, {
+    auth: {
+      requireAllScopes: () => async () => undefined
+    } as never,
+    scheduler: {
+      onSettingsChanged: async () => undefined
+    } as never,
+    settingsStore: {
+      updateSettings: async (input: UpdateSettingsInput) => {
+        updateInput = input;
+        return input;
+      }
+    } as never
+  });
+
+  const response = await app.inject({
+    method: "PATCH",
+    url: "/settings",
+    payload: { defaultAutoApplyCheckpoints: true }
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(updateInput, { defaultAutoApplyCheckpoints: true });
+
+  await app.close();
+});
+
 test("PATCH /settings rejects global harness fields over 8000 characters", async () => {
   const app = Fastify();
   let updateCalled = false;
