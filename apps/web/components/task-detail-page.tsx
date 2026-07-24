@@ -19,7 +19,6 @@ import {
   type TaskMessageAction,
   type TaskMessage,
   type TaskPromptAttachment,
-  type TaskLiveDiff,
   type TaskRun,
   type AgentProvider,
   type TaskBranchStrategy,
@@ -31,7 +30,6 @@ import {
   type TaskInteractiveTerminalTranscript,
   type TaskTerminalSessionMode,
   type TaskWorkflowStatus,
-  type TaskWorkspaceCommit,
   type TaskWorkspaceFilePreview,
   type TaskGitOperation,
   type User
@@ -53,7 +51,6 @@ import {
   Modal,
   Pagination,
   Popconfirm,
-  Segmented,
   Skeleton,
   Spin,
   Select,
@@ -252,17 +249,6 @@ function getTaskWorkingLabel(task: Pick<Task, "status" | "activeInteractiveSessi
   }
 
   return getTaskStatusLabel(task.status);
-}
-
-function formatDiffRefDisplay(ref: string | null | undefined): string {
-  if (!ref?.trim()) {
-    return "—";
-  }
-  const trimmed = ref.trim();
-  if (trimmed.startsWith("origin/")) {
-    return trimmed.slice("origin/".length);
-  }
-  return trimmed;
 }
 
 function renderNonTextDiffCard(file: FileData, collapseFiles: boolean): ReactNode {
@@ -661,16 +647,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     refetch: refetchChangeProposals,
     loadMore: loadMoreProposals
   } = useTaskChangeProposals(taskId);
-  const [liveDiff, setLiveDiff] = useState<TaskLiveDiff | null>(null);
-  const [liveDiffLoading, setLiveDiffLoading] = useState(false);
-  const [liveDiffError, setLiveDiffError] = useState<string | null>(null);
-  const [liveDiffRefreshKey, setLiveDiffRefreshKey] = useState(0);
-  const [diffLiveKind, setDiffLiveKind] = useState<"compare" | "commits" | "working">("working");
-  const [diffCompareBaseRef, setDiffCompareBaseRef] = useState<string | null>(null);
-  const [commitLog, setCommitLog] = useState<TaskWorkspaceCommit[]>([]);
-  const [commitLogLoading, setCommitLogLoading] = useState(false);
-  const [commitLogError, setCommitLogError] = useState<string | null>(null);
-  const [selectedCommitSha, setSelectedCommitSha] = useState<string | null>(null);
   const [assignableUsers, setAssignableUsers] = useState<User[]>([]);
   const [assignableUsersLoading, setAssignableUsersLoading] = useState(false);
   const [followUpForm] = Form.useForm();
@@ -683,7 +659,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const [autoApplyCheckpointsInput, setAutoApplyCheckpointsInput] = useState(false);
   const { models: providerModels, loading: providerModelsLoading } = useProviderModels(providerInput);
   const [followUpMode, setFollowUpMode] = useState<FollowUpMode>(null);
-  const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "diff" | "files">("chat");
+  const [activeMainTab, setActiveMainTab] = useState<"chat" | "context" | "files">("chat");
   const [expandedRunTimelineKeys, setExpandedRunTimelineKeys] = useState<string[]>([]);
   const [selectedChatAction, setSelectedChatAction] = useState<ComposerAction>("build");
   const [submitting, setSubmitting] = useState<
@@ -696,8 +672,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "pull"
     | "push"
     | "resetGit"
-    | "revertCommit"
-    | "resetCommit"
     | "merge"
     | "archive"
     | "newSession"
@@ -794,7 +768,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     [messageApi]
   );
   const selectedChatActionRef = useRef(false);
-  const diffCompareBaseSyncedTaskIdRef = useRef<string | null>(null);
   const executionConfigSyncedTaskIdRef = useRef<string | null>(null);
   const mergeAutoMagicTargetRef = useRef<string | null>(null);
   const [selectedPromptImageFiles, setSelectedPromptImageFiles] = useState<SelectedTaskPromptImageFile[]>([]);
@@ -1124,7 +1097,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   }, [setTask, showTaskActionError, task?.id]);
   const triggerGitRefresh = useCallback((): void => {
-    setLiveDiffRefreshKey((k) => k + 1);
     if (canPush) {
       void loadTaskGitState();
       return;
@@ -1271,43 +1243,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     }
   };
   const hasOutputTab = (task?.resultMarkdown?.trim().length ?? 0) > 0;
-  const hasStoredDiff = (task?.branchDiff?.trim().length ?? 0) > 0;
-  const canRequestLiveDiff = !!task;
-  const hasLiveDiff = liveDiff?.live ?? false;
-  const compareRefError =
-    diffLiveKind === "compare" &&
-    Boolean(liveDiff && !liveDiff.live && liveDiff.message?.includes("Compare ref not found"));
-  const renderedDiff =
-    diffLiveKind === "compare" && compareRefError
-      ? ""
-      : diffLiveKind === "commits"
-        ? liveDiff?.diff ?? ""
-        : hasLiveDiff
-          ? liveDiff?.diff ?? ""
-          : task?.branchDiff ?? "";
-  const diffPreviewRefs =
-    !task || !hasLiveDiff
-      ? null
-      : diffLiveKind === "compare"
-        ? {
-            before: liveDiff?.baseRef ?? liveDiff?.defaultBaseRef ?? null,
-            after: "HEAD"
-          }
-        : diffLiveKind === "commits" && selectedCommitSha
-          ? {
-              before: `${selectedCommitSha}^`,
-              after: selectedCommitSha
-            }
-          : null;
-  const hasDiffTab = hasStoredDiff || canRequestLiveDiff;
-  const diffBaseBranchOptions = useMemo(() => {
-    const options: Array<{ value: string; label: string }> = [];
-    const repoDefault = task?.repoDefaultBranch;
-    if (repoDefault?.trim()) {
-      options.push({ value: repoDefault, label: `${repoDefault} (repo default)` });
-    }
-    return options;
-  }, [task?.repoDefaultBranch]);
   const allowedChatActions = useMemo(
     () => getAllowedComposerActions(canBuildTasks, canAskTasks, canUseInteractiveTerminal),
     [canAskTasks, canBuildTasks, canUseInteractiveTerminal]
@@ -1318,23 +1253,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     selectedChatActionRef.current = false;
     setSelectedChatAction(defaultAction);
   }, [allowedChatActions, taskId, task?.id]);
-
-  useEffect(() => {
-    setLiveDiff(null);
-    setLiveDiffError(null);
-    setLiveDiffLoading(false);
-    diffCompareBaseSyncedTaskIdRef.current = null;
-  }, [taskId]);
-
-  useEffect(() => {
-    if (!task?.id) {
-      return;
-    }
-    if (diffCompareBaseSyncedTaskIdRef.current !== task.id) {
-      diffCompareBaseSyncedTaskIdRef.current = task.id;
-      setDiffCompareBaseRef(task.repoDefaultBranch?.trim() ? task.repoDefaultBranch : null);
-    }
-  }, [task?.id, task?.repoDefaultBranch]);
 
   useEffect(() => {
     if (!task?.id || !hasBranchForSync) {
@@ -1642,167 +1560,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       cancelled = true;
     };
   }, [mergeModalOpen, mergeTargetBranch, task?.id]);
-
-  useEffect(() => {
-    setSelectedCommitSha(null);
-    setCommitLog([]);
-    setCommitLogError(null);
-  }, [task?.id]);
-
-  useEffect(() => {
-    setLiveDiff(null);
-  }, [diffLiveKind]);
-
-  useEffect(() => {
-    if (activeMainTab !== "diff" || !task || !canRequestLiveDiff) {
-      return;
-    }
-
-    if (diffLiveKind !== "commits") {
-      setCommitLog([]);
-      setCommitLogError(null);
-      setCommitLogLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    const loadCommitLog = async () => {
-      setCommitLogLoading(true);
-      setCommitLogError(null);
-      try {
-        const res = await api.getTaskWorkspaceCommitLog(task.id);
-        if (!cancelled) {
-          setCommitLog(res.commits);
-          setCommitLogError(res.message);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setCommitLog([]);
-          setCommitLogError(error instanceof Error ? error.message : "Failed to load commits");
-        }
-      } finally {
-        if (!cancelled) {
-          setCommitLogLoading(false);
-        }
-      }
-    };
-
-    void loadCommitLog();
-    return () => {
-      cancelled = true;
-    };
-  }, [activeMainTab, canRequestLiveDiff, diffLiveKind, liveDiffRefreshKey, task?.id, task?.updatedAt]);
-
-  useEffect(() => {
-    if (diffLiveKind !== "commits" || commitLog.length === 0) {
-      return;
-    }
-    if (!selectedCommitSha || !commitLog.some((c) => c.sha === selectedCommitSha)) {
-      setSelectedCommitSha(commitLog[0].sha);
-    }
-  }, [commitLog, diffLiveKind, selectedCommitSha]);
-
-  useEffect(() => {
-    if (activeMainTab !== "diff" || !task || !canRequestLiveDiff) {
-      return;
-    }
-
-    if (diffLiveKind === "commits") {
-      if (!selectedCommitSha) {
-        setLiveDiff(null);
-        setLiveDiffLoading(false);
-        setLiveDiffError(null);
-        return;
-      }
-
-      let cancelled = false;
-      const loadCommitDiff = async () => {
-        setLiveDiffLoading(true);
-        setLiveDiffError(null);
-        try {
-          const snapshot = await api.getTaskLiveDiff(task.id, {
-            diffKind: "commits",
-            commitSha: selectedCommitSha
-          });
-          if (!cancelled) {
-            setLiveDiff(snapshot);
-            if (!snapshot.live && snapshot.message) {
-              setLiveDiffError(snapshot.message);
-            } else {
-              setLiveDiffError(null);
-            }
-          }
-        } catch (error) {
-          if (!cancelled) {
-            setLiveDiffError(error instanceof Error ? error.message : "Failed to load commit diff");
-            setLiveDiff(null);
-          }
-        } finally {
-          if (!cancelled) {
-            setLiveDiffLoading(false);
-          }
-        }
-      };
-
-      void loadCommitDiff();
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    let cancelled = false;
-    const loadLiveDiff = async () => {
-      setLiveDiffLoading(true);
-      try {
-        const snapshot = await api.getTaskLiveDiff(task.id, {
-          ...(diffLiveKind === "compare"
-            ? {
-                baseRef: diffCompareBaseRef ?? task.repoDefaultBranch ?? undefined,
-                diffKind: "compare" as const
-              }
-            : { diffKind: "working" as const })
-        });
-        if (!cancelled) {
-          setLiveDiff(snapshot);
-          setLiveDiffError(null);
-        }
-      } catch (error) {
-        if (!cancelled) {
-          setLiveDiffError(error instanceof Error ? error.message : "Failed to refresh live diff");
-        }
-      } finally {
-        if (!cancelled) {
-          setLiveDiffLoading(false);
-        }
-      }
-    };
-
-    void loadLiveDiff();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    activeMainTab,
-    canRequestLiveDiff,
-    diffCompareBaseRef,
-    diffLiveKind,
-    liveDiffRefreshKey,
-    selectedCommitSha,
-    task?.id,
-    task?.updatedAt,
-    task?.workspaceBaseRef
-  ]);
-
-  useEffect(() => {
-    if (!task) {
-      return;
-    }
-
-    if (activeMainTab === "diff" && !hasDiffTab) {
-      setActiveMainTab("chat");
-    }
-  }, [activeMainTab, hasDiffTab, task]);
 
   const markdownComponents = {
     h1: ({ children }: { children?: React.ReactNode }) => <Typography.Title level={3}>{children}</Typography.Title>,
@@ -2816,7 +2573,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       );
       messageApi.success("Changes pushed");
       void loadTaskGitState();
-      setLiveDiffRefreshKey((k) => k + 1);
     } catch (error) {
       showTaskActionError(error, "Failed to push changes");
     } finally {
@@ -2849,77 +2605,8 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           );
           messageApi.success("Local Git state reset");
           void loadTaskGitState();
-          setLiveDiffRefreshKey((k) => k + 1);
         } catch (error) {
           showTaskActionError(error, "Failed to reset local Git state");
-        } finally {
-          setSubmitting(null);
-        }
-      }
-    });
-  };
-  const handleRevertCommit = async (commit: TaskWorkspaceCommit) => {
-    if (!task) {
-      return;
-    }
-
-    Modal.confirm({
-      title: `Revert ${commit.shortSha}?`,
-      content: "This creates a new commit that reverts the selected commit.",
-      okText: "Revert commit",
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        setSubmitting("revertCommit");
-        try {
-          const updatedTask = await api.revertTaskCommit(task.id, commit.sha);
-          setTask((current) =>
-            current
-              ? {
-                  ...current,
-                  ...updatedTask,
-                  logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
-                }
-              : updatedTask
-          );
-          messageApi.success(`Reverted ${commit.shortSha}`);
-          void loadTaskGitState();
-          setLiveDiffRefreshKey((k) => k + 1);
-        } catch (error) {
-          showTaskActionError(error, "Failed to revert commit");
-        } finally {
-          setSubmitting(null);
-        }
-      }
-    });
-  };
-  const handleResetToCommit = async (commit: TaskWorkspaceCommit) => {
-    if (!task) {
-      return;
-    }
-
-    Modal.confirm({
-      title: `Reset to ${commit.shortSha}?`,
-      content: "This removes newer local-only commits and discards uncommitted changes.",
-      okText: "Reset to commit",
-      okButtonProps: { danger: true },
-      onOk: async () => {
-        setSubmitting("resetCommit");
-        try {
-          const updatedTask = await api.resetTaskCommit(task.id, commit.sha);
-          setTask((current) =>
-            current
-              ? {
-                  ...current,
-                  ...updatedTask,
-                  logs: updatedTask.logs.length > 0 ? updatedTask.logs : current.logs
-                }
-              : updatedTask
-          );
-          messageApi.success(`Reset to ${commit.shortSha}`);
-          void loadTaskGitState();
-          setLiveDiffRefreshKey((k) => k + 1);
-        } catch (error) {
-          showTaskActionError(error, "Failed to reset to commit");
         } finally {
           setSubmitting(null);
         }
@@ -2975,7 +2662,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       return;
     }
 
-    const selectedDiffSource = (task.branchDiff?.trim() ? task.branchDiff : renderedDiff).trim();
+    const selectedDiffSource = (task.branchDiff ?? "").trim();
     if (!selectedDiffSource || selectedDiffSource === "(no changes)") {
       messageApi.warning("No diff content is available for this merge.");
       return;
@@ -3047,7 +2734,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           : updatedTask
       );
       messageApi.success("Changes pulled");
-      setLiveDiffRefreshKey((k) => k + 1);
       void loadTaskGitState();
     } catch (error) {
       showTaskActionError(error, "Failed to pull changes");
@@ -3089,7 +2775,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setKillTerminalConfirmOpen(false);
       setInteractiveTerminalLaunchPending(false);
       messageApi.success(`${activeTerminalLabel} stopped`);
-      setLiveDiffRefreshKey((k) => k + 1);
       refetchChangeProposals();
       void Promise.allSettled([
         api.getTaskInteractiveTerminalStatus(task.id, { mode: "terminal" })
@@ -3358,12 +3043,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Card>
     </Space>
   );
-  const diffHeadLabel = liveDiffLoading && !liveDiff
-    ? "Loading…"
-    : liveDiff?.headBranch
-      ? `${liveDiff.headBranch}${liveDiff.headShaShort ? ` @ ${liveDiff.headShaShort}` : ""}`
-      : task?.branchName ?? "—";
-
   const pushPreviewHasPushableChanges = Boolean(
     pushPreview &&
       (pushPreview.hasUncommittedChanges || pushPreview.unpushedCommitSubjects.length > 0)
@@ -3635,250 +3314,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       </Dropdown>
     ) : null;
 
-  const diffContent = hasDiffTab ? (
-    <Flex vertical gap={16} style={{ width: "100%", height: "71vh", maxHeight: "71vh", minHeight: 0 }}>
-      {task ? (
-        <Card size="small" style={{ flexShrink: 0 }} styles={{ body: { paddingBottom: 12 } }}>
-          <Segmented
-            value={diffLiveKind}
-            onChange={(value) => setDiffLiveKind(value as "compare" | "commits" | "working")}
-            options={[
-              { label: "Working tree", value: "working" },
-              { label: "Branch commits", value: "commits" },
-              { label: "Compare to branch", value: "compare" }
-            ]}
-            style={{ marginBottom: 14 }}
-          />
-          <Flex gap={8} wrap style={{ width: "100%", marginBottom: 14 }}>
-            {gitStateSummary.map((item) => (
-              <div
-                key={item.label}
-                style={{
-                  minWidth: 150,
-                  flex: "1 1 170px",
-                  padding: "10px 12px",
-                  borderRadius: 8,
-                  background: token.colorFillAlter
-                }}
-              >
-                <Typography.Text type="secondary" style={{ display: "block", fontSize: 12 }}>
-                  {item.label}
-                </Typography.Text>
-                <Typography.Text strong>{item.value}</Typography.Text>
-              </div>
-            ))}
-          </Flex>
-          <Flex align="flex-start" wrap="wrap" gap={16}>
-            <div style={{ minWidth: 200, flex: "1 1 220px" }}>
-              <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
-                Base branch
-              </Typography.Text>
-              <Select
-                placeholder={task.repoDefaultBranch ?? "Branch"}
-                value={diffCompareBaseRef ?? task.repoDefaultBranch}
-                options={diffBaseBranchOptions}
-                disabled={!canRequestLiveDiff || diffLiveKind !== "compare"}
-                style={{ width: "100%" }}
-                onChange={(value) => {
-                  setDiffCompareBaseRef(typeof value === "string" && value.length > 0 ? value : task.repoDefaultBranch ?? null);
-                }}
-              />
-              {diffLiveKind === "commits" ? (
-                <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
-                  Recent commits on the current workspace branch. Choose one to view its patch. The base branch is only used in
-                  Compare to branch mode.
-                </Typography.Paragraph>
-              ) : diffLiveKind === "working" ? (
-                <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0, fontSize: 12 }}>
-                  Live workspace changes against HEAD, including uncommitted edits.
-                </Typography.Paragraph>
-              ) : null}
-            </div>
-            <ArrowRightOutlined style={{ color: "rgba(0,0,0,0.45)", marginTop: 34 }} />
-            <div style={{ minWidth: 200, flex: "1 1 220px" }}>
-              <Typography.Text type="secondary" style={{ display: "block", marginBottom: 6 }}>
-                {diffLiveKind === "commits" ? "Workspace (HEAD)" : diffLiveKind === "working" ? "Working tree" : "Compare (HEAD)"}
-              </Typography.Text>
-              <Typography.Text code style={{ fontSize: 14 }}>
-                {diffHeadLabel}
-              </Typography.Text>
-            </div>
-          </Flex>
-          {compareRefError ? null : (
-            <Typography.Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0 }}>
-              {diffLiveKind === "commits" ? (
-                commitLogLoading ? (
-                  "Loading commit list…"
-                ) : commitLogError ? (
-                  commitLogError
-                ) : hasLiveDiff && liveDiff ? (
-                  `Selected commit · diff updated ${dayjs(liveDiff.fetchedAt).format("HH:mm:ss")}`
-                ) : selectedCommitSha && liveDiffLoading ? (
-                  "Loading commit diff…"
-                ) : !commitLog.length && !commitLogLoading ? (
-                  "No commits on this branch in the workspace yet."
-                ) : (
-                  liveDiff?.message ?? "Select a commit to view its changes."
-                )
-              ) : diffLiveKind === "working" ? (
-                hasLiveDiff ? `Working tree · updated ${dayjs(liveDiff?.fetchedAt).format("HH:mm:ss")}` : liveDiff?.message ?? "Live working tree diff will appear once the task workspace exists."
-              ) : hasLiveDiff ? (
-                `Compare · updated ${dayjs(liveDiff?.fetchedAt).format("HH:mm:ss")}`
-              ) : hasStoredDiff ? (
-                "Showing last captured diff from task state because no live workspace diff is available."
-              ) : (
-                liveDiff?.message ?? "Live diff will appear once the task workspace exists."
-              )}
-            </Typography.Paragraph>
-          )}
-        </Card>
-      ) : null}
-      {liveDiffError ? <Alert type="warning" showIcon message="Live diff refresh failed" description={liveDiffError} /> : null}
-      {compareRefError && liveDiff ? (
-        <Alert
-          type="warning"
-          showIcon
-          message={liveDiff.message ?? "Invalid compare base."}
-          description={
-            liveDiff.defaultBaseRef
-              ? `Try ${formatDiffRefDisplay(liveDiff.defaultBaseRef)} (repo default) or another branch that exists in this workspace.`
-              : undefined
-          }
-        />
-      ) : null}
-      {task ? (
-        <Flex gap={16} align="stretch" style={{ width: "100%", flex: 1, minHeight: 0 }}>
-          {diffLiveKind === "commits" ? (
-            <Card
-              size="small"
-              title="Commits"
-              extra={
-                <Space size={8}>
-                  {selectedCommitSha ? (
-                    <>
-                      <Button
-                        type="link"
-                        size="small"
-                        onClick={() => {
-                          const selected = commitLog.find((commit) => commit.sha === selectedCommitSha);
-                          if (selected) {
-                            void handleRevertCommit(selected);
-                          }
-                        }}
-                        loading={submitting === "revertCommit"}
-                        style={{ padding: 0 }}
-                      >
-                        Revert commit
-                      </Button>
-                      {commitLog.find((commit) => commit.sha === selectedCommitSha)?.isPushed === false ? (
-                        <Button
-                          type="link"
-                          size="small"
-                          danger
-                          onClick={() => {
-                            const selected = commitLog.find((commit) => commit.sha === selectedCommitSha);
-                            if (selected) {
-                              void handleResetToCommit(selected);
-                            }
-                          }}
-                          loading={submitting === "resetCommit"}
-                          style={{ padding: 0 }}
-                        >
-                          Reset to here
-                        </Button>
-                      ) : null}
-                    </>
-                  ) : null}
-                  <Button type="link" size="small" onClick={triggerGitRefresh} style={{ padding: 0 }}>
-                    Refresh
-                  </Button>
-                </Space>
-              }
-              style={{ width: "100%", maxWidth: 360, flex: "0 0 320px", height: "100%", minHeight: 0, display: "flex", flexDirection: "column" }}
-              styles={{ body: { padding: 0, flex: 1, minHeight: 0, overflow: "auto" } }}
-            >
-              {commitLogLoading ? (
-                <div style={{ padding: 24, textAlign: "center" }}>
-                  <Spin size="small" />
-                </div>
-              ) : (
-                <List
-                  size="small"
-                  dataSource={commitLog}
-                  locale={{ emptyText: "No commits yet." }}
-                  renderItem={(c) => (
-                    <List.Item
-                      style={{
-                        cursor: "pointer",
-                        background: selectedCommitSha === c.sha ? "rgba(0,0,0,0.06)" : undefined,
-                        padding: "10px 12px"
-                      }}
-                      onClick={() => setSelectedCommitSha(c.sha)}
-                    >
-                      <List.Item.Meta
-                        title={
-                          <Space size={8} wrap>
-                            <Typography.Text code style={{ fontSize: 12 }}>
-                              {c.shortSha}
-                            </Typography.Text>
-                            <Tag color={c.isPushed ? "default" : "blue"} style={{ marginInlineEnd: 0 }}>
-                              {c.isPushed ? "Pushed" : "Local"}
-                            </Tag>
-                          </Space>
-                        }
-                        description={
-                          <div>
-                            <Typography.Paragraph style={{ marginBottom: 4, fontSize: 13 }} ellipsis={{ rows: 2 }}>
-                              {c.subject}
-                            </Typography.Paragraph>
-                            <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-                              {dayjs(c.committedAt).format("MMM D, YYYY HH:mm")} · {c.authorName}
-                            </Typography.Text>
-                          </div>
-                        }
-                      />
-                    </List.Item>
-                  )}
-                />
-              )}
-            </Card>
-          ) : null}
-          <div style={{ flex: "1 1 400px", minWidth: 0, height: "100%", minHeight: 0, overflow: "auto" }}>
-            <TaskDiffOpenAiPanel
-              diffText={renderedDiff}
-              emptyMessage={
-                compareRefError
-                  ? "Choose another base branch or the repository default."
-                    : diffLiveKind === "commits"
-                      ? commitLogLoading
-                        ? "Loading commits…"
-                        : !commitLog.length
-                          ? "No commits on this branch yet."
-                          : liveDiffLoading && selectedCommitSha
-                            ? "Loading commit diff…"
-                            : hasLiveDiff
-                              ? "This commit has no file changes in its patch."
-                              : liveDiff?.message ?? "Could not load this commit’s diff."
-                    : diffLiveKind === "working"
-                      ? hasLiveDiff
-                        ? "No uncommitted changes in the working tree."
-                        : liveDiff?.message ?? "Could not load the working tree diff."
-                    : hasLiveDiff
-                        ? "No diff between the selected base and HEAD."
-                        : "No diff captured yet. Run Build to generate one."
-              }
-              collapseFiles
-              taskId={task.id}
-              liveDiff={liveDiff}
-              previewRefs={diffPreviewRefs}
-              selectionResetToken={`${task.id}-${diffLiveKind}-${selectedCommitSha ?? ""}`}
-            />
-          </div>
-        </Flex>
-      ) : null}
-    </Flex>
-  ) : null;
-
   const aiSettingsSummary = [
     providerOptions.find((option) => option.value === providerInput)?.label ?? getAgentProviderLabel(providerInput),
     (allowedProviderModels.find((option) => option.value === modelInput)?.label ?? modelInput) ||
@@ -4037,7 +3472,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
   const handleCheckpointFileSaved = () => {
     refetchChangeProposals();
-    setLiveDiffRefreshKey((current) => current + 1);
   };
 
   const handleApplyCheckpoint = async () => {
@@ -4057,7 +3491,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       setApplyCheckpointModalProposal(null);
       setApplyCheckpointCommitMessage("");
       messageApi.success(canReapplyReverted ? "Checkpoint re-applied" : "Checkpoint applied");
-      setLiveDiffRefreshKey((k) => k + 1);
       refetchChangeProposals();
     } catch (error) {
       showTaskActionError(error, "Could not apply checkpoint");
@@ -4086,7 +3519,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       syncTaskAfterCheckpointMutation(updatedAfterApply);
       setApplyCheckpointModalProposal(null);
       setApplyCheckpointCommitMessage("");
-      setLiveDiffRefreshKey((k) => k + 1);
       refetchChangeProposals();
 
       const updatedAfterPush = await api.pushTask(task.id);
@@ -4101,7 +3533,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
       );
       messageApi.success(canReapplyReverted ? "Checkpoint re-applied and pushed" : "Checkpoint applied and pushed");
       void loadTaskGitState();
-      setLiveDiffRefreshKey((k) => k + 1);
     } catch (error) {
       if (applied) {
         showTaskActionError(error, "Checkpoint applied but push failed");
@@ -4131,7 +3562,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           const updated = await api.rejectTaskChangeProposal(task.id, proposal.id);
           syncTaskAfterCheckpointMutation(updated);
           messageApi.success("Checkpoint rejected; workspace reset.");
-          setLiveDiffRefreshKey((k) => k + 1);
           refetchChangeProposals();
         } catch (error) {
           showTaskActionError(error, "Could not reject checkpoint");
@@ -4159,7 +3589,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           const updated = await api.revertTaskChangeProposal(task.id, proposal.id);
           syncTaskAfterCheckpointMutation(updated);
           messageApi.success("Checkpoint reverted");
-          setLiveDiffRefreshKey((k) => k + 1);
           refetchChangeProposals();
         } catch (error) {
           showTaskActionError(error, "Could not revert checkpoint");
@@ -4190,7 +3619,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           const updated = await api.revertTaskChangeProposalFile(task.id, proposal.id, { path: filePath });
           syncTaskAfterCheckpointMutation(updated);
           messageApi.success(`Reverted ${filePath}`);
-          setLiveDiffRefreshKey((k) => k + 1);
           refetchChangeProposals();
         } catch (error) {
           showTaskActionError(error, "Could not revert file");
@@ -5218,15 +4646,6 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
         </Space>
       )
     },
-    ...(hasDiffTab
-      ? [
-          {
-            key: "diff",
-            label: "Git",
-            children: diffContent
-          }
-        ]
-      : []),
     {
       key: "files",
       label: "Files",
@@ -5825,7 +5244,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
                 <Flex vertical gap={16}>
                   {chatPreparingNotice}
-                  <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "diff" | "files")} items={mainTabItems} />
+                  <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "files")} items={mainTabItems} />
                   <div ref={bottomScrollAnchorRef} aria-hidden="true" style={{ height: 0, width: "100%", flexShrink: 0 }} />
                 </Flex>
               </Flex>

@@ -16,6 +16,11 @@ import {
 
 type HistoryDetailSection = "timeline" | "summary" | "diff";
 
+interface DiffLineStats {
+  additions: number;
+  deletions: number;
+}
+
 export interface TaskHistoryGroupedAutoRunCardProps {
   entryKey: string;
   entry: GroupedAutoRunHistoryEntry;
@@ -52,6 +57,39 @@ export interface TaskHistoryCheckpointDiffActions {
   disabled?: boolean;
 }
 
+function parseDiffLineStats(proposal: TaskChangeProposal): DiffLineStats | null {
+  const stat = proposal.diffStat.trim();
+  const insertionMatch = stat.match(/(\d+)\s+insertions?\(\+\)/);
+  const deletionMatch = stat.match(/(\d+)\s+deletions?\(-\)/);
+  const additions = insertionMatch ? Number(insertionMatch[1]) : 0;
+  const deletions = deletionMatch ? Number(deletionMatch[1]) : 0;
+
+  if (additions > 0 || deletions > 0 || stat.includes("changed")) {
+    return { additions, deletions };
+  }
+
+  if (!proposal.diff.trim() || proposal.diff.trim() === "(no changes)") {
+    return null;
+  }
+
+  let fallbackAdditions = 0;
+  let fallbackDeletions = 0;
+  for (const line of proposal.diff.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) {
+      continue;
+    }
+    if (line.startsWith("+")) {
+      fallbackAdditions += 1;
+    } else if (line.startsWith("-")) {
+      fallbackDeletions += 1;
+    }
+  }
+
+  return fallbackAdditions > 0 || fallbackDeletions > 0
+    ? { additions: fallbackAdditions, deletions: fallbackDeletions }
+    : null;
+}
+
 export function TaskHistoryGroupedAutoRunCard({
   entryKey,
   entry,
@@ -80,6 +118,7 @@ export function TaskHistoryGroupedAutoRunCard({
   const timelineDisplayCount = buildTimelineDisplayItems(entry.run.timelineEvents ?? []).length;
   const timelineMeta = `Timeline ${timelineEventCount > 0 ? `${timelineDisplayCount}/${timelineEventCount}` : "0"}`;
   const diffMeta = entry.proposal ? `Diff ${entry.proposal.changedFiles.length}` : null;
+  const diffLineStats = entry.proposal ? parseDiffLineStats(entry.proposal) : null;
   const diffActions = entry.proposal ? getCheckpointDiffActions?.(entry.proposal) : undefined;
   const visibleDiffActions = [diffActions?.apply, diffActions?.reject, diffActions?.revert].filter(
     (action): action is TaskHistoryCheckpointDiffAction => !!action?.visible
@@ -182,6 +221,19 @@ export function TaskHistoryGroupedAutoRunCard({
               <>
                 <Typography.Text type="secondary" style={{ fontSize: 13 }}>·</Typography.Text>
                 <Typography.Text type="secondary" style={{ fontSize: 13 }}>No code changes</Typography.Text>
+              </>
+            ) : null}
+            {diffLineStats ? (
+              <>
+                <Typography.Text type="secondary" style={{ fontSize: 13 }}>·</Typography.Text>
+                <Space size={6} aria-label={`${diffLineStats.additions} additions, ${diffLineStats.deletions} deletions`}>
+                  <Typography.Text style={{ fontSize: 13, fontWeight: 600, color: token.colorSuccess }}>
+                    +{diffLineStats.additions}
+                  </Typography.Text>
+                  <Typography.Text style={{ fontSize: 13, fontWeight: 600, color: token.colorError }}>
+                    -{diffLineStats.deletions}
+                  </Typography.Text>
+                </Space>
               </>
             ) : null}
           </Flex>
