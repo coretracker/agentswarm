@@ -278,7 +278,15 @@ export function AppShell({ children }: { children: ReactNode }) {
               transition: "margin-left 220ms ease"
             }}
           >
-            <Layout.Content style={{ padding: 24, minHeight: 0, overflow: "auto", background: token.colorBgLayout }}>
+            <Layout.Content
+              style={{
+                paddingBlock: 24,
+                paddingInline: desktopSidebar ? 50 : 24,
+                minHeight: 0,
+                overflow: "auto",
+                background: token.colorBgLayout
+              }}
+            >
               <div style={{ width: "100%", maxWidth: contentMaxWidth, marginInline: "auto", minHeight: "100%" }}>
                 {hasRouteAccess ? (
                   children
