@@ -127,11 +127,14 @@ export function createMockApi(overrides: MockApiOverrides = {}): MockApiOverride
     updateTaskWorkspaceFile: async (_id, input) => ({ ...textPreview, path: input.path, content: input.content }),
     openAiDiffAssist: async () => ({ text: "This diff looks focused and ready for review." }),
     getTaskMessageAttachmentUrl: (taskId, messageId, attachmentId) => `/storybook/tasks/${taskId}/messages/${messageId}/attachments/${attachmentId}`,
-    listTaskMessages: async () => ({ items: taskMessages, hasMore: false }),
+    listTaskMessages: async (id) => ({ items: taskMessages.filter((message) => message.taskId === id), hasMore: false }),
     updateTaskMessage: async (_taskId, messageId, input) => ({ ...taskMessages[0], id: messageId, content: input.content }),
-    listTaskRuns: async () => ({ items: taskRuns, hasMore: false }),
+    listTaskRuns: async (id) => ({ items: taskRuns.filter((run) => run.taskId === id), hasMore: false }),
     getTaskRunRawJsonUrl: (taskId, runId) => `/storybook/tasks/${taskId}/runs/${runId}/raw-json`,
-    listTaskChangeProposals: async () => ({ items: taskChangeProposals, hasMore: false }),
+    listTaskChangeProposals: async (id) => ({
+      items: taskChangeProposals.filter((proposal) => proposal.taskId === id),
+      hasMore: false
+    }),
     applyTaskChangeProposal: async (taskId) => updateTask(taskId, { hasPendingCheckpoint: false, status: "done", workflowStatus: "done" }),
     acceptTaskChangeProposal: async (taskId) => updateTask(taskId, { hasPendingCheckpoint: false, status: "done", workflowStatus: "done" }),
     revertTaskChangeProposal: async (taskId) => updateTask(taskId, { hasPendingCheckpoint: false }),

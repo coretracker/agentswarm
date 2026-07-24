@@ -327,6 +327,20 @@ export const tasks: Task[] = [
     updatedAt: "2026-07-23T08:55:00.000Z"
   }),
   createTask({
+    id: "task-preparing",
+    title: "Prepare workspace for dashboard refresh",
+    pinned: false,
+    hasPendingCheckpoint: false,
+    status: "preparing_workspace",
+    workflowStatus: "in_progress",
+    executionStatus: "preparing",
+    executionAction: "build",
+    reviewReason: null,
+    startedAt: "2026-07-23T09:08:00.000Z",
+    finishedAt: null,
+    updatedAt: "2026-07-23T09:09:00.000Z"
+  }),
+  createTask({
     id: "task-failed",
     title: "Fix failing task detail empty state",
     pinned: false,

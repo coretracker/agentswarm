@@ -100,6 +100,15 @@ export const TaskDetailRunning: Story = {
   )
 };
 
+export const TaskDetailPreparingWorkspace: Story = {
+  parameters: { verft: { shell: "fullscreen", pathname: "/tasks/task-preparing" } },
+  render: () => (
+    <ShellPage>
+      <TaskDetailPage taskId="task-preparing" />
+    </ShellPage>
+  )
+};
+
 export const TaskTerminal: Story = {
   parameters: { verft: { shell: "fullscreen", pathname: `/tasks/${tasks[0].id}/terminal`, params: { id: tasks[0].id } } },
   render: () => (

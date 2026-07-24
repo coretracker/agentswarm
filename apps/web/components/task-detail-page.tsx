@@ -51,6 +51,7 @@ import {
   Modal,
   Pagination,
   Popconfirm,
+  Result,
   Skeleton,
   Spin,
   Select,
@@ -74,7 +75,6 @@ import {
   EditOutlined,
   ExportOutlined,
   LinkOutlined,
-  LoadingOutlined,
   MoreOutlined,
   PushpinOutlined,
   ReloadOutlined,
@@ -3424,12 +3424,16 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   );
 
   const chatPreparingNotice = isPreparingWorkspace ? (
-    <Alert
-      type="info"
-      showIcon
-      icon={<LoadingOutlined spin />}
-      message="Preparing workspace"
-      description="Cloning the repository and checking out your branch. Chat history and the composer will appear when the workspace is ready."
+    <Result
+      icon={<Spin size="large" />}
+      title="Preparing workspace"
+      subTitle="Cloning the repository and checking out your branch. History and the composer will appear when the workspace is ready."
+      style={{
+        padding: "32px 24px",
+        background: token.colorBgContainer,
+        border: `1px solid ${token.colorBorderSecondary}`,
+        borderRadius: token.borderRadiusLG
+      }}
     />
   ) : null;
 
@@ -5244,7 +5248,9 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
 
                 <Flex vertical gap={16}>
                   {chatPreparingNotice}
-                  <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "files")} items={mainTabItems} />
+                  {!isPreparingWorkspace ? (
+                    <Tabs activeKey={activeMainTab} onChange={(value) => setActiveMainTab(value as "chat" | "context" | "files")} items={mainTabItems} />
+                  ) : null}
                   <div ref={bottomScrollAnchorRef} aria-hidden="true" style={{ height: 0, width: "100%", flexShrink: 0 }} />
                 </Flex>
               </Flex>
