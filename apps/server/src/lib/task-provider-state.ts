@@ -13,7 +13,7 @@ export function validateTaskId(value: string): string {
     taskId.length > 255 ||
     taskId === "." ||
     taskId === ".." ||
-    !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(taskId)
+    !/^[a-zA-Z0-9_-][a-zA-Z0-9._-]*$/.test(taskId)
   ) {
     throw new Error(`Invalid task ID: ${value}`);
   }

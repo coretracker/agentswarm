@@ -12,12 +12,12 @@ import {
 
 describe("task-provider-state", () => {
   it("builds task-scoped provider state paths", () => {
-    const paths = resolveTaskProviderStatePaths("task-123", "codex");
-    assert.equal(paths.serverPath, "/task-workspaces/.task-state/task-123/agent-home/.codex");
-    assert.equal(paths.hostPath, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/agent-home/.codex"));
-    assert.equal(paths.homeServerPath, "/task-workspaces/.task-state/task-123/agent-home");
-    assert.equal(paths.homeHostPath, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/task-123/agent-home"));
-    assert.equal(paths.legacyServerPath, "/task-workspaces/.interactive-homes/codex/task-123");
+    const paths = resolveTaskProviderStatePaths("-task_123", "codex");
+    assert.equal(paths.serverPath, "/task-workspaces/.task-state/-task_123/agent-home/.codex");
+    assert.equal(paths.hostPath, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/-task_123/agent-home/.codex"));
+    assert.equal(paths.homeServerPath, "/task-workspaces/.task-state/-task_123/agent-home");
+    assert.equal(paths.homeHostPath, path.join(env.TASK_WORKSPACE_DOCKER_SOURCE, ".task-state/-task_123/agent-home"));
+    assert.equal(paths.legacyServerPath, "/task-workspaces/.interactive-homes/codex/-task_123");
     assert.equal(paths.configServerPath, null);
     assert.equal(paths.configHostPath, null);
   });
@@ -46,7 +46,7 @@ describe("task-provider-state", () => {
   });
 
   it("rejects unsafe task IDs", () => {
-    for (const taskId of ["", ".", "..", "../task", "task/name", "task name", "/absolute"]) {
+    for (const taskId of ["", ".", "..", "../task", "task/name", "task name", "/absolute", "./task", "-/task"]) {
       assert.throws(() => validateTaskId(taskId), /Invalid task ID/);
     }
   });
