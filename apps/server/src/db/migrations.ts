@@ -806,5 +806,22 @@ Feedback:
       ALTER TABLE system_settings
       DROP COLUMN IF EXISTS response_preference_presets;
     `
+  },
+  {
+    id: "20260903_01_teams",
+    sql: `
+      CREATE TABLE IF NOT EXISTS teams (
+        id text PRIMARY KEY,
+        name text NOT NULL,
+        name_key text NOT NULL UNIQUE,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS team_id text NULL REFERENCES teams(id) ON DELETE RESTRICT;
+
+      CREATE INDEX IF NOT EXISTS users_team_id_idx ON users(team_id);
+    `
   }
 ];

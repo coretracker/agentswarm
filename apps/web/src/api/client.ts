@@ -55,6 +55,9 @@ import type {
   UpdateRepositoryInput,
   UpdateSettingsInput,
   UpdateUserInput,
+  Team,
+  CreateTeamInput,
+  UpdateTeamInput,
   User,
   IntegrationRule,
   CreateIntegrationRuleInput,
@@ -200,6 +203,21 @@ export const api = {
     }),
   deleteUser: (id: string) =>
     request<void>(`/users/${id}`, {
+      method: "DELETE"
+    }),
+  listTeams: () => request<Team[]>("/teams"),
+  createTeam: (input: CreateTeamInput) =>
+    request<Team>("/teams", {
+      method: "POST",
+      body: JSON.stringify(input)
+    }),
+  updateTeam: (id: string, input: UpdateTeamInput) =>
+    request<Team>(`/teams/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  deleteTeam: (id: string) =>
+    request<void>(`/teams/${id}`, {
       method: "DELETE"
     }),
   listRoles: () => request<Role[]>("/roles"),

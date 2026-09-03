@@ -293,6 +293,13 @@ export interface UserRoleRef {
   isSystem: boolean;
 }
 
+export interface Team {
+  id: string;
+  name: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface User {
   id: string;
   name: string;
@@ -303,6 +310,7 @@ export interface User {
   defaultProviderProfile: ProviderProfile | null;
   active: boolean;
   roles: UserRoleRef[];
+  teamId?: string | null;
   repositoryIds: string[];
   lastLoginAt: string | null;
   createdAt: string;
@@ -314,6 +322,7 @@ export interface AuthSessionUser extends User {
   allowedProviders: AgentProvider[];
   allowedModels: string[];
   allowedEfforts: ProviderProfile[];
+  teamMemberUserIds?: string[];
 }
 
 export interface AuthSession {
@@ -378,6 +387,7 @@ export interface CreateUserInput {
   defaultProviderProfile?: ProviderProfile | null;
   active?: boolean;
   roleIds?: string[];
+  teamId?: string | null;
   repositoryIds?: string[];
 }
 
@@ -391,7 +401,16 @@ export interface UpdateUserInput {
   defaultProviderProfile?: ProviderProfile | null;
   active?: boolean;
   roleIds?: string[];
+  teamId?: string | null;
   repositoryIds?: string[];
+}
+
+export interface CreateTeamInput {
+  name: string;
+}
+
+export interface UpdateTeamInput {
+  name?: string;
 }
 
 export interface RepositoryEnvVar {

@@ -52,6 +52,7 @@ Notes:
 8. Use `Claude Code` to set default effort/model, model list, and base URL override.
 9. Open your profile to manage GitHub username linking, personal default agent settings, and personal access tokens.
 10. Administrators can edit another user's default provider, model, and effort from the user's edit form.
+11. Administrators manage teams alongside roles in **Settings → General**, then assign each user to zero or one team in **Users**.
 
 Notes:
 - Global and repository Harness sections display as read-only, content-sized textareas. Use the `Edit` link below a section to edit its Markdown in a right-side drawer, then apply the draft before saving the containing settings or repository form.
@@ -61,6 +62,7 @@ Notes:
 - Codex runs use system/global OpenAI API key or Codex `auth.json`; user profiles do not store per-user Codex `auth.json`.
 - Hostexec tokens are referenced by environment variable name; token values are not stored in settings. Bridge commands execute on the host with the task workspace as `cwd` and are rejected if the resolved directory escapes the workspace.
 - Task runtimes receive one generated `.verft-runtime/harness.md`. Populated global harness sections appear first, followed by populated repository harness sections; both scopes are preserved.
+- Team membership is dynamic: eligible teammates can list, read, and act on a member's current tasks when their own task permissions allow it and they can access the task repository. Task owners and administrators retain their existing access.
 
 ## Task Flows (New + Existing)
 

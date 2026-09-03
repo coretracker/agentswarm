@@ -284,6 +284,8 @@ const getUserVisiblePendingCheckpoint = (
 
 export interface ListTasksOptions {
   ownerUserId?: string | null;
+  ownerUserIds?: string[];
+  repositoryIds?: string[];
   view?: "all" | "active" | "archived";
   limit?: number;
 }
@@ -374,6 +376,7 @@ export type TaskMetadata = Pick<
   Task,
   | "id"
   | "ownerUserId"
+  | "repoId"
   | "status"
   | "executionStatus"
   | "executionAction"
@@ -840,6 +843,7 @@ export class RedisTaskStore implements TaskStore {
     return {
       id: task.id,
       ownerUserId: task.ownerUserId,
+      repoId: task.repoId,
       status: task.status,
       executionStatus: task.executionStatus,
       executionAction: task.executionAction,
@@ -868,6 +872,8 @@ export class RedisTaskStore implements TaskStore {
     const tasks: Task[] = [];
     const view = options.view ?? "all";
     const ownerUserId = options.ownerUserId?.trim() || null;
+    const ownerUserIds = new Set((options.ownerUserIds ?? []).map((id) => id.trim()).filter(Boolean));
+    const repositoryIds = options.repositoryIds ? new Set(options.repositoryIds.map((id) => id.trim()).filter(Boolean)) : null;
 
     for (const row of result ?? []) {
       const raw = row[1];
@@ -877,6 +883,12 @@ export class RedisTaskStore implements TaskStore {
           logs: []
         });
         if (ownerUserId && task.ownerUserId !== ownerUserId) {
+          continue;
+        }
+        if (ownerUserIds.size > 0 && !ownerUserIds.has(task.ownerUserId ?? "")) {
+          continue;
+        }
+        if (repositoryIds && !repositoryIds.has(task.repoId)) {
           continue;
         }
         if (view === "active" && task.status === "archived") {
@@ -2367,6 +2379,7 @@ export class PostgresTaskStore implements TaskStore {
     return {
       id: task.id,
       ownerUserId: task.ownerUserId,
+      repoId: task.repoId,
       status: task.status,
       executionStatus: task.executionStatus,
       executionAction: task.executionAction,
@@ -2381,14 +2394,24 @@ export class PostgresTaskStore implements TaskStore {
   }
 
   async listTasks(options: ListTasksOptions = {}): Promise<Task[]> {
-    const values: Array<string | number> = [];
+    const values: Array<string | number | string[]> = [];
     const clauses: string[] = [];
     const ownerUserId = options.ownerUserId?.trim() || null;
+    const ownerUserIds = Array.from(new Set((options.ownerUserIds ?? []).map((id) => id.trim()).filter(Boolean)));
+    const repositoryIds = options.repositoryIds ? Array.from(new Set(options.repositoryIds.map((id) => id.trim()).filter(Boolean))) : null;
     const view = options.view ?? "all";
 
     if (ownerUserId) {
       values.push(ownerUserId);
       clauses.push(`owner_user_id = $${values.length}`);
+    }
+    if (ownerUserIds.length > 0) {
+      values.push(ownerUserIds);
+      clauses.push(`owner_user_id = ANY($${values.length}::text[])`);
+    }
+    if (repositoryIds) {
+      values.push(repositoryIds);
+      clauses.push(`task_data->>'repoId' = ANY($${values.length}::text[])`);
     }
     if (view === "active") {
       values.push("archived");

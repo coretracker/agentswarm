@@ -47,6 +47,7 @@ export interface StoredUserRecord {
   defaultProviderProfile: ProviderProfile | null;
   active: boolean;
   roleIds: string[];
+  teamId: string | null;
   repositoryIds: string[];
   passwordHash: string;
   passwordSalt: string;
@@ -77,6 +78,10 @@ const normalizeDefaultModel = (value: string | null | undefined): string | null 
 };
 const normalizeDefaultProviderProfile = (value: ProviderProfile | string | null | undefined): ProviderProfile | null =>
   value === "low" || value === "medium" || value === "high" || value === "max" ? value : null;
+const normalizeTeamId = (value: string | null | undefined): string | null => {
+  const normalized = (value ?? "").trim();
+  return normalized || null;
+};
 
 const sortScopes = (scopes: PermissionScope[]): PermissionScope[] =>
   Array.from(new Set(scopes)).sort((left, right) => (scopeOrder.get(left) ?? 0) - (scopeOrder.get(right) ?? 0));
@@ -155,6 +160,7 @@ export class RedisUserStore implements UserStore {
       defaultProviderProfile: normalizeDefaultProviderProfile(user.defaultProviderProfile),
       active: user.active !== false,
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
+      teamId: normalizeTeamId(user.teamId),
       repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
       lastLoginAt: user.lastLoginAt ?? null
     };
@@ -241,6 +247,7 @@ export class RedisUserStore implements UserStore {
       defaultProviderProfile: user.defaultProviderProfile,
       active: user.active,
       roles: this.buildRoleRefs(roles),
+      teamId: user.teamId,
       repositoryIds: user.repositoryIds,
       lastLoginAt: user.lastLoginAt,
       createdAt: user.createdAt,
@@ -377,6 +384,11 @@ export class RedisUserStore implements UserStore {
     }
 
     const roles = await this.roleStore.getRolesByIds(user.roleIds);
+    const teamMemberUserIds = user.teamId
+      ? (await this.getStoredUsers(await this.redis.smembers(USER_IDS_KEY)))
+          .filter((entry) => entry.teamId === user.teamId)
+          .map((entry) => entry.id)
+      : [];
     const scopes = sortScopes(roles.flatMap((role) => role.scopes));
     const allowedProviders = mergeRoleAllowlist<AgentProvider>(roles, (role) => role.allowedProviders);
     const allowedModels = mergeRoleAllowlist<string>(roles, (role) => role.allowedModels);
@@ -386,7 +398,8 @@ export class RedisUserStore implements UserStore {
       scopes,
       allowedProviders,
       allowedModels,
-      allowedEfforts
+      allowedEfforts,
+      teamMemberUserIds
     };
   }
 
@@ -460,6 +473,7 @@ export class RedisUserStore implements UserStore {
       defaultProviderProfile: normalizeDefaultProviderProfile(input.defaultProviderProfile),
       active: input.active !== false,
       roleIds,
+      teamId: normalizeTeamId(input.teamId),
       repositoryIds,
       passwordHash: passwordState.passwordHash,
       passwordSalt: passwordState.passwordSalt,
@@ -528,6 +542,7 @@ export class RedisUserStore implements UserStore {
           : normalizeDefaultProviderProfile(input.defaultProviderProfile),
       active: nextActive,
       roleIds: nextRoleIds,
+      teamId: input.teamId === undefined ? current.teamId : normalizeTeamId(input.teamId),
       repositoryIds: nextRepositoryIds,
       passwordHash,
       passwordSalt,
@@ -594,6 +609,7 @@ export class PostgresUserStore implements UserStore {
       defaultProviderProfile: normalizeDefaultProviderProfile(row.default_provider_profile as ProviderProfile | string | null | undefined),
       active: row.active !== false,
       roleIds,
+      teamId: normalizeTeamId(typeof row.team_id === "string" ? row.team_id : null),
       repositoryIds,
       passwordHash: String(row.password_hash ?? ""),
       passwordSalt: String(row.password_salt ?? ""),
@@ -616,6 +632,7 @@ export class PostgresUserStore implements UserStore {
       defaultProviderProfile: normalizeDefaultProviderProfile(user.defaultProviderProfile),
       active: user.active !== false,
       roleIds: Array.from(new Set((user.roleIds ?? []).map((roleId) => roleId.trim()).filter(Boolean))),
+      teamId: normalizeTeamId(user.teamId),
       repositoryIds: Array.from(new Set((user.repositoryIds ?? []).map((repositoryId) => repositoryId.trim()).filter(Boolean))),
       lastLoginAt: user.lastLoginAt ?? null
     };
@@ -738,6 +755,7 @@ export class PostgresUserStore implements UserStore {
       defaultProviderProfile: user.defaultProviderProfile,
       active: user.active,
       roles: this.buildRoleRefs(roles),
+      teamId: user.teamId,
       repositoryIds: user.repositoryIds,
       lastLoginAt: user.lastLoginAt,
       createdAt: user.createdAt,
@@ -794,6 +812,7 @@ export class PostgresUserStore implements UserStore {
           default_provider,
           default_model,
           default_provider_profile,
+          team_id,
           active,
           password_hash,
           password_salt,
@@ -801,7 +820,7 @@ export class PostgresUserStore implements UserStore {
           created_at,
           updated_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
         ON CONFLICT (id) DO UPDATE
         SET
           name = EXCLUDED.name,
@@ -812,6 +831,7 @@ export class PostgresUserStore implements UserStore {
           default_provider = EXCLUDED.default_provider,
           default_model = EXCLUDED.default_model,
           default_provider_profile = EXCLUDED.default_provider_profile,
+          team_id = EXCLUDED.team_id,
           active = EXCLUDED.active,
           password_hash = EXCLUDED.password_hash,
           password_salt = EXCLUDED.password_salt,
@@ -829,6 +849,7 @@ export class PostgresUserStore implements UserStore {
         nextUser.defaultProvider,
         nextUser.defaultModel,
         nextUser.defaultProviderProfile,
+        nextUser.teamId,
         nextUser.active,
         nextUser.passwordHash,
         nextUser.passwordSalt,
@@ -976,6 +997,9 @@ export class PostgresUserStore implements UserStore {
     }
 
     const roles = await this.roleStore.getRolesByIds(user.roleIds);
+    const teamMemberUserIds = user.teamId
+      ? (await this.pool.query<{ id: string }>("SELECT id FROM users WHERE team_id = $1 ORDER BY id ASC", [user.teamId])).rows.map((row) => row.id)
+      : [];
     const scopes = sortScopes(roles.flatMap((role) => role.scopes));
     const allowedProviders = mergeRoleAllowlist<AgentProvider>(roles, (role) => role.allowedProviders);
     const allowedModels = mergeRoleAllowlist<string>(roles, (role) => role.allowedModels);
@@ -985,7 +1009,8 @@ export class PostgresUserStore implements UserStore {
       scopes,
       allowedProviders,
       allowedModels,
-      allowedEfforts
+      allowedEfforts,
+      teamMemberUserIds
     };
   }
 
@@ -1062,6 +1087,7 @@ export class PostgresUserStore implements UserStore {
       defaultProviderProfile: normalizeDefaultProviderProfile(input.defaultProviderProfile),
       active: input.active !== false,
       roleIds,
+      teamId: normalizeTeamId(input.teamId),
       repositoryIds,
       passwordHash: passwordState.passwordHash,
       passwordSalt: passwordState.passwordSalt,
@@ -1133,6 +1159,7 @@ export class PostgresUserStore implements UserStore {
           : normalizeDefaultProviderProfile(input.defaultProviderProfile),
       active: nextActive,
       roleIds: nextRoleIds,
+      teamId: input.teamId === undefined ? current.teamId : normalizeTeamId(input.teamId),
       repositoryIds: nextRepositoryIds,
       passwordHash,
       passwordSalt,

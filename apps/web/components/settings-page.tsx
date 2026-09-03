@@ -8,6 +8,7 @@ import type {
   ProviderModelOption,
   ProviderProfile,
   Role,
+  Team,
   SystemSettings,
   UpdateSettingsInput
 } from "@verft/shared-types";
@@ -89,6 +90,10 @@ interface RoleFormValues {
   allowedProviders: AgentProvider[];
   allowedModels: string[];
   allowedEfforts: ProviderProfile[];
+}
+
+interface TeamFormValues {
+  name: string;
 }
 
 type ClearCredentialTarget = "github" | "openai" | "anthropic" | "slackSigningSecret" | "slackBotToken";
@@ -244,8 +249,11 @@ export function SettingsPage() {
   const [generalForm] = Form.useForm<GeneralSettingsForm>();
   const [credentialForm] = Form.useForm<CredentialForm>();
   const [roleForm] = Form.useForm<RoleFormValues>();
+  const [teamForm] = Form.useForm<TeamFormValues>();
   const [roles, setRoles] = useState<Role[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
   const [rolesLoading, setRolesLoading] = useState(true);
+  const [teamsLoading, setTeamsLoading] = useState(true);
   const [savingGeneral, setSavingGeneral] = useState(false);
   const [savingCredentials, setSavingCredentials] = useState(false);
   const [checkingHostexec, setCheckingHostexec] = useState(false);
@@ -254,6 +262,9 @@ export function SettingsPage() {
   const [savingRole, setSavingRole] = useState(false);
   const [roleModalOpen, setRoleModalOpen] = useState(false);
   const [editingRole, setEditingRole] = useState<Role | null>(null);
+  const [savingTeam, setSavingTeam] = useState(false);
+  const [teamModalOpen, setTeamModalOpen] = useState(false);
+  const [editingTeam, setEditingTeam] = useState<Team | null>(null);
   const [activeTab, setActiveTab] = useState<SettingsTabKey>("general");
   const [generalDirty, setGeneralDirty] = useState(false);
   const [credentialsDirty, setCredentialsDirty] = useState(false);
@@ -288,6 +299,15 @@ export function SettingsPage() {
     }
   };
 
+  const loadTeams = async () => {
+    setTeamsLoading(true);
+    try {
+      setTeams(await api.listTeams());
+    } finally {
+      setTeamsLoading(false);
+    }
+  };
+
   useEffect(() => {
     if (!settings) {
       return;
@@ -318,6 +338,7 @@ export function SettingsPage() {
 
   useEffect(() => {
     void loadRoles();
+    void loadTeams();
   }, []);
 
   const handleAutoFillModels = async (provider: AgentProvider): Promise<void> => {
@@ -1296,6 +1317,68 @@ export function SettingsPage() {
           </Card>
         ) : null}
 
+        {activeTab === "general" ? (
+          <Card
+            bordered={false}
+            loading={teamsLoading}
+            title="Teams"
+            extra={
+              <Button
+                type="primary"
+                disabled={!canEditSettings}
+                onClick={() => {
+                  setEditingTeam(null);
+                  teamForm.setFieldsValue({ name: "" });
+                  setTeamModalOpen(true);
+                }}
+              >
+                Add Team
+              </Button>
+            }
+          >
+            <Table<Team>
+              rowKey="id"
+              pagination={false}
+              dataSource={teams}
+              columns={[
+                { title: "Name", dataIndex: "name", render: (value: string) => <Typography.Text strong>{value}</Typography.Text> },
+                {
+                  title: "Actions",
+                  render: (_, team) => (
+                    <Space>
+                      <Button
+                        disabled={!canEditSettings}
+                        onClick={() => {
+                          setEditingTeam(team);
+                          teamForm.setFieldsValue({ name: team.name });
+                          setTeamModalOpen(true);
+                        }}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        danger
+                        disabled={!canEditSettings}
+                        onClick={async () => {
+                          try {
+                            await api.deleteTeam(team.id);
+                            message.success("Team deleted");
+                            await loadTeams();
+                          } catch (error) {
+                            message.error(error instanceof Error ? error.message : "Failed to delete team");
+                          }
+                        }}
+                      >
+                        Delete
+                      </Button>
+                    </Space>
+                  )
+                }
+              ]}
+            />
+          </Card>
+        ) : null}
+
       </Space>
 
       <Modal
@@ -1410,6 +1493,38 @@ export function SettingsPage() {
             style={{ marginTop: 16 }}
           >
             {editingRole ? "Save Role" : "Create Role"}
+          </Button>
+        </Form>
+      </Modal>
+
+      <Modal open={teamModalOpen} title={editingTeam ? `Edit Team: ${editingTeam.name}` : "Add Team"} footer={null} onCancel={() => setTeamModalOpen(false)} destroyOnHidden>
+        <Form
+          form={teamForm}
+          layout="vertical"
+          onFinish={async (values) => {
+            setSavingTeam(true);
+            try {
+              if (editingTeam) {
+                await api.updateTeam(editingTeam.id, values);
+                message.success("Team updated");
+              } else {
+                await api.createTeam(values);
+                message.success("Team created");
+              }
+              setTeamModalOpen(false);
+              await loadTeams();
+            } catch (error) {
+              message.error(error instanceof Error ? error.message : "Failed to save team");
+            } finally {
+              setSavingTeam(false);
+            }
+          }}
+        >
+          <Form.Item name="name" label="Name" rules={[{ required: true, message: "Enter a team name" }]}>
+            <Input maxLength={120} disabled={!canEditSettings} />
+          </Form.Item>
+          <Button type="primary" htmlType="submit" loading={savingTeam} disabled={!canEditSettings} block>
+            {editingTeam ? "Save Team" : "Create Team"}
           </Button>
         </Form>
       </Modal>

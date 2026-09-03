@@ -5,6 +5,7 @@ import { sendHttpError } from "../lib/http-error.js";
 import type { RoleStore } from "../services/role-store.js";
 import type { SessionStore } from "../services/session-store.js";
 import type { UserStore } from "../services/user-store.js";
+import { TeamStore } from "../services/team-store.js";
 
 const nullableDefaultProviderSchema = z.enum(["codex", "claude"]).nullable().optional();
 const nullableDefaultProviderProfileSchema = z.enum(["low", "medium", "high", "max"]).nullable().optional();
@@ -19,6 +20,7 @@ const createUserSchema = z.object({
   defaultProviderProfile: nullableDefaultProviderProfileSchema,
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),
+  teamId: z.string().trim().min(1).nullable().optional(),
   repositoryIds: z.array(z.string().trim().min(1)).optional()
 });
 
@@ -32,6 +34,7 @@ const updateUserSchema = z.object({
   defaultProviderProfile: nullableDefaultProviderProfileSchema,
   active: z.boolean().optional(),
   roleIds: z.array(z.string().trim().min(1)).optional(),
+  teamId: z.string().trim().min(1).nullable().optional(),
   repositoryIds: z.array(z.string().trim().min(1)).optional()
 });
 
@@ -41,6 +44,7 @@ export const registerUserRoutes = (
     auth: AuthService;
     userStore: UserStore;
     roleStore: RoleStore;
+    teamStore: TeamStore;
     sessionStore: SessionStore;
   }
 ): void => {
@@ -69,10 +73,14 @@ export const registerUserRoutes = (
       }
 
       if (
-        (parsed.data.roleIds !== undefined || parsed.data.repositoryIds !== undefined) &&
+        (parsed.data.roleIds !== undefined || parsed.data.teamId !== undefined || parsed.data.repositoryIds !== undefined) &&
         !request.auth!.scopes.has("settings:edit")
       ) {
-        return reply.status(403).send({ message: "Role or repository assignment requires settings:edit" });
+        return reply.status(403).send({ message: "Role, team, or repository assignment requires settings:edit" });
+      }
+
+      if (parsed.data.teamId && !(await deps.teamStore.getTeam(parsed.data.teamId))) {
+        return reply.status(400).send({ message: "Unknown team" });
       }
 
       try {
@@ -99,10 +107,14 @@ export const registerUserRoutes = (
       }
 
       if (
-        (parsed.data.roleIds !== undefined || parsed.data.repositoryIds !== undefined) &&
+        (parsed.data.roleIds !== undefined || parsed.data.teamId !== undefined || parsed.data.repositoryIds !== undefined) &&
         !request.auth!.scopes.has("settings:edit")
       ) {
-        return reply.status(403).send({ message: "Role or repository assignment requires settings:edit" });
+        return reply.status(403).send({ message: "Role, team, or repository assignment requires settings:edit" });
+      }
+
+      if (parsed.data.teamId && !(await deps.teamStore.getTeam(parsed.data.teamId))) {
+        return reply.status(400).send({ message: "Unknown team" });
       }
 
       if (parsed.data.active === false && request.params.id === request.auth!.user.id) {
@@ -118,6 +130,7 @@ export const registerUserRoutes = (
         if (
           parsed.data.active === false ||
           parsed.data.roleIds !== undefined ||
+          parsed.data.teamId !== undefined ||
           parsed.data.repositoryIds !== undefined
         ) {
           await deps.sessionStore.deleteSessionsForUser(user.id);

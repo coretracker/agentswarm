@@ -17,6 +17,7 @@ import { WebhookDeliveryService } from "./services/webhook-delivery-service.js";
 import { registerRoleRoutes } from "./routes/roles.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerUserRoutes } from "./routes/users.js";
+import { registerTeamRoutes } from "./routes/teams.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerRepositoryRoutes } from "./routes/repositories.js";
 import { registerGitHubPrWebhookRoutes } from "./routes/github-pr-webhooks.js";
@@ -154,6 +155,7 @@ const bootstrap = async (): Promise<void> => {
     credentialStore,
     roleStore,
     userStore,
+    teamStore,
     personalAccessTokenStore,
     sessionStore,
     settingsStore,
@@ -192,7 +194,8 @@ const bootstrap = async (): Promise<void> => {
   });
 
   registerAuthRoutes(app, { auth, userStore, sessionStore, personalAccessTokenStore });
-  registerUserRoutes(app, { auth, userStore, roleStore, sessionStore });
+  registerUserRoutes(app, { auth, userStore, roleStore, teamStore, sessionStore });
+  registerTeamRoutes(app, { auth, teamStore });
   registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
   registerTaskRoutes(app, {
     taskStore,

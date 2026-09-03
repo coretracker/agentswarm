@@ -3,6 +3,7 @@
 The terms below come from current repository docs and code.
 
 - Task: a unit of work created against a repository.
+- Team: an optional group of users used only to share visibility and task actions between current members; teams do not grant roles or permissions.
 - Task draft: a saved task definition that can be edited before it becomes a runnable task.
 - Provider: the agent engine used for a task (`codex` or `claude`).
 - Task workspace: the filesystem area where task changes are made.

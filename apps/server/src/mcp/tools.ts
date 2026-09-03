@@ -9,7 +9,7 @@ import {
 } from "@verft/shared-types";
 import { beginTaskStart } from "../lib/task-start-orchestrator.js";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
-import { canUserAccessRepository, canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
+import { canUserAccessRepository, canUserAccessTask, listTasksAccessibleToUser } from "../lib/task-ownership.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
@@ -330,8 +330,7 @@ export const createMcpTools = (): McpToolDefinition[] => [
     async handler(rawInput, context) {
       const input = listTasksSchema.parse(rawInput ?? {});
       const query = input.query?.toLowerCase() ?? "";
-      const tasks = await context.deps.taskStore.listTasks({
-        ownerUserId: isAdminUser(context.user) ? null : context.user.id,
+      const tasks = await listTasksAccessibleToUser(context.deps.taskStore, context.user, {
         view: input.view ?? "active",
         limit: 100
       });

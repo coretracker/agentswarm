@@ -6,6 +6,7 @@ import type {
   ProviderProfile,
   Repository,
   Role,
+  Team,
   User
 } from "@verft/shared-types";
 import { getAgentProviderLabel, getEffortOptionsForProvider, getModelsForProvider } from "@verft/shared-types";
@@ -44,6 +45,7 @@ interface UserFormValues {
   defaultProviderProfile?: ProviderProfile;
   active: boolean;
   roleIds: string[];
+  teamId?: string;
   repositoryIds: string[];
 }
 
@@ -60,6 +62,7 @@ export function UsersPage() {
   const [form] = Form.useForm<UserFormValues>();
   const [users, setUsers] = useState<User[]>([]);
   const [roles, setRoles] = useState<Role[]>([]);
+  const [teams, setTeams] = useState<Team[]>([]);
   const [repositories, setRepositories] = useState<Repository[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -85,13 +88,15 @@ export function UsersPage() {
   const loadUsers = async () => {
     setLoading(true);
     try {
-      const [nextUsers, nextRoles, nextRepositories] = await Promise.all([
+      const [nextUsers, nextRoles, nextTeams, nextRepositories] = await Promise.all([
         api.listUsers(),
         canReadRoles ? api.listRoles().catch(() => []) : Promise.resolve([]),
+        api.listTeams().catch(() => []),
         canEditRoles && canReadRepositories ? api.listRepositories().catch(() => []) : Promise.resolve([])
       ]);
       setUsers(nextUsers);
       setRoles(nextRoles);
+      setTeams(nextTeams);
       setRepositories(nextRepositories);
     } finally {
       setLoading(false);
@@ -110,6 +115,7 @@ export function UsersPage() {
       password: "",
       active: true,
       roleIds: [],
+      teamId: undefined,
       repositoryIds: []
     });
     setModalOpen(true);
@@ -127,6 +133,7 @@ export function UsersPage() {
       defaultProviderProfile: user.defaultProviderProfile ?? undefined,
       active: user.active,
       roleIds: user.roles.map((role) => role.id),
+      teamId: user.teamId ?? undefined,
       repositoryIds: user.repositoryIds ?? []
     });
     setModalOpen(true);
@@ -136,6 +143,7 @@ export function UsersPage() {
   const selectedRoleIds = Form.useWatch("roleIds", form) ?? [];
   const adminRoleSelected = selectedRoleIds.includes(SYSTEM_ADMIN_ROLE_ID);
   const roleNameById = useMemo(() => new Map(roles.map((role) => [role.id, role.name])), [roles]);
+  const teamNameById = useMemo(() => new Map(teams.map((team) => [team.id, team.name])), [teams]);
   const roleFilterOptions = useMemo(
     () => roles.map((role) => ({ label: role.name, value: role.id })).sort((a, b) => a.label.localeCompare(b.label)),
     [roles]
@@ -307,6 +315,7 @@ export function UsersPage() {
                         ) : (
                           <Typography.Text type="secondary">No roles</Typography.Text>
                         )}
+                        {user.teamId ? <Tag color="blue">{teamNameById.get(user.teamId) ?? user.teamId}</Tag> : null}
                         <Typography.Text type="secondary" style={{ whiteSpace: "nowrap" }}>
                           {lastLoginLabel}
                         </Typography.Text>
@@ -397,6 +406,7 @@ export function UsersPage() {
                   defaultProviderProfile: values.defaultProviderProfile ?? null,
                   active: values.active,
                   roleIds: canEditRoles ? values.roleIds : undefined,
+                  teamId: canEditRoles ? values.teamId ?? null : undefined,
                   repositoryIds: canEditRoles ? values.repositoryIds : undefined
                 });
                 message.success("User updated");
@@ -407,6 +417,7 @@ export function UsersPage() {
                   password: values.password?.trim() || "",
                   active: values.active,
                   roleIds: canEditRoles ? values.roleIds : undefined,
+                  teamId: canEditRoles ? values.teamId ?? null : undefined,
                   repositoryIds: canEditRoles ? values.repositoryIds : undefined
                 });
                 message.success("User created");
@@ -488,6 +499,15 @@ export function UsersPage() {
                   label: role.name,
                   value: role.id
                 }))}
+              />
+            </Form.Item>
+          ) : null}
+          {canEditRoles ? (
+            <Form.Item name="teamId" label="Team">
+              <Select
+                allowClear
+                placeholder="No team"
+                options={teams.map((team) => ({ label: team.name, value: team.id }))}
               />
             </Form.Item>
           ) : null}

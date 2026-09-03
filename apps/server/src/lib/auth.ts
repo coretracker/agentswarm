@@ -1,6 +1,6 @@
 import type { IncomingHttpHeaders } from "node:http";
 import type { FastifyReply, FastifyRequest } from "fastify";
-import type { AuthSession, PermissionScope, RealtimeEvent } from "@verft/shared-types";
+import type { AuthSession, PermissionScope, RealtimeEvent, Task } from "@verft/shared-types";
 import type { Server as SocketIOServer, Socket } from "socket.io";
 import type { PersonalAccessTokenRuntimeContext, PersonalAccessTokenStore } from "../services/personal-access-token-store.js";
 import type { SessionStore } from "../services/session-store.js";
@@ -189,34 +189,34 @@ export const createAuthService = ({
   const hasAllScopes = (grantedScopes: Set<PermissionScope>, requiredScopes: PermissionScope[]): boolean =>
     requiredScopes.every((scope) => grantedScopes.has(scope));
 
-  const resolveTaskOwnerUserId = async (event: RealtimeEvent): Promise<string | null> => {
+  const resolveTaskAccessRecord = async (event: RealtimeEvent): Promise<Pick<Task, "ownerUserId" | "repoId"> | null> => {
     switch (event.type) {
       case "task:created":
       case "task:updated":
-        return event.payload.ownerUserId ?? null;
+        return event.payload;
       case "task:deleted":
-        return event.payload.ownerUserId ?? null;
+        return event.payload;
       case "task:log": {
         const task = await taskStore.getTaskMetadata(event.payload.taskId);
-        return task?.ownerUserId ?? null;
+        return task;
       }
       case "task:message":
       case "task:message_updated":
       case "task:message_deleted": {
         const task = await taskStore.getTaskMetadata(event.payload.taskId);
-        return task?.ownerUserId ?? null;
+        return task;
       }
       case "task:run_updated": {
         const task = await taskStore.getTaskMetadata(event.payload.taskId);
-        return task?.ownerUserId ?? null;
+        return task;
       }
       case "task:git_operation": {
         const task = await taskStore.getTaskMetadata(event.payload.taskId);
-        return task?.ownerUserId ?? null;
+        return task;
       }
       case "task:change_proposal": {
         const task = await taskStore.getTaskMetadata(event.payload.taskId);
-        return task?.ownerUserId ?? null;
+        return task;
       }
       default:
         return null;
@@ -356,7 +356,7 @@ export const createAuthService = ({
         return;
       }
 
-      const taskOwnerUserId = event.type.startsWith("task:") ? await resolveTaskOwnerUserId(event) : null;
+      const taskAccessRecord = event.type.startsWith("task:") ? await resolveTaskAccessRecord(event) : null;
       const repositoryId = event.type.startsWith("repository:") ? resolveRepositoryId(event) : null;
       if (event.type.startsWith("repository:") && !repositoryId) {
         return;
@@ -369,7 +369,7 @@ export const createAuthService = ({
           continue;
         }
 
-        if (event.type.startsWith("task:") && !canUserAccessTask(auth.user, { ownerUserId: taskOwnerUserId })) {
+        if (event.type.startsWith("task:") && (!taskAccessRecord || !canUserAccessTask(auth.user, taskAccessRecord))) {
           continue;
         }
 

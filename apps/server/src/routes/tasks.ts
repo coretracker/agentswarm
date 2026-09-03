@@ -37,7 +37,7 @@ import {
   requireTaskCapabilityAccess,
   requireTaskExecutionConfigAccess
 } from "../lib/task-capability-access.js";
-import { canUserAccessRepository, canUserAccessTask, isAdminUser } from "../lib/task-ownership.js";
+import { canUserAccessRepository, canUserAccessTask, isAdminUser, listTasksAccessibleToUser } from "../lib/task-ownership.js";
 import { writeSafeWorkspaceFile } from "../lib/safe-workspace-file.js";
 import { env } from "../config/env.js";
 import { normalizeProvider } from "../lib/provider-config.js";
@@ -400,10 +400,8 @@ export const registerTaskRoutes = (
         return reply.status(400).send({ message: parsed.error.message });
       }
 
-      const userId = request.auth?.user.id ?? null;
       const creatorNameCache = new Map<string, string | null>();
-      const tasks = await deps.taskStore.listTasks({
-        ownerUserId: isAdminUser(request.auth?.user) ? null : userId,
+      const tasks = await listTasksAccessibleToUser(deps.taskStore, request.auth!.user, {
         view: parsed.data.view ?? "all",
         limit: parsed.data.limit
       });
