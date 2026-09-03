@@ -12,6 +12,7 @@ const baseTask: Task = {
   pinned: true,
   hasPendingCheckpoint: false,
   autoApplyCheckpoints: false,
+  shareWithTeam: false,
   activeInteractiveSession: false,
   activeTerminalSessionMode: null,
   linkedWorkspaces: [],

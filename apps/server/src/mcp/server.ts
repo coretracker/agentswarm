@@ -7,6 +7,7 @@ import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
+import type { UserStore } from "../services/user-store.js";
 import { createMcpTools, McpToolError, type McpToolDeps } from "./tools.js";
 
 const jsonRpcRequestSchema = z.object({
@@ -69,6 +70,7 @@ export const registerMcpRoutes = (
     taskQueueStore: TaskQueueStore;
     scheduler: SchedulerService;
     spawner: SpawnerService;
+    userStore: UserStore;
   }
 ): void => {
   const tools = createMcpTools();
@@ -79,7 +81,8 @@ export const registerMcpRoutes = (
     taskStore: deps.taskStore,
     taskQueueStore: deps.taskQueueStore,
     scheduler: deps.scheduler,
-    spawner: deps.spawner
+    spawner: deps.spawner,
+    userStore: deps.userStore
   };
 
   app.post("/mcp", async (request, reply) => {

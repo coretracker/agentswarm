@@ -45,6 +45,7 @@ export const compactTask = (task: Task) => ({
   pinned: task.pinned,
   hasPendingCheckpoint: task.hasPendingCheckpoint,
   autoApplyCheckpoints: task.autoApplyCheckpoints,
+  shareWithTeam: task.shareWithTeam,
   branchName: task.branchName,
   baseBranch: task.baseBranch,
   branchStrategy: task.branchStrategy,

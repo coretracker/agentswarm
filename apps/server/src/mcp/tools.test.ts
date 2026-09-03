@@ -48,6 +48,7 @@ const createTask = (overrides: Partial<Task> = {}): Task =>
     pinned: false,
     hasPendingCheckpoint: false,
     autoApplyCheckpoints: false,
+    shareWithTeam: false,
     activeInteractiveSession: false,
     activeTerminalSessionMode: null,
     ownerUserId: "user-1",
@@ -196,6 +197,7 @@ describe("MCP Phase 1 tools", () => {
       pinned: false,
       hasPendingCheckpoint: false,
       autoApplyCheckpoints: false,
+      shareWithTeam: false,
       branchName: null,
       baseBranch: "main",
       branchStrategy: "feature_branch",
@@ -252,6 +254,39 @@ describe("MCP Phase 1 tools", () => {
     assert.equal((createdInput as { provider: string }).provider, "claude");
     assert.equal((createdInput as { providerProfile: string }).providerProfile, "max");
     assert.equal((createdInput as { modelOverride: string }).modelOverride, "claude-sonnet-4-6");
+  });
+
+  it("lets an owner change task sharing through MCP", async () => {
+    const tool = toolByName("verft_update_task_sharing");
+    const task = createTask({ shareWithTeam: false });
+    let patch: unknown = null;
+
+    const result = await tool.handler(
+      { taskId: task.id, shareWithTeam: true },
+      {
+        user: { ...user, teamId: "team-1", scopes: ["task:edit"] },
+        deps: {
+          taskStore: {
+            getTask: async () => task,
+            patchTask: async (_taskId: string, nextPatch: unknown) => {
+              patch = nextPatch;
+              return { ...task, ...(nextPatch as object) };
+            }
+          },
+          userStore: {
+            getUser: async () => ({ id: "user-1", teamId: "team-1" })
+          },
+          repositoryStore: {} as never,
+          settingsStore: {} as never,
+          taskQueueStore: {} as never,
+          scheduler: {} as never,
+          spawner: {} as never
+        } as never
+      }
+    );
+
+    assert.deepEqual(patch, { shareWithTeam: true });
+    assert.equal((result as { task: { shareWithTeam: boolean } }).task.shareWithTeam, true);
   });
 
   it("creates runtime subtasks for the current task repository and links the parent", async () => {

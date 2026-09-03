@@ -290,3 +290,23 @@ test("create-or-queue requires task:create when the target has no task", async (
   assert.equal(response.statusCode, 403);
   assert.deepEqual(JSON.parse(response.body), { message: "Task create access is required." });
 });
+
+test("task owners can update team sharing", async () => {
+  const app = Fastify();
+  const built = buildDeps();
+  const task = { ...openTask, shareWithTeam: false };
+  (built.deps.taskStore as { getTask: (taskId: string) => Promise<unknown>; patchTask: (taskId: string, patch: unknown) => Promise<unknown> }).getTask = async () => task;
+  (built.deps.taskStore as { patchTask: (taskId: string, patch: unknown) => Promise<unknown> }).patchTask = async (_taskId, patch) => ({ ...task, ...(patch as object) });
+  (built.deps.userStore as { getUser: (userId: string) => Promise<unknown> }).getUser = async () => ({ id: "user-1", teamId: "team-1" });
+  registerTaskRoutes(app, built.deps as never);
+
+  const response = await app.inject({
+    method: "PATCH",
+    url: "/tasks/task-1/sharing",
+    payload: { shareWithTeam: true }
+  });
+  await app.close();
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(JSON.parse(response.body).shareWithTeam, true);
+});

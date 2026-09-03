@@ -50,6 +50,7 @@ import type {
   UpdateAuthProfileInput,
   UpdateCredentialSettingsInput,
   UpdateTaskConfigInput,
+  UpdateTaskSharingInput,
   UpdateTaskIssueInput,
   UpdateTaskPullRequestInput,
   UpdateRepositoryInput,
@@ -509,6 +510,11 @@ export const api = {
     }),
   updateTaskConfig: (id: string, input: UpdateTaskConfigInput) =>
     request<Task>(`/tasks/${id}/config`, {
+      method: "PATCH",
+      body: JSON.stringify(input)
+    }),
+  updateTaskSharing: (id: string, input: UpdateTaskSharingInput) =>
+    request<Task>(`/tasks/${id}/sharing`, {
       method: "PATCH",
       body: JSON.stringify(input)
     }),

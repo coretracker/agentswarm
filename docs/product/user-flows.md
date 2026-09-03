@@ -62,12 +62,13 @@ Notes:
 - Codex runs use system/global OpenAI API key or Codex `auth.json`; user profiles do not store per-user Codex `auth.json`.
 - Hostexec tokens are referenced by environment variable name; token values are not stored in settings. Bridge commands execute on the host with the task workspace as `cwd` and are rejected if the resolved directory escapes the workspace.
 - Task runtimes receive one generated `.verft-runtime/harness.md`. Populated global harness sections appear first, followed by populated repository harness sections; both scopes are preserved.
-- Team membership is dynamic: eligible teammates can list, read, and act on a member's current tasks when their own task permissions allow it and they can access the task repository. Task owners and administrators retain their existing access.
+- Team membership is dynamic: eligible teammates can list, read, and act on a member's current tasks only when the task is marked **Share with team**, their own task permissions allow it, and they can access the task repository. Tasks are private by default; task owners and administrators retain their existing access.
 
 ## Task Flows (New + Existing)
 
 Notes:
 - Saving a draft stores the same task definition fields used by the new task form; opening a draft reuses the same form and can create the runnable task. Task definitions do not include task-specific notes.
+- The new-task form can opt into **Share with team**. Owners and administrators can later change it in the task's **Info** tab; turning it off ends an active terminal session.
 
 ```mermaid
 flowchart TD

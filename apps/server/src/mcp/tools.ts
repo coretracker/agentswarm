@@ -9,13 +9,15 @@ import {
 } from "@verft/shared-types";
 import { beginTaskStart } from "../lib/task-start-orchestrator.js";
 import { getMutationBlocked } from "../lib/task-mutation-guards.js";
-import { canUserAccessRepository, canUserAccessTask, listTasksAccessibleToUser } from "../lib/task-ownership.js";
+import { killTaskInteractiveTerminalSession } from "../lib/task-interactive-terminal.js";
+import { canUserAccessRepository, canUserAccessTask, isAdminUser, listTasksAccessibleToUser } from "../lib/task-ownership.js";
 import type { RepositoryStore } from "../services/repository-store.js";
 import type { SettingsStore } from "../services/settings-store.js";
 import type { SpawnerService } from "../services/spawner.js";
 import type { TaskQueueStore } from "../services/task-queue-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { SchedulerService } from "../services/scheduler.js";
+import type { UserStore } from "../services/user-store.js";
 import type { PersonalAccessTokenRuntimeContext } from "../services/personal-access-token-store.js";
 import { resolveCreateTaskProviderConfig } from "../lib/task-create-defaults.js";
 import { clampLimit, compactCheckpoint, compactMessage, compactRepository, compactRun, compactTask, detailTask } from "./format.js";
@@ -42,6 +44,7 @@ export interface McpToolDeps {
   taskQueueStore: TaskQueueStore;
   scheduler: SchedulerService;
   spawner: SpawnerService;
+  userStore: Pick<UserStore, "getUser">;
 }
 
 export class McpToolError extends Error {
@@ -84,7 +87,8 @@ const createTaskSchema = z
     providerProfile: z.enum(["low", "medium", "high", "max"]).optional(),
     modelOverride: z.string().trim().min(1).optional(),
     baseBranch: z.string().trim().min(1).optional(),
-    branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional()
+    branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+    shareWithTeam: z.boolean().optional()
   })
   .strict();
 
@@ -118,6 +122,11 @@ const linkIssueSchema = z.object({
 const updateTaskConfigSchema = z.object({
   taskId: z.string().trim().min(1),
   autoApplyCheckpoints: z.boolean()
+});
+
+const updateTaskSharingSchema = z.object({
+  taskId: z.string().trim().min(1),
+  shareWithTeam: z.boolean()
 });
 
 const replySlackThreadSchema = z.object({
@@ -246,6 +255,9 @@ const createMcpTask = async (
   const parentTask = options.parentTask ?? null;
   if (parentTask && repository.id !== parentTask.repoId) {
     throw new McpToolError(404, "Repository not found", "not_found");
+  }
+  if (input.shareWithTeam && !context.user.teamId) {
+    throw new McpToolError(409, "Assign yourself to a team before sharing tasks with it.", "team_required");
   }
   const settings = await context.deps.settingsStore.getSettings();
   const providerConfig = resolveCreateTaskProviderConfig(input, settings, repository, context.user);
@@ -569,6 +581,33 @@ export const createMcpTools = (): McpToolDefinition[] => [
       const updated = await context.deps.taskStore.patchTask(task.id, {
         autoApplyCheckpoints: input.autoApplyCheckpoints
       });
+      return { task: compactTask(updated ?? task) };
+    }
+  },
+  {
+    name: "verft_update_task_sharing",
+    description: "Share or unshare a task with its owner's current team.",
+    inputSchema: schemaToJson(updateTaskSharingSchema),
+    scopes: ["task:edit"],
+    async handler(rawInput, context) {
+      const input = updateTaskSharingSchema.parse(rawInput ?? {});
+      const task = await getAccessibleTask(context, input.taskId);
+      if (!isAdminUser(context.user) && task.ownerUserId !== context.user.id) {
+        throw new McpToolError(403, "Only the task owner or an admin can change team sharing.", "forbidden");
+      }
+      if (input.shareWithTeam) {
+        const owner = task.ownerUserId ? await context.deps.userStore.getUser(task.ownerUserId) : null;
+        if (!owner?.teamId) {
+          throw new McpToolError(409, "Assign the task owner to a team before sharing this task.", "team_required");
+        }
+      }
+      if (task.shareWithTeam && !input.shareWithTeam) {
+        const activeSession = await context.deps.taskStore.getActiveInteractiveSession(task.id);
+        if (activeSession && !(await killTaskInteractiveTerminalSession(task.id))) {
+          await context.deps.spawner.endInteractiveTerminalSession(task.id, activeSession.sessionId);
+        }
+      }
+      const updated = await context.deps.taskStore.patchTask(task.id, { shareWithTeam: input.shareWithTeam });
       return { task: compactTask(updated ?? task) };
     }
   }

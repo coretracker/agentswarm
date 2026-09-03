@@ -5,7 +5,7 @@ import { SYSTEM_ADMIN_ROLE_ID } from "../services/role-store.js";
 type AdminCheckUser = Pick<AuthSessionUser, "roles"> | null | undefined;
 type TaskAccessUser = Pick<AuthSessionUser, "id" | "roles" | "repositoryIds" | "teamMemberUserIds"> | null | undefined;
 type RepositoryAccessUser = Pick<AuthSessionUser, "roles" | "repositoryIds"> | null | undefined;
-type TaskOwnerRecord = Pick<Task, "ownerUserId" | "repoId">;
+type TaskOwnerRecord = Pick<Task, "ownerUserId" | "repoId" | "shareWithTeam">;
 
 export const isAdminUser = (user: AdminCheckUser): boolean =>
   Boolean(user?.roles.some((role) => role.id === SYSTEM_ADMIN_ROLE_ID));
@@ -22,6 +22,16 @@ export const canUserAccessRepository = (user: RepositoryAccessUser, repositoryId
   return (user.repositoryIds ?? []).includes(repositoryId);
 };
 
+export const canUserAccessTeammateTask = (user: TaskAccessUser, task: Pick<Task, "ownerUserId" | "repoId">): boolean =>
+  Boolean(
+    user &&
+      !isAdminUser(user) &&
+      task.ownerUserId &&
+      task.ownerUserId !== user.id &&
+      (user.teamMemberUserIds ?? []).includes(task.ownerUserId) &&
+      canUserAccessRepository(user, task.repoId)
+  );
+
 export const canUserAccessTask = (user: TaskAccessUser, task: TaskOwnerRecord): boolean => {
   if (!user) {
     return false;
@@ -35,11 +45,7 @@ export const canUserAccessTask = (user: TaskAccessUser, task: TaskOwnerRecord): 
     return true;
   }
 
-  return Boolean(
-    task.ownerUserId &&
-      (user.teamMemberUserIds ?? []).includes(task.ownerUserId) &&
-      canUserAccessRepository(user, task.repoId)
-  );
+  return task.shareWithTeam && canUserAccessTeammateTask(user, task);
 };
 
 const sortTasks = (tasks: Task[]): Task[] =>
@@ -48,7 +54,7 @@ const sortTasks = (tasks: Task[]): Task[] =>
 export const listTasksAccessibleToUser = async (
   taskStore: TaskStore,
   user: AuthSessionUser,
-  options: Omit<ListTasksOptions, "ownerUserId" | "ownerUserIds" | "repositoryIds"> = {}
+  options: Omit<ListTasksOptions, "ownerUserId" | "ownerUserIds" | "repositoryIds" | "shareWithTeam"> = {}
 ): Promise<Task[]> => {
   if (isAdminUser(user)) {
     return taskStore.listTasks(options);
@@ -63,7 +69,8 @@ export const listTasksAccessibleToUser = async (
   const teammateTasks = await taskStore.listTasks({
     ...options,
     ownerUserIds: teammateIds,
-    repositoryIds: user.repositoryIds
+    repositoryIds: user.repositoryIds,
+    shareWithTeam: true
   });
   const merged = sortTasks([...ownTasks, ...teammateTasks]);
   return options.limit == null ? merged : merged.slice(0, Math.max(0, options.limit));

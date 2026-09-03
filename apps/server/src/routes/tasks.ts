@@ -64,6 +64,7 @@ const createTaskSchema = z
     modelOverride: z.string().trim().min(1).optional(),
     baseBranch: z.string().min(1).optional(),
     branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
+    shareWithTeam: z.boolean().optional(),
     model: z.string().min(1).optional(),
     reasoningEffort: z.enum(["minimal", "low", "medium", "high", "xhigh"]).optional()
   })
@@ -88,6 +89,10 @@ const updateTaskConfigSchema = z.object({
   modelOverride: z.string().trim().nullable().optional(),
   branchStrategy: z.enum(["feature_branch", "work_on_branch"]).optional(),
   autoApplyCheckpoints: z.boolean().optional()
+});
+
+const updateTaskSharingSchema = z.object({
+  shareWithTeam: z.boolean()
 });
 
 const updateTaskPinSchema = z.object({
@@ -1321,6 +1326,9 @@ export const registerTaskRoutes = (
     if (!repository || !canUserAccessRepository(request.auth?.user, parsed.data.repoId)) {
       return reply.status(404).send({ message: "Repository not found" });
     }
+    if (parsed.data.shareWithTeam && !request.auth!.user.teamId) {
+      return reply.status(409).send({ message: "Assign yourself to a team before sharing tasks with it." });
+    }
 
     const {
       attachments: attachmentUploads = [],
@@ -1709,6 +1717,40 @@ export const registerTaskRoutes = (
     });
 
     return reply.send(updated);
+  });
+
+  app.patch<{ Params: { id: string } }>("/tasks/:id/sharing", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {
+    const parsed = updateTaskSharingSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ message: parsed.error.message });
+    }
+
+    const task = await getAccessibleTask(request, reply, deps.taskStore, request.params.id);
+    if (!task) {
+      return;
+    }
+    if (!isAdminUser(request.auth?.user) && task.ownerUserId !== request.auth?.user.id) {
+      return reply.status(403).send({ message: "Only the task owner or an admin can change team sharing." });
+    }
+    if (parsed.data.shareWithTeam) {
+      const owner = task.ownerUserId ? await deps.userStore.getUser(task.ownerUserId) : null;
+      if (!owner?.teamId) {
+        return reply.status(409).send({ message: "Assign the task owner to a team before sharing this task." });
+      }
+    }
+
+    if (task.shareWithTeam && !parsed.data.shareWithTeam) {
+      const activeSession = await deps.taskStore.getActiveInteractiveSession(task.id);
+      if (activeSession) {
+        const killedLiveSession = await killTaskInteractiveTerminalSession(task.id);
+        if (!killedLiveSession) {
+          await deps.spawner.endInteractiveTerminalSession(task.id, activeSession.sessionId);
+        }
+      }
+    }
+
+    const updated = await deps.taskStore.patchTask(task.id, { shareWithTeam: parsed.data.shareWithTeam });
+    return reply.send(updated ?? task);
   });
 
   app.patch<{ Params: { id: string } }>("/tasks/:id/pin", { preHandler: deps.auth.requireAllScopes(["task:edit"]) }, async (request, reply) => {

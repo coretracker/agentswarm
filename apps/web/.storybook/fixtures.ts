@@ -265,6 +265,7 @@ export function createTask(overrides: Partial<Task> = {}): Task {
     pinned: false,
     hasPendingCheckpoint: false,
     autoApplyCheckpoints: false,
+    shareWithTeam: false,
     activeInteractiveSession: false,
     activeTerminalSessionMode: null,
     linkedWorkspaces: [],

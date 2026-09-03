@@ -286,6 +286,7 @@ export interface ListTasksOptions {
   ownerUserId?: string | null;
   ownerUserIds?: string[];
   repositoryIds?: string[];
+  shareWithTeam?: boolean;
   view?: "all" | "active" | "archived";
   limit?: number;
 }
@@ -382,6 +383,7 @@ export type TaskMetadata = Pick<
   | "executionAction"
   | "hasPendingCheckpoint"
   | "autoApplyCheckpoints"
+  | "shareWithTeam"
   | "activeInteractiveSession"
   | "activeTerminalSessionMode"
   | "provider"
@@ -496,6 +498,7 @@ export class RedisTaskStore implements TaskStore {
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       autoApplyCheckpoints: legacyTask.autoApplyCheckpoints === true,
+      shareWithTeam: legacyTask.shareWithTeam === true,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
       activeTerminalSessionMode: legacyTask.activeInteractiveSession === true ? "terminal" : null,
       linkedWorkspaces: normalizeTaskLinkedWorkspaces(legacyTask.linkedWorkspaces),
@@ -731,6 +734,7 @@ export class RedisTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const autoApplyCheckpoints = input.autoApplyCheckpoints === true;
+    const shareWithTeam = input.shareWithTeam === true;
     const parentTaskId = input.parentTaskId?.trim() || null;
     const rootTaskId = input.rootTaskId?.trim() || parentTaskId;
     const isDraft = input.draft === true;
@@ -742,6 +746,7 @@ export class RedisTaskStore implements TaskStore {
       pinned: false,
       hasPendingCheckpoint: false,
       autoApplyCheckpoints,
+      shareWithTeam,
       activeInteractiveSession: false,
       activeTerminalSessionMode: null,
       linkedWorkspaces: [],
@@ -849,6 +854,7 @@ export class RedisTaskStore implements TaskStore {
       executionAction: task.executionAction,
       hasPendingCheckpoint: task.hasPendingCheckpoint,
       autoApplyCheckpoints: task.autoApplyCheckpoints,
+      shareWithTeam: task.shareWithTeam,
       activeInteractiveSession: task.activeInteractiveSession,
       activeTerminalSessionMode: task.activeTerminalSessionMode,
       provider: task.provider,
@@ -889,6 +895,9 @@ export class RedisTaskStore implements TaskStore {
           continue;
         }
         if (repositoryIds && !repositoryIds.has(task.repoId)) {
+          continue;
+        }
+        if (options.shareWithTeam !== undefined && task.shareWithTeam !== options.shareWithTeam) {
           continue;
         }
         if (view === "active" && task.status === "archived") {
@@ -1519,7 +1528,7 @@ export class RedisTaskStore implements TaskStore {
       pipeline.del(this.taskChangeProposalKey(proposalId));
     }
     await pipeline.exec();
-    await this.eventBus.publish({ type: "task:deleted", payload: { id: taskId, repoId: task.repoId, ownerUserId: task.ownerUserId } });
+    await this.eventBus.publish({ type: "task:deleted", payload: { id: taskId, repoId: task.repoId, ownerUserId: task.ownerUserId, shareWithTeam: task.shareWithTeam } });
     return true;
   }
 
@@ -1902,6 +1911,7 @@ export class PostgresTaskStore implements TaskStore {
       pinned: legacyTask.pinned ?? false,
       hasPendingCheckpoint: legacyTask.hasPendingCheckpoint ?? false,
       autoApplyCheckpoints: legacyTask.autoApplyCheckpoints === true,
+      shareWithTeam: legacyTask.shareWithTeam === true,
       activeInteractiveSession: legacyTask.activeInteractiveSession === true,
       activeTerminalSessionMode: legacyTask.activeInteractiveSession === true ? "terminal" : null,
       linkedWorkspaces: normalizeTaskLinkedWorkspaces(legacyTask.linkedWorkspaces),
@@ -2214,6 +2224,7 @@ export class PostgresTaskStore implements TaskStore {
     const providerProfile = normalizeProviderProfile(input.providerProfile, input.reasoningEffort);
     const modelOverride = normalizeModelOverride(input.modelOverride, input.model);
     const autoApplyCheckpoints = input.autoApplyCheckpoints === true;
+    const shareWithTeam = input.shareWithTeam === true;
     const parentTaskId = input.parentTaskId?.trim() || null;
     const rootTaskId = input.rootTaskId?.trim() || parentTaskId;
     const isDraft = input.draft === true;
@@ -2225,6 +2236,7 @@ export class PostgresTaskStore implements TaskStore {
       pinned: false,
       hasPendingCheckpoint: false,
       autoApplyCheckpoints,
+      shareWithTeam,
       activeInteractiveSession: false,
       activeTerminalSessionMode: null,
       linkedWorkspaces: [],
@@ -2385,6 +2397,7 @@ export class PostgresTaskStore implements TaskStore {
       executionAction: task.executionAction,
       hasPendingCheckpoint: task.hasPendingCheckpoint,
       autoApplyCheckpoints: task.autoApplyCheckpoints,
+      shareWithTeam: task.shareWithTeam,
       activeInteractiveSession: task.activeInteractiveSession,
       activeTerminalSessionMode: task.activeTerminalSessionMode,
       provider: task.provider,
@@ -2412,6 +2425,10 @@ export class PostgresTaskStore implements TaskStore {
     if (repositoryIds) {
       values.push(repositoryIds);
       clauses.push(`task_data->>'repoId' = ANY($${values.length}::text[])`);
+    }
+    if (options.shareWithTeam !== undefined) {
+      values.push(options.shareWithTeam ? "true" : "false");
+      clauses.push(`COALESCE(task_data->>'shareWithTeam', 'false') = $${values.length}`);
     }
     if (view === "active") {
       values.push("archived");
@@ -2988,7 +3005,7 @@ export class PostgresTaskStore implements TaskStore {
     }
 
     await this.pool.query("DELETE FROM tasks WHERE id = $1", [taskId]);
-    await this.eventBus.publish({ type: "task:deleted", payload: { id: taskId, repoId: task.repoId, ownerUserId: task.ownerUserId } });
+    await this.eventBus.publish({ type: "task:deleted", payload: { id: taskId, repoId: task.repoId, ownerUserId: task.ownerUserId, shareWithTeam: task.shareWithTeam } });
     return true;
   }
 

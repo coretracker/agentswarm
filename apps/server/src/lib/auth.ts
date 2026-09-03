@@ -6,7 +6,7 @@ import type { PersonalAccessTokenRuntimeContext, PersonalAccessTokenStore } from
 import type { SessionStore } from "../services/session-store.js";
 import type { TaskStore } from "../services/task-store.js";
 import type { UserStore } from "../services/user-store.js";
-import { canUserAccessRepository, canUserAccessTask } from "./task-ownership.js";
+import { canUserAccessRepository, canUserAccessTask, canUserAccessTeammateTask } from "./task-ownership.js";
 
 const realtimeScopesByEventType: Record<RealtimeEvent["type"], PermissionScope[]> = {
   "task:created": ["task:list", "task:read"],
@@ -189,7 +189,7 @@ export const createAuthService = ({
   const hasAllScopes = (grantedScopes: Set<PermissionScope>, requiredScopes: PermissionScope[]): boolean =>
     requiredScopes.every((scope) => grantedScopes.has(scope));
 
-  const resolveTaskAccessRecord = async (event: RealtimeEvent): Promise<Pick<Task, "ownerUserId" | "repoId"> | null> => {
+  const resolveTaskAccessRecord = async (event: RealtimeEvent): Promise<Pick<Task, "ownerUserId" | "repoId" | "shareWithTeam"> | null> => {
     switch (event.type) {
       case "task:created":
       case "task:updated":
@@ -370,6 +370,14 @@ export const createAuthService = ({
         }
 
         if (event.type.startsWith("task:") && (!taskAccessRecord || !canUserAccessTask(auth.user, taskAccessRecord))) {
+          if (
+            event.type === "task:updated" &&
+            taskAccessRecord &&
+            !taskAccessRecord.shareWithTeam &&
+            canUserAccessTeammateTask(auth.user, taskAccessRecord)
+          ) {
+            socket.emit("task:deleted", { id: event.payload.id });
+          }
           continue;
         }
 

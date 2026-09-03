@@ -628,6 +628,7 @@ export interface Task {
   pinned: boolean;
   hasPendingCheckpoint: boolean;
   autoApplyCheckpoints: boolean;
+  shareWithTeam: boolean;
   activeInteractiveSession?: boolean;
   activeTerminalSessionMode?: TaskTerminalSessionMode | null;
   linkedWorkspaces?: TaskLinkedWorkspace[];
@@ -1130,6 +1131,7 @@ export interface CreateTaskInput {
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
   autoApplyCheckpoints?: boolean;
+  shareWithTeam?: boolean;
   parentTaskId?: string | null;
   rootTaskId?: string | null;
   model?: string;
@@ -1147,6 +1149,7 @@ export interface TaskDefinitionInput {
   providerProfile: ProviderProfile;
   baseBranch: string;
   branchStrategy: TaskBranchStrategy;
+  shareWithTeam?: boolean;
 }
 
 export interface TriggerTaskActionInput {
@@ -1159,6 +1162,10 @@ export interface UpdateTaskConfigInput {
   modelOverride?: string | null;
   branchStrategy?: TaskBranchStrategy;
   autoApplyCheckpoints?: boolean;
+}
+
+export interface UpdateTaskSharingInput {
+  shareWithTeam: boolean;
 }
 
 export interface UpdateTaskPinInput {
@@ -1514,6 +1521,7 @@ export interface TaskDeletedEvent {
     id: string;
     repoId: string;
     ownerUserId: string | null;
+    shareWithTeam: boolean;
   };
 }
 

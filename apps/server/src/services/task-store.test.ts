@@ -322,6 +322,19 @@ describe("TaskStore.createTask", () => {
     assert.equal(task.autoApplyCheckpoints, true);
   });
 
+  it("defaults task sharing to private and filters explicitly shared tasks", async () => {
+    const redis = new FakeRedis();
+    const taskStore = new RedisTaskStore(redis as never, {
+      publish: async () => {}
+    } as never);
+    const privateTask = await taskStore.createTask(createTaskInput, repository, "user-1");
+    const sharedTask = await taskStore.createTask({ ...createTaskInput, shareWithTeam: true }, repository, "user-2");
+
+    assert.equal(privateTask.shareWithTeam, false);
+    assert.equal(sharedTask.shareWithTeam, true);
+    assert.deepEqual((await taskStore.listTasks({ shareWithTeam: true })).map((task) => task.id), [sharedTask.id]);
+  });
+
   it("strips removed task source metadata from legacy tasks", async () => {
     const redis = new FakeRedis();
     const taskStore = new RedisTaskStore(redis as never, {

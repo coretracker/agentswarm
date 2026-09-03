@@ -124,6 +124,7 @@ const createMockTask = (values: TaskDefinitionFormValues): Task => ({
   pinned: false,
   hasPendingCheckpoint: false,
   autoApplyCheckpoints: false,
+  shareWithTeam: false,
   activeInteractiveSession: false,
   activeTerminalSessionMode: null,
   linkedWorkspaces: [],

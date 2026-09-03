@@ -19,7 +19,7 @@ import {
   getEffortOptionsForProvider,
   getModelsForProvider
 } from "@verft/shared-types";
-import { Alert, Card, Col, Collapse, Flex, Form, Input, Row, Segmented, Select, Space, Typography, message } from "antd";
+import { Alert, Card, Col, Collapse, Flex, Form, Input, Row, Segmented, Select, Space, Switch, Typography, message } from "antd";
 import { useProviderModels } from "../src/hooks/useProviderModels";
 import { useRepositories } from "../src/hooks/useRepositories";
 import { useSettings } from "../src/hooks/useSettings";
@@ -38,6 +38,7 @@ export type TaskDefinitionFormValues = {
   providerProfile?: ProviderProfile;
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
+  shareWithTeam?: boolean;
 };
 
 export interface TaskDefinitionFieldsProps {
@@ -47,6 +48,7 @@ export interface TaskDefinitionFieldsProps {
   allowPromptAttachments?: boolean;
   promptImageFiles?: SelectedTaskPromptImageFile[];
   onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
+  showTeamSharing?: boolean;
 }
 
 const providerOptions = (): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
@@ -116,7 +118,8 @@ export const getTaskDefinitionInitialValues = (
     provider: resolvedDefaults.provider,
     model: resolvedDefaults.model,
     providerProfile: resolvedDefaults.providerProfile,
-    branchStrategy: "feature_branch"
+    branchStrategy: "feature_branch",
+    shareWithTeam: false
   };
 };
 
@@ -136,7 +139,8 @@ export const buildTaskDefinitionInput = (
     model: values.model?.trim() ?? "",
     providerProfile: values.providerProfile ?? "high",
     baseBranch: values.baseBranch?.trim() ?? "",
-    branchStrategy: values.branchStrategy ?? "feature_branch"
+    branchStrategy: values.branchStrategy ?? "feature_branch",
+    shareWithTeam: values.shareWithTeam === true
   };
 };
 
@@ -146,7 +150,8 @@ export function TaskDefinitionFields({
   lockRepository = false,
   allowPromptAttachments = true,
   promptImageFiles = [],
-  onPromptImageFilesChange
+  onPromptImageFilesChange,
+  showTeamSharing = true
 }: TaskDefinitionFieldsProps) {
   const { can, session } = useAuth();
   const { repositories } = useRepositories();
@@ -559,6 +564,22 @@ export function TaskDefinitionFields({
                       <Form.Item name="providerProfile" label="Effort" rules={[{ required: true }]}>
                         <Select options={allowedEffortOptions} />
                       </Form.Item>
+
+                      {showTeamSharing ? (
+                        <Form.Item name="shareWithTeam" valuePropName="checked" style={{ marginBottom: 0 }}>
+                          <Flex align="center" justify="space-between" gap={12}>
+                            <div>
+                              <Typography.Text>Share with team</Typography.Text>
+                              <Typography.Paragraph type="secondary" style={{ marginBottom: 0, marginTop: 4 }}>
+                                {session?.user.teamId
+                                  ? "Eligible teammates can access this task."
+                                  : "Assign yourself to a team before sharing tasks."}
+                              </Typography.Paragraph>
+                            </div>
+                            <Switch disabled={!session?.user.teamId} />
+                          </Flex>
+                        </Form.Item>
+                      ) : null}
                     </Flex>
                   )
                 }

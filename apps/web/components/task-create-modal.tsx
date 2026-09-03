@@ -191,6 +191,7 @@ export function TaskCreateModal({ open, onClose, onCreated, onUpdated, draftTask
           syncSettingsDefaults={!editingDraft}
           lockRepository={editingDraft}
           allowPromptAttachments={!editingDraft}
+          showTeamSharing={!editingDraft}
           promptImageFiles={promptImageFiles}
           onPromptImageFilesChange={setPromptImageFiles}
         />

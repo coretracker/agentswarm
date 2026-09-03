@@ -681,6 +681,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     | "continue"
     | "message"
     | "pin"
+    | "sharing"
     | "assign"
     | "state"
     | "renameTitle"
@@ -951,6 +952,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
   const canDeleteTask = can("task:delete");
   const canListUsers = can("user:list");
   const isAdminTaskUser = Boolean(session?.user.roles.some((role) => role.id === SYSTEM_ADMIN_ROLE_ID));
+  const canManageTaskSharing = canEditTask && !!task && (isAdminTaskUser || task.ownerUserId === session?.user.id);
   const canCreateFollowUp = canAll(["task:create", "repo:list"]) && canBuildTasks;
   const lifecycle = buildTaskLifecycleViewModel(task);
   const isQueued = lifecycle.isQueued;
@@ -1177,6 +1179,35 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
     } finally {
       setSubmitting((current) => (current === "assign" ? null : current));
     }
+  };
+  const persistTaskSharing = async (shareWithTeam: boolean): Promise<void> => {
+    if (!task || !canManageTaskSharing) {
+      return;
+    }
+
+    setSubmitting("sharing");
+    try {
+      const updatedTask = await api.updateTaskSharing(task.id, { shareWithTeam });
+      applyUpdatedTask(updatedTask);
+      messageApi.success(shareWithTeam ? "Task shared with team" : "Task is now private");
+    } catch (error) {
+      showTaskActionError(error, "Failed to update team sharing");
+    } finally {
+      setSubmitting((current) => (current === "sharing" ? null : current));
+    }
+  };
+  const handleTaskSharingChange = (shareWithTeam: boolean): void => {
+    if (!shareWithTeam && task?.activeInteractiveSession) {
+      Modal.confirm({
+        title: "Make this task private?",
+        content: "This immediately ends the active terminal session.",
+        okText: "Make Private",
+        okButtonProps: { danger: true },
+        onOk: () => persistTaskSharing(false)
+      });
+      return;
+    }
+    void persistTaskSharing(shareWithTeam);
   };
   const persistTaskConfig = async ({
     provider,
@@ -2969,6 +3000,28 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
               />
             ) : (
               assigneeLabel
+            )}
+          </Descriptions.Item>
+          <Descriptions.Item label="Team visibility">
+            {canManageTaskSharing ? (
+              <Flex align="center" gap={8}>
+                <Switch
+                  checked={task?.shareWithTeam === true}
+                  checkedChildren="Shared"
+                  unCheckedChildren="Private"
+                  loading={submitting === "sharing"}
+                  disabled={
+                    submitting === "sharing" ||
+                    (task?.shareWithTeam !== true && !isAdminTaskUser && !session?.user.teamId)
+                  }
+                  onChange={handleTaskSharingChange}
+                />
+                {!task?.shareWithTeam && !isAdminTaskUser && !session?.user.teamId ? (
+                  <Typography.Text type="secondary">Assign yourself to a team to share.</Typography.Text>
+                ) : null}
+              </Flex>
+            ) : (
+              <Typography.Text type="secondary">{task?.shareWithTeam ? "Shared with team" : "Private"}</Typography.Text>
             )}
           </Descriptions.Item>
           <Descriptions.Item label={baseBranchLabel}>{task?.baseBranch}</Descriptions.Item>

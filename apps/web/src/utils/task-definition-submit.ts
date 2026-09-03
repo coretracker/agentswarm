@@ -19,6 +19,7 @@ export const createTaskFromDefinition = (definition: TaskDefinitionInput, option
     providerProfile: definition.providerProfile,
     modelOverride: definition.model || undefined,
     baseBranch: definition.baseBranch,
-    branchStrategy: definition.branchStrategy
+    branchStrategy: definition.branchStrategy,
+    shareWithTeam: definition.shareWithTeam
   });
 };

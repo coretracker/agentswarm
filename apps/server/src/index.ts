@@ -220,7 +220,8 @@ const bootstrap = async (): Promise<void> => {
     taskStore,
     taskQueueStore,
     scheduler,
-    spawner
+    spawner,
+    userStore
   });
 
   app.get("/health", async () => ({ ok: true }));
