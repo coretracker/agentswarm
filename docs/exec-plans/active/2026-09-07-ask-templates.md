@@ -7,6 +7,7 @@
 - Authorized users can create, share, version, restore, and use templates in the existing Ask form.
 - Template access and management enforce the approved permission and ownership rules.
 - Existing blank task creation remains unchanged.
+- Template-based task creation always works on the selected existing branch.
 
 ## Human-Gated Flow Evidence
 - Requirements Read: YES
@@ -23,3 +24,4 @@
 - 2026-09-07: User approved implementation of the Ask Templates plan.
 - 2026-09-07: Implemented Ask Template permissions, persistence, API, UI, rendering, sharing, and version history.
 - 2026-09-07: Verified lint, tests, build, and patch formatting.
+- 2026-09-07: Template-selected tasks now force the existing-branch strategy in the shared task definition builder.

@@ -42,6 +42,7 @@ export type TaskDefinitionFormValues = {
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
   shareWithTeam?: boolean;
+  templateId?: string;
   templateValues?: Record<string, string>;
 };
 
@@ -144,7 +145,7 @@ export const buildTaskDefinitionInput = (
     model: values.model?.trim() ?? "",
     providerProfile: values.providerProfile ?? "high",
     baseBranch: values.baseBranch?.trim() ?? "",
-    branchStrategy: values.branchStrategy ?? "feature_branch",
+    branchStrategy: values.templateId ? "work_on_branch" : values.branchStrategy ?? "feature_branch",
     shareWithTeam: values.shareWithTeam === true
   };
 };
@@ -230,14 +231,17 @@ export function TaskDefinitionFields({
     if (!templateId) {
       setSelectedTemplate(null);
       setTemplateValues({});
+      form.setFieldValue("templateId", undefined);
       return;
     }
     void api.getAskTemplate(templateId).then((template) => {
       const values = Object.fromEntries(template.variables.map((variable) => [variable.key, variable.defaultValue]));
       setSelectedTemplate(template);
       setTemplateValues(values);
+      form.setFieldValue("templateId", template.id);
       form.setFieldValue("templateValues", values);
       form.setFieldValue("taskType", "ask");
+      form.setFieldValue("branchStrategy", "work_on_branch");
       if (!form.isFieldTouched("title")) form.setFieldValue("title", template.name);
       form.setFieldValue("prompt", renderAskTemplate(template, values));
     }).catch(() => setSelectedTemplate(null));
@@ -521,6 +525,7 @@ export function TaskDefinitionFields({
                           { label: "Create feature branch", value: "feature_branch" },
                           { label: "Work on existing branch", value: "work_on_branch" }
                         ]}
+                        disabled={Boolean(selectedTemplate)}
                       />
                     </Form.Item>
                   </Col>
