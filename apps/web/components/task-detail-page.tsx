@@ -4342,11 +4342,11 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   ) : null}
                 </Space>
               </Flex>
-              <div>
+              <ExpandableMessageContent fadeColor={messageColor}>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                   {entryMessage.content}
                 </ReactMarkdown>
-              </div>
+              </ExpandableMessageContent>
               {renderPersistedMessageAttachments(entryMessage, entryKey)}
             </Flex>
           ) : (
@@ -4476,6 +4476,13 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
             {markdown}
           </ReactMarkdown>
+        )}
+        renderPromptMarkdown={(markdown) => (
+          <ExpandableMessageContent fadeColor="rgba(28,128,87,0.08)">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+              {markdown}
+            </ReactMarkdown>
+          </ExpandableMessageContent>
         )}
         renderRunErrorNotice={renderRunErrorNotice}
         renderRunTimelineContent={renderRunTimelineContent}

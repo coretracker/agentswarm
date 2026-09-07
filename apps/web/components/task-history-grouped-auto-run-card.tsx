@@ -31,6 +31,7 @@ export interface TaskHistoryGroupedAutoRunCardProps {
   cancelLoading: boolean;
   onCancel?: () => void;
   renderMarkdown: (markdown: string) => ReactNode;
+  renderPromptMarkdown?: (markdown: string) => ReactNode;
   renderRunErrorNotice: (run: TaskRun) => ReactNode;
   renderRunTimelineContent: (run: TaskRun) => ReactNode;
   onTimelineOpen?: (run: TaskRun) => void;
@@ -100,6 +101,7 @@ export function TaskHistoryGroupedAutoRunCard({
   cancelLoading,
   onCancel,
   renderMarkdown,
+  renderPromptMarkdown = renderMarkdown,
   renderRunErrorNotice,
   renderRunTimelineContent,
   onTimelineOpen,
@@ -247,7 +249,7 @@ export function TaskHistoryGroupedAutoRunCard({
         {/* Content: prompt + summary */}
         <Flex vertical style={{ padding: "12px 20px 0" }}>
           <div style={{ fontSize: 15, lineHeight: 1.6, fontWeight: 500 }}>
-            {renderMarkdown(entry.promptText)}
+            {renderPromptMarkdown(entry.promptText)}
           </div>
           {renderRunErrorNotice(entry.run)}
         </Flex>
