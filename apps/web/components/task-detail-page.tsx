@@ -475,7 +475,7 @@ const taskStateOptions: Array<{ value: EditableTaskState; label: string }> = [
   { value: "done", label: "Done" }
 ];
 
-function ExpandableMessageContent({ children, fadeColor }: { children: ReactNode; fadeColor: string }) {
+function ExpandableMessageContent({ children }: { children: ReactNode }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [expanded, setExpanded] = useState(false);
   const [hasOverflow, setHasOverflow] = useState(false);
@@ -508,17 +508,6 @@ function ExpandableMessageContent({ children, fadeColor }: { children: ReactNode
     <Space direction="vertical" size={8} style={{ width: "100%" }}>
       <div style={{ position: "relative", maxHeight: expanded ? "none" : 320, overflow: "hidden" }}>
         <div ref={containerRef}>{children}</div>
-        {!expanded && hasOverflow ? (
-          <div
-            style={{
-              position: "absolute",
-              inset: "auto 0 0 0",
-              height: 64,
-              background: `linear-gradient(to bottom, rgba(255,255,255,0), ${fadeColor})`,
-              pointerEvents: "none"
-            }}
-          />
-        ) : null}
       </div>
       {hasOverflow ? (
         <Button type="link" size="small" style={{ padding: 0, alignSelf: "flex-start" }} onClick={() => setExpanded((current) => !current)}>
@@ -4342,7 +4331,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                   ) : null}
                 </Space>
               </Flex>
-              <ExpandableMessageContent fadeColor={messageColor}>
+              <ExpandableMessageContent>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                   {entryMessage.content}
                 </ReactMarkdown>
@@ -4358,7 +4347,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
                 </Space>
                 <Typography.Text type="secondary">{dayjs(entryMessage.createdAt).format("YYYY-MM-DD HH:mm:ss")}</Typography.Text>
               </Flex>
-              <ExpandableMessageContent fadeColor={messageColor}>
+              <ExpandableMessageContent>
                 <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
                   {entryMessage.content}
                 </ReactMarkdown>
@@ -4478,7 +4467,7 @@ export function TaskDetailPage({ taskId }: { taskId: string }) {
           </ReactMarkdown>
         )}
         renderPromptMarkdown={(markdown) => (
-          <ExpandableMessageContent fadeColor="rgba(28,128,87,0.08)">
+          <ExpandableMessageContent>
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
               {markdown}
             </ReactMarkdown>
