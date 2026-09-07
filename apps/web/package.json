@@ -9,7 +9,7 @@
     "build-storybook": "storybook build",
     "start": "next start -H 0.0.0.0 -p 3217",
     "lint": "tsc --noEmit",
-    "test": "node --import tsx --test src/api/client.test.ts src/utils/task-history.test.ts src/utils/diff.test.ts src/utils/workspace-file-links.test.ts src/utils/task-lifecycle-view-model.test.ts src/utils/task-run-timeline.test.ts src/utils/harness-editor.test.ts src/utils/integration-yaml.test.ts"
+    "test": "node --import tsx --test src/api/client.test.ts src/utils/task-history.test.ts src/utils/diff.test.ts src/utils/workspace-file-links.test.ts src/utils/task-lifecycle-view-model.test.ts src/utils/task-run-timeline.test.ts src/utils/harness-editor.test.ts src/utils/integration-yaml.test.ts src/utils/ask-template.test.ts"
   },
   "dependencies": {
     "@ant-design/icons": "^6.0.0",

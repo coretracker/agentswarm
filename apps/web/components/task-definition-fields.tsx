@@ -11,13 +11,16 @@ import type {
   TaskBranchStrategy,
   TaskDefinitionInput,
   TaskType,
-  User
+  User,
+  AskTemplate,
+  AskTemplateSummary
 } from "@verft/shared-types";
 import {
   getAgentProviderLabel,
   getDefaultModelForProvider,
   getEffortOptionsForProvider,
-  getModelsForProvider
+  getModelsForProvider,
+  renderAskTemplate
 } from "@verft/shared-types";
 import { Alert, Card, Col, Collapse, Flex, Form, Input, Row, Segmented, Select, Space, Switch, Typography, message } from "antd";
 import { useProviderModels } from "../src/hooks/useProviderModels";
@@ -39,6 +42,7 @@ export type TaskDefinitionFormValues = {
   baseBranch?: string;
   branchStrategy?: TaskBranchStrategy;
   shareWithTeam?: boolean;
+  templateValues?: Record<string, string>;
 };
 
 export interface TaskDefinitionFieldsProps {
@@ -49,6 +53,7 @@ export interface TaskDefinitionFieldsProps {
   promptImageFiles?: SelectedTaskPromptImageFile[];
   onPromptImageFilesChange?: (nextFiles: SelectedTaskPromptImageFile[]) => void;
   showTeamSharing?: boolean;
+  initialTemplateId?: string | null;
 }
 
 const providerOptions = (): Array<{ label: string; value: AgentProvider; disabled?: boolean }> => [
@@ -151,7 +156,8 @@ export function TaskDefinitionFields({
   allowPromptAttachments = true,
   promptImageFiles = [],
   onPromptImageFilesChange,
-  showTeamSharing = true
+  showTeamSharing = true,
+  initialTemplateId = null
 }: TaskDefinitionFieldsProps) {
   const { can, session } = useAuth();
   const { repositories } = useRepositories();
@@ -159,9 +165,13 @@ export function TaskDefinitionFields({
   const [branchOptions, setBranchOptions] = useState<string[]>([]);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [branchesError, setBranchesError] = useState<string | null>(null);
+  const [templates, setTemplates] = useState<AskTemplateSummary[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState<AskTemplate | null>(null);
+  const [templateValues, setTemplateValues] = useState<Record<string, string>>({});
   const canBuildTasks = can("task:build");
   const canAskTasks = can("task:ask");
   const canRunAutomatedTask = canBuildTasks || canAskTasks;
+  const canUseTemplates = can("template:list") && can("template:read") && canAskTasks;
 
   const selectedRepoId = Form.useWatch("repoId", form);
   const selectedTitle = Form.useWatch("title", form);
@@ -210,6 +220,36 @@ export function TaskDefinitionFields({
     ...(canBuildTasks ? [{ label: "Build", value: "build" as const }] : []),
     ...(canAskTasks ? [{ label: "Ask", value: "ask" as const }] : [])
   ];
+
+  useEffect(() => {
+    if (!canUseTemplates) return;
+    void api.listAskTemplates().then(setTemplates).catch(() => setTemplates([]));
+  }, [canUseTemplates]);
+
+  const selectTemplate = (templateId?: string) => {
+    if (!templateId) {
+      setSelectedTemplate(null);
+      setTemplateValues({});
+      return;
+    }
+    void api.getAskTemplate(templateId).then((template) => {
+      const values = Object.fromEntries(template.variables.map((variable) => [variable.key, variable.defaultValue]));
+      setSelectedTemplate(template);
+      setTemplateValues(values);
+      form.setFieldValue("templateValues", values);
+      form.setFieldValue("taskType", "ask");
+      if (!form.isFieldTouched("title")) form.setFieldValue("title", template.name);
+      form.setFieldValue("prompt", renderAskTemplate(template, values));
+    }).catch(() => setSelectedTemplate(null));
+  };
+
+  useEffect(() => {
+    if (initialTemplateId && !selectedTemplate) selectTemplate(initialTemplateId);
+  }, [initialTemplateId, selectedTemplate]);
+
+  useEffect(() => {
+    if (selectedTemplate) form.setFieldValue("prompt", renderAskTemplate(selectedTemplate, templateValues));
+  }, [form, selectedTemplate, templateValues]);
 
   useEffect(() => {
     if (!settings || !syncSettingsDefaults) {
@@ -328,7 +368,7 @@ export function TaskDefinitionFields({
   }, [selectedRepoId]);
 
   useEffect(() => {
-    if (form.isFieldTouched("title")) {
+    if (selectedTemplate || form.isFieldTouched("title")) {
       return;
     }
 
@@ -336,7 +376,7 @@ export function TaskDefinitionFields({
     if (nextTitle && nextTitle !== selectedTitle) {
       form.setFieldValue("title", nextTitle);
     }
-  }, [form, selectedPrompt, selectedTitle]);
+  }, [form, selectedPrompt, selectedTemplate, selectedTitle]);
 
   const promptPanelTitle = effectiveTaskType === "ask" ? "Question" : "Prompt";
   const canAttachPromptImages = allowPromptAttachments;
@@ -369,26 +409,30 @@ export function TaskDefinitionFields({
         <Input placeholder="Short task title" size="large" />
       </Form.Item>
       <Form.Item
-        label={promptPanelTitle}
+        label={selectedTemplate ? `Ask Template: ${selectedTemplate.name}` : promptPanelTitle}
         style={{ marginBottom: 0, flex: 1, display: "flex", flexDirection: "column" }}
       >
         <Flex vertical gap={12} style={{ flex: 1 }}>
-          <Form.Item
-            name="prompt"
-            style={{ marginBottom: 0 }}
-            rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}
-          >
-            <Input.TextArea
-              autoSize={{ minRows: 8, maxRows: 22 }}
-              showCount
-              style={{ resize: "none", fontSize: 15, lineHeight: 1.6 }}
-              placeholder={
-                effectiveTaskType === "ask"
-                  ? "Ask a repository question. Include the files, behavior, or decision you want explained."
-                  : "Describe the goal, constraints, relevant files, and what done looks like."
-              }
-            />
-          </Form.Item>
+          {selectedTemplate ? (
+            <>
+              {selectedTemplate.variables.map((variable) => (
+                <Form.Item key={variable.key} name={["templateValues", variable.key]} label={variable.label} rules={variable.required ? [{ required: true, message: `${variable.label} is required` }] : []} extra={variable.description || undefined} style={{ marginBottom: 0 }}>
+                  {variable.type === "multiline" ? (
+                    <Input.TextArea value={templateValues[variable.key] ?? ""} autoSize={{ minRows: 3, maxRows: 10 }} onChange={(event) => { const value = event.target.value; setTemplateValues((current) => ({ ...current, [variable.key]: value })); form.setFieldValue(["templateValues", variable.key], value); }} />
+                  ) : (
+                    <Input value={templateValues[variable.key] ?? ""} onChange={(event) => { const value = event.target.value; setTemplateValues((current) => ({ ...current, [variable.key]: value })); form.setFieldValue(["templateValues", variable.key], value); }} />
+                  )}
+                </Form.Item>
+              ))}
+              <Form.Item name="prompt" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+                <Input.TextArea readOnly autoSize={{ minRows: 6, maxRows: 16 }} style={{ resize: "none", fontSize: 13, lineHeight: 1.5 }} />
+              </Form.Item>
+            </>
+          ) : (
+            <Form.Item name="prompt" style={{ marginBottom: 0 }} rules={[{ required: true, message: effectiveTaskType === "ask" ? "Enter a question" : "Enter a prompt" }]}>
+              <Input.TextArea autoSize={{ minRows: 8, maxRows: 22 }} showCount style={{ resize: "none", fontSize: 15, lineHeight: 1.6 }} placeholder={effectiveTaskType === "ask" ? "Ask a repository question. Include the files, behavior, or decision you want explained." : "Describe the goal, constraints, relevant files, and what done looks like."} />
+            </Form.Item>
+          )}
           {allowPromptAttachments ? (
             <TaskPromptAttachmentsInput
               files={promptImageFiles}
@@ -405,9 +449,12 @@ export function TaskDefinitionFields({
   const promptPanelHeader = (
     <Flex align="center" justify="space-between" gap={12} wrap="wrap">
       <Typography.Text strong>{promptPanelTitle}</Typography.Text>
-      <Form.Item name="taskType" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
-        <Segmented options={taskTypeOptions} disabled={taskTypeOptions.length <= 1} />
-      </Form.Item>
+      <Flex align="center" gap={8}>
+        {canUseTemplates ? <Select value={selectedTemplate?.id ?? ""} style={{ minWidth: 220 }} options={[{ label: "Blank prompt", value: "" }, ...templates.map((template) => ({ label: template.name, value: template.id }))]} onChange={selectTemplate} /> : null}
+        <Form.Item name="taskType" rules={[{ required: true }]} style={{ marginBottom: 0 }}>
+          <Segmented options={taskTypeOptions} disabled={taskTypeOptions.length <= 1 || Boolean(selectedTemplate)} />
+        </Form.Item>
+      </Flex>
     </Flex>
   );
 

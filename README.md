@@ -21,7 +21,7 @@ It is built for teams that want the speed of AI coding agents without giving up 
 
 ## How It Works
 
-1. **Connect**: Add repositories, GitHub credentials, provider credentials, repository env, MCP tools, and defaults.
+1. **Connect**: Add repositories, GitHub credentials, provider credentials, repository env, MCP tools, Ask Templates, and defaults.
 2. **Create**: Start build or ask tasks from prompts, GitHub feedback, or agent-created subtasks.
 3. **Observe**: Follow task status, streamed logs, messages, terminal output, checkpoints, and pending diffs from the browser.
 4. **Decide**: Apply, reject, revert, push, or merge each result from Verft's review UI.
@@ -42,7 +42,7 @@ Ask tasks let Codex or Claude inspect a codebase and answer without writing file
 
 ### Standardize Repeated Work
 
-Use repository defaults for provider/model choices and repository-local postflight checks for validation.
+Use Ask Templates for reusable Ask prompts with named inputs and Markdown answer formats. Templates can stay private, be shared with selected teams, or be made global for authorized users. Use repository defaults for provider/model choices and repository-local postflight checks for validation.
 
 ### Integrate With GitHub Feedback
 

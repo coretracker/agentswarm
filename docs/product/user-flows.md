@@ -67,6 +67,7 @@ Notes:
 ## Task Flows (New + Existing)
 
 Notes:
+- Open **Templates** to create reusable Ask prompts. Templates may be private, shared with selected teams, or global for roles with template access. Choosing one in the new-task form fills its named inputs into the normal Ask prompt; later template edits do not change the created task.
 - Saving a draft stores the same task definition fields used by the new task form; opening a draft reuses the same form and can create the runnable task. Task definitions do not include task-specific notes.
 - The new-task form can opt into **Share with team**. Owners and administrators can later change it in the task's **Info** tab; turning it off ends an active terminal session.
 

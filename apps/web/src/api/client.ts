@@ -65,7 +65,13 @@ import type {
   UpdateIntegrationRuleInput,
   CopyIntegrationSetupInput,
   CopyIntegrationSetupResult,
-  WebhookInboxEntry
+  WebhookInboxEntry,
+  AskTemplate,
+  AskTemplateSummary,
+  AskTemplateVersion,
+  CreateAskTemplateInput,
+  UpdateAskTemplateInput,
+  UpdateAskTemplateSharingInput
 } from "@verft/shared-types";
 export type { TaskWorkspaceFilePreview } from "@verft/shared-types";
 import { buildApiUrl } from "../lib/public-url";
@@ -221,6 +227,15 @@ export const api = {
     request<void>(`/teams/${id}`, {
       method: "DELETE"
     }),
+  listAskTemplates: () => request<AskTemplateSummary[]>("/ask-templates"),
+  getAskTemplate: (id: string) => request<AskTemplate>(`/ask-templates/${id}`),
+  createAskTemplate: (input: CreateAskTemplateInput) => request<AskTemplate>("/ask-templates", { method: "POST", body: JSON.stringify(input) }),
+  updateAskTemplate: (id: string, input: UpdateAskTemplateInput) => request<AskTemplate>(`/ask-templates/${id}`, { method: "PATCH", body: JSON.stringify(input) }),
+  updateAskTemplateSharing: (id: string, input: UpdateAskTemplateSharingInput) => request<AskTemplate>(`/ask-templates/${id}/sharing`, { method: "PATCH", body: JSON.stringify(input) }),
+  deleteAskTemplate: (id: string) => request<void>(`/ask-templates/${id}`, { method: "DELETE" }),
+  listAskTemplateVersions: (id: string) => request<AskTemplateVersion[]>(`/ask-templates/${id}/versions`),
+  getAskTemplateVersion: (id: string, version: number) => request<AskTemplateVersion>(`/ask-templates/${id}/versions/${version}`),
+  restoreAskTemplateVersion: (id: string, version: number) => request<AskTemplate>(`/ask-templates/${id}/versions/${version}/restore`, { method: "POST" }),
   listRoles: () => request<Role[]>("/roles"),
   getRole: (id: string) => request<Role>(`/roles/${id}`),
   createRole: (input: CreateRoleInput) =>

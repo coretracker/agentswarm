@@ -26,6 +26,7 @@ import { attachTaskInteractiveTerminalUpgrade } from "./lib/task-interactive-ter
 import { registerInboundWebhookRoutes } from "./routes/inbound-webhooks.js";
 import { registerIntegrationManagementRoutes } from "./routes/integration-management.js";
 import { registerMcpRoutes } from "./mcp/server.js";
+import { registerAskTemplateRoutes } from "./routes/ask-templates.js";
 import { createOperationalLogger } from "./lib/operational-logger.js";
 
 const readHeaderValue = (value: string | string[] | undefined): string | null => {
@@ -160,7 +161,8 @@ const bootstrap = async (): Promise<void> => {
     sessionStore,
     settingsStore,
     integrationRuleStore,
-    webhookInboxStore
+    webhookInboxStore,
+    askTemplateStore
   } = createPostgresStores(
     postgresPool,
     redisClients,
@@ -196,6 +198,7 @@ const bootstrap = async (): Promise<void> => {
   registerAuthRoutes(app, { auth, userStore, sessionStore, personalAccessTokenStore });
   registerUserRoutes(app, { auth, userStore, roleStore, teamStore, sessionStore });
   registerTeamRoutes(app, { auth, teamStore });
+  registerAskTemplateRoutes(app, { auth, askTemplateStore, teamStore });
   registerRoleRoutes(app, { auth, roleStore, userStore, sessionStore });
   registerTaskRoutes(app, {
     taskStore,

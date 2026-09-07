@@ -21,7 +21,7 @@ const ROLE_NAME_KEY_PREFIX = "verft:role_name:";
 export const SYSTEM_ADMIN_ROLE_ID = "admin";
 const SYSTEM_ADMIN_ROLE_NAME = "Admin";
 const SYSTEM_ADMIN_ROLE_DESCRIPTION = "Built-in superuser role with every available permission.";
-const ROLE_SCOPE_VERSION = 5;
+const ROLE_SCOPE_VERSION = 6;
 
 const nowIso = (): string => new Date().toISOString();
 const scopeOrder = new Map(ALL_PERMISSION_SCOPES.map((scope, index) => [scope, index]));

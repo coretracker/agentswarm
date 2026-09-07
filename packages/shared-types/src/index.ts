@@ -182,6 +182,12 @@ export type PermissionScope =
   | "task:ask"
   | "task:terminal"
   | "task:delete"
+  | "template:list"
+  | "template:read"
+  | "template:create"
+  | "template:edit"
+  | "template:delete"
+  | "template:share"
   | "repo:list"
   | "repo:read"
   | "repo:create"
@@ -205,6 +211,12 @@ export const ALL_PERMISSION_SCOPES: PermissionScope[] = [
   "task:ask",
   "task:terminal",
   "task:delete",
+  "template:list",
+  "template:read",
+  "template:create",
+  "template:edit",
+  "template:delete",
+  "template:share",
   "repo:list",
   "repo:read",
   "repo:create",
@@ -235,6 +247,7 @@ export interface PermissionScopeGroup {
 
 export const PERMISSION_SCOPE_GROUPS: PermissionScopeGroup[] = [
   { label: "Tasks", scopes: ["task:list", "task:create", "task:create_subtask", "task:read", "task:edit", "task:build", "task:ask", "task:terminal", "task:delete"] },
+  { label: "Ask Templates", scopes: ["template:list", "template:read", "template:create", "template:edit", "template:delete", "template:share"] },
   { label: "Repositories", scopes: ["repo:list", "repo:read", "repo:create", "repo:edit", "repo:delete"] },
   { label: "Settings", scopes: ["settings:read", "settings:edit"] },
   { label: "Users", scopes: ["user:list", "user:create", "user:read", "user:edit", "user:delete"] }
@@ -412,6 +425,87 @@ export interface CreateTeamInput {
 export interface UpdateTeamInput {
   name?: string;
 }
+
+export type AskTemplateVisibility = "private" | "teams" | "global";
+export type AskTemplateVariableType = "text" | "multiline";
+
+export interface AskTemplateVariable {
+  key: string;
+  label: string;
+  description: string;
+  type: AskTemplateVariableType;
+  required: boolean;
+  defaultValue: string;
+}
+
+export interface AskTemplate {
+  id: string;
+  ownerUserId: string | null;
+  ownerName: string | null;
+  name: string;
+  description: string;
+  prompt: string;
+  outputFormat: string;
+  variables: AskTemplateVariable[];
+  visibility: AskTemplateVisibility;
+  sharedTeamIds: string[];
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AskTemplateSummary {
+  id: string;
+  ownerUserId: string | null;
+  ownerName: string | null;
+  name: string;
+  description: string;
+  visibility: AskTemplateVisibility;
+  sharedTeamIds: string[];
+  version: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AskTemplateVersion {
+  templateId: string;
+  version: number;
+  name: string;
+  description: string;
+  prompt: string;
+  outputFormat: string;
+  variables: AskTemplateVariable[];
+  changedByUserId: string | null;
+  changedByName: string | null;
+  createdAt: string;
+}
+
+export interface CreateAskTemplateInput {
+  name: string;
+  description?: string;
+  prompt: string;
+  outputFormat: string;
+  variables?: AskTemplateVariable[];
+}
+
+export interface UpdateAskTemplateInput extends CreateAskTemplateInput {}
+
+export interface UpdateAskTemplateSharingInput {
+  visibility: AskTemplateVisibility;
+  sharedTeamIds?: string[];
+}
+
+const ASK_TEMPLATE_PLACEHOLDER_PATTERN = /\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/g;
+
+export const getAskTemplatePlaceholders = (value: string): string[] =>
+  Array.from(value.matchAll(ASK_TEMPLATE_PLACEHOLDER_PATTERN), (match) => match[1]);
+
+export const renderAskTemplate = (template: Pick<AskTemplate, "prompt" | "outputFormat" | "variables">, values: Record<string, string>): string => {
+  const variables = new Map(template.variables.map((variable) => [variable.key, variable]));
+  const replace = (value: string): string =>
+    value.replace(ASK_TEMPLATE_PLACEHOLDER_PATTERN, (_match, key: string) => values[key] ?? variables.get(key)?.defaultValue ?? "");
+  return [replace(template.prompt), "", "Required answer format:", replace(template.outputFormat)].join("\n").trim();
+};
 
 export interface RepositoryEnvVar {
   key: string;

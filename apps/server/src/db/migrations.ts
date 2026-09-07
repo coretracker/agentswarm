@@ -823,5 +823,49 @@ Feedback:
 
       CREATE INDEX IF NOT EXISTS users_team_id_idx ON users(team_id);
     `
+  },
+  {
+    id: "20260907_01_ask_templates",
+    sql: `
+      CREATE TABLE IF NOT EXISTS ask_templates (
+        id text PRIMARY KEY,
+        owner_user_id text NULL REFERENCES users(id) ON DELETE SET NULL,
+        name text NOT NULL,
+        description text NOT NULL,
+        prompt text NOT NULL,
+        output_format text NOT NULL,
+        variables jsonb NOT NULL DEFAULT '[]'::jsonb,
+        visibility text NOT NULL CHECK (visibility IN ('private', 'teams', 'global')),
+        version integer NOT NULL,
+        created_at text NOT NULL,
+        updated_at text NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS ask_templates_owner_updated_idx ON ask_templates(owner_user_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS ask_templates_visibility_updated_idx ON ask_templates(visibility, updated_at DESC);
+
+      CREATE TABLE IF NOT EXISTS ask_template_team_access (
+        template_id text NOT NULL REFERENCES ask_templates(id) ON DELETE CASCADE,
+        team_id text NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+        PRIMARY KEY (template_id, team_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS ask_template_team_access_team_idx ON ask_template_team_access(team_id, template_id);
+
+      CREATE TABLE IF NOT EXISTS ask_template_versions (
+        template_id text NOT NULL REFERENCES ask_templates(id) ON DELETE CASCADE,
+        version integer NOT NULL,
+        name text NOT NULL,
+        description text NOT NULL,
+        prompt text NOT NULL,
+        output_format text NOT NULL,
+        variables jsonb NOT NULL,
+        changed_by_user_id text NULL REFERENCES users(id) ON DELETE SET NULL,
+        created_at text NOT NULL,
+        PRIMARY KEY (template_id, version)
+      );
+
+      CREATE INDEX IF NOT EXISTS ask_template_versions_template_created_idx ON ask_template_versions(template_id, created_at DESC);
+    `
   }
 ];

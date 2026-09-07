@@ -15,6 +15,7 @@ import { RedisWebhookDeliveryStore } from "./webhook-delivery-store.js";
 import { PostgresWebhookInboxStore } from "./webhook-inbox-store.js";
 import { PostgresPersonalAccessTokenStore } from "./personal-access-token-store.js";
 import { TeamStore } from "./team-store.js";
+import { PostgresAskTemplateStore } from "./ask-template-store.js";
 
 export const createPostgresStores = (
   pool: Pool,
@@ -30,6 +31,7 @@ export const createPostgresStores = (
   const roleStore = new PostgresRoleStore(pool);
   const userStore = new PostgresUserStore(pool, roleStore, repositoryStore);
   const teamStore = new TeamStore(pool);
+  const askTemplateStore = new PostgresAskTemplateStore(pool);
   const personalAccessTokenStore = new PostgresPersonalAccessTokenStore(pool, userStore);
   const sessionStore = new RedisSessionStore(redisClients.command, sessionTtlDays);
   const settingsStore = new PostgresSettingsStore(pool, eventBus, credentialStore);
@@ -49,6 +51,7 @@ export const createPostgresStores = (
     sessionStore,
     settingsStore,
     integrationRuleStore,
-    webhookInboxStore
+    webhookInboxStore,
+    askTemplateStore
   };
 };

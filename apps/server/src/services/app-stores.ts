@@ -11,6 +11,7 @@ import type { TeamStore } from "./team-store.js";
 import type { WebhookDeliveryStore } from "./webhook-delivery-store.js";
 import type { WebhookInboxStore } from "./webhook-inbox-store.js";
 import type { PersonalAccessTokenStore } from "./personal-access-token-store.js";
+import type { AskTemplateStore } from "./ask-template-store.js";
 
 export interface AppStores {
   taskStore: TaskStore;
@@ -26,4 +27,5 @@ export interface AppStores {
   settingsStore: SettingsStore;
   integrationRuleStore: IntegrationRuleStore;
   webhookInboxStore: WebhookInboxStore;
+  askTemplateStore: AskTemplateStore;
 }

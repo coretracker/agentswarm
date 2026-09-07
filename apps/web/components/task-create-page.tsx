@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import type { TaskType } from "@verft/shared-types";
 import { Button, Flex, Form, Space, Typography, message } from "antd";
 import { createTaskFromDefinition, startMessageForDefinition } from "../src/utils/task-definition-submit";
@@ -16,6 +16,7 @@ import {
 
 export function TaskCreatePage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { can } = useAuth();
   const [form] = Form.useForm<TaskDefinitionFormValues>();
   const [submitting, setSubmitting] = useState(false);
@@ -92,7 +93,7 @@ export function TaskCreatePage() {
             </Space>
           </Flex>
 
-          <TaskDefinitionFields form={form} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
+          <TaskDefinitionFields form={form} initialTemplateId={searchParams.get("template")} promptImageFiles={promptImageFiles} onPromptImageFilesChange={setPromptImageFiles} />
         </Flex>
       </Form>
     </>

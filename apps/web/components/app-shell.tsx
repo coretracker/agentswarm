@@ -32,6 +32,7 @@ import {
 
 const menuIconByPath: Record<string, ReactNode> = {
   "/tasks": <UnorderedListOutlined />,
+  "/templates": <BulbOutlined />,
   "/repositories": <DatabaseOutlined />,
   "/settings": <SettingOutlined />,
   "/users": <TeamOutlined />

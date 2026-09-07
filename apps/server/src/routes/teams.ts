@@ -9,7 +9,7 @@ const updateTeamSchema = teamSchema.partial();
 
 export const registerTeamRoutes = (app: FastifyInstance, deps: { auth: AuthService; teamStore: TeamStore }): void => {
   app.get("/teams", { preHandler: deps.auth.requireAuth() }, async (request, reply) => {
-    if (!request.auth!.scopes.has("user:list") && !request.auth!.scopes.has("settings:read")) {
+    if (!request.auth!.scopes.has("user:list") && !request.auth!.scopes.has("settings:read") && !request.auth!.scopes.has("template:share")) {
       return reply.status(403).send({ message: "Forbidden" });
     }
     return deps.teamStore.listTeams();
